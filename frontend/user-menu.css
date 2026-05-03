@@ -1,0 +1,139 @@
+.user-menu-host {
+  position: relative;
+}
+
+.user-box {
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+
+.user-box:hover,
+.user-box.user-menu-open {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.user-menu {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(320px, calc(100vw - 28px));
+  display: none;
+  z-index: 120;
+  border: 1px solid #e5e7eb;
+  border-radius: 18px;
+  background: #fff;
+  color: #111827;
+  box-shadow: 0 24px 60px rgba(17, 24, 39, 0.24);
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.user-menu.open {
+  display: block;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.user-menu-header {
+  padding: 16px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fafafa;
+}
+
+.user-menu-header strong,
+.user-menu-header span {
+  display: block;
+}
+
+.user-menu-header strong {
+  font-size: 16px;
+}
+
+.user-menu-header span,
+.user-menu-header small {
+  color: #6b7280;
+}
+
+.user-menu-section {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.user-menu-section:last-child {
+  border-bottom: 0;
+}
+
+.user-menu-button {
+  width: 100%;
+  min-height: 42px;
+  border: 0;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  color: #111827;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.user-menu-button:hover,
+.user-menu-button:focus-visible {
+  outline: none;
+  background: #f3f4f6;
+}
+
+.user-menu-button.danger {
+  color: #dc2626;
+}
+
+.user-menu-button.danger:hover,
+.user-menu-button.danger:focus-visible {
+  background: #fef2f2;
+}
+
+.user-menu-toast {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 200;
+  max-width: min(360px, calc(100vw - 36px));
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #111827;
+  color: #fff;
+  box-shadow: 0 18px 40px rgba(17, 24, 39, 0.28);
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.user-menu-toast.open {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (max-width: 720px) {
+  .user-menu {
+    position: fixed;
+    inset: auto 12px 12px 12px;
+    width: auto;
+    top: auto;
+    right: 12px;
+    border-radius: 20px;
+    transform: translateY(12px);
+  }
+
+  .user-menu.open {
+    transform: translateY(0);
+  }
+}

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mi perfil - Sistema Guernica</title>
+  <style>
+    :root{--header-height:88px;--sidebar-width:270px;--bg:#f7f7fb;--surface:#fff;--header:#16052e;--text:#111827;--muted:#6b7280;--border:#e5e7eb;--primary:#6d28d9;--primary-soft:#f0e5ff;--success:#22a35a;--danger:#e05252;--shadow:0 12px 30px rgba(31,11,63,.08);--radius:18px}
+    *{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#fbfaff 0%,var(--bg) 100%);color:var(--text);font-family:"Segoe UI",Tahoma,Geneva,Verdana,sans-serif}button,input{font:inherit}button{cursor:pointer}.site-header{position:fixed;inset:0 0 auto 0;z-index:30;min-height:var(--header-height);background:var(--header);box-shadow:var(--shadow)}.topbar{min-height:var(--header-height);display:flex;justify-content:space-between;align-items:center;gap:16px;color:#fff;padding:18px 28px}.topbar-left,.brand-block{display:flex;align-items:center;gap:16px;min-width:0}.logo-mark{width:54px;height:54px;border-radius:18px;display:grid;place-items:center;background:linear-gradient(135deg,#2b0b53 0%,#7c3aed 100%);font-size:28px;font-weight:900}.logo-text strong{display:block;letter-spacing:.08em}.logo-text small,.topbar-title p{color:rgba(255,255,255,.78)}.topbar-divider{width:1px;height:42px;background:rgba(255,255,255,.16)}.topbar-title h1{margin:0;font-size:26px}.topbar-title p{margin:6px 0 0}.top-actions{display:flex;align-items:center;gap:10px}.chip{border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#fff;padding:10px 12px;border-radius:999px;font-size:14px}.user-box{display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid rgba(255,255,255,.16);border-radius:999px;background:rgba(255,255,255,.08)}.avatar{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:#fff;color:var(--primary);font-weight:800}.user-box small{display:block;color:rgba(255,255,255,.72)}
+    .app-shell{display:grid;grid-template-columns:var(--sidebar-width) minmax(0,1fr);min-height:calc(100vh - var(--header-height));margin-top:var(--header-height)}.sidebar{background:#fff;border-right:1px solid var(--border);padding:20px 18px 24px}.nav-title{margin:0 0 10px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}.nav{display:grid;gap:8px}.nav a{display:flex;align-items:center;gap:12px;text-decoration:none;color:var(--text);padding:12px 14px;border-radius:14px}.nav a:hover,.nav a.active{background:var(--primary-soft);color:var(--primary);font-weight:800}.branch-card{margin-top:22px;padding:14px 16px;border-radius:18px;background:#fff;border:1px solid var(--border);box-shadow:var(--shadow)}
+    .main{min-width:0;padding:24px;display:grid;gap:14px;align-content:start}.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:18px}.profile-card{display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:18px;align-items:start}.profile-fields{display:grid;gap:14px}.profile-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}.photo-panel{border-left:1px solid var(--border);padding-left:18px;display:grid;gap:12px;justify-items:center}.photo-preview{width:132px;height:132px;border-radius:22px;display:grid;place-items:center;background:var(--primary-soft);color:var(--primary);font-size:36px;font-weight:900;background-size:cover;background-position:center;border:1px solid var(--border)}.photo-panel input[type=file]{display:none}.button{border:0;border-radius:12px;min-height:42px;padding:10px 14px;background:var(--primary);color:#fff;font-weight:800}.button.secondary{background:#eef2ff;color:#3730a3}.button.ghost{background:#fff;color:var(--text);border:1px solid var(--border)}label{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:800}input{width:100%;border:1px solid var(--border);border-radius:12px;padding:10px 12px;color:var(--text);background:#fff}.field-text{min-height:42px;border:1px solid var(--border);border-radius:12px;padding:10px 12px;background:#fafafe;font-weight:800}.message{margin:0;color:var(--muted);min-height:22px}.message.ok{color:var(--success)}.message.error{color:var(--danger)}.actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:4px}.modal{position:fixed;inset:0;display:none;place-items:center;z-index:120;background:rgba(17,24,39,.52);padding:18px}.modal.open{display:grid}.dialog{width:min(560px,100%);background:#fff;border:1px solid var(--border);border-radius:20px;box-shadow:0 24px 70px rgba(17,24,39,.32);padding:18px}.dialog-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:14px}.icon-button{width:38px;height:38px;border:1px solid var(--border);border-radius:10px;background:#fff}
+    @media(max-width:860px){.site-header{position:static}.app-shell{grid-template-columns:1fr;margin-top:0}.sidebar{border-right:0;border-bottom:1px solid var(--border)}.topbar{align-items:flex-start;flex-direction:column}.topbar-left{flex-wrap:wrap}.topbar-divider{display:none}.main{padding:18px}.profile-card,.profile-row{grid-template-columns:1fr}.photo-panel{border-left:0;border-top:1px solid var(--border);padding:18px 0 0}}
+  </style>
+  <link rel="stylesheet" href="/nav-icons.css?v=6" />
+  <link rel="stylesheet" href="/user-menu.css?v=4" />
+</head>
+<body>
+  <header class="site-header"><div class="topbar"><div class="topbar-left"><div class="brand-block"><div class="logo-mark">G</div><div class="logo-text"><strong>GUERNICA</strong><small>SISTEMA DE GESTIÓN</small></div></div><div class="topbar-divider"></div><div class="topbar-title"><h1>Mi perfil</h1><p>Datos personales y acceso</p></div></div><div class="top-actions"><div class="chip">Ayuda</div><div class="user-box"><div class="avatar">JP</div><div><strong>Juan Perez</strong><small>Administrador</small></div><span class="app-icon icon-chevron" aria-hidden="true"></span></div></div></div></header>
+  <div class="app-shell">
+    <aside class="sidebar"><div class="nav-title">Navegación</div><nav class="nav"><a href="/dashboard.html"><span class="nav-icon home" aria-hidden="true"></span><span>Inicio</span></a><a href="/ventas.html"><span class="nav-icon sales" aria-hidden="true"></span><span>Ventas</span></a><a href="/caja.html"><span class="nav-icon cash" aria-hidden="true"></span><span>Caja</span></a><a href="/pagos.html"><span class="nav-icon payments" aria-hidden="true"></span><span>Pagos</span></a><a href="/productos.html"><span class="nav-icon stock" aria-hidden="true"></span><span>Stock</span></a><a href="/clientes.html"><span class="nav-icon clients" aria-hidden="true"></span><span>Cuentas corrientes</span></a><a href="/proveedores.html"><span class="nav-icon providers" aria-hidden="true"></span><span>Proveedores</span></a><a href="/reportes.html"><span class="nav-icon reports" aria-hidden="true"></span><span>Reportes</span></a><a href="/usuarios.html"><span class="nav-icon users" aria-hidden="true"></span><span>Usuarios</span></a><a href="/configuracion.html"><span class="nav-icon settings" aria-hidden="true"></span><span>Configuración</span></a></nav><div class="branch-card"><div><strong>Guernica Bar</strong><br><small class="muted">Sucursal Central</small></div><span class="app-icon icon-store" aria-hidden="true"></span></div></aside>
+    <main class="main">
+      <section class="card">
+        <form id="perfilForm" class="profile-card">
+          <div class="profile-fields">
+            <p class="message" id="mensaje"></p>
+            <div class="profile-row"><label>Nombre<input id="nombre" required></label><label>Usuario<input id="usuario" disabled></label></div>
+            <label>Teléfono<input id="telefono"></label>
+            <label>Email<input id="email" type="email"></label>
+            <label>Rol<div class="field-text" id="rolTexto">-</div></label>
+            <input type="hidden" id="fotoUrl">
+            <div class="actions"><button class="button ghost" type="button" id="abrirPassword">Contraseña</button><button class="button" type="submit">Guardar perfil</button></div>
+          </div>
+          <div class="photo-panel">
+            <div class="photo-preview" id="photoPreview">JP</div>
+            <input type="file" id="fotoFile" accept="image/*">
+            <button class="button secondary" type="button" id="subirFoto">Subir foto</button>
+            <p class="message" id="fotoMensaje"></p>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+  <div class="modal" id="passwordModal">
+    <div class="dialog">
+      <div class="dialog-head"><div><h2>Cambiar contraseña</h2><p class="message" id="passwordMensaje"></p></div><button class="icon-button" id="cerrarPassword" type="button"><span class="app-icon icon-close" aria-hidden="true"></span></button></div>
+      <form id="passwordForm">
+        <div class="profile-fields">
+          <label>Nueva contraseña<input id="password" type="password" autocomplete="new-password" required></label>
+          <label>Confirmar contraseña<input id="confirmarPassword" type="password" autocomplete="new-password" required></label>
+        </div>
+        <div class="actions"><button class="button ghost" type="button" id="cancelarPassword">Cancelar</button><button class="button secondary" type="submit">Actualizar contraseña</button></div>
+      </form>
+    </div>
+  </div>
+  <script>
+    const USER_KEY="guernicaUser";
+    const $=(id)=>document.getElementById(id);
+    const read=(storage,key)=>{try{return JSON.parse(storage.getItem(key)||"null")}catch{return null}};
+    const writeUser=(user)=>{const target=localStorage.getItem(USER_KEY)?localStorage:sessionStorage;target.setItem(USER_KEY,JSON.stringify(user));};
+    let currentUser=read(localStorage,USER_KEY)||read(sessionStorage,USER_KEY)||{};
+    async function apiJson(res,fallback){const type=res.headers.get("content-type")||"";if(!type.includes("application/json"))throw new Error(fallback||"Respuesta no válida del servidor");return res.json()}
+    function initials(name){return String(name||"Usuario").trim().split(/\s+/).slice(0,2).map(p=>p[0]).join("").toUpperCase()||"U"}
+    function msg(el,text,type=""){el.className=`message ${type}`;el.textContent=text}
+    function paintPhoto(){const url=$("fotoUrl").value||currentUser.foto_url||"";$("photoPreview").textContent=url?"":initials($("nombre").value||currentUser.nombre);$("photoPreview").style.backgroundImage=url?`url("${url}")`:"";document.querySelectorAll(".user-box strong").forEach(n=>n.textContent=$("nombre").value||currentUser.nombre||"Usuario");document.querySelectorAll(".user-box small").forEach(n=>n.textContent=currentUser.rol||"Usuario");document.querySelectorAll(".avatar").forEach(a=>{if(url){a.textContent="";a.style.backgroundImage=`url("${url}")`;a.style.backgroundSize="cover";a.style.backgroundPosition="center"}else{a.textContent=initials($("nombre").value||currentUser.nombre);a.style.backgroundImage=""}})}
+    async function loadUser(){if(!currentUser.id){window.location.href="/login";return}try{const res=await fetch(`/usuarios/${currentUser.id}`);if(res.ok){currentUser={...currentUser,...await apiJson(res,"No se pudo cargar el usuario")};writeUser(currentUser)}}catch{}$("nombre").value=currentUser.nombre||"";$("usuario").value=currentUser.usuario||"";$("email").value=currentUser.email||"";$("telefono").value=currentUser.telefono||"";$("fotoUrl").value=currentUser.foto_url||"";$("rolTexto").textContent=currentUser.rol||"-";paintPhoto();if(location.hash==="#password")abrirModalPassword()}
+    async function uploadPhoto(file){if(!file)return;if(!file.type.startsWith("image/"))return msg($("fotoMensaje"),"La foto debe ser una imagen","error");const reader=new FileReader();reader.onload=async()=>{try{const res=await fetch("/usuarios/foto",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({nombre:$("usuario").value||"perfil",data_url:reader.result})});const data=await apiJson(res,"No se pudo subir la foto");if(!res.ok)throw new Error(data.message||"No se pudo subir la foto");$("fotoUrl").value=data.url;paintPhoto();msg($("fotoMensaje"),"Foto lista. Guardá el perfil para aplicarla.","ok")}catch(e){msg($("fotoMensaje"),e.message||"Error al subir foto","error")}};reader.readAsDataURL(file)}
+    function abrirModalPassword(){passwordModal.classList.add("open");password.focus()}
+    function cerrarModalPassword(){passwordModal.classList.remove("open");passwordForm.reset();msg(passwordMensaje,"")}
+    subirFoto.onclick=()=>fotoFile.click();fotoFile.onchange=e=>uploadPhoto(e.target.files?.[0]);abrirPassword.onclick=abrirModalPassword;cerrarPassword.onclick=cerrarModalPassword;cancelarPassword.onclick=cerrarModalPassword;passwordModal.onclick=e=>{if(e.target===passwordModal)cerrarModalPassword()};
+    perfilForm.onsubmit=async(e)=>{e.preventDefault();try{const payload={nombre:nombre.value.trim(),email:email.value.trim(),telefono:telefono.value.trim(),foto_url:fotoUrl.value.trim()};const res=await fetch(`/usuarios/${currentUser.id}/perfil`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});const data=await apiJson(res,"No se pudo guardar el perfil");if(!res.ok)throw new Error(data.message||"No se pudo guardar el perfil");currentUser={...currentUser,...data.usuario};writeUser(currentUser);paintPhoto();msg(mensaje,data.message||"Perfil actualizado","ok")}catch(err){msg(mensaje,err.message||"Error al guardar perfil","error")}};
+    passwordForm.onsubmit=async(e)=>{e.preventDefault();try{const res=await fetch(`/usuarios/${currentUser.id}/password`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:password.value,confirmar_password:confirmarPassword.value})});const data=await apiJson(res,"No se pudo actualizar la contraseña");if(!res.ok)throw new Error(data.message||"No se pudo actualizar la contraseña");cerrarModalPassword();msg(mensaje,data.message||"Contraseña actualizada","ok")}catch(err){msg(passwordMensaje,err.message||"Error al actualizar contraseña","error")}};
+    loadUser();
+  </script>
+  <script src="/nav-permissions.js?v=6" defer></script>
+  <script src="/user-menu.js?v=7" defer></script>
+</body>
+</html>

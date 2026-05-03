@@ -1,0 +1,445 @@
+﻿<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login - Sistema Guernica</title>
+  <style>
+    :root {
+      --header: #16052e;
+      --primary: #6d28d9;
+      --primary-dark: #4c1d95;
+      --text: #111827;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --danger: #dc2626;
+      --success: #16a34a;
+      --surface: #ffffff;
+      --shadow: 0 28px 80px rgba(17, 24, 39, 0.22);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: 22px;
+      color: var(--text);
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background:
+        linear-gradient(135deg, rgba(22, 5, 46, 0.88), rgba(109, 40, 217, 0.72)),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1200' height='800' viewBox='0 0 1200 800'%3E%3Crect width='1200' height='800' fill='%2316052e'/%3E%3Cg fill='none' stroke='%23ffffff' stroke-opacity='.12' stroke-width='2'%3E%3Cpath d='M0 150h1200M0 320h1200M0 510h1200M160 0v800M420 0v800M760 0v800M1040 0v800'/%3E%3C/g%3E%3Cg fill='%23ffffff' fill-opacity='.08'%3E%3Ccircle cx='210' cy='220' r='90'/%3E%3Ccircle cx='980' cy='170' r='130'/%3E%3Ccircle cx='850' cy='620' r='160'/%3E%3C/g%3E%3C/svg%3E");
+      background-size: cover;
+      background-position: center;
+    }
+
+    button, input { font: inherit; }
+    .login-shell {
+      width: min(980px, 100%);
+      display: grid;
+      grid-template-columns: 1fr 430px;
+      min-height: 620px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      border-radius: 28px;
+      background: rgba(255, 255, 255, 0.1);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+    }
+
+    .brand-panel {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 36px;
+      color: #fff;
+      background: linear-gradient(180deg, rgba(22, 5, 46, 0.24), rgba(22, 5, 46, 0.58));
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .logo {
+      width: 62px;
+      height: 62px;
+      border-radius: 20px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, #fff 0%, #efe7ff 100%);
+      color: var(--primary);
+      font-size: 34px;
+      font-weight: 900;
+      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.24);
+    }
+
+    .brand strong {
+      display: block;
+      letter-spacing: 0.12em;
+      font-size: 20px;
+    }
+
+    .brand small,
+    .brand-copy p,
+    .status-strip {
+      color: rgba(255, 255, 255, 0.78);
+    }
+
+    .brand-copy h1 {
+      max-width: 460px;
+      margin: 0 0 12px;
+      font-size: clamp(34px, 5vw, 56px);
+      line-height: 1;
+      letter-spacing: 0;
+    }
+
+    .brand-copy p {
+      max-width: 430px;
+      margin: 0;
+      font-size: 17px;
+      line-height: 1.5;
+    }
+
+    .status-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      font-size: 13px;
+    }
+
+    .status-strip span {
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 14px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .form-panel {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 22px;
+      padding: 34px;
+      background: var(--surface);
+    }
+
+    .form-head h2 {
+      margin: 0;
+      font-size: 30px;
+    }
+
+    .form-head p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    form {
+      display: grid;
+      gap: 16px;
+    }
+
+    label {
+      display: grid;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .field-wrap {
+      position: relative;
+    }
+
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      min-height: 48px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px 14px;
+      color: var(--text);
+      outline: none;
+      background: #fff;
+    }
+
+    .password-input {
+      padding-right: 104px !important;
+    }
+
+    input:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 4px rgba(109, 40, 217, 0.13);
+    }
+
+    .password-toggle {
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      min-height: 34px;
+      border: 0;
+      border-radius: 10px;
+      padding: 7px 10px;
+      background: #f3f4f6;
+      color: var(--text);
+      font-weight: 800;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .link-button {
+      border: 0;
+      background: transparent;
+      color: var(--primary);
+      padding: 0;
+      font-weight: 800;
+    }
+
+    .submit {
+      min-height: 50px;
+      border: 0;
+      border-radius: 14px;
+      background: var(--primary);
+      color: #fff;
+      font-weight: 900;
+      box-shadow: 0 16px 34px rgba(109, 40, 217, 0.28);
+      transition: background 150ms ease, transform 150ms ease, opacity 150ms ease;
+    }
+
+    .submit:hover { background: var(--primary-dark); }
+    .submit:active { transform: translateY(1px); }
+    .submit:disabled { opacity: 0.68; cursor: not-allowed; }
+
+    .message {
+      min-height: 22px;
+      margin: 0;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .message.error { color: var(--danger); }
+    .message.ok { color: var(--success); }
+
+    .help {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px;
+      background: #fafafa;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 860px) {
+      body { padding: 0; place-items: stretch; }
+      .login-shell {
+        min-height: 100vh;
+        grid-template-columns: 1fr;
+        border-radius: 0;
+      }
+      .brand-panel {
+        min-height: 280px;
+        padding: 26px;
+      }
+      .status-strip {
+        grid-template-columns: 1fr;
+      }
+      .form-panel {
+        padding: 26px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="login-shell">
+    <section class="brand-panel" aria-label="Identidad Guernica">
+      <div class="brand">
+        <div class="logo">G</div>
+        <div>
+          <strong>GUERNICA</strong>
+          <small>Sistema de gestión</small>
+        </div>
+      </div>
+      <div class="brand-copy">
+        <h1>Acceso seguro</h1>
+        <p>Gestión operativa para ventas, caja, stock, pagos, reportes y cuentas corrientes.</p>
+      </div>
+      <div class="status-strip">
+        <span>Validacion backend</span>
+        <span>Sesion persistente</span>
+        <span>Usuarios activos</span>
+      </div>
+    </section>
+
+    <section class="form-panel">
+      <div class="form-head">
+        <h2>Ingresar</h2>
+        <p>Usa tus credenciales para entrar al sistema.</p>
+      </div>
+
+      <form id="loginForm" novalidate>
+        <label for="usuario">
+          Usuario
+          <input type="text" id="usuario" name="usuario" autocomplete="username" required />
+        </label>
+
+        <label for="password">
+          Contraseña
+          <span class="field-wrap">
+            <input class="password-input" type="password" id="password" name="password" autocomplete="current-password" required />
+            <button class="password-toggle" id="togglePassword" type="button">Mostrar</button>
+          </span>
+        </label>
+
+        <div class="row">
+          <label class="check" for="remember">
+            <input type="checkbox" id="remember" />
+            Recordarme
+          </label>
+          <button class="link-button" id="forgotPassword" type="button">Olvidaste tu contraseña?</button>
+        </div>
+
+        <button class="submit" id="submitButton" type="submit">Ingresar</button>
+        <p class="message" id="mensaje" role="status" aria-live="polite"></p>
+      </form>
+
+      <div class="help">Usuario inicial: admin / admin123. La contraseña se valida siempre en el servidor.</div>
+    </section>
+  </main>
+
+  <script>
+    const USER_KEY = "guernicaUser";
+    const SESSION_KEY = "guernicaSession";
+    const form = document.getElementById("loginForm");
+    const mensaje = document.getElementById("mensaje");
+    const submitButton = document.getElementById("submitButton");
+    const usuarioInput = document.getElementById("usuario");
+    const passwordInput = document.getElementById("password");
+    const rememberInput = document.getElementById("remember");
+    const togglePassword = document.getElementById("togglePassword");
+
+    function getSession() {
+      try {
+        return JSON.parse(localStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY) || "null");
+      } catch {
+        return null;
+      }
+    }
+
+    function isValidSession(session) {
+      return session?.token && session?.expires_at && new Date(session.expires_at).getTime() > Date.now();
+    }
+
+    function setMessage(text, type = "") {
+      mensaje.className = `message ${type}`;
+      mensaje.textContent = text;
+    }
+
+    function setLoading(loading) {
+      submitButton.disabled = loading;
+      submitButton.textContent = loading ? "Ingresando..." : "Ingresar";
+      usuarioInput.disabled = loading;
+      passwordInput.disabled = loading;
+      rememberInput.disabled = loading;
+    }
+
+    function saveSession(data, remember) {
+      const session = {
+        token: data.token,
+        expires_at: data.expires_at,
+        remember
+      };
+
+      localStorage.setItem(USER_KEY, JSON.stringify(data.user));
+      sessionStorage.setItem(USER_KEY, JSON.stringify(data.user));
+
+      if (data.token && data.expires_at) {
+        localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
+      }
+    }
+
+    const currentSession = getSession();
+    if (isValidSession(currentSession)) {
+      window.location.href = "/dashboard.html";
+    } else {
+      localStorage.removeItem(SESSION_KEY);
+      sessionStorage.removeItem(SESSION_KEY);
+    }
+
+    togglePassword.addEventListener("click", () => {
+      const visible = passwordInput.type === "text";
+      passwordInput.type = visible ? "password" : "text";
+      togglePassword.textContent = visible ? "Mostrar" : "Ocultar";
+      passwordInput.focus();
+    });
+
+    document.getElementById("forgotPassword").addEventListener("click", () => {
+      setMessage("Recuperacion de contraseña pendiente de módulo de usuarios.", "error");
+    });
+
+    form.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      const usuario = usuarioInput.value.trim();
+      const password = passwordInput.value;
+      const remember = rememberInput.checked;
+
+      if (!usuario || !password) {
+        setMessage("Usuario y contraseña son obligatorios.", "error");
+        return;
+      }
+
+      setLoading(true);
+      setMessage("Validando credenciales...");
+
+      try {
+        const res = await fetch("/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ usuario, password, remember })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok || data.message !== "Login correcto") {
+          setMessage(data.message || "Error en el login", "error");
+          return;
+        }
+
+        saveSession(data, remember);
+        setMessage("Login correcto. Redirigiendo...", "ok");
+        window.setTimeout(() => {
+          window.location.replace("/dashboard.html");
+        }, 250);
+      } catch (error) {
+        console.error("Error:", error);
+        setMessage("Error al conectar con el servidor", "error");
+      } finally {
+        setLoading(false);
+      }
+    });
+  </script>
+</body>
+</html>
+
+

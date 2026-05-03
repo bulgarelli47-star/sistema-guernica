@@ -1,0 +1,1285 @@
+﻿<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Proveedores - Sistema Guernica</title>
+  <style>
+    :root {
+      --header-height: 88px;
+      --sidebar-width: 270px;
+      --bg: #f7f7fb;
+      --surface: #ffffff;
+      --sidebar: #ffffff;
+      --header: #16052e;
+      --text: #111827;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --primary: #6d28d9;
+      --primary-soft: #f0e5ff;
+      --success: #22a35a;
+      --danger: #e05252;
+      --warning: #d99a21;
+      --shadow: 0 12px 30px rgba(31, 11, 63, 0.08);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #fbfaff 0%, var(--bg) 100%);
+      color: var(--text);
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    }
+    button, input, select, textarea { font: inherit; }
+
+    .site-header {
+      position: fixed;
+      inset: 0 0 auto 0;
+      z-index: 30;
+      min-height: var(--header-height);
+      background: var(--header);
+      box-shadow: var(--shadow);
+    }
+    .topbar {
+      min-height: var(--header-height);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      color: #fff;
+      padding: 18px 28px;
+    }
+    .topbar-left, .brand-block { display: flex; align-items: center; gap: 16px; min-width: 0; }
+    .logo-mark {
+      width: 54px;
+      height: 54px;
+      border-radius: 18px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, #2b0b53 0%, #7c3aed 100%);
+      font-size: 28px;
+      font-weight: 900;
+    }
+    .logo-text strong { display: block; letter-spacing: 0.08em; }
+    .logo-text small, .topbar-title p { color: rgba(255,255,255,0.78); }
+    .topbar-divider { width: 1px; height: 42px; background: rgba(255,255,255,0.16); }
+    .topbar-title h1 { margin: 0; font-size: 26px; }
+    .topbar-title p { margin: 6px 0 0; }
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .chip {
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+      padding: 10px 12px;
+      border-radius: 999px;
+      font-size: 14px;
+    }
+    button.chip { cursor: pointer; }
+    .chip.icon-chip {
+      width: 42px;
+      height: 42px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      font-size: 18px;
+    }
+    .top-actions-menu { position: relative; }
+    .notifications-dropdown {
+      position: absolute;
+      top: calc(100% + 10px);
+      right: 0;
+      width: min(360px, calc(100vw - 32px));
+      background: #fff;
+      color: var(--text);
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      box-shadow: 0 24px 60px rgba(17, 24, 39, 0.24);
+      padding: 14px;
+      display: none;
+      z-index: 90;
+    }
+    .notifications-dropdown.open {
+      display: grid;
+      gap: 12px;
+    }
+    .notifications-dropdown h3,
+    .notifications-dropdown p { margin: 0; }
+    .notification-list {
+      display: grid;
+      gap: 8px;
+      max-height: 280px;
+      overflow: auto;
+    }
+    .notification-item {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px 12px;
+      background: #fafafe;
+      display: grid;
+      gap: 4px;
+    }
+    .notification-item small { color: var(--muted); }
+    .user-box {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-left: 6px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: rgba(255, 255, 255, 0.16);
+      font-weight: 800;
+    }
+    .user-box strong,
+    .user-box small { display: block; }
+    .user-box small { color: rgba(255, 255, 255, 0.72); }
+
+    .app-shell {
+      display: grid;
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      min-height: calc(100vh - var(--header-height));
+      margin-top: var(--header-height);
+    }
+    .sidebar {
+      background: var(--sidebar);
+      border-right: 1px solid var(--border);
+      padding: 20px 18px 24px;
+      min-height: calc(100vh - var(--header-height));
+    }
+    .nav-title {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .nav { display: grid; gap: 8px; }
+    .nav a {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      color: var(--text);
+      padding: 12px 14px;
+      border-radius: 14px;
+      transition: background 0.2s ease, transform 0.2s ease;
+    }
+    .nav a:hover {
+      background: var(--primary-soft);
+      transform: translateX(3px);
+    }
+    .nav a.active { background: var(--primary-soft); color: var(--primary); font-weight: 700; }
+    .nav-icon { width: 22px; text-align: center; color: var(--muted); font-size: 16px; }
+    .nav a.active .nav-icon { color: var(--primary); }
+    .branch-card {
+      margin-top: 22px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: #fff;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+    }
+
+    .main { min-width: 0; padding: 24px; display: grid; gap: 18px; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .kpi {
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: #fff;
+      display: grid;
+      gap: 8px;
+    }
+    .kpi span { color: var(--muted); font-size: 12px; }
+    .kpi strong { font-size: 24px; }
+    .kpi-grid { gap: 6px; }
+    .kpi { padding: 7px 10px; gap: 2px; border-radius: 12px; min-height: 58px; }
+    .kpi span { font-size: 10px; line-height: 1.1; }
+    .kpi strong { font-size: 16px; line-height: 1.05; }
+    .proveedor-modal { width: min(680px, 100%); }
+    .proveedor-form-grid { grid-template-columns: 1.2fr 1fr 1fr; gap: 10px; }
+    .commercial-row {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr 1fr 1.1fr;
+      gap: 10px;
+      align-items: end;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px;
+      background: #fafafa;
+    }
+    .commercial-row > strong { align-self: center; }
+    .commercial-row .switch-row {
+      min-height: 42px;
+      justify-content: center;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fff;
+      color: var(--text);
+      font-weight: 900;
+    }
+
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .toolbar-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .filters {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) 160px 180px;
+      gap: 10px;
+      min-width: min(680px, 100%);
+    }
+    .field {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: #fff;
+      border-radius: 12px;
+      padding: 10px 12px;
+      outline: none;
+    }
+    textarea.field { min-height: 84px; resize: vertical; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 700; }
+    .button {
+      border: none;
+      border-radius: 12px;
+      padding: 10px 13px;
+      cursor: pointer;
+      font-weight: 800;
+      background: var(--primary);
+      color: #fff;
+    }
+    .button.secondary { background: #fff; color: var(--text); border: 1px solid var(--border); }
+    .button.success { background: var(--success); }
+    .button.warning { background: var(--warning); }
+    .button.danger { background: var(--danger); }
+    .button.compact { padding: 8px 10px; font-size: 12px; }
+    .icon-add {
+      width: 42px;
+      height: 42px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 28px;
+      line-height: 1;
+      font-weight: 950;
+      text-align: center;
+    }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 10px 9px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; }
+    .actions-menu { position: relative; display: inline-flex; }
+    .dots-button {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--text);
+      cursor: pointer;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+    .actions-popup {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      z-index: 20;
+      width: 190px;
+      display: none;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fff;
+      box-shadow: 0 18px 42px rgba(17, 24, 39, 0.18);
+    }
+    .actions-popup.open { display: grid; gap: 4px; }
+    .menu-action {
+      width: 100%;
+      border: none;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      padding: 9px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .menu-action:hover { background: var(--primary-soft); color: var(--primary); }
+    .menu-action.danger { color: var(--danger); }
+    .pill {
+      display: inline-flex;
+      padding: 5px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      background: var(--primary-soft);
+      color: var(--primary);
+    }
+    .pill.off { background: rgba(224, 82, 82, 0.12); color: var(--danger); }
+    .pill.warn { background: rgba(217, 154, 33, 0.14); color: var(--warning); }
+    .muted { color: var(--muted); }
+    .message { min-height: 20px; font-weight: 700; margin: 0; }
+
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: none;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 28px 18px;
+      background: rgba(17, 24, 39, 0.46);
+      overflow: auto;
+    }
+    .modal.open { display: flex; }
+    .modal-card {
+      width: min(880px, 100%);
+      max-height: calc(100vh - 56px);
+      overflow: auto;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 26px 70px rgba(17, 24, 39, 0.28);
+      padding: 18px;
+    }
+    .modal-card.compact { width: min(620px, 100%); }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .modal-header h2, .modal-header h3 { margin: 0; }
+    .modal-header p { margin: 4px 0 0; color: var(--muted); }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .full { grid-column: 1 / -1; }
+    .section-label {
+      grid-column: 1 / -1;
+      color: var(--text);
+      font-weight: 900;
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+      margin-top: 4px;
+    }
+    .switch-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+      font-size: 14px;
+    }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .detail-box {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      display: grid;
+      gap: 4px;
+    }
+    .detail-box span { color: var(--muted); font-size: 12px; }
+    .hidden { display: none; }
+
+    @media (max-width: 1100px) {
+      .kpi-grid, .filters, .detail-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 860px) {
+      .site-header { position: static; }
+      .app-shell { grid-template-columns: 1fr; margin-top: 0; }
+      .sidebar { min-height: auto; border-right: none; border-bottom: 1px solid var(--border); }
+      .topbar { flex-direction: column; align-items: flex-start; }
+      .topbar-divider { display: none; }
+      .top-actions { justify-content: flex-start; }
+      .form-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+  <link rel="stylesheet" href="/nav-icons.css?v=7" />
+  <link rel="stylesheet" href="/user-menu.css?v=4" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="topbar">
+      <div class="topbar-left">
+        <div class="brand-block">
+          <div class="logo-mark">G</div>
+          <div class="logo-text">
+            <strong>GUERNICA</strong>
+            <small>SISTEMA DE GESTIÓN</small>
+          </div>
+        </div>
+        <div class="topbar-divider" aria-hidden="true"></div>
+        <div class="topbar-title">
+          <h1>Proveedores</h1>
+          <p>Compras, deuda y pagos asociados</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <div class="top-actions-menu">
+          <button type="button" class="chip icon-chip" id="toggleNotificaciones" aria-label="Notificaciones" title="Notificaciones"><span class="app-icon icon-bell" aria-hidden="true"></span></button>
+          <div class="notifications-dropdown" id="notificacionesDropdown">
+            <div>
+              <h3>Notificaciones</h3>
+              <p class="muted">Avisos generales del módulo de proveedores.</p>
+            </div>
+            <div class="notification-list">
+              <div class="notification-item">
+                <strong>Gestión de proveedores</strong>
+                <small>Compras, deuda y pagos asociados disponibles.</small>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="chip">Ayuda</div>
+        <div class="user-box">
+          <div class="avatar">JP</div>
+          <div>
+            <strong>Juan Perez</strong>
+            <small>Administrador</small>
+          </div>
+          <span class="app-icon icon-chevron" aria-hidden="true"></span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="nav-title">Navegación</div>
+      <nav class="nav">
+        <a href="/dashboard.html"><span class="nav-icon home" aria-hidden="true"></span><span>Inicio</span></a>
+        <a href="/ventas.html"><span class="nav-icon sales" aria-hidden="true"></span><span>Ventas</span></a>
+        <a href="/caja.html"><span class="nav-icon cash" aria-hidden="true"></span><span>Caja</span></a>
+        <a href="/pagos.html"><span class="nav-icon payments" aria-hidden="true"></span><span>Pagos</span></a>
+        <a href="/productos.html"><span class="nav-icon stock" aria-hidden="true"></span><span>Stock</span></a>
+        <a href="/clientes.html"><span class="nav-icon clients" aria-hidden="true"></span><span>Cuentas corrientes</span></a>
+        <a class="active" href="/proveedores.html"><span class="nav-icon providers" aria-hidden="true"></span><span>Proveedores</span></a>
+        <a href="/reportes.html"><span class="nav-icon reports" aria-hidden="true"></span><span>Reportes</span></a>
+        <a href="/usuarios.html"><span class="nav-icon users" aria-hidden="true"></span><span>Usuarios</span></a>
+        <a href="/configuracion.html"><span class="nav-icon settings" aria-hidden="true"></span><span>Configuración</span></a>
+      </nav>
+      <div class="branch-card">
+        <div>
+          <strong>Guernica Bar</strong>
+          <small>Sucursal Central</small>
+        </div>
+        <span class="app-icon icon-store" aria-hidden="true"></span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <section class="kpi-grid">
+        <div class="kpi"><span>Total proveedores</span><strong id="kpiTotal">0</strong></div>
+        <div class="kpi"><span>Compras del mes</span><strong id="kpiComprasMes">$0.00</strong></div>
+        <div class="kpi"><span>Pagos realizados</span><strong id="kpiPagosMes">$0.00</strong></div>
+        <div class="kpi"><span>Saldo pendiente</span><strong id="kpiSaldo">$0.00</strong></div>
+        <div class="kpi"><span>Compras del anio</span><strong id="kpiComprasAnio">$0.00</strong></div>
+      </section>
+
+      <section class="card">
+        <div class="toolbar">
+          <div>
+            <h2 style="margin:0;">Listado de proveedores</h2>
+            <p class="message" id="mensaje"></p>
+          </div>
+          <div class="toolbar-actions">
+            <button type="button" class="button secondary" id="actualizar">Actualizar</button>
+            <button type="button" class="button success icon-add" id="abrirProveedor" aria-label="Nuevo proveedor" title="Nuevo proveedor">+</button>
+          </div>
+        </div>
+        <div class="toolbar">
+          <div class="filters">
+            <input type="search" id="busqueda" class="field" placeholder="Buscar por nombre, CUIT o teléfono" />
+            <select id="filtroEstado" class="field">
+              <option value="todos">Todos</option>
+              <option value="activo">Activos</option>
+              <option value="inactivo">Inactivos</option>
+            </select>
+            <select id="ordenListado" class="field">
+              <option value="nombre">Orden: nombre</option>
+              <option value="saldo">Orden: saldo pendiente</option>
+              <option value="compras_mes">Orden: compras del mes</option>
+              <option value="ultima_compra">Orden: Última compra</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="overflow:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>Proveedor</th>
+                <th>Contacto</th>
+                <th>Teléfono</th>
+                <th>Email</th>
+                <th>Categoria</th>
+                <th>Compras mes</th>
+                <th>Impacto</th>
+                <th>Saldo pendiente</th>
+                <th>Última compra</th>
+                <th>Estado</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="tablaProveedores">
+              <tr><td colspan="11">Cargando proveedores...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal" id="modalProveedor" aria-hidden="true">
+    <article class="modal-card proveedor-modal" role="dialog" aria-modal="true" aria-labelledby="tituloModalProveedor">
+      <div class="modal-header">
+        <div>
+          <h2 id="tituloModalProveedor">Nuevo proveedor</h2>
+        </div>
+        <button type="button" class="button secondary" id="cerrarProveedor">Cerrar</button>
+      </div>
+      <div class="form-grid proveedor-form-grid">
+        <label>Nombre
+          <input type="text" id="nombre" class="field" />
+        </label>
+        <label>Categoria
+          <select id="categoríaProveedor" class="field">
+            <option value="">Sin categoría</option>
+          </select>
+        </label>
+        <label>Alias
+          <input type="text" id="alias" class="field" />
+        </label>
+        <div class="commercial-row full">
+          <strong>Cond. comerciales</strong>
+          <label class="switch-row"><input type="checkbox" id="manejaCuentaCorriente" /> Cta corriente</label>
+          <label>Vencimiento<input type="number" id="diasVencimiento" class="field" min="0" step="1" placeholder="Tiempo"></label>
+        </div>
+        <div class="commercial-row full">
+          <strong>Datos fiscales</strong>
+          <label>Condición IVA<select id="condicionIva" class="field"><option value="responsable_inscripto">Responsable inscripto</option><option value="monotributo">Monotributo</option><option value="exento">Exento</option><option value="consumidor_final">Consumidor final</option><option value="no_informado">No informado</option></select></label>
+          <label>Comprobante<select id="tipoComprobante" class="field"><option value="factura_a">Factura A</option><option value="factura_b">Factura B</option><option value="factura_c">Factura C</option><option value="recibo_x">Recibo X</option><option value="otro">Otro</option></select></label>
+          <label>IVA %<input type="number" id="ivaAlicuota" class="field" min="0" step="0.01" value="21"></label>
+          <div class="detail-box"><span>IVA a favor</span><strong id="ivaFavorInfo">Solo factura A + RI</strong></div>
+        </div>
+        <label class="full">Impacto del proveedor
+          <select id="tipoImpacto" class="field">
+            <option value="costo_fijo_operativo">Costo fijo / operativo</option>
+            <option value="costo_variable_mercaderia">Costo variable / mercadería</option>
+            <option value="inversion">Inversión</option>
+            <option value="otro_no_computable">Otro / no computable</option>
+          </select>
+        </label>
+        <input type="hidden" id="categoríaEspecial" />
+        <input type="hidden" id="cuit" />
+        <input type="hidden" id="tipoPersona" value="juridica" />
+        <input type="hidden" id="telefono" />
+        <input type="hidden" id="email" />
+        <input type="hidden" id="contacto" />
+        <input type="hidden" id="direccion" />
+        <input type="hidden" id="localidad" />
+        <input type="hidden" id="codigoPostal" />
+        <input type="hidden" id="observaciones" />
+        <input type="hidden" id="limiteCredito" />
+        <input type="hidden" id="diaVencimientoFijo" />
+        <select class="hidden" id="moneda"><option value="ARS">ARS</option><option value="USD">USD</option></select>
+        <input class="hidden" type="checkbox" id="activo" checked />
+      </div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:14px;">
+        <button type="button" class="button success" id="guardarProveedor">Guardar proveedor</button>
+        <button type="button" class="button secondary" id="limpiarProveedor">Limpiar</button>
+      </div>
+    </article>
+  </div>
+
+  <div class="modal" id="modalPago" aria-hidden="true">
+    <article class="modal-card compact" role="dialog" aria-modal="true" aria-labelledby="tituloModalPago">
+      <div class="modal-header">
+        <div>
+          <h2 id="tituloModalPago">Registrar pago</h2>
+          <p id="pagoProveedorNombre">Proveedor seleccionado</p>
+          <p class="muted" id="pagoProveedorImpacto">Impacto: Otro / no computable</p>
+        </div>
+        <button type="button" class="button secondary" id="cerrarPago">Cerrar</button>
+      </div>
+      <div class="form-grid">
+        <label>Fecha
+          <input type="date" id="pagoFecha" class="field" />
+        </label>
+        <label>Importe
+          <input type="number" id="pagoImporte" class="field" min="0" step="0.01" />
+        </label>
+        <label>Forma de pago
+          <select id="pagoForma" class="field">
+            <option value="efectivo">Efectivo</option>
+            <option value="transferencia">Transferencia</option>
+            <option value="debito">Débito automatico</option>
+          </select>
+        </label>
+        <label>Cuenta bancaria / caja
+          <input type="text" id="pagoCuenta" class="field" placeholder="Caja, banco o billetera" />
+        </label>
+        <label>Nro comprobante / referencia
+          <input type="text" id="pagoReferencia" class="field" />
+        </label>
+        <label>Estado
+          <select id="pagoEstado" class="field">
+            <option value="registrado">Pagado</option>
+            <option value="pendiente">Pendiente</option>
+          </select>
+        </label>
+        <label class="full">Observaciones
+          <textarea id="pagoObservaciones" class="field"></textarea>
+        </label>
+      </div>
+      <div class="detail-grid" style="margin-top:12px;">
+        <div class="detail-box"><span>Saldo actual</span><strong id="pagoSaldoActual">$0.00</strong></div>
+        <div class="detail-box"><span>Saldo luego del pago</span><strong id="pagoSaldoLuego">$0.00</strong></div>
+        <div class="detail-box"><span>Aplicación</span><strong>Deuda más antigua</strong></div>
+      </div>
+      <button type="button" class="button success" id="confirmarPago">Registrar pago</button>
+    </article>
+  </div>
+
+  <div class="modal" id="modalDetalle" aria-hidden="true">
+    <article class="modal-card" role="dialog" aria-modal="true" aria-labelledby="tituloDetalle">
+      <div class="modal-header">
+        <div>
+          <h2 id="tituloDetalle">Detalle proveedor</h2>
+          <p id="subtituloDetalle">Movimientos y condiciones comerciales</p>
+        </div>
+        <button type="button" class="button secondary" id="cerrarDetalle">Cerrar</button>
+      </div>
+      <div class="detail-grid" id="detalleResumen"></div>
+      <div style="overflow:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>Tipo</th>
+              <th>Estado</th>
+              <th>Monto / Cantidad</th>
+              <th>Referencia</th>
+              <th>Observaciones</th>
+            </tr>
+          </thead>
+          <tbody id="tablaMovimientos">
+            <tr><td colspan="6">Selecciona un proveedor.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+  </div>
+
+  <script>
+    const mensaje = document.getElementById("mensaje");
+    const toggleNotificaciones = document.getElementById("toggleNotificaciones");
+    const notificacionesDropdown = document.getElementById("notificacionesDropdown");
+    const tablaProveedores = document.getElementById("tablaProveedores");
+    const busqueda = document.getElementById("busqueda");
+    const filtroEstado = document.getElementById("filtroEstado");
+    const ordenListado = document.getElementById("ordenListado");
+    const modalProveedor = document.getElementById("modalProveedor");
+    const modalPago = document.getElementById("modalPago");
+    const modalDetalle = document.getElementById("modalDetalle");
+    const tituloModalProveedor = document.getElementById("tituloModalProveedor");
+    const pagoProveedorNombre = document.getElementById("pagoProveedorNombre");
+    const pagoSaldoActual = document.getElementById("pagoSaldoActual");
+    const pagoSaldoLuego = document.getElementById("pagoSaldoLuego");
+    const detalleResumen = document.getElementById("detalleResumen");
+    const tablaMovimientos = document.getElementById("tablaMovimientos");
+
+    const campos = {
+      nombre: document.getElementById("nombre"),
+      alias: document.getElementById("alias"),
+      cuit: document.getElementById("cuit"),
+      tipo_persona: document.getElementById("tipoPersona"),
+      telefono: document.getElementById("telefono"),
+      email: document.getElementById("email"),
+      contacto: document.getElementById("contacto"),
+      direccion: document.getElementById("direccion"),
+      localidad: document.getElementById("localidad"),
+      codigo_postal: document.getElementById("codigoPostal"),
+      observaciones: document.getElementById("observaciones"),
+      maneja_cuenta_corriente: document.getElementById("manejaCuentaCorriente"),
+      limite_credito: document.getElementById("limiteCredito"),
+      dias_vencimiento: document.getElementById("diasVencimiento"),
+      dia_vencimiento_fijo: document.getElementById("diaVencimientoFijo"),
+      moneda: document.getElementById("moneda"),
+      tipo_impacto: document.getElementById("tipoImpacto"),
+      categoria_id: document.getElementById("categoríaProveedor"),
+      categoria_especial: document.getElementById("categoríaEspecial"),
+      condicion_iva: document.getElementById("condicionIva"),
+      tipo_comprobante: document.getElementById("tipoComprobante"),
+      iva_alicuota: document.getElementById("ivaAlicuota"),
+      activo: document.getElementById("activo")
+    };
+
+    const pagoCampos = {
+      fecha: document.getElementById("pagoFecha"),
+      importe: document.getElementById("pagoImporte"),
+      forma: document.getElementById("pagoForma"),
+      cuenta: document.getElementById("pagoCuenta"),
+      referencia: document.getElementById("pagoReferencia"),
+      estado: document.getElementById("pagoEstado"),
+      observaciones: document.getElementById("pagoObservaciones")
+    };
+
+    let proveedores = [];
+    let categorias = [];
+    let proveedorEditandoId = null;
+    let proveedorPago = null;
+    const kpiGrid = document.querySelector(".kpi-grid");
+
+    function money(valor) {
+      return `$${Number(valor || 0).toFixed(2)}`;
+    }
+
+    function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",cajero:"caja"}[raw]||raw}
+    function mostrarKpisComplejos(config){const tipo=String(config?.[`dashboard_tipo_${rolActual()}`]??"").replace(/^"+|"+$/g,"").toLowerCase();const complejo=tipo ? tipo==="complejo" : ["admin","encargado"].includes(rolActual());if(kpiGrid)kpiGrid.style.display=complejo?"grid":"none"}
+
+    function hoyISO() {
+      return new Date().toISOString().slice(0, 10);
+    }
+
+    function normalizar(valor) {
+      return String(valor || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+    }
+
+    function impactoLabel(valor) {
+      return {
+        costo_fijo_operativo: "Costo fijo / operativo",
+        costo_variable_mercaderia: "Costo variable / mercadería",
+        inversion: "Inversión",
+        otro_no_computable: "Otro / no computable"
+      }[valor] || "Otro / no computable";
+    }
+
+    function categoriaProveedorLabel(proveedor) {
+      return proveedor.categoria_nombre || "Sin categoría";
+    }
+
+    function condicionIvaLabel(valor) {
+      return {
+        responsable_inscripto: "Responsable inscripto",
+        monotributo: "Monotributo",
+        exento: "Exento",
+        consumidor_final: "Consumidor final",
+        no_informado: "No informado"
+      }[valor] || "No informado";
+    }
+
+    function comprobanteLabel(valor) {
+      return {
+        factura_a: "Factura A",
+        factura_b: "Factura B",
+        factura_c: "Factura C",
+        recibo_x: "Recibo X",
+        otro: "Otro"
+      }[valor] || "Otro";
+    }
+
+    function normalizarCondicionIva(valor) {
+      const value = normalizar(valor).replace(/\s+/g, "_");
+      if (value.includes("responsable") || value === "ri") return "responsable_inscripto";
+      if (value.includes("mono")) return "monotributo";
+      if (value.includes("exento")) return "exento";
+      if (value.includes("consumidor")) return "consumidor_final";
+      return valor || "responsable_inscripto";
+    }
+
+    function normalizarComprobante(valor) {
+      const value = normalizar(valor).replace(/\s+/g, "_");
+      if (value.includes("fact") && value.endsWith("_a") || value === "fact_a" || value === "factura_a") return "factura_a";
+      if (value.includes("fact") && value.endsWith("_b") || value === "fact_b" || value === "factura_b") return "factura_b";
+      if (value.includes("fact") && value.endsWith("_c") || value === "fact_c" || value === "factura_c") return "factura_c";
+      if (value.includes("rec")) return "recibo_x";
+      return valor || "factura_a";
+    }
+
+    function permiteIvaFavor(proveedor) {
+      return normalizarCondicionIva(proveedor?.condicion_iva) === "responsable_inscripto" && normalizarComprobante(proveedor?.tipo_comprobante) === "factura_a";
+    }
+
+    function actualizarInfoIvaFavor() {
+      const habilita = campos.condicion_iva.value === "responsable_inscripto" && campos.tipo_comprobante.value === "factura_a";
+      const alicuota = Number(campos.iva_alicuota.value || 0);
+      document.getElementById("ivaFavorInfo").innerText = habilita && alicuota > 0 ? `Calcula ${alicuota}%` : "No computa";
+    }
+
+    function renderCategoriasProveedor() {
+      campos.categoria_id.innerHTML = '<option value="">Sin categoría</option>';
+      categorias.forEach((categoría) => {
+        const option = document.createElement("option");
+        option.value = categoría.id;
+        option.textContent = categoría.nombre;
+        campos.categoria_id.appendChild(option);
+      });
+    }
+
+    function mostrarMensaje(texto, esError = false) {
+      mensaje.innerText = texto;
+      mensaje.style.color = esError ? "var(--danger)" : "var(--success)";
+    }
+
+    function abrirModal(modal) {
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+    }
+
+    function cerrarModal(modal) {
+      modal.classList.remove("open");
+      modal.setAttribute("aria-hidden", "true");
+    }
+
+    function limpiarFormulario() {
+      proveedorEditandoId = null;
+      tituloModalProveedor.innerText = "Nuevo proveedor";
+      Object.entries(campos).forEach(([key, input]) => {
+        if (input.type === "checkbox") {
+          input.checked = key === "activo";
+        } else {
+          input.value = key === "tipo_persona" ? "juridica" : key === "moneda" ? "ARS" : key === "tipo_impacto" ? "otro_no_computable" : key === "condicion_iva" ? "responsable_inscripto" : key === "tipo_comprobante" ? "factura_a" : key === "iva_alicuota" ? "21" : "";
+        }
+      });
+      actualizarInfoIvaFavor();
+    }
+
+    function getPayloadProveedor() {
+      return {
+        nombre: campos.nombre.value.trim(),
+        alias: campos.alias.value.trim(),
+        cuit: campos.cuit.value.trim(),
+        tipo_persona: campos.tipo_persona.value,
+        telefono: campos.telefono.value.trim(),
+        email: campos.email.value.trim(),
+        contacto: campos.contacto.value.trim(),
+        direccion: campos.direccion.value.trim(),
+        localidad: campos.localidad.value.trim(),
+        codigo_postal: campos.codigo_postal.value.trim(),
+        observaciones: campos.observaciones.value.trim(),
+        maneja_cuenta_corriente: campos.maneja_cuenta_corriente.checked,
+        limite_credito: Number(campos.limite_credito.value) || 0,
+        dias_vencimiento: Number(campos.dias_vencimiento.value) || 0,
+        dia_vencimiento_fijo: campos.dia_vencimiento_fijo.value ? Number(campos.dia_vencimiento_fijo.value) : null,
+        moneda: campos.moneda.value,
+        tipo_impacto: campos.tipo_impacto.value,
+        categoria_id: campos.categoria_id.value ? Number(campos.categoria_id.value) : null,
+        categoria_especial: "",
+        condicion_iva: campos.condicion_iva.value,
+        tipo_comprobante: campos.tipo_comprobante.value,
+        iva_alicuota: Number(campos.iva_alicuota.value) || 0,
+        activo: campos.activo.checked
+      };
+    }
+
+    function editarProveedor(proveedor) {
+      proveedorEditandoId = proveedor.id;
+      tituloModalProveedor.innerText = "Editar proveedor";
+      Object.entries(campos).forEach(([key, input]) => {
+        if (input.type === "checkbox") {
+          input.checked = key === "maneja_cuenta_corriente"
+            ? Number(proveedor[key] || 0) === 1
+            : Number(proveedor[key]) !== 0;
+        } else {
+          input.value = key === "tipo_impacto" ? (proveedor[key] || "otro_no_computable") : key === "condicion_iva" ? normalizarCondicionIva(proveedor[key]) : key === "tipo_comprobante" ? normalizarComprobante(proveedor[key]) : key === "iva_alicuota" ? (proveedor[key] ?? 21) : proveedor[key] ?? "";
+        }
+      });
+      actualizarInfoIvaFavor();
+      abrirModal(modalProveedor);
+      campos.nombre.focus();
+    }
+
+    function renderKpis(items) {
+      document.getElementById("kpiTotal").innerText = String(items.length);
+      document.getElementById("kpiComprasMes").innerText = money(items.reduce((acc, item) => acc + Number(item.compras_mes || 0), 0));
+      document.getElementById("kpiPagosMes").innerText = money(items.reduce((acc, item) => acc + Number(item.pagos_mes || 0), 0));
+      document.getElementById("kpiSaldo").innerText = money(items.reduce((acc, item) => acc + Number(item.saldo_pendiente || 0), 0));
+      document.getElementById("kpiComprasAnio").innerText = money(items.reduce((acc, item) => acc + Number(item.compras_anio || 0), 0));
+    }
+
+    function getProveedoresFiltrados() {
+      const termino = normalizar(busqueda.value);
+      let items = proveedores.filter((proveedor) => {
+        const estado = Number(proveedor.activo) === 1 ? "activo" : "inactivo";
+        const texto = normalizar(`${proveedor.nombre} ${proveedor.cuit} ${proveedor.telefono}`);
+        return (filtroEstado.value === "todos" || filtroEstado.value === estado) && (!termino || texto.includes(termino));
+      });
+
+      items = [...items].sort((a, b) => {
+        if (ordenListado.value === "saldo") return Number(b.saldo_pendiente || 0) - Number(a.saldo_pendiente || 0);
+        if (ordenListado.value === "compras_mes") return Number(b.compras_mes || 0) - Number(a.compras_mes || 0);
+        if (ordenListado.value === "ultima_compra") return String(b.ultima_compra || "").localeCompare(String(a.ultima_compra || ""));
+        return String(a.nombre || "").localeCompare(String(b.nombre || ""));
+      });
+
+      return items;
+    }
+
+    function renderizarProveedores() {
+      const items = getProveedoresFiltrados();
+      renderKpis(proveedores);
+      tablaProveedores.innerHTML = "";
+
+      if (items.length === 0) {
+        tablaProveedores.innerHTML = '<tr><td colspan="11">No hay proveedores para mostrar.</td></tr>';
+        return;
+      }
+
+      items.forEach((proveedor) => {
+        const row = document.createElement("tr");
+        const activo = Number(proveedor.activo) === 1;
+        const saldo = Number(proveedor.saldo_pendiente || 0);
+        row.innerHTML = `
+          <td><strong>${proveedor.nombre}</strong><br><span class="muted">CUIT ${proveedor.cuit || "-"}</span></td>
+          <td>${proveedor.contacto || proveedor.alias || "-"}</td>
+          <td>${proveedor.telefono || "-"}</td>
+          <td>${proveedor.email || "-"}</td>
+          <td>${categoriaProveedorLabel(proveedor)}</td>
+          <td>${money(proveedor.compras_mes)}</td>
+          <td>${impactoLabel(proveedor.tipo_impacto)}<br><span class="muted">${permiteIvaFavor(proveedor) ? "IVA a favor" : "Sin IVA crédito"}</span></td>
+          <td><span class="pill ${saldo > 0 ? "warn" : ""}">${money(saldo)}</span></td>
+          <td>${proveedor.ultima_compra || "-"}</td>
+          <td><span class="pill ${activo ? "" : "off"}">${activo ? "Activo" : "Inactivo"}</span></td>
+          <td>
+            <div class="actions-menu">
+              <button type="button" class="dots-button" data-action="menu" aria-label="Acciones" title="Acciones"><span class="app-icon icon-more" aria-hidden="true"></span></button>
+              <div class="actions-popup">
+                <button type="button" class="menu-action" data-action="detalle">Detalle</button>
+                <button type="button" class="menu-action" data-action="movimientos">Movimientos</button>
+                <button type="button" class="menu-action" data-action="pago">Registrar pago</button>
+                <button type="button" class="menu-action" data-action="editar">Editar proveedor</button>
+                <button type="button" class="menu-action" data-action="estado">${activo ? "Desactivar" : "Activar"}</button>
+                <button type="button" class="menu-action danger" data-action="eliminar">Eliminar</button>
+              </div>
+            </div>
+          </td>
+        `;
+        const menuButton = row.querySelector('[data-action="menu"]');
+        const popup = row.querySelector(".actions-popup");
+        menuButton.addEventListener("click", (event) => {
+          event.stopPropagation();
+          document.querySelectorAll(".actions-popup.open").forEach((menu) => {
+            if (menu !== popup) menu.classList.remove("open");
+          });
+          popup.classList.toggle("open");
+        });
+        row.querySelector('[data-action="detalle"]').addEventListener("click", () => abrirDetalle(proveedor));
+        row.querySelector('[data-action="movimientos"]').addEventListener("click", () => abrirDetalle(proveedor));
+        row.querySelector('[data-action="pago"]').addEventListener("click", () => abrirPago(proveedor));
+        row.querySelector('[data-action="editar"]').addEventListener("click", () => editarProveedor(proveedor));
+        row.querySelector('[data-action="estado"]').addEventListener("click", () => cambiarEstado(proveedor));
+        row.querySelector('[data-action="eliminar"]').addEventListener("click", () => eliminarProveedor(proveedor));
+        tablaProveedores.appendChild(row);
+      });
+    }
+
+    async function cargarProveedores() {
+      try {
+        const [res, catRes, cfgRes] = await Promise.all([
+          fetch("/proveedores?include_inactive=1"),
+          fetch("/categorias"),
+          fetch("/configuracion")
+        ]);
+        if (!res.ok) throw new Error("No se pudo obtener proveedores");
+        proveedores = await res.json();
+        categorias = catRes.ok ? await catRes.json() : [];
+        mostrarKpisComplejos(cfgRes.ok ? (await cfgRes.json()).config || {} : {});
+        renderCategoriasProveedor();
+        renderizarProveedores();
+      } catch (error) {
+        console.error("Error al cargar proveedores:", error);
+        tablaProveedores.innerHTML = '<tr><td colspan="11">Error al cargar proveedores.</td></tr>';
+        mostrarMensaje("No se pudo obtener proveedores desde el servidor", true);
+      }
+    }
+
+    async function guardarProveedor() {
+      const payload = getPayloadProveedor();
+      if (!payload.nombre) {
+        mostrarMensaje("El nombre del proveedor es obligatorio", true);
+        return;
+      }
+
+      const url = proveedorEditandoId ? `/proveedores/${proveedorEditandoId}` : "/proveedores";
+      const method = proveedorEditandoId ? "PUT" : "POST";
+
+      try {
+        const res = await fetch(url, {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          mostrarMensaje(data.message || "Error al guardar proveedor", true);
+          return;
+        }
+        mostrarMensaje(data.message || "Proveedor guardado");
+        cerrarModal(modalProveedor);
+        limpiarFormulario();
+        await cargarProveedores();
+      } catch (error) {
+        console.error("Error al guardar proveedor:", error);
+        mostrarMensaje("Error al guardar proveedor", true);
+      }
+    }
+
+    async function cambiarEstado(proveedor) {
+      try {
+        const res = await fetch(`/proveedores/${proveedor.id}/estado`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ activo: Number(proveedor.activo) !== 1 })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          mostrarMensaje(data.message || "Error al cambiar estado", true);
+          return;
+        }
+        mostrarMensaje(data.message || "Estado actualizado");
+        await cargarProveedores();
+      } catch (error) {
+        mostrarMensaje("Error al cambiar estado", true);
+      }
+    }
+
+    async function eliminarProveedor(proveedor) {
+      if (!confirm(`Eliminar proveedor ${proveedor.nombre}?`)) return;
+
+      try {
+        const res = await fetch(`/proveedores/${proveedor.id}`, { method: "DELETE" });
+        const data = await res.json();
+        if (!res.ok) {
+          mostrarMensaje(data.message || "No se pudo eliminar", true);
+          return;
+        }
+        mostrarMensaje(data.message || "Proveedor eliminado");
+        await cargarProveedores();
+      } catch (error) {
+        mostrarMensaje("Error al eliminar proveedor", true);
+      }
+    }
+
+    function abrirPago(proveedor) {
+      proveedorPago = proveedor;
+      pagoProveedorNombre.innerText = proveedor.nombre;
+      document.getElementById("pagoProveedorImpacto").innerText = `Impacto: ${impactoLabel(proveedor.tipo_impacto)}`;
+      pagoCampos.fecha.value = hoyISO();
+      pagoCampos.importe.value = "";
+      pagoCampos.forma.value = "efectivo";
+      pagoCampos.cuenta.value = "";
+      pagoCampos.referencia.value = "";
+      pagoCampos.estado.value = "registrado";
+      pagoCampos.observaciones.value = "";
+      actualizarImpactoPago();
+      abrirModal(modalPago);
+    }
+
+    function actualizarImpactoPago() {
+      const saldo = Number(proveedorPago?.saldo_pendiente || 0);
+      const importe = pagoCampos.estado.value === "pendiente" ? 0 : Number(pagoCampos.importe.value || 0);
+      pagoSaldoActual.innerText = money(saldo);
+      pagoSaldoLuego.innerText = money(Math.max(0, saldo - importe));
+    }
+
+    async function confirmarPagoProveedor() {
+      if (!proveedorPago) return;
+      const importe = Number(pagoCampos.importe.value) || 0;
+      if (importe <= 0) {
+        mostrarMensaje("El importe del pago debe ser mayor a cero", true);
+        return;
+      }
+
+      try {
+        const payload = {
+          proveedor_id: proveedorPago.id,
+          categoria_pago: proveedorPago.tipo_impacto || "otro_no_computable",
+          concepto: pagoCampos.observaciones.value.trim() || `Pago a ${proveedorPago.nombre}`,
+          fecha: pagoCampos.fecha.value,
+          monto_total: importe,
+          tipo_pago: pagoCampos.forma.value,
+          cuenta_destino: pagoCampos.cuenta.value.trim(),
+          referencia: pagoCampos.referencia.value.trim(),
+          numero_comprobante: pagoCampos.referencia.value.trim(),
+          observaciones: pagoCampos.observaciones.value.trim(),
+          estado: pagoCampos.estado.value,
+          es_cuenta_corriente: Number(proveedorPago.maneja_cuenta_corriente || 0) === 1
+        };
+        const res = await fetch("/pagos", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          mostrarMensaje(data.message || "Error al registrar pago", true);
+          return;
+        }
+        mostrarMensaje(data.message || "Pago registrado");
+        cerrarModal(modalPago);
+        await cargarProveedores();
+      } catch (error) {
+        mostrarMensaje("Error al registrar pago", true);
+      }
+    }
+
+    async function abrirDetalle(proveedor) {
+      document.getElementById("tituloDetalle").innerText = proveedor.nombre;
+      document.getElementById("subtituloDetalle").innerText = `${proveedor.cuit || "Sin CUIT"} - ${Number(proveedor.activo) === 1 ? "Activo" : "Inactivo"}`;
+      detalleResumen.innerHTML = `
+        <div class="detail-box"><span>Saldo pendiente</span><strong>${money(proveedor.saldo_pendiente)}</strong></div>
+        <div class="detail-box"><span>Límite crédito</span><strong>${money(proveedor.limite_credito)}</strong></div>
+        <div class="detail-box"><span>Cuenta corriente</span><strong>${Number(proveedor.maneja_cuenta_corriente) === 1 ? "Si" : "No"}</strong></div>
+        <div class="detail-box"><span>Categoria</span><strong>${categoriaProveedorLabel(proveedor)}</strong></div>
+        <div class="detail-box"><span>Impacto</span><strong>${impactoLabel(proveedor.tipo_impacto)}</strong></div>
+        <div class="detail-box"><span>Fiscal</span><strong>${condicionIvaLabel(proveedor.condicion_iva)}</strong><small>${comprobanteLabel(proveedor.tipo_comprobante)}</small></div>
+        <div class="detail-box"><span>IVA a favor</span><strong>${permiteIvaFavor(proveedor) ? `${Number(proveedor.iva_alicuota || 0)}%` : "No computa"}</strong></div>
+        <div class="detail-box"><span>Compras mes</span><strong>${money(proveedor.compras_mes)}</strong></div>
+        <div class="detail-box"><span>Pagos mes</span><strong>${money(proveedor.pagos_mes)}</strong></div>
+        <div class="detail-box"><span>Vencimiento</span><strong>${proveedor.dias_vencimiento || 0} días</strong></div>
+      `;
+      tablaMovimientos.innerHTML = '<tr><td colspan="6">Cargando movimientos...</td></tr>';
+      abrirModal(modalDetalle);
+
+      try {
+        const res = await fetch(`/proveedores/${proveedor.id}/movimientos`);
+        if (!res.ok) throw new Error("No se pudieron obtener movimientos");
+        const movimientos = await res.json();
+        if (!movimientos.length) {
+          tablaMovimientos.innerHTML = '<tr><td colspan="6">Sin movimientos registrados.</td></tr>';
+          return;
+        }
+        tablaMovimientos.innerHTML = "";
+        movimientos.forEach((movimiento) => {
+          const row = document.createElement("tr");
+          row.innerHTML = `
+            <td>${movimiento.fecha || "-"} ${movimiento.hora || ""}</td>
+            <td>${movimiento.tipo_movimiento || "-"}</td>
+            <td>${movimiento.estado || "-"}</td>
+            <td>${movimiento.tipo_movimiento === "pago" ? money(movimiento.monto) : movimiento.monto}</td>
+            <td>${movimiento.referencia || movimiento.numero_comprobante || movimiento.producto_nombre || "-"}</td>
+            <td>${movimiento.observaciones || "-"}</td>
+          `;
+          tablaMovimientos.appendChild(row);
+        });
+      } catch (error) {
+        tablaMovimientos.innerHTML = '<tr><td colspan="6">Error al cargar movimientos.</td></tr>';
+      }
+    }
+
+    document.getElementById("abrirProveedor").addEventListener("click", () => {
+      limpiarFormulario();
+      abrirModal(modalProveedor);
+      campos.nombre.focus();
+    });
+    document.getElementById("cerrarProveedor").addEventListener("click", () => cerrarModal(modalProveedor));
+    document.getElementById("limpiarProveedor").addEventListener("click", limpiarFormulario);
+    document.getElementById("guardarProveedor").addEventListener("click", guardarProveedor);
+    document.getElementById("actualizar").addEventListener("click", cargarProveedores);
+    document.getElementById("cerrarPago").addEventListener("click", () => cerrarModal(modalPago));
+    document.getElementById("confirmarPago").addEventListener("click", confirmarPagoProveedor);
+    document.getElementById("cerrarDetalle").addEventListener("click", () => cerrarModal(modalDetalle));
+    toggleNotificaciones.addEventListener("click", function (event) {
+      event.stopPropagation();
+      notificacionesDropdown.classList.toggle("open");
+    });
+    [busqueda, filtroEstado, ordenListado].forEach((input) => {
+      input.addEventListener("input", renderizarProveedores);
+      input.addEventListener("change", renderizarProveedores);
+    });
+    [pagoCampos.importe, pagoCampos.estado].forEach((input) => {
+      input.addEventListener("input", actualizarImpactoPago);
+      input.addEventListener("change", actualizarImpactoPago);
+    });
+    [campos.condicion_iva, campos.tipo_comprobante, campos.iva_alicuota].forEach((input) => {
+      input.addEventListener("input", actualizarInfoIvaFavor);
+      input.addEventListener("change", actualizarInfoIvaFavor);
+    });
+    [modalProveedor, modalPago, modalDetalle].forEach((modal) => {
+      modal.addEventListener("click", (event) => {
+        if (event.target === modal) cerrarModal(modal);
+      });
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        [modalProveedor, modalPago, modalDetalle].forEach(cerrarModal);
+      }
+    });
+    document.addEventListener("click", function (event) {
+      document.querySelectorAll(".actions-popup.open").forEach((menu) => {
+        if (!menu.contains(event.target)) {
+          menu.classList.remove("open");
+        }
+      });
+
+      if (!notificacionesDropdown.contains(event.target) && event.target !== toggleNotificaciones) {
+        notificacionesDropdown.classList.remove("open");
+      }
+    });
+
+    limpiarFormulario();
+    pagoCampos.fecha.value = hoyISO();
+    cargarProveedores();
+  </script>
+  <script src="/nav-permissions.js?v=6" defer></script>
+  <script src="/user-menu.js?v=7" defer></script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+

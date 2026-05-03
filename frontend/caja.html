@@ -1,0 +1,4754 @@
+﻿<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Caja - Sistema Guernica</title>
+  <style>
+    :root {
+      --header-height: 88px;
+      --sidebar-width: 270px;
+      --bg: #f7f7fb;
+      --surface: #ffffff;
+      --sidebar: #ffffff;
+      --header: #16052e;
+      --primary: #6d28d9;
+      --primary-strong: #7c3aed;
+      --primary-soft: #f0e5ff;
+      --text: #111827;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --success: #22a35a;
+      --danger: #e05252;
+      --warning: #d99a21;
+      --info: #3478f6;
+      --shadow: 0 12px 30px rgba(31, 11, 63, 0.08);
+      --radius: 18px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #fbfaff 0%, var(--bg) 100%);
+      color: var(--text);
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    .site-header {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 30;
+      min-height: var(--header-height);
+      background: var(--header);
+      box-shadow: var(--shadow);
+    }
+
+    .topbar {
+      min-height: var(--header-height);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      color: #ffffff;
+      padding: 18px 28px;
+    }
+
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      min-width: 0;
+    }
+
+    .brand-block {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-shrink: 0;
+    }
+
+    .logo-mark {
+      width: 54px;
+      height: 54px;
+      border-radius: 18px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, #2b0b53 0%, var(--primary-strong) 100%);
+      font-size: 28px;
+      font-weight: 900;
+      box-shadow: 0 10px 24px rgba(124, 58, 237, 0.28);
+      flex-shrink: 0;
+    }
+
+    .logo-text strong {
+      display: block;
+      font-size: 18px;
+      letter-spacing: 0.08em;
+    }
+
+    .logo-text small {
+      color: rgba(255, 255, 255, 0.76);
+      letter-spacing: 0.08em;
+    }
+
+    .topbar-divider {
+      width: 1px;
+      height: 42px;
+      background: rgba(255, 255, 255, 0.14);
+      flex-shrink: 0;
+    }
+
+    .topbar-title h1 {
+      margin: 0;
+      font-size: 26px;
+    }
+
+    .topbar-title p {
+      margin: 6px 0 0;
+      color: rgba(255, 255, 255, 0.82);
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .chip {
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: rgba(255, 255, 255, 0.08);
+      color: white;
+      padding: 10px 12px;
+      border-radius: 999px;
+      font-size: 14px;
+    }
+
+    button.chip {
+      cursor: pointer;
+    }
+
+    .chip.icon-chip {
+      width: 42px;
+      height: 42px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      font-size: 18px;
+    }
+
+    .top-actions-menu {
+      position: relative;
+    }
+
+    .notifications-dropdown {
+      position: absolute;
+      top: calc(100% + 10px);
+      right: 0;
+      width: min(360px, calc(100vw - 32px));
+      background: #ffffff;
+      color: var(--text);
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      box-shadow: 0 24px 60px rgba(17, 24, 39, 0.24);
+      padding: 14px;
+      display: none;
+      z-index: 90;
+    }
+
+    .notifications-dropdown.open {
+      display: grid;
+      gap: 12px;
+    }
+
+    .notifications-dropdown h3,
+    .notifications-dropdown p {
+      margin: 0;
+    }
+
+    .notification-list {
+      display: grid;
+      gap: 8px;
+      max-height: 280px;
+      overflow: auto;
+    }
+
+    .notification-item {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px 12px;
+      background: #fafafe;
+      display: grid;
+      gap: 4px;
+    }
+
+    .notification-item small {
+      color: var(--muted);
+    }
+
+    .user-box {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-left: 6px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: rgba(255, 255, 255, 0.16);
+      font-weight: 800;
+    }
+
+    .user-box strong,
+    .user-box small {
+      display: block;
+    }
+
+    .user-box small {
+      color: rgba(255, 255, 255, 0.72);
+    }
+
+    .app-shell {
+      display: grid;
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      min-height: calc(100vh - var(--header-height));
+      margin-top: var(--header-height);
+    }
+
+    .sidebar {
+      background: var(--sidebar);
+      border-right: 1px solid var(--border);
+      padding: 20px 18px 24px;
+      min-height: calc(100vh - var(--header-height));
+    }
+
+    .nav-title {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .nav {
+      display: grid;
+      gap: 8px;
+    }
+
+    .nav a {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      color: var(--text);
+      padding: 12px 14px;
+      border-radius: 14px;
+      transition: background 0.2s ease, transform 0.2s ease;
+    }
+
+    .nav a:hover {
+      background: var(--primary-soft);
+      transform: translateX(3px);
+    }
+
+    .nav a.active {
+      background: var(--primary-soft);
+      color: var(--primary);
+      font-weight: 700;
+    }
+
+    .nav-icon {
+      width: 22px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .nav a.active .nav-icon {
+      color: var(--primary);
+    }
+
+    .branch-card {
+      margin-top: 22px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: #ffffff;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .branch-card strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .branch-card small {
+      color: var(--muted);
+    }
+
+    .main {
+      min-width: 0;
+      padding: 24px;
+      display: grid;
+      gap: 18px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+
+    .top-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0;
+      align-items: start;
+    }
+
+    .top-grid > .card {
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      padding: 0;
+      margin: 0 0 -1px 12px;
+      position: relative;
+      z-index: 2;
+    }
+
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      gap: 4px;
+    }
+
+    .tab-button {
+      border: 1px solid var(--border);
+      border-bottom-color: var(--surface);
+      background: #ffffff;
+      color: var(--text);
+      border-radius: 9px 9px 0 0;
+      padding: 5px 8px;
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-height: 28px;
+    }
+
+    .tab-button:hover {
+      background: var(--primary-soft);
+      color: var(--primary);
+      border-color: rgba(109, 40, 217, 0.22);
+    }
+
+    .tab-button.active {
+      background: var(--primary);
+      color: #ffffff;
+      border-color: var(--primary);
+      box-shadow: 0 -2px 10px rgba(109, 40, 217, 0.12);
+    }
+
+    .tab-icon {
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      display: inline-grid;
+      place-items: center;
+      background: transparent;
+      color: var(--header);
+      font-size: 13px;
+      line-height: 1;
+    }
+
+    .tab-button:hover .tab-icon {
+      background: rgba(109, 40, 217, 0.14);
+      color: var(--primary);
+    }
+
+    .tab-button.active .tab-icon {
+      background: #ffffff;
+      color: var(--primary);
+    }
+
+    .status-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .status-card {
+      display: grid;
+      gap: 16px;
+    }
+
+    .summary-detail-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 0.95fr) minmax(420px, 1.05fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .equal-panel {
+      min-height: 430px;
+    }
+
+    .movements-panel {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .movements-table-wrap {
+      min-height: 0;
+      overflow: auto;
+    }
+
+    .status-card-layout {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      font-weight: 700;
+    }
+
+    .status-pill.open {
+      background: rgba(34, 163, 90, 0.12);
+      color: var(--success);
+    }
+
+    .status-pill.closed {
+      background: rgba(224, 82, 82, 0.12);
+      color: var(--danger);
+    }
+
+    .status-meta {
+      display: grid;
+      gap: 8px;
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .mini-card {
+      padding: 14px;
+      border-radius: 14px;
+      background: #fafafe;
+      border: 1px solid var(--border);
+    }
+
+    .mini-card span {
+      color: var(--muted);
+      font-size: 12px;
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .mini-card strong {
+      font-size: 18px;
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+
+    .movement-kpis {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .metric-card {
+      padding: 14px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, #ffffff 0%, #faf8ff 100%);
+      min-height: 100px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .metric-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+      width: 100%;
+    }
+
+    .metric-title-amount {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .metric-title-amount strong {
+      display: inline-flex;
+      align-items: center;
+      margin-bottom: 0;
+    }
+
+    .metric-card span {
+      color: var(--muted);
+      font-size: 12px;
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    .metric-card strong {
+      display: block;
+      font-size: 30px;
+      margin-bottom: 6px;
+    }
+
+    .metric-card small {
+      color: var(--muted);
+    }
+
+    .metric-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      display: inline-grid;
+      place-items: center;
+      font-size: 16px;
+      font-weight: 800;
+      flex: 0 0 auto;
+    }
+
+    .metric-card.kpi-efectivo {
+      background: linear-gradient(180deg, #ffffff 0%, #f2fcf5 100%);
+      border-color: rgba(34, 163, 90, 0.18);
+    }
+
+    .metric-card.kpi-efectivo .metric-icon {
+      background: rgba(34, 163, 90, 0.14);
+      color: var(--success);
+    }
+
+    .metric-card.kpi-ingresos {
+      background: linear-gradient(180deg, #ffffff 0%, #faf7ff 100%);
+      border-color: rgba(109, 40, 217, 0.18);
+    }
+
+    .metric-card.kpi-ingresos .metric-icon {
+      background: rgba(109, 40, 217, 0.14);
+      color: var(--primary);
+    }
+
+    .metric-card.kpi-egresos {
+      background: linear-gradient(180deg, #ffffff 0%, #fff6f6 100%);
+      border-color: rgba(224, 82, 82, 0.18);
+    }
+
+    .metric-card.kpi-egresos .metric-icon {
+      background: rgba(224, 82, 82, 0.14);
+      color: var(--danger);
+    }
+
+    .metric-card.kpi-saldo {
+      background: linear-gradient(180deg, #ffffff 0%, #f5f9ff 100%);
+      border-color: rgba(52, 120, 246, 0.18);
+    }
+
+    .metric-card.kpi-saldo .metric-icon {
+      background: rgba(52, 120, 246, 0.14);
+      color: var(--info);
+    }
+
+    .metric-card.kpi-diferencia {
+      background: linear-gradient(180deg, #ffffff 0%, #fffaf2 100%);
+      border-color: rgba(217, 154, 33, 0.2);
+    }
+
+    .metric-card.kpi-diferencia .metric-icon {
+      background: rgba(217, 154, 33, 0.16);
+      color: var(--warning);
+    }
+
+    .metric-card.kpi-balance {
+      background: linear-gradient(180deg, #ffffff 0%, #faf7ff 100%);
+      border-color: rgba(109, 40, 217, 0.18);
+    }
+
+    .metric-card.kpi-balance .metric-icon {
+      background: rgba(109, 40, 217, 0.14);
+      color: var(--primary);
+    }
+
+    .metric-card .amount-value,
+    .method-grid .amount-value {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: nowrap;
+      gap: 4px;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .metric-card .currency-symbol,
+    .method-grid .currency-symbol {
+      font-size: 16px;
+      color: var(--muted);
+      font-weight: 700;
+      flex: 0 0 auto;
+    }
+
+    .metric-card .amount-number {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: var(--text);
+      flex: 0 0 auto;
+    }
+
+    .method-grid .amount-number {
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: var(--text);
+      flex: 0 0 auto;
+    }
+
+    .method-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .status-side {
+      display: grid;
+      gap: 12px;
+    }
+
+    .status-panel {
+      padding: 14px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: #fafafe;
+    }
+
+    .status-panel h3,
+    .status-panel p {
+      margin: 0;
+    }
+
+    .status-panel p {
+      color: var(--muted);
+      margin-top: 6px;
+    }
+
+    .balance-track {
+      display: flex;
+      width: 100%;
+      height: 14px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #eceef4;
+      margin-top: 14px;
+    }
+
+    .balance-segment {
+      height: 100%;
+      transition: width 0.2s ease;
+    }
+
+    .balance-segment.ingresos {
+      background: linear-gradient(90deg, #22a35a 0%, #34c26b 100%);
+    }
+
+    .balance-segment.egresos {
+      background: linear-gradient(90deg, #f26b6b 0%, #e05252 100%);
+    }
+
+    .balance-legend {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .balance-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 13px;
+    }
+
+    .balance-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+      font-weight: 700;
+    }
+
+    .balance-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex: 0 0 auto;
+    }
+
+    .balance-dot.ingresos {
+      background: var(--success);
+    }
+
+    .balance-dot.egresos {
+      background: var(--danger);
+    }
+
+    .section {
+      display: none;
+      gap: 18px;
+    }
+
+    .section.active {
+      display: grid;
+    }
+
+    .section-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .table-card {
+      overflow: hidden;
+    }
+
+    .table-toolbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .field,
+    .field-inline,
+    .field-date {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: #ffffff;
+      border-radius: 14px;
+      padding: 12px 14px;
+      outline: none;
+    }
+
+    .field-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .field-grid.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .field-grid.five {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+
+    .movement-filters {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr)) auto auto;
+      gap: 12px;
+      margin-bottom: 16px;
+      align-items: center;
+    }
+
+    .table-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .pagination {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .page-button {
+      min-width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #ffffff;
+      color: var(--text);
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .page-button.active {
+      background: var(--primary);
+      color: #ffffff;
+      border-color: var(--primary);
+    }
+
+    .page-button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .page-size-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .page-size-control select {
+      width: auto;
+      min-width: 82px;
+      padding: 8px 10px;
+      border-radius: 10px;
+    }
+
+    .button {
+      border: none;
+      border-radius: 12px;
+      padding: 11px 13px;
+      cursor: pointer;
+      font-weight: 700;
+      background: var(--primary);
+      color: #ffffff;
+    }
+
+    .button.secondary {
+      background: #ffffff;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .button.warning {
+      background: var(--warning);
+    }
+
+    .button.danger {
+      background: var(--danger);
+    }
+
+    .button.success {
+      background: var(--success);
+    }
+
+    .button.compact {
+      padding: 9px 11px;
+      border-radius: 10px;
+      font-size: 13px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .compact-table th,
+    .compact-table td {
+      padding: 8px 9px;
+      font-size: 12px;
+    }
+
+    .daily-grid {
+      display: grid;
+      grid-template-columns: 0.85fr 1fr 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .daily-card {
+      display: grid;
+      gap: 14px;
+      min-height: 300px;
+    }
+
+    .closure-overview-grid {
+      display: grid;
+      grid-template-columns: minmax(240px, 0.48fr) minmax(0, 1.52fr);
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .closure-work-grid {
+      display: grid;
+      grid-template-columns: minmax(220px, 0.45fr) minmax(0, 1.55fr);
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .cash-state-card,
+    .day-summary-card,
+    .cash-actions-card,
+    .close-cash-card {
+      display: grid;
+      gap: 14px;
+    }
+
+    .day-summary-kpis {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(170px, 1fr));
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 2px;
+    }
+
+    .day-summary-kpis .metric-card {
+      padding: 12px;
+      border-radius: 13px;
+      min-height: 86px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-width: 0;
+      background: #ffffff;
+      border-color: var(--border);
+      box-shadow: none;
+    }
+
+    .day-summary-kpis .metric-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      width: 100%;
+      margin-bottom: 0;
+    }
+
+    .day-summary-kpis .metric-title-amount {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 7px;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .day-summary-kpis .metric-title-amount span {
+      display: inline;
+      margin-bottom: 0;
+      color: var(--muted);
+      line-height: 1.15;
+    }
+
+    .day-summary-card {
+      gap: 10px;
+      padding: 14px;
+    }
+
+    .day-summary-card h3 {
+      font-size: 16px;
+    }
+
+    .day-summary-card .muted {
+      font-size: 12px;
+    }
+
+
+
+    .day-summary-kpis .metric-icon {
+      width: 30px;
+      height: 30px;
+      border-radius: 10px;
+      font-size: 13px;
+    }
+
+    .day-summary-kpis .amount-number {
+      font-size: 20px;
+    }
+
+    .day-summary-kpis .currency-symbol {
+      font-size: 13px;
+    }
+
+    .day-summary-kpis .amount-value,
+    .close-cash-card .amount-value {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: nowrap;
+      gap: 4px;
+      white-space: nowrap;
+      line-height: 1;
+    }
+
+    .day-summary-kpis .metric-card.kpi-efectivo .amount-number,
+    .day-summary-kpis .metric-card.kpi-efectivo .metric-icon {
+      color: var(--success);
+    }
+
+    .day-summary-kpis .metric-card.kpi-saldo .amount-number,
+    .day-summary-kpis .metric-card.kpi-saldo .metric-icon {
+      color: var(--info);
+    }
+
+    .day-summary-kpis .metric-card.kpi-diferencia .amount-number,
+    .day-summary-kpis .metric-card.kpi-diferencia .metric-icon {
+      color: var(--warning);
+    }
+
+    .day-summary-kpis .metric-card.kpi-egresos .amount-number,
+    .day-summary-kpis .metric-card.kpi-egresos .metric-icon {
+      color: var(--danger);
+    }
+
+    .cash-state-card {
+      align-content: start;
+      gap: 10px;
+      padding: 14px;
+    }
+
+    .cash-state-card .meta-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 0;
+    }
+
+    .cash-state-card .meta-grid .mini-card:last-child {
+      display: none;
+    }
+
+    .cash-state-card .field-grid {
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+
+    .cash-state-card .field,
+    .cash-state-card .field-date,
+    .cash-state-card .field-inline {
+      padding: 9px 11px;
+      border-radius: 11px;
+      font-size: 12px;
+    }
+
+    .cash-state-card .button {
+      padding: 9px 11px;
+      border-radius: 11px;
+      font-size: 12px;
+    }
+
+    .cash-state-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .cash-state-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-weight: 800;
+      font-size: 13px;
+    }
+
+    .cash-state-title.open {
+      color: var(--success);
+    }
+
+    .cash-state-title.closed {
+      color: var(--danger);
+    }
+
+    .online-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 0 4px rgba(34, 163, 90, 0.14);
+      flex: 0 0 auto;
+    }
+
+    .online-dot.closed {
+      background: var(--danger);
+      box-shadow: 0 0 0 4px rgba(224, 82, 82, 0.14);
+    }
+
+    .summary-note {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 8px 10px;
+      border-radius: 12px;
+      background: #fafafe;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .info-icon {
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      display: inline-grid;
+      place-items: center;
+      flex: 0 0 auto;
+      background: rgba(52, 120, 246, 0.12);
+      color: var(--info);
+      font-weight: 800;
+      font-size: 11px;
+    }
+
+    .action-stack {
+      display: grid;
+      gap: 8px;
+      align-content: center;
+      min-height: 100%;
+    }
+
+    .cash-actions-card {
+      align-content: start;
+      gap: 10px;
+      padding: 14px;
+      min-height: 0;
+    }
+
+    .cash-actions-card h3 {
+      font-size: 13px;
+    }
+
+    .cash-actions-card .button {
+      padding: 8px 10px;
+      border-radius: 10px;
+      font-size: 11px;
+    }
+
+    .button.success-soft {
+      background: var(--success);
+    }
+
+    .button.warning-soft {
+      background: var(--warning);
+    }
+
+    .close-cash-layout {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+      align-items: stretch;
+    }
+
+    .close-cash-totals {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 2px;
+    }
+
+    .close-cash-totals > * {
+      min-width: 150px;
+    }
+
+    .close-cash-totals .mini-card,
+    .counted-box {
+      min-height: 75px;
+      display: grid;
+      align-content: start;
+      gap: 4px;
+    }
+
+    .close-number {
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+
+    .success-text {
+      color: var(--success);
+    }
+
+    .danger-text {
+      color: var(--danger);
+    }
+
+    .close-cash-card .mini-card span {
+      font-size: 10px;
+    }
+
+    .close-cash-card .mini-card strong {
+      font-size: 14px;
+    }
+
+    .close-cash-card .muted {
+      font-size: 9px;
+    }
+
+    .close-cash-card h3 {
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+
+    .counted-box,
+    .difference-box {
+      margin-top: 8px;
+      padding: 9px 10px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #fafafe;
+    }
+    .counted-box {
+      margin-top: 0;
+    }
+
+    .counted-box span.muted {
+      font-size: 8px;
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .counted-box div.muted {
+      font-size: 7px;
+      line-height: 1.2;
+    }
+
+    .difference-box {
+      display: grid;
+      gap: 4px;
+      min-height: 100px;
+    }
+
+    .difference-box strong {
+      font-size: 15px;
+    }
+
+    .difference-box .muted {
+      font-size: 9px;
+    }
+
+    .close-bottom-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 8px;
+      align-items: stretch;
+    }
+
+    .romaneo-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 800;
+      color: var(--warning);
+    }
+
+    .romaneo-status.done {
+      color: var(--success);
+    }
+
+    .close-action-column {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      align-items: stretch;
+      gap: 8px;
+    }
+
+    .close-help {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .close-button-box {
+      padding: 9px 10px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #fafafe;
+      display: grid;
+      gap: 8px;
+      align-content: space-between;
+      min-height: 100px;
+    }
+
+    .close-button-box .button {
+      width: 100%;
+      min-height: 42px;
+    }
+
+    /* Compact closure tab cards: keep content-driven sizing without affecting other modules. */
+    #tab-apertura-cierre .card {
+      padding: 12px;
+    }
+
+    #tab-apertura-cierre .closure-overview-grid,
+    #tab-apertura-cierre .closure-work-grid {
+      gap: 10px;
+    }
+
+    #tab-apertura-cierre .cash-state-card,
+    #tab-apertura-cierre .day-summary-card,
+    #tab-apertura-cierre .cash-actions-card,
+    #tab-apertura-cierre .close-cash-card {
+      gap: 8px;
+      align-content: start;
+    }
+
+    #tab-apertura-cierre .mini-card,
+    #tab-apertura-cierre .metric-card,
+    #tab-apertura-cierre .counted-box,
+    #tab-apertura-cierre .difference-box,
+    #tab-apertura-cierre .close-button-box,
+    #tab-apertura-cierre .summary-note {
+      padding: 8px 9px;
+      border-radius: 11px;
+    }
+
+    #tab-apertura-cierre .day-summary-kpis {
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 6px;
+    }
+
+    #tab-apertura-cierre .day-summary-kpis .metric-card {
+      min-height: 68px;
+    }
+
+    #tab-apertura-cierre .close-cash-totals {
+      gap: 6px;
+    }
+
+    #tab-apertura-cierre .close-cash-totals > * {
+      min-width: 128px;
+    }
+
+    #tab-apertura-cierre .close-cash-totals .mini-card,
+    #tab-apertura-cierre .counted-box,
+    #tab-apertura-cierre .difference-box,
+    #tab-apertura-cierre .close-button-box {
+      min-height: 70px;
+    }
+
+    #tab-apertura-cierre .close-cash-totals .mini-card,
+    #tab-apertura-cierre .counted-box {
+      align-content: start;
+      gap: 4px;
+    }
+
+    #tab-apertura-cierre .close-bottom-grid {
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    #tab-apertura-cierre .field,
+    #tab-apertura-cierre .field-inline,
+    #tab-apertura-cierre .field-date,
+    #tab-apertura-cierre .button {
+      padding: 8px 10px;
+      border-radius: 10px;
+      font-size: 12px;
+    }
+
+    #tab-apertura-cierre h3 {
+      font-size: 14px;
+      line-height: 1.15;
+    }
+
+    #tab-apertura-cierre .muted,
+    #tab-apertura-cierre .mini-card span,
+    #tab-apertura-cierre .metric-title-amount span {
+      font-size: 10px;
+      line-height: 1.2;
+    }
+
+    #tab-apertura-cierre .amount-number {
+      font-size: 18px;
+    }
+
+    #tab-apertura-cierre .close-number {
+      font-size: 15px;
+    }
+
+    #tab-apertura-cierre .metric-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 8px;
+      font-size: 11px;
+    }
+
+    #tab-apertura-cierre .close-button-box .button {
+      min-height: 34px;
+    }
+
+    #tab-apertura-cierre .cash-state-card .cash-state-title {
+      font-size: 11px;
+      letter-spacing: 0.03em;
+    }
+
+    #tab-apertura-cierre .cash-state-card .mini-card strong {
+      font-size: 12px;
+      line-height: 1.15;
+    }
+
+    #tab-apertura-cierre .cash-state-card .mini-card span,
+    #tab-apertura-cierre .cash-state-card .field,
+    #tab-apertura-cierre .cash-state-card .button {
+      font-size: 10px;
+    }
+
+    #tab-apertura-cierre .day-summary-card h3 {
+      font-size: 17px;
+    }
+
+    #tab-apertura-cierre .day-summary-card .muted {
+      font-size: 12px;
+    }
+
+    #tab-apertura-cierre .day-summary-kpis .metric-title-amount span {
+      font-size: 12px;
+    }
+
+    #tab-apertura-cierre .day-summary-kpis .amount-number {
+      font-size: 21px;
+    }
+
+    #tab-apertura-cierre .day-summary-kpis .currency-symbol {
+      font-size: 14px;
+    }
+
+    #tab-apertura-cierre .cash-state-card .meta-grid {
+      grid-template-columns: 1fr;
+      gap: 6px;
+    }
+
+    #tab-apertura-cierre .cash-state-card .field-grid {
+      display: none;
+    }
+
+    #tab-apertura-cierre .cash-state-card .mini-card {
+      display: grid;
+      grid-template-columns: 72px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+    }
+
+    #tab-apertura-cierre .cash-state-card .mini-card span {
+      margin: 0;
+    }
+
+    #tab-apertura-cierre .cash-actions-card {
+      align-content: stretch;
+    }
+
+    #tab-apertura-cierre .action-stack {
+      grid-template-columns: 1fr;
+      align-content: stretch;
+      height: 100%;
+    }
+
+    #tab-apertura-cierre .cash-actions-card .button {
+      min-height: 46px;
+      height: 100%;
+    }
+
+    #tab-apertura-cierre .close-cash-totals .mini-card,
+    #tab-apertura-cierre .counted-box {
+      min-height: 56px;
+      padding: 7px 8px;
+      gap: 2px;
+    }
+
+    #tab-apertura-cierre .close-cash-card .mini-card span,
+    #tab-apertura-cierre .counted-box span.muted {
+      font-size: 10px;
+      margin: 0;
+    }
+
+    #tab-apertura-cierre .close-cash-card .amount-value {
+      margin-top: 2px;
+    }
+
+    #tab-apertura-cierre .difference-box,
+    #tab-apertura-cierre .close-button-box {
+      min-height: 66px;
+      padding: 7px 8px;
+    }
+
+    #tab-apertura-cierre .difference-box {
+      align-content: start;
+      gap: 3px;
+    }
+
+    #tab-apertura-cierre .romaneo-status {
+      gap: 5px;
+      font-size: 9px;
+      line-height: 1.15;
+      font-weight: 700;
+      margin-top: 2px;
+    }
+
+    #tab-apertura-cierre .romaneo-status .info-icon {
+      width: 14px;
+      height: 14px;
+      font-size: 9px;
+    }
+
+    .toast {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 120;
+      max-width: 360px;
+      border-radius: 16px;
+      padding: 13px 15px;
+      color: #ffffff;
+      box-shadow: 0 20px 50px rgba(17, 24, 39, 0.26);
+      opacity: 0;
+      transform: translateY(12px);
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      font-weight: 700;
+    }
+
+    .toast.open {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .toast.success {
+      background: var(--success);
+    }
+
+    .toast.error {
+      background: var(--danger);
+    }
+
+    .button:disabled {
+      background: #d1d5db;
+      color: #6b7280;
+      cursor: not-allowed;
+    }
+
+    .history-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .history-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .daily-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .daily-card-header h3 {
+      margin: 0;
+    }
+
+    .daily-metrics {
+      display: grid;
+      gap: 10px;
+    }
+
+    .daily-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: #fafafe;
+      border: 1px solid var(--border);
+    }
+
+    .daily-row span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .daily-row strong {
+      font-size: 16px;
+    }
+
+    .denomination-summary {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .denomination-summary .mini-card {
+      min-height: auto;
+      padding: 9px 10px;
+    }
+
+    .denomination-summary .mini-card span {
+      font-size: 11px;
+    }
+
+    .denomination-summary .mini-card strong {
+      font-size: 16px;
+    }
+
+    .audit-top-grid {
+      margin-bottom: 18px;
+    }
+
+    .audit-main-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      align-items: stretch;
+      margin-bottom: 18px;
+    }
+
+    .audit-card {
+      display: grid;
+      gap: 10px;
+      align-content: start;
+    }
+
+    .audit-card h3,
+    .audit-card p {
+      margin: 0;
+    }
+
+    #tab-arqueos .card {
+      padding: 12px;
+    }
+    #tab-arqueos .cash-state-card .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    #tab-arqueos .cash-state-card .mini-card {
+      border: 0;
+      background: transparent;
+      padding: 4px 0;
+      box-shadow: none;
+    }
+
+    #tab-arqueos .denomination-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 6px;
+      max-height: 390px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    #tab-arqueos .denomination-grid .mini-card {
+      display: grid;
+      grid-template-columns: 58px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      min-height: auto;
+      padding: 7px 8px;
+    }
+
+    #tab-arqueos .denomination-grid .field {
+      padding: 7px 9px;
+      border-radius: 9px;
+      font-size: 12px;
+    }
+
+    #tab-arqueos .day-summary-kpis {
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 6px;
+    }
+
+    #tab-arqueos .metric-card {
+      padding: 8px 9px;
+      border-radius: 11px;
+      min-height: 68px;
+    }
+
+    #tab-arqueos .metric-title-amount span,
+    #tab-arqueos .muted,
+    #tab-arqueos label {
+      font-size: 12px;
+    }
+
+    #tab-arqueos .amount-number {
+      font-size: 21px;
+    }
+
+    #tab-arqueos .metric-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 8px;
+      font-size: 11px;
+    }
+
+    .system-expected-card,
+    .accounts-card,
+    .audit-result-section {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+      border-radius: 13px;
+      border: 1px solid rgba(109, 40, 217, 0.14);
+      background: #faf7ff;
+    }
+
+    .system-expected-card > span {
+      color: var(--primary);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .audit-mini-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .audit-mini-grid div {
+      padding: 8px;
+      border-radius: 10px;
+      background: #ffffff;
+      border: 1px solid var(--border);
+      display: grid;
+      gap: 4px;
+    }
+
+    .audit-mini-grid small,
+    .accounts-row span,
+    .audit-result-line span {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .audit-mini-grid strong {
+      font-size: 15px;
+    }
+
+    .accounts-table {
+      display: grid;
+      gap: 6px;
+    }
+
+    .accounts-row {
+      display: grid;
+      grid-template-columns: 0.9fr 1fr 1fr 1fr;
+      gap: 6px;
+      align-items: end;
+    }
+
+    .accounts-row .field {
+      padding: 7px 8px;
+      border-radius: 9px;
+      font-size: 12px;
+    }
+
+    .audit-result-line {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 9px 10px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #ffffff;
+    }
+
+    .audit-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--success);
+    }
+
+    .audit-status.negative,
+    .negative-text {
+      color: var(--danger);
+    }
+
+    .positive-text {
+      color: var(--success);
+    }
+
+    .pie-layout {
+      display: grid;
+      grid-template-columns: 140px minmax(0, 1fr);
+      gap: 16px;
+      align-items: center;
+    }
+
+    .payment-pie {
+      width: 140px;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: conic-gradient(#22a35a 0deg 90deg, #3478f6 90deg 180deg, #6d28d9 180deg 270deg, #d99a21 270deg 360deg);
+      border: 10px solid #ffffff;
+      box-shadow: 0 10px 24px rgba(31, 11, 63, 0.1);
+    }
+
+    .pie-legend {
+      display: grid;
+      gap: 8px;
+    }
+
+    .pie-filter {
+      margin-top: 4px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 13px;
+    }
+
+    .legend-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex: 0 0 auto;
+    }
+
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: rgba(17, 24, 39, 0.5);
+      backdrop-filter: blur(4px);
+    }
+
+    .modal.open {
+      display: flex;
+    }
+
+    .modal-card {
+      width: min(960px, 100%);
+      max-height: 88vh;
+      overflow: auto;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: #ffffff;
+      box-shadow: 0 30px 80px rgba(17, 24, 39, 0.28);
+      padding: 20px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .item {
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: #fafafe;
+    }
+
+    .item strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .item small,
+    .muted {
+      color: var(--muted);
+    }
+
+    .denomination-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .placeholder-card {
+      border: 1px dashed rgba(109, 40, 217, 0.28);
+      background: #faf8ff;
+      color: var(--muted);
+      border-radius: 16px;
+      padding: 22px;
+    }
+
+    @media (max-width: 1280px) {
+      .top-grid,
+      .section-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .metrics-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .movement-kpis,
+      .movement-filters,
+      .closure-overview-grid,
+      .closure-work-grid,
+      .close-cash-layout {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .method-grid,
+      .meta-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .summary-detail-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .daily-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 980px) {
+      .topbar {
+        padding: 16px 20px;
+      }
+
+      .field-grid,
+      .field-grid.two,
+      .field-grid.five,
+      .metrics-grid,
+      .movement-kpis,
+      .movement-filters,
+      .audit-main-grid,
+      .closure-overview-grid,
+      .closure-work-grid,
+      .close-cash-layout,
+      .close-bottom-grid,
+      .method-grid,
+      .meta-grid,
+      .denomination-grid,
+      .status-card-layout,
+      .summary-detail-grid,
+      .daily-grid,
+      .pie-layout {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 860px) {
+      .site-header {
+        position: static;
+      }
+
+      .app-shell {
+        grid-template-columns: 1fr;
+        margin-top: 0;
+        min-height: auto;
+      }
+
+      .sidebar {
+        min-height: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .topbar {
+        min-height: auto;
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .topbar-left {
+        width: 100%;
+        flex-wrap: wrap;
+      }
+
+      .topbar-divider {
+        display: none;
+      }
+
+      .top-actions {
+        justify-content: flex-start;
+      }
+    }
+  </style>
+  <link rel="stylesheet" href="/nav-icons.css?v=7" />
+  <link rel="stylesheet" href="/user-menu.css?v=4" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="topbar">
+      <div class="topbar-left">
+        <div class="brand-block">
+          <div class="logo-mark">G</div>
+          <div class="logo-text">
+            <strong>GUERNICA</strong>
+            <small>SISTEMA DE GESTIÓN</small>
+          </div>
+        </div>
+        <div class="topbar-divider" aria-hidden="true"></div>
+        <div class="topbar-title">
+          <h1>Caja</h1>
+          <p>Resumen, movimientos y cierre de jornada</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <div class="top-actions-menu">
+          <button type="button" class="chip icon-chip" id="toggleNotificaciones" aria-label="Notificaciones" title="Notificaciones"><span class="app-icon icon-bell" aria-hidden="true"></span></button>
+          <div class="notifications-dropdown" id="notificacionesDropdown">
+            <div>
+              <h3>Notificaciones</h3>
+              <p class="muted">Avisos generales del módulo de caja.</p>
+            </div>
+            <div class="notification-list">
+              <div class="notification-item">
+                <strong>Sin novedades</strong>
+                <small>La caja no tiene alertas nuevas por ahora.</small>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="chip">Ayuda</div>
+        <div class="user-box">
+          <div class="avatar">JP</div>
+          <div>
+            <strong>Juan Perez</strong>
+            <small>Administrador</small>
+          </div>
+          <span class="app-icon icon-chevron" aria-hidden="true"></span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="nav-title">Navegación</div>
+      <nav class="nav">
+        <a href="/dashboard.html"><span class="nav-icon home" aria-hidden="true"></span><span>Inicio</span></a>
+        <a href="/ventas.html"><span class="nav-icon sales" aria-hidden="true"></span><span>Ventas</span></a>
+        <a class="active" href="/caja.html"><span class="nav-icon cash" aria-hidden="true"></span><span>Caja</span></a>
+        <a href="/pagos.html"><span class="nav-icon payments" aria-hidden="true"></span><span>Pagos</span></a>
+        <a href="/productos.html"><span class="nav-icon stock" aria-hidden="true"></span><span>Stock</span></a>
+        <a href="/clientes.html"><span class="nav-icon clients" aria-hidden="true"></span><span>Cuentas corrientes</span></a>
+        <a href="/proveedores.html"><span class="nav-icon providers" aria-hidden="true"></span><span>Proveedores</span></a>
+        <a href="/reportes.html"><span class="nav-icon reports" aria-hidden="true"></span><span>Reportes</span></a>
+        <a href="/usuarios.html"><span class="nav-icon users" aria-hidden="true"></span><span>Usuarios</span></a>
+        <a href="/configuracion.html"><span class="nav-icon settings" aria-hidden="true"></span><span>Configuración</span></a>
+      </nav>
+
+      <div class="branch-card">
+        <div>
+          <strong>Guernica Bar</strong>
+          <small>Sucursal Central</small>
+        </div>
+        <span class="app-icon icon-store" aria-hidden="true"></span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <section class="top-grid">
+        <article class="card">
+          <div class="tabs">
+            <button type="button" class="tab-button active" data-tab="resumen"><span class="tab-icon app-icon icon-view" aria-hidden="true"></span>Resumen</button>
+            <button type="button" class="tab-button" data-tab="arqueos"><span class="tab-icon app-icon icon-check" aria-hidden="true"></span>Arqueos</button>
+            <button type="button" class="tab-button" data-tab="apertura-cierre"><span class="tab-icon app-icon icon-money" aria-hidden="true"></span>Apertura / Cierre</button>
+            <button type="button" class="tab-button" data-tab="movimientos"><span class="tab-icon app-icon icon-split" aria-hidden="true"></span>Movimientos</button>
+          </div>
+        </article>
+
+      </section>
+
+      <section class="section active" id="tab-resumen">
+        <div class="metrics-grid">
+          <div class="metric-card kpi-efectivo">
+            <div class="metric-head">
+              <span>Efectivo en caja</span>
+              <div class="metric-icon" aria-hidden="true">&#128181;</div>
+            </div>
+            <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="totalEfectivo">0.00</span></strong>
+            <small>Disponible en efectivo</small>
+          </div>
+          <div class="metric-card kpi-ingresos">
+            <div class="metric-head">
+              <span>Total ingresos</span>
+              <div class="metric-icon" aria-hidden="true">&#10140;</div>
+            </div>
+            <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="totalVentas">0.00</span></strong>
+            <small>Ventas de la caja activa</small>
+          </div>
+          <div class="metric-card kpi-egresos">
+            <div class="metric-head">
+              <span>Total egresos</span>
+              <div class="metric-icon" aria-hidden="true">&#8595;</div>
+            </div>
+            <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="totalPagosGeneral">0.00</span></strong>
+            <small>Pagos y retiros registrados</small>
+          </div>
+          <div class="metric-card kpi-saldo">
+            <div class="metric-head">
+              <span>Saldo esperado</span>
+              <div class="metric-icon" aria-hidden="true">&#128091;</div>
+            </div>
+            <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="efectivoEsperado">0.00</span></strong>
+            <small>Efectivo teórico actual</small>
+          </div>
+          <div class="metric-card kpi-diferencia">
+            <div class="metric-head">
+              <span>Diferencia</span>
+              <div class="metric-icon" aria-hidden="true">&#9878;</div>
+            </div>
+            <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="diferenciaCaja">0.00</span></strong>
+            <small>Comparación con arqueo</small>
+          </div>
+        </div>
+
+        <div class="summary-detail-grid">
+          <div class="card status-card equal-panel">
+            <div class="status-banner">
+              <div>
+                <h2 style="margin: 0 0 6px;">Estado de caja</h2>
+                <div class="muted" id="mensaje">Panel listo.</div>
+              </div>
+              <div class="status-pill closed" id="estadoCajaVisual">Caja cerrada</div>
+            </div>
+
+            <div class="meta-grid">
+              <div class="mini-card">
+                <span>Usuario</span>
+                <strong id="usuarioCajaVisual">-</strong>
+              </div>
+              <div class="mini-card">
+                <span>Turno</span>
+                <strong id="turnoCajaVisual">Jornada actual</strong>
+              </div>
+              <div class="mini-card">
+                <span>Hora apertura</span>
+                <strong id="horaAperturaVisual">-</strong>
+              </div>
+            </div>
+
+            <div class="status-meta">
+              <div class="muted" id="estadoApertura">Cargando apertura...</div>
+            </div>
+
+            <div class="status-card-layout">
+              <div>
+                <h3 style="margin: 0;">Resumen por metodo</h3>
+                <div class="method-grid">
+                  <div class="mini-card">
+                    <span>Efectivo</span>
+                    <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="resumenMetodoEfectivo">0.00</span></strong>
+                  </div>
+                  <div class="mini-card">
+                    <span>Debito</span>
+                    <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="totalDebito">0.00</span></strong>
+                  </div>
+                  <div class="mini-card">
+                    <span>Transferencias</span>
+                    <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="resumenMetodoTransferencias">0.00</span></strong>
+                  </div>
+                  <div class="mini-card">
+                    <span>Cuenta corriente</span>
+                    <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="resumenMetodoCuentaCorriente">0.00</span></strong>
+                  </div>
+                </div>
+              </div>
+
+              <div class="status-side">
+                <div class="status-panel">
+                  <h3>Balance operativo</h3>
+                  <p>Comparación visual entre ingresos y egresos del turno.</p>
+                  <div class="balance-track" aria-hidden="true">
+                    <div class="balance-segment ingresos" id="balanceIngresosBar" style="width: 0%;"></div>
+                    <div class="balance-segment egresos" id="balanceEgresosBar" style="width: 0%;"></div>
+                  </div>
+                  <div class="balance-legend">
+                    <div class="balance-row">
+                      <div class="balance-label"><span class="balance-dot ingresos"></span><span>Ingresos</span></div>
+                      <strong id="balanceIngresosPct">0%</strong>
+                    </div>
+                    <div class="balance-row">
+                      <div class="balance-label"><span class="balance-dot egresos"></span><span>Egresos</span></div>
+                      <strong id="balanceEgresosPct">0%</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card equal-panel movements-panel">
+            <div class="table-toolbar">
+              <div>
+                <h3 style="margin: 0;">Movimiento de caja</h3>
+                <div class="muted">Ultimas operaciones del turno.</div>
+              </div>
+              <button type="button" class="button secondary compact" id="verTodosMovimientos">Ver todos</button>
+            </div>
+            <div class="movements-table-wrap">
+              <table class="compact-table">
+                <thead>
+                  <tr>
+                    <th>Hora</th>
+                    <th>Tipo</th>
+                    <th>Descripcion</th>
+                    <th>Metodo</th>
+                    <th>Importe</th>
+                  </tr>
+                </thead>
+                <tbody id="detalleVentas">
+                  <tr><td colspan="5">Cargando movimientos...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="daily-grid">
+          <div class="card daily-card">
+            <div class="daily-card-header">
+              <h3>Apertura de caja</h3>
+            </div>
+            <div class="daily-metrics">
+              <div class="daily-row"><span>Monto inicial</span><strong>$<span id="aperturaMontoInicial">0.00</span></strong></div>
+              <div class="daily-row"><span>Ingresos desde apertura</span><strong>$<span id="aperturaIngresos">0.00</span></strong></div>
+              <div class="daily-row"><span>Egresos desde apertura</span><strong>$<span id="aperturaEgresos">0.00</span></strong></div>
+              <div class="daily-row"><span>Saldo actual en efectivo</span><strong>$<span id="aperturaSaldoActual">0.00</span></strong></div>
+            </div>
+            <button type="button" class="button danger" id="cerrarCajaResumen">&#128274; Cerrar caja</button>
+          </div>
+
+          <div class="card daily-card">
+            <div class="daily-card-header">
+              <h3>Ultimos arqueos</h3>
+              <button type="button" class="button secondary compact" id="verTodosArqueos">Ver todos</button>
+            </div>
+            <div style="overflow:auto;">
+              <table class="compact-table">
+                <thead>
+                  <tr>
+                    <th>Hora</th>
+                    <th>Usuario</th>
+                    <th>Efectivo contado</th>
+                    <th>Diferencia</th>
+                  </tr>
+                </thead>
+                <tbody id="ultimosArqueosBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card daily-card">
+            <div class="daily-card-header">
+              <h3>Ingresos por metodo</h3>
+            </div>
+            <select class="field pie-filter" id="filtroGraficoMetodos">
+              <option value="todos">Todos los metodos</option>
+              <option value="efectivo">Efectivo</option>
+              <option value="debito">Debito / credito</option>
+              <option value="transferencia">Transferencia</option>
+              <option value="cuenta_corriente">Cuenta corriente</option>
+            </select>
+            <div class="pie-layout">
+              <div class="payment-pie" id="graficoMetodosPago" aria-hidden="true"></div>
+              <div class="pie-legend">
+                <div class="legend-item"><span class="legend-label"><span class="legend-dot" style="background:#22a35a;"></span>Efectivo</span><strong id="pieEfectivo">0%</strong></div>
+                <div class="legend-item"><span class="legend-label"><span class="legend-dot" style="background:#3478f6;"></span>Debito / credito</span><strong id="pieDebito">0%</strong></div>
+                <div class="legend-item"><span class="legend-label"><span class="legend-dot" style="background:#6d28d9;"></span>Transferencia</span><strong id="pieTransferencia">0%</strong></div>
+                <div class="legend-item"><span class="legend-label"><span class="legend-dot" style="background:#d99a21;"></span>Cta cte</span><strong id="pieCuentaCorriente">0%</strong></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="tab-movimientos">
+        <div class="card table-card">
+          <div class="table-toolbar">
+            <div>
+              <h3 style="margin: 0;"><span class="tab-icon" aria-hidden="true">&#8644;</span> Movimientos</h3>
+              <div class="muted">Ingresos y egresos del periodo visible.</div>
+            </div>
+            <button type="button" class="button secondary" id="exportarMovimientos">Exportar</button>
+          </div>
+
+          <div class="movement-kpis">
+            <div class="metric-card kpi-efectivo">
+              <div class="metric-head">
+                <span>Total ingresos</span>
+                <div class="metric-icon" aria-hidden="true">&#128200;</div>
+              </div>
+              <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="movimientosTotalIngresos">0.00</span></strong>
+              <small>Desde el ultimo cierre</small>
+            </div>
+            <div class="metric-card kpi-egresos">
+              <div class="metric-head">
+                <span>Total egresos</span>
+                <div class="metric-icon" aria-hidden="true">&#8595;</div>
+              </div>
+              <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="movimientosTotalEgresos">0.00</span></strong>
+              <small>Desde el ultimo cierre</small>
+            </div>
+            <div class="metric-card kpi-balance">
+              <div class="metric-head">
+                <span>Balance del periodo</span>
+                <div class="metric-icon" aria-hidden="true">&#9878;</div>
+              </div>
+              <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="movimientosBalancePeriodo">0.00</span></strong>
+              <small>Ingresos menos egresos</small>
+            </div>
+          </div>
+
+          <div class="movement-filters">
+            <input type="date" class="field-date" id="filtroFecha" />
+            <select class="field-inline" id="filtroTipo">
+              <option value="">Tipo</option>
+              <option value="ingreso">Ingreso</option>
+              <option value="egreso">Egreso</option>
+            </select>
+            <select class="field-inline" id="filtroOrigen">
+              <option value="">Origen</option>
+              <option value="venta">Venta</option>
+              <option value="cobro">Cobro</option>
+              <option value="caja">Caja</option>
+              <option value="pago">Pago</option>
+            </select>
+            <select class="field-inline" id="filtroMetodo">
+              <option value="">Metodo</option>
+              <option value="efectivo">Efectivo</option>
+              <option value="debito">Debito</option>
+              <option value="transferencia">Transferencia</option>
+              <option value="cuenta_corriente">Cuenta corriente</option>
+              <option value="mixto">Mixto</option>
+            </select>
+            <input type="text" class="field" id="filtroUsuario" placeholder="Usuario" />
+            <button type="button" class="button compact" id="filtrarMovimientos">Filtrar</button>
+            <button type="button" class="button secondary compact" id="limpiarFiltrosMovimientos">Limpiar</button>
+          </div>
+
+          <div style="overflow:auto;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Hora</th>
+                  <th>Tipo</th>
+                  <th>Origen</th>
+                  <th>Descripcion</th>
+                  <th>Metodo</th>
+                  <th>Importe</th>
+                  <th>Usuario</th>
+                </tr>
+              </thead>
+              <tbody id="tablaMovimientosBody">
+                <tr><td colspan="7">Cargando movimientos...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="table-footer">
+            <div id="movimientosPageInfo">Sin movimientos.</div>
+            <div class="pagination" id="movimientosPagination"></div>
+            <label class="page-size-control">
+              <span>Ver</span>
+              <select class="field-inline" id="movimientosPageSize">
+                <option value="5">5</option>
+                <option value="10" selected>10</option>
+                <option value="20">20</option>
+                <option value="50">50</option>
+              </select>
+              <span>por pagina</span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="tab-apertura-cierre">
+        <div class="closure-overview-grid">
+          <article class="card cash-state-card">
+            <div class="cash-state-head">
+              <div class="cash-state-title closed" id="aperturaEstadoHeader"><span class="online-dot closed" id="aperturaEstadoDot"></span><span id="aperturaEstadoTitulo">Caja cerrada</span></div>
+              <button type="button" class="button secondary compact" id="verDetalleApertura">Ver detalles de apertura</button>
+            </div>
+            <div class="meta-grid">
+              <div class="mini-card">
+                <span>Apertura</span>
+                <strong id="aperturaFechaHora">-</strong>
+              </div>
+              <div class="mini-card">
+                <span>Usuario</span>
+                <strong id="aperturaUsuario">-</strong>
+              </div>
+              <strong id="aperturaEstadoTexto" hidden>Sin caja activa</strong>
+            </div>
+            <div class="field-grid">
+              <input type="text" id="usuarioApertura" class="field" placeholder="Usuario" value="admin" />
+            </div>
+            <button type="button" class="button success" id="abrirCaja">Abrir caja</button>
+          </article>
+
+          <article class="card day-summary-card">
+            <div>
+              <h3 style="margin: 0;">Resumen del dia</h3>
+              <div class="muted">Actualizado con los movimientos de la caja activa.</div>
+            </div>
+            <div class="day-summary-kpis">
+              <div class="metric-card kpi-efectivo">
+                <div class="metric-head">
+                  <div class="metric-title-amount">
+                    <span>Total efectivo esperado</span>
+                    <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="cierreResumenEfectivo">0.00</span></strong>
+                  </div>
+                  <div class="metric-icon" aria-hidden="true">&#128181;</div>
+                </div>
+              </div>
+              <div class="metric-card kpi-saldo">
+                <div class="metric-head">
+                  <div class="metric-title-amount">
+                    <span>Total debito / credito</span>
+                    <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="cierreResumenDebito">0.00</span></strong>
+                  </div>
+                  <div class="metric-icon" aria-hidden="true">&#128179;</div>
+                </div>
+              </div>
+              <div class="metric-card kpi-diferencia">
+                <div class="metric-head">
+                  <div class="metric-title-amount">
+                    <span>Operaciones mixtas</span>
+                    <strong class="amount-value"><span class="amount-number" id="cierreResumenMixtas">0</span></strong>
+                  </div>
+                  <div class="metric-icon" aria-hidden="true">&#215;/&#247;</div>
+                </div>
+              </div>
+              <div class="metric-card kpi-egresos">
+                <div class="metric-head">
+                  <div class="metric-title-amount">
+                    <span>Total pagos</span>
+                    <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="cierreResumenPagos">0.00</span></strong>
+                  </div>
+                  <div class="metric-icon" aria-hidden="true">&#128176;</div>
+                </div>
+              </div>
+            </div>
+            <div class="summary-note"><span class="info-icon" aria-hidden="true">i</span><span>Estos valores son estimados en base a los movimientos desde el ultimo cierre. Al cerrar caja se contrastara el efectivo con el romaneo realizado.</span></div>
+          </article>
+        </div>
+
+        <div class="closure-work-grid">
+          <article class="card cash-actions-card">
+            <h3 style="margin: 0;">Acciones de caja</h3>
+            <div class="action-stack">
+              <button type="button" class="button success-soft" id="ingresarDineroVisual">+ Ingresar dinero</button>
+              <button type="button" class="button warning-soft" id="retirarDineroVisual">- Retirar dinero</button>
+            </div>
+          </article>
+
+          <article class="card close-cash-card">
+            <div>
+              <h3 style="margin: 0;">Cerrar caja</h3>
+              <div class="muted">Al cerrar caja se registrara el cierre de turno y no podras realizar mas movimientos en dicha caja.</div>
+            </div>
+            <div class="close-cash-layout">
+              <div>
+                <div class="close-cash-totals">
+                  <div class="mini-card"><span>Total ingresos</span><strong class="amount-value close-number success-text"><span class="currency-symbol">$</span><span id="cierreIngresos">0.00</span></strong></div>
+                  <div class="counted-box">
+                    <span class="muted">Efectivo contado (romaneo)</span>
+                    <strong class="amount-value close-number"><span class="currency-symbol">$</span><span id="efectivoContado">0.00</span></strong>
+                  </div>
+                  <div class="mini-card"><span>Total egresos</span><strong class="amount-value close-number danger-text"><span class="currency-symbol">$</span><span id="cierreEgresos">0.00</span></strong></div>
+                  <div class="mini-card"><span>Efectivo esperado</span><strong class="amount-value close-number"><span class="currency-symbol">$</span><span id="efectivoEsperadoCopia">0.00</span></strong></div>
+                </div>
+                <div class="close-bottom-grid">
+                  <div class="difference-box">
+                    <span class="muted">Diferencia</span>
+                    <strong class="amount-value close-number" id="cierreDiferenciaVisual"><span class="currency-symbol">$</span><span>0.00</span></strong>
+                    <span class="romaneo-status" id="romaneoEstado"><span class="info-icon" aria-hidden="true">i</span><span>Pendiente de romaneo</span></span>
+                  </div>
+                  <div class="close-button-box">
+                    <button type="button" class="button danger" id="cerrarCaja">Cerrar caja</button>
+                    <div class="close-help">Se cerrara la caja y se generara el cierre de turno.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <article class="card">
+          <div class="history-toolbar">
+            <div>
+              <h3 style="margin: 0;">Cierres historicos</h3>
+              <div class="muted">Historial de cierres registrados.</div>
+            </div>
+            <div class="history-actions">
+              <button type="button" class="button secondary compact" id="filtrarCierresHistoricos">Filtrar</button>
+              <button type="button" class="button secondary compact" id="exportarCierresHistoricos">Exportar</button>
+            </div>
+          </div>
+          <div style="overflow:auto;">
+            <table class="compact-table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Usuario</th>
+                  <th>Apertura</th>
+                  <th>Cierre</th>
+                  <th>Total efectivo</th>
+                  <th>Total debito / credito</th>
+                  <th>Total mixtas</th>
+                  <th>Total pagos</th>
+                  <th>Efectivo esperado</th>
+                  <th>Diferencia</th>
+                  <th>Estado</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="cierresHistoricosBody">
+                <tr><td colspan="12">Cargando cierres...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="table-footer">
+            <div id="cierresPageInfo">Sin cierres.</div>
+            <div class="pagination" id="cierresPagination"></div>
+            <label class="page-size-control">
+              <span>Ver</span>
+              <select class="field-inline" id="cierresPageSize">
+                <option value="5" selected>5</option>
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="50">50</option>
+              </select>
+              <span>por pagina</span>
+            </label>
+          </div>
+        </article>
+      </section>
+
+      <section class="section" id="tab-arqueos">
+        <div class="closure-overview-grid audit-top-grid">
+          <article class="card cash-state-card">
+            <div class="cash-state-head">
+              <div class="cash-state-title closed" id="arqueoEstadoHeader"><span class="online-dot closed" id="arqueoEstadoDot"></span><span id="arqueoEstadoTitulo">Caja cerrada</span></div>
+            </div>
+            <div class="meta-grid">
+              <div class="mini-card">
+                <span>Apertura</span>
+                <strong id="arqueoFechaHora">-</strong>
+              </div>
+              <div class="mini-card">
+                <span>Usuario</span>
+                <strong id="arqueoUsuario">-</strong>
+              </div>
+            </div>
+          </article>
+
+          <article class="card day-summary-card">
+            <div>
+              <h3 style="margin: 0;">Resumen del dia</h3>
+              <div class="muted">Datos estimados desde el ultimo cierre.</div>
+            </div>
+            <div class="day-summary-kpis">
+              <div class="metric-card kpi-efectivo">
+                <div class="metric-head">
+                  <div class="metric-title-amount">
+                    <span>Total efectivo esperado</span>
+                    <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="arqueoResumenEfectivo">0.00</span></strong>
+                  </div>
+                  <div class="metric-icon" aria-hidden="true">&#128181;</div>
+                </div>
+              </div>
+              <div class="metric-card kpi-saldo">
+                <div class="metric-head">
+                  <div class="metric-title-amount">
+                    <span>Total debito / credito</span>
+                    <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="arqueoResumenDebito">0.00</span></strong>
+                  </div>
+                  <div class="metric-icon" aria-hidden="true">&#128179;</div>
+                </div>
+              </div>
+              <div class="metric-card kpi-diferencia">
+                <div class="metric-head">
+                  <div class="metric-title-amount">
+                    <span>Operaciones mixtas</span>
+                    <strong class="amount-value"><span class="amount-number" id="arqueoResumenMixtas">0</span></strong>
+                  </div>
+                  <div class="metric-icon" aria-hidden="true">&#215;/&#247;</div>
+                </div>
+              </div>
+              <div class="metric-card kpi-egresos">
+                <div class="metric-head">
+                  <div class="metric-title-amount">
+                    <span>Total pagos</span>
+                    <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="arqueoResumenPagos">0.00</span></strong>
+                  </div>
+                  <div class="metric-icon" aria-hidden="true">&#128176;</div>
+                </div>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div class="audit-main-grid">
+          <article class="card audit-card">
+            <h3>Romaneo</h3>
+            <div class="denomination-grid" id="conteoBilletes"></div>
+            <div class="denomination-summary">
+              <div class="mini-card"><span>Total en cambio</span><strong>$<span id="totalCambioRomaneo">0.00</span></strong></div>
+              <div class="mini-card"><span>Total de retiro</span><strong>$<span id="totalRetiroRomaneo">0.00</span></strong></div>
+              <label class="mini-card"><span>Saldo físico real</span><input class="field" id="saldoFisicoRealManual" type="number" step="0.01" placeholder="Manual"></label>
+              <div class="mini-card"><span>Caja inicio con cambio</span><strong>$<span id="cajaInicioCambio">0.00</span></strong></div>
+            </div>
+          </article>
+
+          <article class="card audit-card">
+            <h3>Control bancario / electronico</h3>
+            <p class="muted">El sistema calcula la recaudacion real en base al saldo inicial y actual.</p>
+            <div class="system-expected-card">
+              <span>Segun sistema (esperado)</span>
+              <div class="audit-mini-grid">
+                <div><small>Debito / credito</small><strong>$<span id="arqueoSistemaDebito">0.00</span></strong></div>
+                <div><small>Transferencia</small><strong>$<span id="arqueoSistemaTransferencia">0.00</span></strong></div>
+                <div><small>Mixtas</small><strong><span id="arqueoSistemaMixtas">0</span></strong></div>
+              </div>
+            </div>
+            <div class="accounts-card">
+              <strong>Segun cuentas</strong>
+              <div class="accounts-table" id="cuentasDigitalesBody"></div>
+            </div>
+            <div class="audit-result-line">
+              <span>Recaudacion digital real</span>
+              <strong id="arqueoDigitalReal">$0.00</strong>
+            </div>
+            <div class="audit-result-line">
+              <span>Diferencia de saldos</span>
+              <strong id="arqueoDiferenciaDigital">$0.00</strong>
+            </div>
+            <div class="audit-status" id="arqueoDiferenciaDigitalEstado"><span aria-hidden="true">&#10003;</span><span>Sobra</span></div>
+          </article>
+
+          <article class="card audit-card">
+            <h3>Resultado de arqueo</h3>
+            <div class="audit-result-section">
+              <strong>Efectivo (fisico)</strong>
+              <div class="audit-mini-grid">
+                <div><small>Esperado</small><strong>$<span id="resultadoEfectivoEsperado">0.00</span></strong></div>
+                <div><small>Contado</small><strong>$<span id="resultadoEfectivoContado">0.00</span></strong></div>
+                <div><small>Diferencia</small><strong id="resultadoDiferenciaEfectivo">$0.00</strong></div>
+              </div>
+            </div>
+            <div class="audit-result-section">
+              <strong>Medios electronicos</strong>
+              <div class="audit-mini-grid">
+                <div><small>Esperado</small><strong>$<span id="resultadoDigitalEsperado">0.00</span></strong></div>
+                <div><small>Recaudacion real</small><strong>$<span id="resultadoDigitalReal">0.00</span></strong></div>
+                <div><small>Diferencia</small><strong id="resultadoDiferenciaDigital">$0.00</strong></div>
+              </div>
+            </div>
+            <label>Observaciones
+              <textarea class="field" id="observacionesArqueo" placeholder="Observaciones del control"></textarea>
+            </label>
+            <div class="toolbar-actions">
+              <button type="button" class="button secondary" id="guardarArqueoVisual">Guardar</button>
+              <button type="button" class="button secondary" id="editarArqueoVisual">Editar</button>
+              <button type="button" class="button warning" id="registrarArqueoVisual">Registrar</button>
+            </div>
+          </article>
+        </div>
+
+        <article class="card">
+          <div class="history-toolbar">
+            <div>
+              <h3 style="margin: 0;">Historial de arqueos diarios</h3>
+              <div class="muted">Controles guardados para la caja actual.</div>
+            </div>
+            <div class="history-actions">
+              <button type="button" class="button secondary compact" id="filtrarArqueosHistoricos">Filtrar</button>
+              <button type="button" class="button secondary compact" id="exportarArqueosHistoricos">Exportar</button>
+            </div>
+          </div>
+          <div style="overflow:auto;">
+            <table class="compact-table">
+              <thead>
+                <tr>
+                  <th>Hora</th>
+                  <th>Usuario</th>
+                  <th>Eft contado</th>
+                  <th>Diferencia eft</th>
+                  <th>Recaudacion deb</th>
+                  <th>Diferencia deb</th>
+                  <th>Resultado final</th>
+                  <th>Estado</th>
+                  <th>Observaciones</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="arqueosHistoricosBody">
+                <tr><td colspan="10">Cargando arqueos...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="table-footer">
+            <div id="arqueosPageInfo">Sin arqueos.</div>
+            <div class="pagination" id="arqueosPagination"></div>
+            <label class="page-size-control">
+              <span>Ver</span>
+              <select class="field-inline" id="arqueosPageSize">
+                <option value="5" selected>5</option>
+                <option value="10">10</option>
+                <option value="20">20</option>
+              </select>
+              <span>por pagina</span>
+            </label>
+          </div>
+        </article>
+      </section>
+
+      <div class="modal" id="modalMovimientosCaja">
+        <div class="modal-card">
+          <div class="daily-card-header">
+            <h3>Todos los movimientos</h3>
+            <button type="button" class="button secondary compact" id="cerrarModalMovimientos">Cerrar</button>
+          </div>
+          <div style="overflow:auto;">
+            <table class="compact-table">
+              <thead>
+                <tr>
+                  <th>Hora</th>
+                  <th>Tipo</th>
+                  <th>Descripcion</th>
+                  <th>Metodo</th>
+                  <th>Importe</th>
+                </tr>
+              </thead>
+              <tbody id="modalMovimientosBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal" id="modalArqueosCaja">
+        <div class="modal-card">
+          <div class="daily-card-header">
+            <h3>Todos los arqueos</h3>
+            <button type="button" class="button secondary compact" id="cerrarModalArqueos">Cerrar</button>
+          </div>
+          <div style="overflow:auto;">
+            <table class="compact-table">
+              <thead>
+                <tr>
+                  <th>Hora</th>
+                  <th>Usuario</th>
+                  <th>Efectivo contado</th>
+                  <th>Diferencia</th>
+                </tr>
+              </thead>
+              <tbody id="modalArqueosBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal" id="modalDetalleApertura">
+        <div class="modal-card">
+          <div class="daily-card-header">
+            <h3>Detalle de apertura</h3>
+            <button type="button" class="button secondary compact" id="cerrarModalDetalleApertura">Cerrar</button>
+          </div>
+          <div id="detalleAperturaBody" class="list"></div>
+        </div>
+      </div>
+
+      <div class="modal" id="modalDetalleCierre">
+        <div class="modal-card">
+          <div class="daily-card-header">
+            <h3>Detalle del cierre</h3>
+            <button type="button" class="button secondary compact" id="cerrarModalDetalleCierre">Cerrar</button>
+          </div>
+          <div id="detalleCierreModalBody"></div>
+        </div>
+      </div>
+
+      <div class="modal" id="modalDetalleArqueo">
+        <div class="modal-card">
+          <div class="daily-card-header">
+            <h3>Detalle del arqueo</h3>
+            <button type="button" class="button secondary compact" id="cerrarModalDetalleArqueo">Cerrar</button>
+          </div>
+          <div id="detalleArqueoModalBody"></div>
+        </div>
+      </div>
+
+      <div class="modal" id="modalMovimientoCaja">
+        <div class="modal-card">
+          <div class="daily-card-header">
+            <h3 id="movimientoCajaTitulo">Movimiento de caja</h3>
+            <button type="button" class="button secondary compact" id="cerrarModalMovimientoCaja">Cerrar</button>
+          </div>
+          <div class="field-grid">
+            <input type="number" id="movimientoCajaMonto" class="field" placeholder="Monto" step="0.01" min="0" />
+            <input type="text" id="movimientoCajaConcepto" class="field" placeholder="Concepto" />
+            <input type="text" id="movimientoCajaUsuario" class="field" placeholder="Usuario" value="admin" />
+          </div>
+          <div class="daily-card-header">
+            <div class="muted" id="movimientoCajaAyuda">Completa los datos para registrar el movimiento.</div>
+            <button type="button" class="button success" id="confirmarMovimientoCaja">Registrar</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="toast" id="toastCaja" role="status" aria-live="polite"></div>
+
+      <span id="totalPagosEfectivo" hidden>0.00</span>
+      <span id="totalPagosDebito" hidden>0.00</span>
+      <span id="saldoInicialMpResumen" hidden>0.00</span>
+      <span id="costoEstimadoVendido" hidden>0.00</span>
+      <span id="gananciaBrutaEstimada" hidden>0.00</span>
+      <span id="totalVentasManualSinCosto" hidden>0.00</span>
+      <span id="resultadoEstimadoDia" hidden>0.00</span>
+      <span id="operacionesMixtas" hidden>0</span>
+      <span id="totalGeneral" hidden>0.00</span>
+      <button type="button" id="actualizarCaja" hidden>Actualizar caja</button>
+      <input type="hidden" id="montoCajaAperturaCierre" value="0" />
+      <input type="hidden" id="montoCajaFondoCierre" value="0" />
+      <span id="saldoMpEstimado" hidden>0.00</span>
+      <span id="diferenciaCajaCopia" hidden>0.00</span>
+      <span id="controlBancoVisual" hidden>0.00</span>
+      <span id="controlBilleterasVisual" hidden>0.00</span>
+      <div id="historialCierres" hidden></div>
+      <div id="detalleCierre" hidden></div>
+    </main>
+  </div>
+
+  <script>
+    const toggleNotificaciones = document.getElementById("toggleNotificaciones");
+    const notificacionesDropdown = document.getElementById("notificacionesDropdown");
+    const mensaje = document.getElementById("mensaje");
+    const estadoApertura = document.getElementById("estadoApertura");
+    const usuarioApertura = document.getElementById("usuarioApertura");
+    const botonAbrirCaja = document.getElementById("abrirCaja");
+    const totalEfectivo = document.getElementById("totalEfectivo");
+    const totalDebito = document.getElementById("totalDebito");
+    const totalPagosEfectivo = document.getElementById("totalPagosEfectivo");
+    const totalPagosDebito = document.getElementById("totalPagosDebito");
+    const totalPagosGeneral = document.getElementById("totalPagosGeneral");
+    const saldoInicialMpResumen = document.getElementById("saldoInicialMpResumen");
+    const saldoMpEstimado = document.getElementById("saldoMpEstimado");
+    const totalVentas = document.getElementById("totalVentas");
+    const costoEstimadoVendido = document.getElementById("costoEstimadoVendido");
+    const gananciaBrutaEstimada = document.getElementById("gananciaBrutaEstimada");
+    const totalVentasManualSinCosto = document.getElementById("totalVentasManualSinCosto");
+    const resultadoEstimadoDia = document.getElementById("resultadoEstimadoDia");
+    const operacionesMixtas = document.getElementById("operacionesMixtas");
+    const totalGeneral = document.getElementById("totalGeneral");
+    const detalleVentas = document.getElementById("detalleVentas");
+    const botonActualizarCaja = document.getElementById("actualizarCaja");
+    const botonVerTodosMovimientos = document.getElementById("verTodosMovimientos");
+    const modalMovimientosCaja = document.getElementById("modalMovimientosCaja");
+    const cerrarModalMovimientos = document.getElementById("cerrarModalMovimientos");
+    const modalMovimientosBody = document.getElementById("modalMovimientosBody");
+    const efectivoEsperado = document.getElementById("efectivoEsperado");
+    const efectivoContado = document.getElementById("efectivoContado");
+    const diferenciaCaja = document.getElementById("diferenciaCaja");
+    const conteoBilletes = document.getElementById("conteoBilletes");
+    const montoCajaAperturaCierre = document.getElementById("montoCajaAperturaCierre");
+    const montoCajaFondoCierre = document.getElementById("montoCajaFondoCierre");
+    const botonCerrarCaja = document.getElementById("cerrarCaja");
+    const historialCierres = document.getElementById("historialCierres");
+    const detalleCierre = document.getElementById("detalleCierre");
+    const estadoCajaVisual = document.getElementById("estadoCajaVisual");
+    const usuarioCajaVisual = document.getElementById("usuarioCajaVisual");
+    const turnoCajaVisual = document.getElementById("turnoCajaVisual");
+    const horaAperturaVisual = document.getElementById("horaAperturaVisual");
+    const resumenMetodoEfectivo = document.getElementById("resumenMetodoEfectivo");
+    const resumenMetodoTransferencias = document.getElementById("resumenMetodoTransferencias");
+    const resumenMetodoCuentaCorriente = document.getElementById("resumenMetodoCuentaCorriente");
+    const balanceIngresosBar = document.getElementById("balanceIngresosBar");
+    const balanceEgresosBar = document.getElementById("balanceEgresosBar");
+    const balanceIngresosPct = document.getElementById("balanceIngresosPct");
+    const balanceEgresosPct = document.getElementById("balanceEgresosPct");
+    const aperturaMontoInicial = document.getElementById("aperturaMontoInicial");
+    const aperturaIngresos = document.getElementById("aperturaIngresos");
+    const aperturaEgresos = document.getElementById("aperturaEgresos");
+    const aperturaSaldoActual = document.getElementById("aperturaSaldoActual");
+    const cerrarCajaResumen = document.getElementById("cerrarCajaResumen");
+    const ultimosArqueosBody = document.getElementById("ultimosArqueosBody");
+    const botonVerTodosArqueos = document.getElementById("verTodosArqueos");
+    const modalArqueosCaja = document.getElementById("modalArqueosCaja");
+    const cerrarModalArqueos = document.getElementById("cerrarModalArqueos");
+    const modalArqueosBody = document.getElementById("modalArqueosBody");
+    const aperturaEstadoDot = document.getElementById("aperturaEstadoDot");
+    const aperturaEstadoHeader = document.getElementById("aperturaEstadoHeader");
+    const aperturaEstadoTitulo = document.getElementById("aperturaEstadoTitulo");
+    const aperturaFechaHora = document.getElementById("aperturaFechaHora");
+    const aperturaUsuario = document.getElementById("aperturaUsuario");
+    const aperturaEstadoTexto = document.getElementById("aperturaEstadoTexto");
+    const botonVerDetalleApertura = document.getElementById("verDetalleApertura");
+    const modalDetalleApertura = document.getElementById("modalDetalleApertura");
+    const cerrarModalDetalleApertura = document.getElementById("cerrarModalDetalleApertura");
+    const detalleAperturaBody = document.getElementById("detalleAperturaBody");
+    const cierreResumenEfectivo = document.getElementById("cierreResumenEfectivo");
+    const cierreResumenDebito = document.getElementById("cierreResumenDebito");
+    const cierreResumenMixtas = document.getElementById("cierreResumenMixtas");
+    const cierreResumenPagos = document.getElementById("cierreResumenPagos");
+    const cierreDiferenciaVisual = document.getElementById("cierreDiferenciaVisual");
+    const romaneoEstado = document.getElementById("romaneoEstado");
+    const botonIngresarDineroVisual = document.getElementById("ingresarDineroVisual");
+    const botonRetirarDineroVisual = document.getElementById("retirarDineroVisual");
+    const cierresHistoricosBody = document.getElementById("cierresHistoricosBody");
+    const cierresPageInfo = document.getElementById("cierresPageInfo");
+    const cierresPagination = document.getElementById("cierresPagination");
+    const cierresPageSize = document.getElementById("cierresPageSize");
+    const botonFiltrarCierresHistoricos = document.getElementById("filtrarCierresHistoricos");
+    const botonExportarCierresHistoricos = document.getElementById("exportarCierresHistoricos");
+    const modalDetalleCierre = document.getElementById("modalDetalleCierre");
+    const cerrarModalDetalleCierre = document.getElementById("cerrarModalDetalleCierre");
+    const detalleCierreModalBody = document.getElementById("detalleCierreModalBody");
+    const modalMovimientoCaja = document.getElementById("modalMovimientoCaja");
+    const cerrarModalMovimientoCaja = document.getElementById("cerrarModalMovimientoCaja");
+    const movimientoCajaTitulo = document.getElementById("movimientoCajaTitulo");
+    const movimientoCajaMonto = document.getElementById("movimientoCajaMonto");
+    const movimientoCajaConcepto = document.getElementById("movimientoCajaConcepto");
+    const movimientoCajaUsuario = document.getElementById("movimientoCajaUsuario");
+    const movimientoCajaAyuda = document.getElementById("movimientoCajaAyuda");
+    const confirmarMovimientoCaja = document.getElementById("confirmarMovimientoCaja");
+    const toastCaja = document.getElementById("toastCaja");
+    const filtroGraficoMetodos = document.getElementById("filtroGraficoMetodos");
+    const graficoMetodosPago = document.getElementById("graficoMetodosPago");
+    const pieEfectivo = document.getElementById("pieEfectivo");
+    const pieDebito = document.getElementById("pieDebito");
+    const pieTransferencia = document.getElementById("pieTransferencia");
+    const pieCuentaCorriente = document.getElementById("pieCuentaCorriente");
+    const cierreIngresos = document.getElementById("cierreIngresos");
+    const cierreEgresos = document.getElementById("cierreEgresos");
+    const efectivoEsperadoCopia = document.getElementById("efectivoEsperadoCopia");
+    const diferenciaCajaCopia = document.getElementById("diferenciaCajaCopia");
+    const totalCambioRomaneo = document.getElementById("totalCambioRomaneo");
+    const totalRetiroRomaneo = document.getElementById("totalRetiroRomaneo");
+    const saldoFisicoRealManual = document.getElementById("saldoFisicoRealManual");
+    const cajaInicioCambio = document.getElementById("cajaInicioCambio");
+    const arqueoEstadoDot = document.getElementById("arqueoEstadoDot");
+    const arqueoEstadoHeader = document.getElementById("arqueoEstadoHeader");
+    const arqueoEstadoTitulo = document.getElementById("arqueoEstadoTitulo");
+    const arqueoFechaHora = document.getElementById("arqueoFechaHora");
+    const arqueoUsuario = document.getElementById("arqueoUsuario");
+    const arqueoResumenEfectivo = document.getElementById("arqueoResumenEfectivo");
+    const arqueoResumenDebito = document.getElementById("arqueoResumenDebito");
+    const arqueoResumenMixtas = document.getElementById("arqueoResumenMixtas");
+    const arqueoResumenPagos = document.getElementById("arqueoResumenPagos");
+    const arqueoSistemaDebito = document.getElementById("arqueoSistemaDebito");
+    const arqueoSistemaTransferencia = document.getElementById("arqueoSistemaTransferencia");
+    const arqueoSistemaMixtas = document.getElementById("arqueoSistemaMixtas");
+    const cuentasDigitalesBody = document.getElementById("cuentasDigitalesBody");
+    const arqueoDigitalReal = document.getElementById("arqueoDigitalReal");
+    const arqueoDiferenciaDigital = document.getElementById("arqueoDiferenciaDigital");
+    const arqueoDiferenciaDigitalEstado = document.getElementById("arqueoDiferenciaDigitalEstado");
+    const resultadoEfectivoEsperado = document.getElementById("resultadoEfectivoEsperado");
+    const resultadoEfectivoContado = document.getElementById("resultadoEfectivoContado");
+    const resultadoDiferenciaEfectivo = document.getElementById("resultadoDiferenciaEfectivo");
+    const resultadoDigitalEsperado = document.getElementById("resultadoDigitalEsperado");
+    const resultadoDigitalReal = document.getElementById("resultadoDigitalReal");
+    const resultadoDiferenciaDigital = document.getElementById("resultadoDiferenciaDigital");
+    const observacionesArqueo = document.getElementById("observacionesArqueo");
+    const botonGuardarArqueo = document.getElementById("guardarArqueoVisual");
+    const botonEditarArqueo = document.getElementById("editarArqueoVisual");
+    const botonRegistrarArqueo = document.getElementById("registrarArqueoVisual");
+    const arqueosHistoricosBody = document.getElementById("arqueosHistoricosBody");
+    const arqueosPageInfo = document.getElementById("arqueosPageInfo");
+    const arqueosPagination = document.getElementById("arqueosPagination");
+    const arqueosPageSize = document.getElementById("arqueosPageSize");
+    const botonFiltrarArqueosHistoricos = document.getElementById("filtrarArqueosHistoricos");
+    const botonExportarArqueosHistoricos = document.getElementById("exportarArqueosHistoricos");
+    const modalDetalleArqueo = document.getElementById("modalDetalleArqueo");
+    const cerrarModalDetalleArqueo = document.getElementById("cerrarModalDetalleArqueo");
+    const detalleArqueoModalBody = document.getElementById("detalleArqueoModalBody");
+    const controlBancoVisual = document.getElementById("controlBancoVisual");
+    const controlBilleterasVisual = document.getElementById("controlBilleterasVisual");
+    const tablaMovimientosBody = document.getElementById("tablaMovimientosBody");
+    const botonExportarMovimientos = document.getElementById("exportarMovimientos");
+    const movimientosTotalIngresos = document.getElementById("movimientosTotalIngresos");
+    const movimientosTotalEgresos = document.getElementById("movimientosTotalEgresos");
+    const movimientosBalancePeriodo = document.getElementById("movimientosBalancePeriodo");
+    const filtroFecha = document.getElementById("filtroFecha");
+    const filtroTipo = document.getElementById("filtroTipo");
+    const filtroOrigen = document.getElementById("filtroOrigen");
+    const filtroMetodo = document.getElementById("filtroMetodo");
+    const filtroUsuario = document.getElementById("filtroUsuario");
+    const botonFiltrarMovimientos = document.getElementById("filtrarMovimientos");
+    const botonLimpiarFiltrosMovimientos = document.getElementById("limpiarFiltrosMovimientos");
+    const movimientosPageInfo = document.getElementById("movimientosPageInfo");
+    const movimientosPagination = document.getElementById("movimientosPagination");
+    const movimientosPageSize = document.getElementById("movimientosPageSize");
+    const tabButtons = document.querySelectorAll(".tab-button");
+    const sections = document.querySelectorAll(".section");
+
+    const denominaciones = [10, 20, 50, 100, 200, 500, 1000, 2000, 10000, 20000];
+    let cuentasDigitales = [
+      { nombre: "MP", saldo_inicial: 0, saldo_actual: 0 },
+      { nombre: "Banco", saldo_inicial: 0, saldo_actual: 0 }
+    ];
+    const conteoInputs = {};
+    const cuentaInputs = [];
+    let resumenActual = null;
+    let aperturaActual = null;
+    let ventasActuales = [];
+    let movimientosFiltrados = [];
+    let movimientosPaginaActual = 1;
+    let cierresActuales = [];
+    let cierresPaginaActual = 1;
+    let cierresFiltroTexto = "";
+    let arqueosActuales = [];
+    let arqueosPaginaActual = 1;
+    let arqueosFiltroTexto = "";
+    let arqueoGuardadoId = null;
+    let arqueoPreparadoParaCierre = false;
+    let tipoMovimientoCajaActivo = "ingreso";
+    let toastTimer = null;
+
+    function mostrarMensaje(texto, esError = false) {
+      mensaje.innerText = texto;
+      mensaje.style.color = esError ? "var(--danger)" : "var(--success)";
+    }
+
+    function mostrarToast(texto, esError = false) {
+      clearTimeout(toastTimer);
+      toastCaja.textContent = texto;
+      toastCaja.className = `toast open ${esError ? "error" : "success"}`;
+      toastTimer = setTimeout(() => {
+        toastCaja.className = `toast ${esError ? "error" : "success"}`;
+      }, 3200);
+    }
+
+    function formatearNumero(valor) {
+      return Number(valor || 0).toFixed(2);
+    }
+
+    function formatearCompacto(valor) {
+      const numero = Number(valor || 0);
+      const abs = Math.abs(numero);
+
+      if (abs >= 1000000) {
+        return `${(numero / 1000000).toFixed(1).replace(/\.0$/, "")}M`;
+      }
+
+      if (abs >= 1000) {
+        return `${(numero / 1000).toFixed(1).replace(/\.0$/, "")}K`;
+      }
+
+      return formatearNumero(numero);
+    }
+
+    function money(valor) {
+      return `$${formatearNumero(valor)}`;
+    }
+
+    function descargarCsv(nombreArchivo, encabezados, filas) {
+      const escapeCsv = (valor) => {
+        const texto = String(valor ?? "");
+        return /[",\n\r;]/.test(texto) ? `"${texto.replace(/"/g, '""')}"` : texto;
+      };
+      const contenido = [encabezados, ...filas]
+        .map((fila) => fila.map(escapeCsv).join(";"))
+        .join("\n");
+      const blob = new Blob([`\uFEFF${contenido}`], { type: "text/csv;charset=utf-8;" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = nombreArchivo;
+      link.click();
+      URL.revokeObjectURL(link.href);
+    }
+
+    function setMontoVisual(element, valor) {
+      if (!element) {
+        return;
+      }
+
+      element.innerText = formatearCompacto(valor);
+      element.title = money(valor);
+    }
+
+    function calcularEfectivoEsperado() {
+      const apertura = Number(aperturaActual?.monto_apertura || 0);
+      const efectivo = Number(resumenActual?.total_efectivo || 0);
+      const pagosEfectivo = Number(resumenActual?.total_pagos_efectivo || 0);
+      return Number((apertura + efectivo - pagosEfectivo).toFixed(2));
+    }
+
+    function calcularConteoDesglose() {
+      return denominaciones.reduce((acc, denominacion) => {
+        const cantidad = Number(conteoInputs[denominacion]?.value || 0);
+        if (denominacion < 500) {
+          acc.totalCambio += denominacion * cantidad;
+          return acc;
+        }
+
+        if (denominacion === 500) {
+          const cantidadCambio = cantidad % 2;
+          const cantidadRetiro = cantidad - cantidadCambio;
+          acc.totalCambio += denominacion * cantidadCambio;
+          acc.totalRetiro += denominacion * cantidadRetiro;
+          return acc;
+        }
+
+        acc.totalRetiro += denominacion * cantidad;
+        return acc;
+      }, { totalCambio: 0, totalRetiro: 0 });
+    }
+
+    function calcularConteoTotal() {
+      const desglose = calcularConteoDesglose();
+      return desglose.totalCambio + desglose.totalRetiro;
+    }
+
+    function tieneRomaneoCargado() {
+      return denominaciones.some((denominacion) => Number(conteoInputs[denominacion]?.value || 0) > 0);
+    }
+
+    function actualizarEstadoCierre() {
+      const cajaAbierta = aperturaActual?.estado === "abierta";
+      const romaneoHecho = tieneRomaneoCargado();
+      const puedeCerrar = cajaAbierta && romaneoHecho && arqueoPreparadoParaCierre;
+      botonCerrarCaja.disabled = !puedeCerrar;
+      botonCerrarCaja.classList.toggle("danger", puedeCerrar);
+      romaneoEstado.classList.toggle("done", puedeCerrar);
+      romaneoEstado.innerHTML = puedeCerrar
+        ? '<span aria-hidden="true">&#10003;</span><span>Arqueo registrado</span>'
+        : romaneoHecho
+          ? '<span class="info-icon" aria-hidden="true">i</span><span>Registrar arqueo para cerrar</span>'
+          : '<span class="info-icon" aria-hidden="true">i</span><span>Pendiente de romaneo</span>';
+    }
+
+    function marcarArqueoPendienteRegistro() {
+      arqueoPreparadoParaCierre = false;
+      actualizarEstadoCierre();
+    }
+
+    function actualizarBalanceVisual(ingresos, egresos) {
+      const ingresosNumero = Number(ingresos || 0);
+      const egresosNumero = Number(egresos || 0);
+      const total = ingresosNumero + egresosNumero;
+
+      if (total <= 0) {
+        balanceIngresosBar.style.width = "0%";
+        balanceEgresosBar.style.width = "0%";
+        balanceIngresosPct.innerText = "0%";
+        balanceEgresosPct.innerText = "0%";
+        return;
+      }
+
+      const porcentajeIngresos = Math.round((ingresosNumero / total) * 100);
+      const porcentajeEgresos = Math.max(0, 100 - porcentajeIngresos);
+
+      balanceIngresosBar.style.width = `${porcentajeIngresos}%`;
+      balanceEgresosBar.style.width = `${porcentajeEgresos}%`;
+      balanceIngresosPct.innerText = `${porcentajeIngresos}%`;
+      balanceEgresosPct.innerText = `${porcentajeEgresos}%`;
+    }
+
+    function abrirModal(modal) {
+      modal.classList.add("open");
+    }
+
+    function cerrarModal(modal) {
+      modal.classList.remove("open");
+    }
+
+    function calcularSaldoActualEfectivo() {
+      return calcularEfectivoEsperado();
+    }
+
+    function actualizarAperturaResumen() {
+      const montoInicial = Number(aperturaActual?.monto_apertura || 0);
+      const ingresos = Number(resumenActual?.total_efectivo || 0);
+      const egresos = Number(resumenActual?.total_pagos_efectivo || 0);
+
+      aperturaMontoInicial.innerText = formatearNumero(montoInicial);
+      aperturaIngresos.innerText = formatearNumero(ingresos);
+      aperturaEgresos.innerText = formatearNumero(egresos);
+      aperturaSaldoActual.innerText = formatearNumero(calcularSaldoActualEfectivo());
+    }
+
+    function calcularIngresosPorMetodo() {
+      const fallbackResumen = {
+        efectivo: Number(resumenActual?.total_efectivo || 0),
+        debito: Number(resumenActual?.total_debito_tarjeta ?? resumenActual?.total_debito ?? 0),
+        transferencia: Number(resumenActual?.total_transferencia || 0),
+        cuentaCorriente: Number(resumenActual?.total_cuenta_corriente || 0)
+      };
+
+      if (ventasActuales.length > 0) {
+        const desdeMovimientos = ventasActuales.reduce(
+          (acc, movimiento) => {
+            if (movimiento.tipo_operacion === "pago_proveedor") {
+              return acc;
+            }
+
+            const tipoCobro = String(movimiento.tipo_cobro || "").toLowerCase();
+            const efectivo = Number(movimiento.monto_efectivo || 0);
+            const debito = Number(movimiento.monto_debito || 0);
+            const total = Number(movimiento.total || 0);
+            const esVentaCuentaCorriente =
+              movimiento.tipo_operacion === "venta_cuenta_corriente" ||
+              (Number(movimiento.es_cuenta_corriente) === 1 && movimiento.tipo_operacion !== "cobro_cuenta_corriente");
+
+            if (esVentaCuentaCorriente) {
+              acc.cuentaCorriente += total;
+              return acc;
+            }
+
+            acc.efectivo += efectivo;
+
+            if (tipoCobro === "transferencia") {
+              acc.transferencia += debito;
+            } else {
+              acc.debito += debito;
+            }
+
+            return acc;
+          },
+          { efectivo: 0, debito: 0, transferencia: 0, cuentaCorriente: 0 }
+        );
+
+        const totalDesdeMovimientos =
+          desdeMovimientos.efectivo +
+          desdeMovimientos.debito +
+          desdeMovimientos.transferencia +
+          desdeMovimientos.cuentaCorriente;
+
+        if (totalDesdeMovimientos > 0) {
+          return desdeMovimientos;
+        }
+      }
+
+      return fallbackResumen;
+    }
+
+    function actualizarGraficoMetodos() {
+      const valores = calcularIngresosPorMetodo();
+      const filtro = filtroGraficoMetodos.value;
+      const totalBase = valores.efectivo + valores.debito + valores.transferencia + valores.cuentaCorriente;
+      const total = totalBase > 0 ? totalBase : 0;
+      const porcentaje = (valor) => total > 0 ? (Number(valor || 0) / total) * 100 : 0;
+
+      const segmentos = [
+        { key: "efectivo", color: "#22a35a", value: valores.efectivo },
+        { key: "debito", color: "#3478f6", value: valores.debito },
+        { key: "transferencia", color: "#6d28d9", value: valores.transferencia },
+        { key: "cuenta_corriente", color: "#d99a21", value: valores.cuentaCorriente }
+      ];
+
+      if (total <= 0) {
+        graficoMetodosPago.style.background = "#eceef4";
+        pieEfectivo.innerText = "0.0%";
+        pieDebito.innerText = "0.0%";
+        pieTransferencia.innerText = "0.0%";
+        pieCuentaCorriente.innerText = "0.0%";
+        setMontoVisual(resumenMetodoEfectivo, 0);
+        setMontoVisual(totalDebito, 0);
+        setMontoVisual(resumenMetodoTransferencias, 0);
+        setMontoVisual(resumenMetodoCuentaCorriente, 0);
+        return;
+      }
+
+      let inicio = 0;
+      const segmentosVisibles = filtro === "todos"
+        ? segmentos
+        : segmentos.map((segmento) => ({
+            ...segmento,
+            value: segmento.key === filtro ? segmento.value : 0
+          }));
+      const totalVisible = segmentosVisibles.reduce((acc, segmento) => acc + Number(segmento.value || 0), 0);
+      const gradient = totalVisible > 0
+        ? segmentosVisibles
+            .filter((segmento) => Number(segmento.value || 0) > 0)
+            .map((segmento, index, lista) => {
+              const fin = index === lista.length - 1
+                ? 360
+                : inicio + (segmento.value / totalVisible) * 360;
+              const tramo = `${segmento.color} ${inicio}deg ${fin}deg`;
+              inicio = fin;
+              return tramo;
+            })
+            .join(", ")
+        : "#eceef4 0deg 360deg";
+
+      graficoMetodosPago.style.background = `conic-gradient(${gradient})`;
+      pieEfectivo.innerText = `${porcentaje(valores.efectivo).toFixed(1)}%`;
+      pieDebito.innerText = `${porcentaje(valores.debito).toFixed(1)}%`;
+      pieTransferencia.innerText = `${porcentaje(valores.transferencia).toFixed(1)}%`;
+      pieCuentaCorriente.innerText = `${porcentaje(valores.cuentaCorriente).toFixed(1)}%`;
+      setMontoVisual(resumenMetodoEfectivo, valores.efectivo);
+      setMontoVisual(totalDebito, valores.debito);
+      setMontoVisual(resumenMetodoTransferencias, valores.transferencia);
+      setMontoVisual(resumenMetodoCuentaCorriente, valores.cuentaCorriente);
+    }
+
+    function setSignedValue(element, value) {
+      element.innerText = money(value);
+      element.classList.toggle("positive-text", Number(value || 0) >= 0);
+      element.classList.toggle("negative-text", Number(value || 0) < 0);
+    }
+
+    function getCuentasDigitales() {
+      return cuentaInputs.map((cuenta) => ({
+        nombre: cuenta.nombre.value.trim() || "Cuenta",
+        saldo_inicial: Number(cuenta.saldoInicial.value) || 0,
+        saldo_actual: Number(cuenta.saldoActual.value) || 0
+      }));
+    }
+
+    function aplicarCuentasPagoConfig(config) {
+      let cuentas = [];
+      try {
+        cuentas = JSON.parse(config?.pago_cuentas_billeteras || "[]");
+      } catch {
+        cuentas = [];
+      }
+
+      const normalizadas = cuentas
+        .map((cuenta, index) => {
+          const saldoInicial = Number(cuenta.saldo_inicial || 0);
+          return {
+            nombre: String(cuenta.nombre || `Cuenta ${index + 1}`).trim() || `Cuenta ${index + 1}`,
+            saldo_inicial: saldoInicial,
+            saldo_actual: saldoInicial
+          };
+        })
+        .filter((cuenta) => cuenta.nombre);
+
+      cuentasDigitales = normalizadas.length
+        ? normalizadas
+        : [
+            { nombre: "MP", saldo_inicial: 0, saldo_actual: 0 },
+            { nombre: "Banco", saldo_inicial: 0, saldo_actual: 0 }
+          ];
+      renderizarCuentasDigitales();
+      actualizarResumenCierre();
+    }
+
+    function calcularDigitalReal() {
+      return Number(getCuentasDigitales()
+        .reduce((acc, cuenta) => acc + Number(cuenta.saldo_actual || 0) - Number(cuenta.saldo_inicial || 0), 0)
+        .toFixed(2));
+    }
+
+    function calcularDigitalEsperado() {
+      return Number((
+        Number(resumenActual?.total_debito_tarjeta ?? resumenActual?.total_debito ?? 0) +
+        Number(resumenActual?.total_transferencia || 0)
+      ).toFixed(2));
+    }
+
+    function renderizarCuentasDigitales() {
+      cuentasDigitalesBody.innerHTML = "";
+      cuentaInputs.length = 0;
+      cuentasDigitales.forEach((cuenta) => {
+        const row = document.createElement("div");
+        row.className = "accounts-row";
+        row.innerHTML = `
+          <label><span>Cuenta</span><input type="text" class="field" value="${cuenta.nombre}" /></label>
+          <label><span>Saldo inicial</span><input type="number" class="field" value="${cuenta.saldo_inicial}" step="0.01" /></label>
+          <label><span>Saldo actual</span><input type="number" class="field" value="${cuenta.saldo_actual}" step="0.01" /></label>
+          <label><span>Recaudacion real</span><input type="text" class="field" value="$0.00" disabled /></label>
+        `;
+        const [nombre, saldoInicial, saldoActual, recaudacion] = row.querySelectorAll("input");
+        const item = { nombre, saldoInicial, saldoActual, recaudacion };
+        cuentaInputs.push(item);
+        [nombre, saldoInicial, saldoActual].forEach((input) => {
+          input.addEventListener("input", actualizarResumenCierre);
+          input.addEventListener("input", marcarArqueoPendienteRegistro);
+        });
+        cuentasDigitalesBody.appendChild(row);
+      });
+      saldoFisicoRealManual?.addEventListener("input", actualizarResumenCierre);
+      saldoFisicoRealManual?.addEventListener("input", marcarArqueoPendienteRegistro);
+    }
+
+    function actualizarCuentasDigitalesUI() {
+      cuentaInputs.forEach((cuenta) => {
+        const real = (Number(cuenta.saldoActual.value) || 0) - (Number(cuenta.saldoInicial.value) || 0);
+        cuenta.recaudacion.value = money(real);
+      });
+    }
+
+    function renderizarArqueosVisuales() {
+      const ultimos = arqueosActuales.slice(0, 5);
+      const filas = ultimos.length ? ultimos.map((arqueo) => `
+        <tr>
+          <td>${arqueo.hora || "-"}</td>
+          <td>${arqueo.usuario || "-"}</td>
+          <td>${money(arqueo.efectivo_contado)}</td>
+          <td>${money(arqueo.diferencia_efectivo)}</td>
+        </tr>
+      `).join("") : '<tr><td colspan="4">Sin arqueos registrados.</td></tr>';
+
+      ultimosArqueosBody.innerHTML = filas;
+      modalArqueosBody.innerHTML = filas;
+    }
+
+    function actualizarResumenCierre() {
+      const desgloseConteo = calcularConteoDesglose();
+      const esperado = calcularEfectivoEsperado();
+      const manualReal = Number(saldoFisicoRealManual?.value || 0);
+      const contado = Number((manualReal > 0 ? manualReal : calcularConteoTotal()).toFixed(2));
+      const diferencia = Number((contado - esperado).toFixed(2));
+      const digitalEsperado = calcularDigitalEsperado();
+      const digitalReal = calcularDigitalReal();
+      const diferenciaDigital = Number((digitalReal - digitalEsperado).toFixed(2));
+      totalCambioRomaneo.innerText = formatearNumero(desgloseConteo.totalCambio);
+      totalRetiroRomaneo.innerText = formatearNumero(desgloseConteo.totalRetiro);
+      cajaInicioCambio.innerText = formatearNumero(desgloseConteo.totalCambio);
+      actualizarCuentasDigitalesUI();
+      setMontoVisual(efectivoEsperado, esperado);
+      efectivoEsperadoCopia.innerText = formatearNumero(esperado);
+      efectivoContado.innerText = formatearNumero(contado);
+      setMontoVisual(diferenciaCaja, diferencia);
+      diferenciaCajaCopia.innerText = formatearNumero(diferencia);
+      cierreDiferenciaVisual.innerText = money(diferencia);
+      resultadoEfectivoEsperado.innerText = formatearNumero(esperado);
+      resultadoEfectivoContado.innerText = formatearNumero(contado);
+      setSignedValue(resultadoDiferenciaEfectivo, diferencia);
+      resultadoDigitalEsperado.innerText = formatearNumero(digitalEsperado);
+      resultadoDigitalReal.innerText = formatearNumero(digitalReal);
+      setSignedValue(resultadoDiferenciaDigital, diferenciaDigital);
+      arqueoDigitalReal.innerText = money(digitalReal);
+      setSignedValue(arqueoDiferenciaDigital, diferenciaDigital);
+      arqueoDiferenciaDigitalEstado.classList.toggle("negative", diferenciaDigital < 0);
+      arqueoDiferenciaDigitalEstado.innerHTML = diferenciaDigital >= 0
+        ? '<span aria-hidden="true">&#10003;</span><span>Sobra</span>'
+        : '<span aria-hidden="true">&#10005;</span><span>Falta</span>';
+      actualizarEstadoCierre();
+    }
+
+    function renderizarConteoBilletes() {
+      conteoBilletes.innerHTML = "";
+      denominaciones.forEach((denominacion) => {
+        const fila = document.createElement("div");
+        fila.className = "mini-card";
+        fila.innerHTML = `<span>$${denominacion}</span>`;
+        const input = document.createElement("input");
+        input.type = "number";
+        input.min = "0";
+        input.step = "1";
+        input.value = "0";
+        input.className = "field";
+        input.addEventListener("input", actualizarResumenCierre);
+        input.addEventListener("input", marcarArqueoPendienteRegistro);
+        conteoInputs[denominacion] = input;
+        fila.appendChild(input);
+        conteoBilletes.appendChild(fila);
+      });
+    }
+
+    function renderizarDetalleApertura() {
+      if (!aperturaActual) {
+        detalleAperturaBody.innerHTML = '<div class="item">No hay una caja abierta para mostrar.</div>';
+        return;
+      }
+
+      detalleAperturaBody.innerHTML = `
+        <div class="item"><strong>Apertura</strong><small>${aperturaActual.fecha || "-"} ${aperturaActual.hora || ""}</small></div>
+        <div class="item"><strong>Usuario</strong><small>${aperturaActual.usuario || "-"}</small></div>
+        <div class="item"><strong>Saldo inicial efectivo</strong><small>${money(aperturaActual.monto_apertura)}</small></div>
+        <div class="item"><strong>Saldo inicial digital</strong><small>${money(aperturaActual.saldo_inicial_mp)}</small></div>
+        <div class="item"><strong>Ingresos de dinero</strong><small>${money(resumenActual?.total_efectivo || 0)} en efectivo desde apertura</small></div>
+      `;
+    }
+
+    function renderizarApertura(apertura) {
+      aperturaActual = apertura;
+      if (!apertura) {
+        estadoApertura.innerText = "La caja de hoy todavia no fue abierta.";
+        estadoCajaVisual.className = "status-pill closed";
+        estadoCajaVisual.innerText = "Caja cerrada";
+        usuarioCajaVisual.innerText = "-";
+        horaAperturaVisual.innerText = "-";
+        aperturaEstadoDot.classList.add("closed");
+        aperturaEstadoHeader.className = "cash-state-title closed";
+        aperturaEstadoTitulo.innerText = "Caja cerrada";
+        arqueoEstadoDot.classList.add("closed");
+        arqueoEstadoHeader.className = "cash-state-title closed";
+        arqueoEstadoTitulo.innerText = "Caja cerrada";
+        arqueoFechaHora.innerText = "-";
+        arqueoUsuario.innerText = "-";
+        aperturaFechaHora.innerText = "-";
+        aperturaUsuario.innerText = "-";
+        aperturaEstadoTexto.innerText = "Sin caja activa";
+        arqueoGuardadoId = null;
+        arqueoPreparadoParaCierre = false;
+        botonAbrirCaja.disabled = false;
+        botonVerDetalleApertura.disabled = true;
+        botonIngresarDineroVisual.disabled = true;
+        botonRetirarDineroVisual.disabled = true;
+        actualizarEstadoCierre();
+        return;
+      }
+
+      usuarioCajaVisual.innerText = apertura.usuario || "-";
+      horaAperturaVisual.innerText = apertura.hora || "-";
+      aperturaFechaHora.innerText = `${apertura.fecha || "-"} ${apertura.hora || ""}`.trim();
+      aperturaUsuario.innerText = apertura.usuario || "-";
+
+      if (apertura.estado === "cerrada") {
+        estadoApertura.innerText =
+          `Caja cerrada | Fecha: ${apertura.fecha} ${apertura.hora} | Apertura: $${formatearNumero(apertura.monto_apertura)} | MP inicial: $${formatearNumero(apertura.saldo_inicial_mp)} | Esperado: $${formatearNumero(apertura.efectivo_esperado)} | Contado: $${formatearNumero(apertura.efectivo_contado)} | Diferencia: $${formatearNumero(apertura.diferencia)}`;
+        estadoCajaVisual.className = "status-pill closed";
+        estadoCajaVisual.innerText = "Caja cerrada";
+        aperturaEstadoDot.classList.add("closed");
+        aperturaEstadoHeader.className = "cash-state-title closed";
+        aperturaEstadoTitulo.innerText = "Caja cerrada";
+        arqueoEstadoDot.classList.add("closed");
+        arqueoEstadoHeader.className = "cash-state-title closed";
+        arqueoEstadoTitulo.innerText = "Caja cerrada";
+        arqueoFechaHora.innerText = aperturaFechaHora.innerText;
+        arqueoUsuario.innerText = aperturaUsuario.innerText;
+        aperturaEstadoTexto.innerText = "Cerrada";
+        arqueoPreparadoParaCierre = false;
+        botonAbrirCaja.disabled = false;
+        botonVerDetalleApertura.disabled = false;
+        botonIngresarDineroVisual.disabled = true;
+        botonRetirarDineroVisual.disabled = true;
+        actualizarEstadoCierre();
+        return;
+      }
+
+      estadoApertura.innerText =
+        `Caja abierta | Fecha: ${apertura.fecha} ${apertura.hora} | Monto inicial: $${formatearNumero(apertura.monto_apertura)} | MP inicial: $${formatearNumero(apertura.saldo_inicial_mp)} | Usuario: ${apertura.usuario}`;
+      estadoCajaVisual.className = "status-pill open";
+      estadoCajaVisual.innerText = "Caja abierta";
+      aperturaEstadoDot.classList.remove("closed");
+      aperturaEstadoHeader.className = "cash-state-title open";
+      aperturaEstadoTitulo.innerText = "Caja abierta";
+      arqueoEstadoDot.classList.remove("closed");
+      arqueoEstadoHeader.className = "cash-state-title open";
+      arqueoEstadoTitulo.innerText = "Caja abierta";
+      arqueoFechaHora.innerText = aperturaFechaHora.innerText;
+      arqueoUsuario.innerText = aperturaUsuario.innerText;
+      aperturaEstadoTexto.innerText = "Abierta";
+      botonAbrirCaja.disabled = true;
+      botonVerDetalleApertura.disabled = false;
+      botonIngresarDineroVisual.disabled = false;
+      botonRetirarDineroVisual.disabled = false;
+      actualizarEstadoCierre();
+    }
+
+    function renderizarResumen(resumen) {
+      resumenActual = resumen;
+      setMontoVisual(totalEfectivo, resumen.total_efectivo);
+      setMontoVisual(totalDebito, resumen.total_debito_tarjeta ?? resumen.total_debito);
+      totalPagosEfectivo.innerText = formatearNumero(resumen.total_pagos_efectivo);
+      totalPagosDebito.innerText = formatearNumero(resumen.total_pagos_debito);
+      setMontoVisual(totalPagosGeneral, resumen.total_pagos_general);
+      saldoInicialMpResumen.innerText = formatearNumero(resumen.saldo_inicial_mp);
+      saldoMpEstimado.innerText = formatearNumero(resumen.saldo_mp_estimado);
+      setMontoVisual(totalVentas, resumen.total_ventas);
+      costoEstimadoVendido.innerText = formatearNumero(resumen.costo_estimado_vendido);
+      gananciaBrutaEstimada.innerText = formatearNumero(resumen.ganancia_bruta_estimada);
+      totalVentasManualSinCosto.innerText = formatearNumero(resumen.total_ventas_manual_sin_costo);
+      resultadoEstimadoDia.innerText = formatearNumero(resumen.resultado_estimado_dia);
+      operacionesMixtas.innerText = String(resumen.operaciones_mixtas || 0);
+      totalGeneral.innerText = formatearNumero(resumen.total_general);
+      setMontoVisual(resumenMetodoEfectivo, resumen.total_efectivo);
+      setMontoVisual(resumenMetodoTransferencias, resumen.total_transferencia || 0);
+      setMontoVisual(resumenMetodoCuentaCorriente, resumen.total_cuenta_corriente || 0);
+      cierreIngresos.innerText = formatearNumero(resumen.total_ventas);
+      cierreEgresos.innerText = formatearNumero(resumen.total_pagos_general);
+      setMontoVisual(cierreResumenEfectivo, calcularEfectivoEsperado());
+      setMontoVisual(cierreResumenDebito, resumen.total_debito_tarjeta ?? resumen.total_debito);
+      cierreResumenMixtas.innerText = String(resumen.operaciones_mixtas || 0);
+      setMontoVisual(cierreResumenPagos, resumen.total_pagos_general);
+      setMontoVisual(arqueoResumenEfectivo, calcularEfectivoEsperado());
+      setMontoVisual(arqueoResumenDebito, resumen.total_debito_tarjeta ?? resumen.total_debito);
+      arqueoResumenMixtas.innerText = String(resumen.operaciones_mixtas || 0);
+      setMontoVisual(arqueoResumenPagos, resumen.total_pagos_general);
+      arqueoSistemaDebito.innerText = formatearNumero(resumen.total_debito_tarjeta ?? resumen.total_debito ?? 0);
+      arqueoSistemaTransferencia.innerText = formatearNumero(resumen.total_transferencia || 0);
+      arqueoSistemaMixtas.innerText = String(resumen.operaciones_mixtas || 0);
+      controlBancoVisual.innerText = formatearNumero(resumen.total_debito);
+      controlBilleterasVisual.innerText = "0.00";
+      actualizarBalanceVisual(resumen.total_ventas, resumen.total_pagos_general);
+      actualizarAperturaResumen();
+      actualizarGraficoMetodos();
+      actualizarResumenCierre();
+    }
+
+    function buildOperacionDescripcion(venta) {
+      if (venta.tipo_operacion === "caja_movimiento_ingreso") {
+        return venta.concepto || "Ingreso manual de caja";
+      }
+
+      if (venta.tipo_operacion === "caja_movimiento_egreso") {
+        return venta.concepto || "Retiro manual de caja";
+      }
+
+      if (venta.tipo_operacion === "pago_proveedor") {
+        return venta.concepto || "Pago registrado";
+      }
+
+      if (venta.tipo_operacion === "cobro_cuenta_corriente") {
+        return `Cobro cuenta corriente ${venta.cliente_nombre || ""}`.trim();
+      }
+
+      if (venta.tipo_operacion === "venta_cuenta_corriente") {
+        return `Venta cuenta corriente ${venta.cliente_nombre || ""}`.trim();
+      }
+
+      return venta.productos?.map((producto) => producto.nombre_producto).slice(0, 2).join(", ") || "Venta";
+    }
+
+    function buildMovimientoResumenRow(movimiento) {
+      const tipo = getMovimientoTipo(movimiento) === "egreso" ? "Egreso" : "Ingreso";
+      const descripcion = buildOperacionDescripcion(movimiento);
+
+      return `
+        <tr>
+          <td>${movimiento.hora || "-"}</td>
+          <td>${tipo}</td>
+          <td>${descripcion}</td>
+          <td>${movimiento.tipo_cobro || "-"}</td>
+          <td>${money(movimiento.total)}</td>
+        </tr>
+      `;
+    }
+
+    function renderizarVentas(ventas) {
+      ventasActuales = Array.isArray(ventas) ? ventas : [];
+      movimientosFiltrados = ventasActuales;
+
+      if (ventasActuales.length === 0) {
+        detalleVentas.innerHTML = '<tr><td colspan="5">Sin movimientos recientes.</td></tr>';
+        modalMovimientosBody.innerHTML = '<tr><td colspan="5">Sin movimientos.</td></tr>';
+        actualizarKpisMovimientos();
+        renderizarTablaMovimientos([]);
+        actualizarGraficoMetodos();
+        return;
+      }
+
+      detalleVentas.innerHTML = ventasActuales.slice(0, 7).map(buildMovimientoResumenRow).join("");
+      modalMovimientosBody.innerHTML = ventasActuales.map(buildMovimientoResumenRow).join("");
+
+      actualizarKpisMovimientos();
+      aplicarFiltrosMovimientos(true);
+      actualizarGraficoMetodos();
+    }
+
+    function getMovimientoTipo(movimiento) {
+      return movimiento.tipo_operacion === "pago_proveedor" ||
+        movimiento.tipo_operacion === "caja_movimiento_egreso"
+        ? "egreso"
+        : "ingreso";
+    }
+
+    function getMovimientoOrigen(movimiento) {
+      if (
+        movimiento.tipo_operacion === "caja_movimiento_ingreso" ||
+        movimiento.tipo_operacion === "caja_movimiento_egreso"
+      ) {
+        return "caja";
+      }
+
+      if (movimiento.tipo_operacion === "pago_proveedor") {
+        return "pago";
+      }
+
+      if (movimiento.tipo_operacion === "cobro_cuenta_corriente") {
+        return "cobro";
+      }
+
+      return "venta";
+    }
+
+    function getMovimientoMetodo(movimiento) {
+      if (movimiento.tipo_operacion === "venta_cuenta_corriente") {
+        return "cuenta_corriente";
+      }
+
+      return String(movimiento.tipo_cobro || "").toLowerCase();
+    }
+
+    function getMovimientoUsuario(movimiento) {
+      return movimiento.usuario || movimiento.cliente_nombre || movimiento.proveedor_nombre || "-";
+    }
+
+    function actualizarKpisMovimientos() {
+      const totales = ventasActuales.reduce(
+        (acc, movimiento) => {
+          const total = Number(movimiento.total || 0);
+          if (getMovimientoTipo(movimiento) === "egreso") {
+            acc.egresos += total;
+          } else {
+            acc.ingresos += total;
+          }
+          return acc;
+        },
+        { ingresos: 0, egresos: 0 }
+      );
+
+      setMontoVisual(movimientosTotalIngresos, totales.ingresos);
+      setMontoVisual(movimientosTotalEgresos, totales.egresos);
+      setMontoVisual(movimientosBalancePeriodo, totales.ingresos - totales.egresos);
+    }
+
+    function movimientoCoincideConFiltros(movimiento) {
+      const fecha = filtroFecha.value;
+      const tipo = filtroTipo.value;
+      const origen = filtroOrigen.value;
+      const metodo = filtroMetodo.value;
+      const usuario = filtroUsuario.value.trim().toLowerCase();
+
+      if (fecha && movimiento.fecha !== fecha) {
+        return false;
+      }
+
+      if (tipo && getMovimientoTipo(movimiento) !== tipo) {
+        return false;
+      }
+
+      if (origen && getMovimientoOrigen(movimiento) !== origen) {
+        return false;
+      }
+
+      if (metodo && getMovimientoMetodo(movimiento) !== metodo) {
+        return false;
+      }
+
+      if (usuario && !getMovimientoUsuario(movimiento).toLowerCase().includes(usuario)) {
+        return false;
+      }
+
+      return true;
+    }
+
+    function aplicarFiltrosMovimientos(resetearPagina = true) {
+      movimientosFiltrados = ventasActuales.filter(movimientoCoincideConFiltros);
+      if (resetearPagina) {
+        movimientosPaginaActual = 1;
+      }
+      renderizarTablaMovimientos(movimientosFiltrados);
+    }
+
+    function limpiarFiltrosMovimientos() {
+      filtroFecha.value = "";
+      filtroTipo.value = "";
+      filtroOrigen.value = "";
+      filtroMetodo.value = "";
+      filtroUsuario.value = "";
+      aplicarFiltrosMovimientos(true);
+    }
+
+    function exportarMovimientos() {
+      const movimientos = movimientosFiltrados.length ? movimientosFiltrados : ventasActuales;
+
+      if (!movimientos.length) {
+        mostrarMensaje("No hay movimientos para exportar", true);
+        mostrarToast("No hay movimientos para exportar.", true);
+        return;
+      }
+
+      const filas = movimientos.map((movimiento) => [
+        movimiento.fecha || "",
+        movimiento.hora || "",
+        getMovimientoTipo(movimiento) === "egreso" ? "Egreso" : "Ingreso",
+        getMovimientoOrigen(movimiento),
+        buildOperacionDescripcion(movimiento),
+        movimiento.tipo_cobro || "",
+        formatearNumero(movimiento.total),
+        getMovimientoUsuario(movimiento)
+      ]);
+
+      descargarCsv(
+        "movimientos_caja.csv",
+        ["Fecha", "Hora", "Tipo", "Origen", "Descripcion", "Metodo", "Importe", "Usuario"],
+        filas
+      );
+      mostrarMensaje("Movimientos exportados.");
+      mostrarToast("Movimientos exportados correctamente.");
+    }
+
+    function abrirMovimientoCaja(tipo) {
+      tipoMovimientoCajaActivo = tipo;
+      const esIngreso = tipo === "ingreso";
+      movimientoCajaTitulo.innerText = esIngreso ? "Ingresar dinero" : "Retirar dinero";
+      movimientoCajaAyuda.innerText = esIngreso
+        ? "Registra un ingreso manual de efectivo en la caja abierta."
+        : "Registra un retiro manual de efectivo de la caja abierta.";
+      confirmarMovimientoCaja.className = esIngreso ? "button success" : "button warning";
+      confirmarMovimientoCaja.innerText = esIngreso ? "Registrar ingreso" : "Registrar retiro";
+      movimientoCajaMonto.value = "";
+      movimientoCajaConcepto.value = esIngreso ? "Ingreso de dinero" : "Retiro de dinero";
+      movimientoCajaUsuario.value = usuarioApertura.value.trim() || aperturaActual?.usuario || "admin";
+      abrirModal(modalMovimientoCaja);
+      movimientoCajaMonto.focus();
+    }
+
+    async function registrarMovimientoCaja() {
+      const payload = {
+        tipo: tipoMovimientoCajaActivo,
+        monto: Number(movimientoCajaMonto.value) || 0,
+        concepto: movimientoCajaConcepto.value.trim(),
+        usuario: movimientoCajaUsuario.value.trim() || "admin"
+      };
+
+      if (payload.monto <= 0) {
+        mostrarMensaje("El monto debe ser mayor a cero", true);
+        mostrarToast("No se pudo registrar: el monto debe ser mayor a cero.", true);
+        return;
+      }
+
+      if (!payload.concepto) {
+        mostrarMensaje("El concepto es obligatorio", true);
+        mostrarToast("No se pudo registrar: el concepto es obligatorio.", true);
+        return;
+      }
+
+      confirmarMovimientoCaja.disabled = true;
+      mostrarMensaje("Registrando movimiento de caja...");
+
+      try {
+        const res = await fetch("/caja/movimientos", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          mostrarMensaje(data.message || "Error al registrar movimiento", true);
+          mostrarToast(data.message || "No se pudo registrar el movimiento.", true);
+          return;
+        }
+
+        cerrarModal(modalMovimientoCaja);
+        mostrarMensaje(data.message || "Movimiento registrado");
+        mostrarToast(data.message || "Movimiento de caja registrado.");
+        await cargarCaja();
+      } catch (error) {
+        console.error("Error al registrar movimiento de caja:", error);
+        mostrarMensaje("Error al conectar con el servidor", true);
+        mostrarToast("No se pudo conectar con el servidor.", true);
+      } finally {
+        confirmarMovimientoCaja.disabled = false;
+      }
+    }
+
+    function renderizarTablaMovimientos(movimientos) {
+      tablaMovimientosBody.innerHTML = "";
+      movimientosFiltrados = Array.isArray(movimientos) ? movimientos : [];
+
+      if (!movimientosFiltrados.length) {
+        tablaMovimientosBody.innerHTML = '<tr><td colspan="7">Sin movimientos.</td></tr>';
+        movimientosPageInfo.innerText = "Sin movimientos.";
+        movimientosPagination.innerHTML = "";
+        return;
+      }
+
+      const pageSize = Number(movimientosPageSize.value) || 10;
+      const totalPaginas = Math.max(1, Math.ceil(movimientosFiltrados.length / pageSize));
+      movimientosPaginaActual = Math.min(Math.max(1, movimientosPaginaActual), totalPaginas);
+      const inicio = (movimientosPaginaActual - 1) * pageSize;
+      const movimientosPagina = movimientosFiltrados.slice(inicio, inicio + pageSize);
+
+      movimientosPagina.forEach((movimiento) => {
+        const tipo = getMovimientoTipo(movimiento) === "egreso" ? "Egreso" : "Ingreso";
+        const origenMap = { venta: "Venta", pago: "Pago", cobro: "Cobro", caja: "Caja" };
+        const origen = origenMap[getMovimientoOrigen(movimiento)] || "Venta";
+        const descripcion = buildOperacionDescripcion(movimiento);
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td>${movimiento.hora || "-"}</td>
+          <td>${tipo}</td>
+          <td>${origen}</td>
+          <td>${descripcion}</td>
+          <td>${movimiento.tipo_cobro || "-"}</td>
+          <td>${money(movimiento.total)}</td>
+          <td>${getMovimientoUsuario(movimiento)}</td>
+        `;
+        tablaMovimientosBody.appendChild(row);
+      });
+
+      const finVisible = Math.min(inicio + pageSize, movimientosFiltrados.length);
+      movimientosPageInfo.innerText =
+        `Mostrando ${inicio + 1}-${finVisible} de ${movimientosFiltrados.length} movimientos`;
+      movimientosPagination.innerHTML = "";
+
+      const crearBotonPagina = (label, pagina, disabled = false, active = false) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "page-button";
+        button.innerText = label;
+        button.disabled = disabled;
+        button.classList.toggle("active", active);
+        button.addEventListener("click", function () {
+          movimientosPaginaActual = pagina;
+          renderizarTablaMovimientos(movimientosFiltrados);
+        });
+        movimientosPagination.appendChild(button);
+      };
+
+      crearBotonPagina("<", Math.max(1, movimientosPaginaActual - 1), movimientosPaginaActual === 1);
+      for (let pagina = 1; pagina <= totalPaginas; pagina += 1) {
+        crearBotonPagina(String(pagina), pagina, false, pagina === movimientosPaginaActual);
+      }
+      crearBotonPagina(">", Math.min(totalPaginas, movimientosPaginaActual + 1), movimientosPaginaActual === totalPaginas);
+    }
+
+    function renderizarDetalleCierre(cierre) {
+      if (!cierre) {
+        if (detalleCierre) {
+          detalleCierre.textContent = "Selecciona un cierre para ver el detalle.";
+        }
+        detalleCierreModalBody.innerHTML = "";
+        return;
+      }
+
+      const resumen = cierre.resumen_snapshot || {};
+      const html = `/*  */
+        <div class="list">
+          <div class="item"><strong>Fecha</strong><small>${cierre.fecha} | Apertura: ${cierre.hora} | Cierre: ${cierre.hora_cierre || "-"}</small></div>
+          <div class="item"><strong>Usuario</strong><small>${cierre.usuario || "-"}</small></div>
+          <div class="item"><strong>Montos</strong><small>Apertura: ${money(cierre.monto_apertura)} | Esperado: ${money(cierre.efectivo_esperado)} | Contado: ${money(cierre.efectivo_contado)} | Diferencia: ${money(cierre.diferencia)}</small></div>
+          <div class="item"><strong>Resumen</strong><small>Efectivo: ${money(resumen.total_efectivo)} | Debito/credito: ${money(resumen.total_debito_tarjeta ?? resumen.total_debito)} | Mixtas: ${resumen.operaciones_mixtas || 0} | Pagos: ${money(resumen.total_pagos_general)}</small></div>
+          <div class="item"><strong>Distribucion</strong><small>Caja apertura: ${money(cierre.monto_caja_apertura)} | Caja fondo: ${money(cierre.monto_caja_fondo)}</small></div>
+        </div>
+      `;
+
+      if (detalleCierre) {
+        detalleCierre.innerHTML = html;
+      }
+      detalleCierreModalBody.innerHTML = html;
+    }
+
+    function buildCierreHistoricoRow(cierre) {
+      const resumen = cierre.resumen_snapshot || {};
+      return `
+        <tr>
+          <td>${cierre.fecha || "-"}</td>
+          <td>${cierre.usuario || "-"}</td>
+          <td>${cierre.hora || "-"}</td>
+          <td>${cierre.hora_cierre || "-"}</td>
+          <td>${money(resumen.total_efectivo || 0)}</td>
+          <td>${money(resumen.total_debito_tarjeta ?? resumen.total_debito ?? 0)}</td>
+          <td>${resumen.operaciones_mixtas || 0}</td>
+          <td>${money(resumen.total_pagos_general || 0)}</td>
+          <td>${money(cierre.efectivo_esperado)}</td>
+          <td>${money(cierre.diferencia)}</td>
+          <td>${cierre.estado || "-"}</td>
+          <td><button type="button" class="button secondary compact" data-cierre-id="${cierre.id}" title="Ver cierre">&#128065;</button></td>
+        </tr>
+      `;
+    }
+
+    function getCierresHistoricosVisibles() {
+      if (!cierresFiltroTexto) {
+        return cierresActuales;
+      }
+
+      return cierresActuales.filter((cierre) => {
+        const resumen = cierre.resumen_snapshot || {};
+        return [
+          cierre.fecha,
+          cierre.usuario,
+          cierre.hora,
+          cierre.hora_cierre,
+          cierre.estado,
+          resumen.operaciones_mixtas
+        ].some((valor) => String(valor || "").toLowerCase().includes(cierresFiltroTexto));
+      });
+    }
+
+    function exportarCierresHistoricos() {
+      const cierres = getCierresHistoricosVisibles();
+
+      if (!cierres.length) {
+        mostrarMensaje("No hay cierres para exportar", true);
+        return;
+      }
+
+      const headers = [
+        "Fecha",
+        "Usuario",
+        "Apertura",
+        "Cierre",
+        "Total efectivo",
+        "Total debito/credito",
+        "Total mixtas",
+        "Total pagos",
+        "Efectivo esperado",
+        "Diferencia",
+        "Estado"
+      ];
+      const rows = cierres.map((cierre) => {
+        const resumen = cierre.resumen_snapshot || {};
+        return [
+          cierre.fecha || "",
+          cierre.usuario || "",
+          cierre.hora || "",
+          cierre.hora_cierre || "",
+          formatearNumero(resumen.total_efectivo || 0),
+          formatearNumero(resumen.total_debito_tarjeta ?? resumen.total_debito ?? 0),
+          resumen.operaciones_mixtas || 0,
+          formatearNumero(resumen.total_pagos_general || 0),
+          formatearNumero(cierre.efectivo_esperado),
+          formatearNumero(cierre.diferencia),
+          cierre.estado || ""
+        ];
+      });
+      descargarCsv("cierres_historicos.csv", headers, rows);
+      mostrarMensaje("Cierres historicos exportados.");
+      mostrarToast("Cierres historicos exportados correctamente.");
+    }
+
+    function renderizarTablaCierresHistoricos() {
+      cierresHistoricosBody.innerHTML = "";
+      const cierresVisibles = getCierresHistoricosVisibles();
+
+      if (!cierresVisibles.length) {
+        cierresHistoricosBody.innerHTML = '<tr><td colspan="12">No hay cajas cerradas todavia.</td></tr>';
+        cierresPageInfo.innerText = cierresFiltroTexto ? "Sin cierres para el filtro aplicado." : "Sin cierres.";
+        cierresPagination.innerHTML = "";
+        return;
+      }
+
+      const pageSize = Number(cierresPageSize.value) || 5;
+      const totalPaginas = Math.max(1, Math.ceil(cierresVisibles.length / pageSize));
+      cierresPaginaActual = Math.min(Math.max(1, cierresPaginaActual), totalPaginas);
+      const inicio = (cierresPaginaActual - 1) * pageSize;
+      const pagina = cierresVisibles.slice(inicio, inicio + pageSize);
+      cierresHistoricosBody.innerHTML = pagina.map(buildCierreHistoricoRow).join("");
+
+      cierresHistoricosBody.querySelectorAll("[data-cierre-id]").forEach((button) => {
+        button.addEventListener("click", async function () {
+          await cargarDetalleCierre(button.dataset.cierreId, true);
+        });
+      });
+
+      const finVisible = Math.min(inicio + pageSize, cierresVisibles.length);
+      cierresPageInfo.innerText = `Mostrando ${inicio + 1}-${finVisible} de ${cierresVisibles.length} cierres`;
+      cierresPagination.innerHTML = "";
+
+      const crearBotonPagina = (label, paginaDestino, disabled = false, active = false) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "page-button";
+        button.innerText = label;
+        button.disabled = disabled;
+        button.classList.toggle("active", active);
+        button.addEventListener("click", function () {
+          cierresPaginaActual = paginaDestino;
+          renderizarTablaCierresHistoricos();
+        });
+        cierresPagination.appendChild(button);
+      };
+
+      crearBotonPagina("<", Math.max(1, cierresPaginaActual - 1), cierresPaginaActual === 1);
+      for (let paginaNumero = 1; paginaNumero <= totalPaginas; paginaNumero += 1) {
+        crearBotonPagina(String(paginaNumero), paginaNumero, false, paginaNumero === cierresPaginaActual);
+      }
+      crearBotonPagina(">", Math.min(totalPaginas, cierresPaginaActual + 1), cierresPaginaActual === totalPaginas);
+    }
+
+    function renderizarHistorialCierres(cierres) {
+      cierresActuales = Array.isArray(cierres) ? cierres : [];
+      cierresPaginaActual = 1;
+      cierresFiltroTexto = "";
+      renderizarTablaCierresHistoricos();
+
+      if (!historialCierres) {
+        return;
+      }
+
+      historialCierres.innerHTML = "";
+      if (cierresActuales.length === 0) {
+        historialCierres.innerHTML = '<div class="item">No hay cajas cerradas todavia.</div>';
+        renderizarDetalleCierre(null);
+        return;
+      }
+
+      cierresActuales.forEach((cierre, index) => {
+        const bloque = document.createElement("div");
+        bloque.className = "item";
+        bloque.innerHTML =
+          `<strong>${cierre.fecha}</strong>
+           <small>Apertura: ${cierre.hora} | Cierre: ${cierre.hora_cierre || "-"} | Esperado: ${money(cierre.efectivo_esperado)} | Contado: ${money(cierre.efectivo_contado)} | Diferencia: ${money(cierre.diferencia)}</small>`;
+
+        const botonVer = document.createElement("button");
+        botonVer.type = "button";
+        botonVer.className = "button secondary";
+        botonVer.style.marginTop = "10px";
+        botonVer.innerText = "Ver detalle";
+        botonVer.addEventListener("click", function () {
+          cargarDetalleCierre(cierre.id);
+        });
+
+        bloque.appendChild(botonVer);
+        historialCierres.appendChild(bloque);
+
+        if (index === 0) {
+          cargarDetalleCierre(cierre.id);
+        }
+      });
+    }
+
+    async function cargarHistorialCierres() {
+      try {
+        const res = await fetch("/caja/cierres");
+        if (!res.ok) {
+          throw new Error("No se pudo obtener historial de cierres");
+        }
+        renderizarHistorialCierres(await res.json());
+      } catch (error) {
+        console.error("Error al cargar historial de cierres:", error);
+        if (historialCierres) {
+          historialCierres.innerHTML = '<div class="item">Error al cargar historial de cierres.</div>';
+        }
+      }
+    }
+
+    async function cargarDetalleCierre(cierreId, mostrarModal = false) {
+      try {
+        const res = await fetch(`/caja/cierres/${cierreId}`);
+        if (!res.ok) {
+          throw new Error("No se pudo obtener detalle del cierre");
+        }
+        renderizarDetalleCierre(await res.json());
+        if (mostrarModal) {
+          abrirModal(modalDetalleCierre);
+        }
+      } catch (error) {
+        console.error("Error al cargar detalle del cierre:", error);
+        if (detalleCierre) {
+          detalleCierre.innerText = "Error al cargar detalle del cierre.";
+        }
+      }
+    }
+
+    function getArqueosHistoricosVisibles() {
+      if (!arqueosFiltroTexto) {
+        return arqueosActuales;
+      }
+
+      return arqueosActuales.filter((arqueo) => [
+        arqueo.fecha,
+        arqueo.hora,
+        arqueo.usuario,
+        arqueo.estado,
+        arqueo.observaciones
+      ].some((valor) => String(valor || "").toLowerCase().includes(arqueosFiltroTexto)));
+    }
+
+    function buildArqueoHistoricoRow(arqueo) {
+      const estadoClass = arqueo.estado === "Falta" ? "negative-text" : "positive-text";
+      const estadoRegistro = Number(arqueo.registrado_cierre) === 1 ? "Registrado" : "Guardado";
+      return `
+        <tr>
+          <td>${arqueo.hora || "-"}</td>
+          <td>${arqueo.usuario || "-"}</td>
+          <td>${money(arqueo.efectivo_contado)}</td>
+          <td class="${Number(arqueo.diferencia_efectivo || 0) < 0 ? "negative-text" : "positive-text"}">${money(arqueo.diferencia_efectivo)}</td>
+          <td>${money(arqueo.digital_real)}</td>
+          <td class="${Number(arqueo.diferencia_digital || 0) < 0 ? "negative-text" : "positive-text"}">${money(arqueo.diferencia_digital)}</td>
+          <td class="${Number(arqueo.resultado_final || 0) < 0 ? "negative-text" : "positive-text"}">${money(arqueo.resultado_final)}</td>
+          <td class="${estadoClass}">${arqueo.estado || "-"}<br><small class="muted">${estadoRegistro}</small></td>
+          <td>${arqueo.observaciones || "-"}</td>
+          <td><button type="button" class="button secondary compact" data-arqueo-id="${arqueo.id}" title="Ver arqueo">&#128065;</button></td>
+        </tr>
+      `;
+    }
+
+    function renderizarTablaArqueosHistoricos() {
+      const arqueosVisibles = getArqueosHistoricosVisibles();
+
+      if (!arqueosVisibles.length) {
+        arqueosHistoricosBody.innerHTML = '<tr><td colspan="10">No hay arqueos registrados.</td></tr>';
+        arqueosPageInfo.innerText = arqueosFiltroTexto ? "Sin arqueos para el filtro aplicado." : "Sin arqueos.";
+        arqueosPagination.innerHTML = "";
+        return;
+      }
+
+      const pageSize = Number(arqueosPageSize.value) || 5;
+      const totalPaginas = Math.max(1, Math.ceil(arqueosVisibles.length / pageSize));
+      arqueosPaginaActual = Math.min(Math.max(1, arqueosPaginaActual), totalPaginas);
+      const inicio = (arqueosPaginaActual - 1) * pageSize;
+      const pagina = arqueosVisibles.slice(inicio, inicio + pageSize);
+      arqueosHistoricosBody.innerHTML = pagina.map(buildArqueoHistoricoRow).join("");
+      arqueosHistoricosBody.querySelectorAll("[data-arqueo-id]").forEach((button) => {
+        button.addEventListener("click", async function () {
+          await cargarDetalleArqueo(button.dataset.arqueoId);
+        });
+      });
+
+      const finVisible = Math.min(inicio + pageSize, arqueosVisibles.length);
+      arqueosPageInfo.innerText = `Mostrando ${inicio + 1}-${finVisible} de ${arqueosVisibles.length} arqueos`;
+      arqueosPagination.innerHTML = "";
+
+      const crearBotonPagina = (label, paginaDestino, disabled = false, active = false) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "page-button";
+        button.innerText = label;
+        button.disabled = disabled;
+        button.classList.toggle("active", active);
+        button.addEventListener("click", function () {
+          arqueosPaginaActual = paginaDestino;
+          renderizarTablaArqueosHistoricos();
+        });
+        arqueosPagination.appendChild(button);
+      };
+
+      crearBotonPagina("<", Math.max(1, arqueosPaginaActual - 1), arqueosPaginaActual === 1);
+      for (let paginaNumero = 1; paginaNumero <= totalPaginas; paginaNumero += 1) {
+        crearBotonPagina(String(paginaNumero), paginaNumero, false, paginaNumero === arqueosPaginaActual);
+      }
+      crearBotonPagina(">", Math.min(totalPaginas, arqueosPaginaActual + 1), arqueosPaginaActual === totalPaginas);
+    }
+
+    function renderizarDetalleArqueo(arqueo) {
+      const cuentas = Array.isArray(arqueo.cuentas_detalle) ? arqueo.cuentas_detalle : [];
+      const conteo = arqueo.conteo_detalle || {};
+      detalleArqueoModalBody.innerHTML = `
+        <div class="list">
+          <div class="item"><strong>Control</strong><small>${arqueo.fecha || "-"} ${arqueo.hora || ""} | Usuario: ${arqueo.usuario || "-"}</small></div>
+          <div class="item"><strong>Efectivo</strong><small>Esperado: ${money(arqueo.efectivo_esperado)} | Contado: ${money(arqueo.efectivo_contado)} | Diferencia: ${money(arqueo.diferencia_efectivo)}</small></div>
+          <div class="item"><strong>Digital</strong><small>Esperado: ${money(arqueo.digital_esperado)} | Real: ${money(arqueo.digital_real)} | Diferencia: ${money(arqueo.diferencia_digital)}</small></div>
+          <div class="item"><strong>Resultado</strong><small>${money(arqueo.resultado_final)} | ${arqueo.estado || "-"} | ${Number(arqueo.registrado_cierre) === 1 ? "Registrado para cierre" : "Guardado sin registrar"}</small></div>
+          <div class="item"><strong>Observaciones</strong><small>${arqueo.observaciones || "-"}</small></div>
+          <div class="item"><strong>Conteo</strong><small>${Object.entries(conteo).map(([den, cant]) => `$${den}: ${cant}`).join(" | ") || "-"}</small></div>
+          <div class="item"><strong>Cuentas</strong><small>${cuentas.map((cuenta) => `${cuenta.nombre}: inicial ${money(cuenta.saldo_inicial)}, actual ${money(cuenta.saldo_actual)}, real ${money(cuenta.recaudacion_real)}`).join(" | ") || "-"}</small></div>
+        </div>
+      `;
+    }
+
+    function renderizarHistorialArqueos(arqueos) {
+      arqueosActuales = Array.isArray(arqueos) ? arqueos : [];
+      arqueosPaginaActual = 1;
+      const ultimo = arqueosActuales[0];
+      arqueoGuardadoId = ultimo?.id || null;
+      arqueoPreparadoParaCierre = Number(ultimo?.registrado_cierre) === 1;
+      renderizarArqueosVisuales();
+      renderizarTablaArqueosHistoricos();
+      actualizarEstadoCierre();
+    }
+
+    function exportarArqueosHistoricos() {
+      const arqueos = getArqueosHistoricosVisibles();
+
+      if (!arqueos.length) {
+        mostrarMensaje("No hay arqueos para exportar", true);
+        mostrarToast("No hay arqueos para exportar.", true);
+        return;
+      }
+
+      const filas = arqueos.map((arqueo) => [
+        arqueo.fecha || "",
+        arqueo.hora || "",
+        arqueo.usuario || "",
+        formatearNumero(arqueo.efectivo_contado),
+        formatearNumero(arqueo.diferencia_efectivo),
+        formatearNumero(arqueo.digital_real),
+        formatearNumero(arqueo.diferencia_digital),
+        formatearNumero(arqueo.resultado_final),
+        arqueo.estado || "",
+        arqueo.observaciones || ""
+      ]);
+
+      descargarCsv(
+        "arqueos_diarios.csv",
+        ["Fecha", "Hora", "Usuario", "Eft contado", "Diferencia eft", "Recaudacion deb", "Diferencia deb", "Resultado final", "Estado", "Observaciones"],
+        filas
+      );
+      mostrarMensaje("Arqueos exportados.");
+      mostrarToast("Arqueos exportados correctamente.");
+    }
+
+    async function cargarHistorialArqueos() {
+      try {
+        const res = await fetch("/caja/arqueos");
+        if (!res.ok) {
+          throw new Error("No se pudo obtener historial de arqueos");
+        }
+        renderizarHistorialArqueos(await res.json());
+      } catch (error) {
+        console.error("Error al cargar historial de arqueos:", error);
+        arqueosHistoricosBody.innerHTML = '<tr><td colspan="10">Error al cargar arqueos.</td></tr>';
+      }
+    }
+
+    async function cargarDetalleArqueo(arqueoId) {
+      try {
+        const res = await fetch(`/caja/arqueos/${arqueoId}`);
+        if (!res.ok) {
+          throw new Error("No se pudo obtener detalle del arqueo");
+        }
+        renderizarDetalleArqueo(await res.json());
+        abrirModal(modalDetalleArqueo);
+      } catch (error) {
+        console.error("Error al cargar detalle del arqueo:", error);
+        mostrarToast("Error al cargar detalle del arqueo.", true);
+      }
+    }
+
+    async function cargarCaja() {
+      try {
+        const [res, configRes] = await Promise.all([
+          fetch("/caja/resumen"),
+          fetch("/configuracion")
+        ]);
+        if (!res.ok) {
+          throw new Error("No se pudo obtener caja");
+        }
+        const configData = configRes.ok ? await configRes.json() : { config: {} };
+        aplicarCuentasPagoConfig(configData.config || {});
+        const data = await res.json();
+        renderizarApertura(data.apertura);
+        renderizarResumen(data.resumen);
+        renderizarVentas(data.ventas);
+      } catch (error) {
+        console.error("Error al cargar caja:", error);
+        estadoApertura.innerText = "Error al cargar apertura.";
+        detalleVentas.innerHTML = '<tr><td colspan="5">Error al cargar movimientos.</td></tr>';
+        mostrarMensaje("Error al cargar caja", true);
+      }
+    }
+
+    async function abrirCaja() {
+      const payload = {
+        usuario: usuarioApertura.value.trim() || "admin"
+      };
+
+      botonAbrirCaja.disabled = true;
+      mostrarMensaje("Registrando apertura...");
+
+      try {
+        const res = await fetch("/caja/apertura", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          mostrarMensaje(data.message || "Error al abrir caja", true);
+          return;
+        }
+        mostrarMensaje(data.message || "Caja abierta");
+        await cargarCaja();
+        await cargarHistorialArqueos();
+      } catch (error) {
+        console.error("Error al abrir caja:", error);
+        mostrarMensaje("Error al abrir caja", true);
+      } finally {
+        botonAbrirCaja.disabled = aperturaActual?.estado === "abierta";
+      }
+    }
+
+    async function cerrarCaja() {
+      if (botonCerrarCaja.disabled) {
+        mostrarToast("No se puede cerrar: falta caja abierta o arqueo registrado.", true);
+        return;
+      }
+
+      const conteo = {};
+      denominaciones.forEach((denominacion) => {
+        conteo[String(denominacion)] = Number(conteoInputs[denominacion]?.value || 0);
+      });
+
+      const payload = {
+        conteo,
+        monto_caja_apertura: Number(montoCajaAperturaCierre?.value) || 0,
+        monto_caja_fondo: Number(montoCajaFondoCierre?.value) || 0
+      };
+
+      botonCerrarCaja.disabled = true;
+      mostrarMensaje("Registrando cierre...");
+
+      try {
+        const res = await fetch("/caja/cierre", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          mostrarMensaje(data.message || "Error al cerrar caja", true);
+          mostrarToast(data.message || "No se pudo cerrar la caja.", true);
+          return;
+        }
+        mostrarMensaje(data.message || "Caja cerrada");
+        mostrarToast(data.message || "Caja cerrada correctamente.");
+        await cargarCaja();
+        await cargarHistorialCierres();
+        await cargarHistorialArqueos();
+      } catch (error) {
+        console.error("Error al cerrar caja:", error);
+        mostrarMensaje("Error al cerrar caja", true);
+        mostrarToast("Error al conectar con el servidor.", true);
+      } finally {
+        actualizarEstadoCierre();
+      }
+    }
+
+    function buildConteoPayload() {
+      const conteo = {};
+      denominaciones.forEach((denominacion) => {
+        conteo[String(denominacion)] = Number(conteoInputs[denominacion]?.value || 0);
+      });
+      return conteo;
+    }
+
+    function buildArqueoPayload(registradoCierre) {
+      return {
+        usuario: aperturaActual?.usuario || usuarioApertura.value.trim() || "admin",
+        observaciones: observacionesArqueo.value.trim(),
+        conteo: buildConteoPayload(),
+        cuentas: getCuentasDigitales(),
+        registrado_cierre: registradoCierre ? 1 : 0
+      };
+    }
+
+    function cargarArqueoEnFormulario(arqueo) {
+      const conteo = arqueo.conteo_detalle || {};
+      denominaciones.forEach((denominacion) => {
+        if (conteoInputs[denominacion]) {
+          conteoInputs[denominacion].value = Number(conteo[String(denominacion)] || 0);
+        }
+      });
+
+      const cuentas = Array.isArray(arqueo.cuentas_detalle) ? arqueo.cuentas_detalle : [];
+      cuentas.forEach((cuenta, index) => {
+        const inputGroup = cuentaInputs[index];
+        if (!inputGroup) {
+          return;
+        }
+        inputGroup.nombre.value = cuenta.nombre || inputGroup.nombre.value;
+        inputGroup.saldoInicial.value = Number(cuenta.saldo_inicial || 0);
+        inputGroup.saldoActual.value = Number(cuenta.saldo_actual || 0);
+      });
+
+      observacionesArqueo.value = arqueo.observaciones || "";
+      arqueoGuardadoId = arqueo.id;
+      arqueoPreparadoParaCierre = Number(arqueo.registrado_cierre) === 1;
+      actualizarResumenCierre();
+      actualizarEstadoCierre();
+    }
+
+    async function editarArqueo() {
+      const arqueo = arqueosActuales.find((item) => Number(item.id) === Number(arqueoGuardadoId)) || arqueosActuales[0];
+
+      if (!arqueo) {
+        mostrarMensaje("No hay un arqueo guardado para editar", true);
+        mostrarToast("Primero guarda un arqueo.", true);
+        return;
+      }
+
+      try {
+        const res = await fetch(`/caja/arqueos/${arqueo.id}`);
+        if (!res.ok) {
+          throw new Error("No se pudo cargar el arqueo");
+        }
+        cargarArqueoEnFormulario(await res.json());
+        mostrarMensaje("Arqueo cargado para editar. Guarda los cambios o registralo para cierre.");
+        mostrarToast("Arqueo listo para editar.");
+      } catch (error) {
+        console.error("Error al editar arqueo:", error);
+        mostrarToast("No se pudo cargar el arqueo.", true);
+      }
+    }
+
+    async function enviarArqueo(registradoCierre) {
+      if (!aperturaActual || aperturaActual.estado !== "abierta") {
+        mostrarMensaje("No hay una caja abierta para guardar el arqueo", true);
+        mostrarToast("No hay una caja abierta para guardar el arqueo.", true);
+        return;
+      }
+
+      if (!tieneRomaneoCargado()) {
+        mostrarMensaje("Carga el romaneo antes de guardar el arqueo", true);
+        mostrarToast("Carga el romaneo antes de guardar el arqueo.", true);
+        return;
+      }
+
+      const boton = registradoCierre ? botonRegistrarArqueo : botonGuardarArqueo;
+      boton.disabled = true;
+      mostrarMensaje(registradoCierre ? "Registrando arqueo..." : "Guardando arqueo...");
+
+      try {
+        const url = arqueoGuardadoId ? `/caja/arqueos/${arqueoGuardadoId}` : "/caja/arqueos";
+        const res = await fetch(url, {
+          method: arqueoGuardadoId ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(buildArqueoPayload(registradoCierre))
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          mostrarMensaje(data.message || "Error al guardar arqueo", true);
+          mostrarToast(data.message || "No se pudo guardar el arqueo.", true);
+          return;
+        }
+
+        arqueoGuardadoId = data.arqueo?.id || arqueoGuardadoId;
+        arqueoPreparadoParaCierre = registradoCierre;
+        mostrarMensaje(data.message || (registradoCierre ? "Arqueo registrado" : "Arqueo guardado"));
+        mostrarToast(data.message || (registradoCierre ? "Arqueo registrado correctamente." : "Arqueo guardado. Registralo para poder cerrar caja."));
+        await cargarHistorialArqueos();
+      } catch (error) {
+        console.error("Error al guardar arqueo:", error);
+        mostrarMensaje("Error al conectar con el servidor", true);
+        mostrarToast("No se pudo conectar con el servidor.", true);
+      } finally {
+        boton.disabled = false;
+        actualizarEstadoCierre();
+      }
+    }
+
+    function guardarArqueo() {
+      return enviarArqueo(false);
+    }
+
+    function registrarArqueo() {
+      return enviarArqueo(true);
+    }
+
+    tabButtons.forEach((button) => {
+      button.addEventListener("click", function () {
+        const tab = button.dataset.tab;
+        tabButtons.forEach((item) => item.classList.toggle("active", item === button));
+        sections.forEach((section) => {
+          section.classList.toggle("active", section.id === `tab-${tab}`);
+        });
+      });
+    });
+
+    botonExportarMovimientos.addEventListener("click", exportarMovimientos);
+
+    botonFiltrarMovimientos.addEventListener("click", function () {
+      aplicarFiltrosMovimientos(true);
+    });
+
+    botonLimpiarFiltrosMovimientos.addEventListener("click", limpiarFiltrosMovimientos);
+
+    filtroUsuario.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        aplicarFiltrosMovimientos(true);
+      }
+    });
+
+    movimientosPageSize.addEventListener("change", function () {
+      movimientosPaginaActual = 1;
+      renderizarTablaMovimientos(movimientosFiltrados);
+    });
+
+    botonVerTodosMovimientos.addEventListener("click", function () {
+      abrirModal(modalMovimientosCaja);
+    });
+
+    cerrarModalMovimientos.addEventListener("click", function () {
+      cerrarModal(modalMovimientosCaja);
+    });
+
+    botonVerTodosArqueos.addEventListener("click", function () {
+      abrirModal(modalArqueosCaja);
+    });
+
+    cerrarModalArqueos.addEventListener("click", function () {
+      cerrarModal(modalArqueosCaja);
+    });
+
+    cerrarCajaResumen.addEventListener("click", function () {
+      document.querySelector('[data-tab="apertura-cierre"]').click();
+      if (botonCerrarCaja.disabled) {
+        mostrarToast("Antes de cerrar caja carga y registra el arqueo en la pestaña Arqueos.", true);
+        document.querySelector('[data-tab="arqueos"]').click();
+        return;
+      }
+      botonCerrarCaja.focus();
+    });
+
+    filtroGraficoMetodos.addEventListener("change", actualizarGraficoMetodos);
+
+    botonIngresarDineroVisual.addEventListener("click", function () {
+      abrirMovimientoCaja("ingreso");
+    });
+
+    botonRetirarDineroVisual.addEventListener("click", function () {
+      abrirMovimientoCaja("egreso");
+    });
+
+    confirmarMovimientoCaja.addEventListener("click", registrarMovimientoCaja);
+
+    cerrarModalMovimientoCaja.addEventListener("click", function () {
+      cerrarModal(modalMovimientoCaja);
+    });
+
+    botonGuardarArqueo.addEventListener("click", guardarArqueo);
+    botonEditarArqueo.addEventListener("click", editarArqueo);
+    botonRegistrarArqueo.addEventListener("click", registrarArqueo);
+    observacionesArqueo.addEventListener("input", marcarArqueoPendienteRegistro);
+
+    toggleNotificaciones.addEventListener("click", function (event) {
+      event.stopPropagation();
+      notificacionesDropdown.classList.toggle("open");
+    });
+
+    document.addEventListener("click", function (event) {
+      if (!notificacionesDropdown.contains(event.target) && event.target !== toggleNotificaciones) {
+        notificacionesDropdown.classList.remove("open");
+      }
+    });
+
+    botonVerDetalleApertura.addEventListener("click", function () {
+      renderizarDetalleApertura();
+      abrirModal(modalDetalleApertura);
+    });
+
+    cerrarModalDetalleApertura.addEventListener("click", function () {
+      cerrarModal(modalDetalleApertura);
+    });
+
+    cerrarModalDetalleCierre.addEventListener("click", function () {
+      cerrarModal(modalDetalleCierre);
+    });
+
+    cierresPageSize.addEventListener("change", function () {
+      cierresPaginaActual = 1;
+      renderizarTablaCierresHistoricos();
+    });
+
+    arqueosPageSize.addEventListener("change", function () {
+      arqueosPaginaActual = 1;
+      renderizarTablaArqueosHistoricos();
+    });
+
+    botonFiltrarArqueosHistoricos.addEventListener("click", function () {
+      const filtro = window.prompt("Filtrar arqueos por fecha, usuario, estado u observaciones. Dejar vacio para limpiar filtro.", arqueosFiltroTexto);
+      if (filtro === null) {
+        return;
+      }
+      arqueosFiltroTexto = filtro.trim().toLowerCase();
+      arqueosPaginaActual = 1;
+      renderizarTablaArqueosHistoricos();
+    });
+
+    botonExportarArqueosHistoricos.addEventListener("click", exportarArqueosHistoricos);
+
+    botonFiltrarCierresHistoricos.addEventListener("click", function () {
+      const filtro = window.prompt("Filtrar cierres por fecha, usuario o estado. Dejar vacio para limpiar filtro.", cierresFiltroTexto);
+      if (filtro === null) {
+        return;
+      }
+      cierresFiltroTexto = filtro.trim().toLowerCase();
+      cierresPaginaActual = 1;
+      renderizarTablaCierresHistoricos();
+    });
+
+    botonExportarCierresHistoricos.addEventListener("click", exportarCierresHistoricos);
+
+    cerrarModalDetalleArqueo.addEventListener("click", function () {
+      cerrarModal(modalDetalleArqueo);
+    });
+
+    [modalMovimientosCaja, modalArqueosCaja, modalDetalleApertura, modalDetalleCierre, modalDetalleArqueo, modalMovimientoCaja].forEach((modal) => {
+      modal.addEventListener("click", function (event) {
+        if (event.target === modal) {
+          cerrarModal(modal);
+        }
+      });
+    });
+
+    botonAbrirCaja.addEventListener("click", abrirCaja);
+    botonCerrarCaja.addEventListener("click", cerrarCaja);
+
+    renderizarConteoBilletes();
+    renderizarCuentasDigitales();
+    renderizarArqueosVisuales();
+    actualizarGraficoMetodos();
+    cargarCaja();
+    cargarHistorialCierres();
+    cargarHistorialArqueos();
+  </script>
+  <script src="/nav-permissions.js?v=6" defer></script>
+  <script src="/user-menu.js?v=7" defer></script>
+</body>
+</html>

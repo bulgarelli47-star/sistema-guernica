@@ -1,0 +1,1267 @@
+﻿<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pagos - Sistema Guernica</title>
+  <style>
+    :root {
+      --header-height: 88px;
+      --sidebar-width: 270px;
+      --bg: #f7f7fb;
+      --surface: #ffffff;
+      --sidebar: #ffffff;
+      --header: #16052e;
+      --text: #111827;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --primary: #6d28d9;
+      --primary-strong: #7c3aed;
+      --primary-soft: #f0e5ff;
+      --success: #22a35a;
+      --danger: #e05252;
+      --warning: #d99a21;
+      --info: #3478f6;
+      --shadow: 0 12px 30px rgba(31, 11, 63, 0.08);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #fbfaff 0%, var(--bg) 100%);
+      color: var(--text);
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    button, input, select, textarea { font: inherit; }
+
+    .site-header {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 30;
+      min-height: var(--header-height);
+      background: var(--header);
+      box-shadow: var(--shadow);
+    }
+
+    .topbar {
+      min-height: var(--header-height);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      color: #ffffff;
+      padding: 18px 28px;
+    }
+
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      min-width: 0;
+    }
+
+    .brand-block {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-shrink: 0;
+    }
+
+    .logo-mark {
+      width: 54px;
+      height: 54px;
+      border-radius: 18px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, #2b0b53 0%, var(--primary-strong) 100%);
+      font-size: 28px;
+      font-weight: 900;
+      box-shadow: 0 10px 24px rgba(124, 58, 237, 0.28);
+      flex-shrink: 0;
+    }
+
+    .logo-text strong {
+      display: block;
+      font-size: 18px;
+      letter-spacing: 0.08em;
+    }
+
+    .logo-text small {
+      color: rgba(255, 255, 255, 0.76);
+      letter-spacing: 0.08em;
+    }
+
+    .topbar-divider {
+      width: 1px;
+      height: 42px;
+      background: rgba(255, 255, 255, 0.14);
+      flex-shrink: 0;
+    }
+
+    .topbar-title h1 {
+      margin: 0;
+      font-size: 26px;
+    }
+
+    .topbar-title p {
+      margin: 6px 0 0;
+      color: rgba(255, 255, 255, 0.82);
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .chip {
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: rgba(255, 255, 255, 0.08);
+      color: white;
+      padding: 10px 12px;
+      border-radius: 999px;
+      font-size: 14px;
+    }
+
+    button.chip {
+      cursor: pointer;
+    }
+
+    .chip.icon-chip {
+      width: 42px;
+      height: 42px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      font-size: 18px;
+    }
+
+    .top-actions-menu {
+      position: relative;
+    }
+
+    .notifications-dropdown {
+      position: absolute;
+      top: calc(100% + 10px);
+      right: 0;
+      width: min(360px, calc(100vw - 32px));
+      background: #ffffff;
+      color: var(--text);
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      box-shadow: 0 24px 60px rgba(17, 24, 39, 0.24);
+      padding: 14px;
+      display: none;
+      z-index: 90;
+    }
+
+    .notifications-dropdown.open {
+      display: grid;
+      gap: 12px;
+    }
+
+    .notifications-dropdown h3,
+    .notifications-dropdown p {
+      margin: 0;
+    }
+
+    .notification-list {
+      display: grid;
+      gap: 8px;
+      max-height: 280px;
+      overflow: auto;
+    }
+
+    .notification-item {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px 12px;
+      background: #fafafe;
+      display: grid;
+      gap: 4px;
+    }
+
+    .notification-item small {
+      color: var(--muted);
+    }
+
+    .user-box {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-left: 6px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: rgba(255, 255, 255, 0.16);
+      font-weight: 800;
+    }
+
+    .user-box strong,
+    .user-box small {
+      display: block;
+    }
+
+    .user-box small {
+      color: rgba(255, 255, 255, 0.72);
+    }
+
+    .app-shell {
+      display: grid;
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      min-height: calc(100vh - var(--header-height));
+      margin-top: var(--header-height);
+    }
+
+    .sidebar {
+      background: var(--sidebar);
+      border-right: 1px solid var(--border);
+      padding: 20px 18px 24px;
+      min-height: calc(100vh - var(--header-height));
+    }
+
+    .nav-title {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .nav {
+      display: grid;
+      gap: 8px;
+    }
+
+    .nav a {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      color: var(--text);
+      padding: 12px 14px;
+      border-radius: 14px;
+      transition: background 0.2s ease, transform 0.2s ease;
+    }
+
+    .nav a:hover {
+      background: var(--primary-soft);
+      transform: translateX(3px);
+    }
+
+    .nav a.active {
+      background: var(--primary-soft);
+      color: var(--primary);
+      font-weight: 700;
+    }
+
+    .nav-icon {
+      width: 22px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .nav a.active .nav-icon {
+      color: var(--primary);
+    }
+
+    .branch-card {
+      margin-top: 22px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: #ffffff;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .branch-card strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .branch-card small {
+      color: var(--muted);
+    }
+
+    .main {
+      min-width: 0;
+      padding: 24px;
+      display: grid;
+      gap: 18px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .kpi {
+      padding: 14px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: #ffffff;
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .kpi span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .kpi strong { font-size: 24px; letter-spacing: -0.03em; }
+    .kpi-line { width: 100%; height: 28px; }
+    .kpi-line polyline { fill: none; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+
+    .layout {
+      display: grid;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .payment-form-compact {
+      display: grid;
+      gap: 10px;
+    }
+
+    .payment-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      align-items: end;
+    }
+
+    .payment-row.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .method-buttons,
+    .state-buttons {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .method-button,
+    .state-button {
+      border: 1px solid var(--border);
+      background: #ffffff;
+      color: var(--text);
+      border-radius: 12px;
+      padding: 10px 13px;
+      cursor: pointer;
+      font-weight: 900;
+      min-width: 88px;
+    }
+
+    .method-button.active,
+    .state-button.active {
+      background: var(--primary-soft);
+      color: var(--primary);
+      border-color: rgba(109, 40, 217, 0.25);
+    }
+
+    .state-button.pay.active {
+      background: rgba(34, 163, 90, 0.12);
+      color: var(--success);
+      border-color: rgba(34, 163, 90, 0.24);
+    }
+
+    .state-button.pending.active {
+      background: rgba(217, 154, 33, 0.14);
+      color: var(--warning);
+      border-color: rgba(217, 154, 33, 0.28);
+    }
+
+    .full { grid-column: 1 / -1; }
+
+    .field {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: #ffffff;
+      border-radius: 14px;
+      padding: 11px 13px;
+      outline: none;
+    }
+
+    textarea.field {
+      min-height: 84px;
+      resize: vertical;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .button {
+      border: none;
+      border-radius: 12px;
+      padding: 11px 14px;
+      cursor: pointer;
+      font-weight: 800;
+      background: var(--primary);
+      color: #ffffff;
+    }
+
+    .button.secondary {
+      background: #ffffff;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .button.success { background: var(--success); }
+
+    .icon-button {
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      border: none;
+      display: inline-grid;
+      place-items: center;
+      background: var(--success);
+      color: #ffffff;
+      cursor: pointer;
+      font-size: 24px;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .toolbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: none;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 28px 18px;
+      background: rgba(17, 24, 39, 0.46);
+      overflow: auto;
+    }
+
+    .modal-backdrop.open {
+      display: flex;
+    }
+
+    .modal-card {
+      width: min(680px, 100%);
+      max-height: calc(100vh - 56px);
+      overflow: auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 26px 70px rgba(17, 24, 39, 0.28);
+      padding: 18px;
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .modal-header h2 {
+      margin: 0;
+    }
+
+    .close-button {
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #ffffff;
+      color: var(--text);
+      cursor: pointer;
+      font-size: 24px;
+      line-height: 1;
+    }
+
+    .table-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    .history-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .page-size-control {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .page-size-control select {
+      width: auto;
+      min-width: 82px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th, td {
+      padding: 10px 9px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+    }
+
+    .pill {
+      display: inline-flex;
+      padding: 5px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      background: var(--primary-soft);
+      color: var(--primary);
+    }
+
+    .pill.pending {
+      background: rgba(217, 154, 33, 0.14);
+      color: var(--warning);
+    }
+
+    .message {
+      min-height: 20px;
+      font-weight: 700;
+    }
+
+    .hidden { display: none; }
+
+    .muted { color: var(--muted); }
+
+    @media (max-width: 1100px) {
+      .layout, .kpi-grid { grid-template-columns: 1fr; }
+      .form-grid { grid-template-columns: 1fr; }
+      .payment-row,
+      .payment-row.two { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 860px) {
+      .site-header { position: static; }
+      .app-shell {
+        grid-template-columns: 1fr;
+        margin-top: 0;
+        min-height: auto;
+      }
+      .sidebar {
+        min-height: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
+      .topbar {
+        min-height: auto;
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .topbar-left {
+        width: 100%;
+        flex-wrap: wrap;
+      }
+      .topbar-divider { display: none; }
+      .top-actions { justify-content: flex-start; }
+    }
+  </style>
+  <link rel="stylesheet" href="/nav-icons.css?v=7" />
+  <link rel="stylesheet" href="/user-menu.css?v=4" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="topbar">
+      <div class="topbar-left">
+        <div class="brand-block">
+          <div class="logo-mark">G</div>
+          <div class="logo-text">
+            <strong>GUERNICA</strong>
+            <small>SISTEMA DE GESTIÓN</small>
+          </div>
+        </div>
+        <div class="topbar-divider" aria-hidden="true"></div>
+        <div class="topbar-title">
+          <h1>Pagos</h1>
+          <p>Registro de salidas de dinero y obligaciones</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <div class="top-actions-menu">
+          <button type="button" class="chip icon-chip" id="toggleNotificaciones" aria-label="Notificaciones" title="Notificaciones"><span class="app-icon icon-bell" aria-hidden="true"></span></button>
+          <div class="notifications-dropdown" id="notificacionesDropdown">
+            <div>
+              <h3>Notificaciones</h3>
+              <p class="muted">Avisos generales del módulo de pagos.</p>
+            </div>
+            <div class="notification-list">
+              <div class="notification-item">
+                <strong>Pagos operativos</strong>
+                <small>Los pagos registrados impactan en caja cuando corresponde.</small>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="chip">Ayuda</div>
+        <div class="user-box">
+          <div class="avatar">JP</div>
+          <div>
+            <strong>Juan Perez</strong>
+            <small>Administrador</small>
+          </div>
+          <span class="app-icon icon-chevron" aria-hidden="true"></span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="nav-title">Navegación</div>
+      <nav class="nav">
+        <a href="/dashboard.html"><span class="nav-icon home" aria-hidden="true"></span><span>Inicio</span></a>
+        <a href="/ventas.html"><span class="nav-icon sales" aria-hidden="true"></span><span>Ventas</span></a>
+        <a href="/caja.html"><span class="nav-icon cash" aria-hidden="true"></span><span>Caja</span></a>
+        <a class="active" href="/pagos.html"><span class="nav-icon payments" aria-hidden="true"></span><span>Pagos</span></a>
+        <a href="/productos.html"><span class="nav-icon stock" aria-hidden="true"></span><span>Stock</span></a>
+        <a href="/clientes.html"><span class="nav-icon clients" aria-hidden="true"></span><span>Cuentas corrientes</span></a>
+        <a href="/proveedores.html"><span class="nav-icon providers" aria-hidden="true"></span><span>Proveedores</span></a>
+        <a href="/reportes.html"><span class="nav-icon reports" aria-hidden="true"></span><span>Reportes</span></a>
+        <a href="/usuarios.html"><span class="nav-icon users" aria-hidden="true"></span><span>Usuarios</span></a>
+        <a href="/configuracion.html"><span class="nav-icon settings" aria-hidden="true"></span><span>Configuración</span></a>
+      </nav>
+
+      <div class="branch-card">
+        <div>
+          <strong>Guernica Bar</strong>
+          <small>Sucursal Central</small>
+        </div>
+        <span class="app-icon icon-store" aria-hidden="true"></span>
+      </div>
+    </aside>
+
+    <main class="main">
+
+    <section class="kpi-grid">
+      <div class="kpi"><span>Total pagos del dia</span><strong id="kpiDia">$0.00</strong><div id="kpiDiaLine"></div></div>
+      <div class="kpi"><span>Pagos en efectivo</span><strong id="kpiEfectivo">$0.00</strong><div id="kpiEfectivoLine"></div></div>
+      <div class="kpi"><span>Pagos con débito</span><strong id="kpiDebito">$0.00</strong><div id="kpiDebitoLine"></div></div>
+      <div class="kpi"><span>Pagos pendientes</span><strong id="kpiPendientes">0</strong></div>
+      <div class="kpi"><span>Pagos del mes</span><strong id="kpiMes">$0.00</strong></div>
+      <div class="kpi"><span>Gasto promedio diario</span><strong id="kpiPromedio">$0.00</strong></div>
+      <div class="kpi"><span>Mayor gasto del mes</span><strong id="kpiMayor">$0.00</strong></div>
+    </section>
+
+    <section class="layout">
+      <article class="card">
+        <div class="table-toolbar">
+          <div>
+            <h2 style="margin:0;">Historial</h2>
+            <div style="color:var(--muted);">Pagos, pendientes e impacto.</div>
+          </div>
+          <div class="toolbar-actions">
+            <button type="button" class="button secondary" id="actualizarPagos">Actualizar</button>
+            <button type="button" class="icon-button" id="abrirPagoModal" aria-label="Registrar pago" title="Registrar pago"><span class="app-icon icon-add" aria-hidden="true"></span></button>
+          </div>
+        </div>
+        <div style="overflow:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Impacto proveedor</th>
+                <th>Proveedor</th>
+                <th>Comprobante</th>
+                <th>Forma</th>
+                <th>Cuenta</th>
+                <th>Importe</th>
+                <th>IVA favor</th>
+                <th>Estado</th>
+                <th>Impacto</th>
+              </tr>
+            </thead>
+            <tbody id="listaPagos">
+              <tr><td colspan="10">Cargando pagos...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="history-footer">
+          <span id="resumenPagosMostrados">Mostrando 0 pagos</span>
+          <label class="page-size-control">Pagos visibles
+            <select id="limitePagos" class="field">
+              <option value="5">5</option>
+              <option value="10" selected>10</option>
+              <option value="20">20</option>
+              <option value="30">30</option>
+              <option value="50">50</option>
+            </select>
+          </label>
+        </div>
+      </article>
+    </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="pagoModal" aria-hidden="true">
+    <article class="modal-card" role="dialog" aria-modal="true" aria-labelledby="pagoModalTitulo">
+      <div class="modal-header">
+        <div>
+          <h2 id="pagoModalTitulo">Registrar pago</h2>
+          <p class="message" id="mensaje"></p>
+        </div>
+        <button type="button" class="close-button" id="cerrarPagoModal" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+      </div>
+      <div class="payment-form-compact">
+        <div class="payment-row">
+        <label>Fecha
+          <input type="date" id="fechaPago" class="field" />
+        </label>
+        <label>Impacto del proveedor
+          <input type="hidden" id="categoriaPago" value="otro_no_computable" />
+          <input type="text" id="impactoProveedor" class="field" value="Sin proveedor" readonly />
+        </label>
+        <label>Nombre
+          <select id="proveedor" class="field">
+            <option value="">Sin proveedor</option>
+          </select>
+        </label>
+        </div>
+        <div class="payment-row">
+        <label>Concepto
+          <input type="text" id="conceptoPago" class="field" placeholder="Ej: compra mercadería" />
+        </label>
+        <label>Nro de comprobante
+          <input type="text" id="numeroComprobante" class="field" placeholder="0001-00000001" />
+        </label>
+        <label>Importe
+          <input type="number" id="montoTotal" class="field" placeholder="0.00" step="0.01" min="0" />
+        </label>
+        </div>
+        <div class="payment-row two">
+          <label>Método de pago
+            <input type="hidden" id="tipoPago" value="efectivo" />
+            <div class="method-buttons" id="metodosPagoBotones">
+              <button type="button" class="method-button active" data-metodo-pago="efectivo">EFT</button>
+              <button type="button" class="method-button" data-metodo-pago="debito">DEB</button>
+              <button type="button" class="method-button" data-metodo-pago="mixto">MIXTO</button>
+            </div>
+          </label>
+          <label>Acción
+            <input type="hidden" id="estadoPago" value="registrado" />
+            <div class="state-buttons" id="estadoPagoBotones">
+              <button type="button" class="state-button pay active" data-estado-pago="registrado">Pagar</button>
+              <button type="button" class="state-button pending" data-estado-pago="pendiente">Pendiente</button>
+            </div>
+          </label>
+        </div>
+        <div id="bloqueMixto" class="payment-row two hidden">
+          <label>Monto efectivo
+            <input type="number" id="montoEfectivo" class="field" step="0.01" min="0" />
+          </label>
+          <label>Monto digital
+            <input type="number" id="montoDebito" class="field" step="0.01" min="0" />
+          </label>
+        </div>
+        <input type="hidden" id="comprobante" value="comprobante" />
+        <input type="hidden" id="cuentaDestino" value="" />
+        <input type="hidden" id="referencia" value="" />
+        <input type="checkbox" id="esCuentaCorriente" hidden />
+        <textarea id="observaciones" class="field hidden"></textarea>
+      </div>
+      <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
+        <button type="button" class="button success" id="guardarPago">Confirmar</button>
+        <button type="button" class="button secondary" id="limpiarPago">Limpiar</button>
+      </div>
+    </article>
+  </div>
+
+  <script>
+    const mensaje = document.getElementById("mensaje");
+    const pagoModal = document.getElementById("pagoModal");
+    const abrirPagoModal = document.getElementById("abrirPagoModal");
+    const cerrarPagoModal = document.getElementById("cerrarPagoModal");
+    const toggleNotificaciones = document.getElementById("toggleNotificaciones");
+    const notificacionesDropdown = document.getElementById("notificacionesDropdown");
+    const proveedor = document.getElementById("proveedor");
+    const categoriaPago = document.getElementById("categoriaPago");
+    const impactoProveedor = document.getElementById("impactoProveedor");
+    const conceptoPago = document.getElementById("conceptoPago");
+    const fechaPago = document.getElementById("fechaPago");
+    const estadoPago = document.getElementById("estadoPago");
+    const comprobante = document.getElementById("comprobante");
+    const numeroComprobante = document.getElementById("numeroComprobante");
+    const tipoPago = document.getElementById("tipoPago");
+    const cuentaDestino = document.getElementById("cuentaDestino");
+    const referencia = document.getElementById("referencia");
+    const montoTotal = document.getElementById("montoTotal");
+    const montoEfectivo = document.getElementById("montoEfectivo");
+    const montoDebito = document.getElementById("montoDebito");
+    const bloqueMixto = document.getElementById("bloqueMixto");
+    const esCuentaCorriente = document.getElementById("esCuentaCorriente");
+    const observaciones = document.getElementById("observaciones");
+    const listaPagos = document.getElementById("listaPagos");
+    const limitePagos = document.getElementById("limitePagos");
+    const resumenPagosMostrados = document.getElementById("resumenPagosMostrados");
+    const botonGuardarPago = document.getElementById("guardarPago");
+    const botonLimpiarPago = document.getElementById("limpiarPago");
+    const botonActualizarPagos = document.getElementById("actualizarPagos");
+    const impactoCuenta = document.getElementById("impactoCuenta");
+    const impactoSaldoActual = document.getElementById("impactoSaldoActual");
+    const impactoSaldoLuego = document.getElementById("impactoSaldoLuego");
+    const kpiDia = document.getElementById("kpiDia");
+    const kpiEfectivo = document.getElementById("kpiEfectivo");
+    const kpiDebito = document.getElementById("kpiDebito");
+    const kpiPendientes = document.getElementById("kpiPendientes");
+    const kpiMes = document.getElementById("kpiMes");
+    const kpiPromedio = document.getElementById("kpiPromedio");
+    const kpiMayor = document.getElementById("kpiMayor");
+    const kpiGrid = document.querySelector(".kpi-grid");
+
+    let pagosActuales = [];
+    let proveedoresActuales = [];
+    let resumenCaja = null;
+
+    function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",cajero:"caja"}[raw]||raw}
+    function mostrarKpisComplejos(config){const tipo=String(config?.[`dashboard_tipo_${rolActual()}`]??"").replace(/^"+|"+$/g,"").toLowerCase();const complejo=tipo ? tipo==="complejo" : ["admin","encargado"].includes(rolActual());if(kpiGrid)kpiGrid.style.display=complejo?"grid":"none"}
+    async function aplicarVisibilidadKpis(){try{const res=await fetch("/configuracion");const data=res.ok ? await res.json():{config:{}};mostrarKpisComplejos(data.config||{})}catch{mostrarKpisComplejos({})}}
+
+    function impactoLabel(valor) {
+      return {
+        costo_fijo_operativo: "Costo fijo / operativo",
+        costo_variable_mercaderia: "Costo variable / mercadería",
+        inversion: "Inversión",
+        otro_no_computable: "Otro / no computable"
+      }[valor] || "Otro / no computable";
+    }
+
+    function abrirModalPago() {
+      pagoModal.classList.add("open");
+      pagoModal.setAttribute("aria-hidden", "false");
+      mensaje.innerText = "";
+      actualizarImpacto();
+      setTimeout(() => fechaPago.focus(), 0);
+    }
+
+    function cerrarModalPago() {
+      pagoModal.classList.remove("open");
+      pagoModal.setAttribute("aria-hidden", "true");
+    }
+
+    toggleNotificaciones?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      notificacionesDropdown?.classList.toggle("open");
+    });
+
+    document.addEventListener("click", (event) => {
+      if (!notificacionesDropdown?.contains(event.target) && event.target !== toggleNotificaciones) {
+        notificacionesDropdown?.classList.remove("open");
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && pagoModal.classList.contains("open")) {
+        cerrarModalPago();
+      }
+    });
+
+    function mostrarMensaje(texto, esError = false) {
+      mensaje.innerText = texto;
+      mensaje.style.color = esError ? "var(--danger)" : "var(--success)";
+    }
+
+    function money(valor) {
+      return `$${Number(valor || 0).toFixed(2)}`;
+    }
+
+    function ivaFavorPago(pago) {
+      return Number(pago.iva_credito_fiscal || pago.iva_credito_fiscal_estimado || 0);
+    }
+
+    function hoyISO() {
+      const d = new Date();
+      return fechaLocalISO(d);
+    }
+
+    function fechaLocalISO(d) {
+      d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+      return d.toISOString().slice(0, 10);
+    }
+
+    function saldoCajaEfectivoActual() {
+      const apertura = Number(resumenCaja?.apertura?.monto_apertura || 0);
+      const resumen = resumenCaja?.resumen || {};
+      return Number((apertura + Number(resumen.total_efectivo || 0) - Number(resumen.total_pagos_efectivo || 0)).toFixed(2));
+    }
+
+    function actualizarBloqueMixto() {
+      bloqueMixto.classList.toggle("hidden", tipoPago.value !== "mixto");
+      actualizarImpacto();
+    }
+
+    function setMetodoPago(metodo) {
+      tipoPago.value = metodo;
+      document.querySelectorAll("[data-metodo-pago]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.metodoPago === metodo);
+      });
+      actualizarBloqueMixto();
+    }
+
+    function setEstadoPago(estado) {
+      estadoPago.value = estado;
+      document.querySelectorAll("[data-estado-pago]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.estadoPago === estado);
+      });
+      actualizarImpacto();
+    }
+
+    function getMontoImpacto() {
+      if (estadoPago.value === "pendiente") return 0;
+      if (tipoPago.value === "mixto") return Number(montoEfectivo.value || 0) + Number(montoDebito.value || 0);
+      return Number(montoTotal.value || 0);
+    }
+
+    function actualizarImpacto() {
+      const forma = tipoPago.value;
+      const cuenta = forma === "efectivo" ? "Caja" : forma === "transferencia" ? "Cuenta bancaria" : forma === "debito" ? "Cuenta bancaria" : "Caja + cuenta";
+      const saldoActual = forma === "efectivo"
+        ? saldoCajaEfectivoActual()
+        : Number(resumenCaja?.resumen?.saldo_mp_estimado || 0);
+      const impacto = getMontoImpacto();
+      if (impactoCuenta) impactoCuenta.innerText = estadoPago.value === "pendiente" ? "Sin impacto hasta confirmar" : cuenta;
+      if (impactoSaldoActual) impactoSaldoActual.innerText = money(saldoActual);
+      if (impactoSaldoLuego) impactoSaldoLuego.innerText = money(saldoActual - impacto);
+    }
+
+    function limpiarFormulario() {
+      proveedor.value = "";
+      categoriaPago.value = "otro_no_computable";
+      impactoProveedor.value = "Sin proveedor";
+      conceptoPago.value = "";
+      fechaPago.value = hoyISO();
+      comprobante.value = "";
+      numeroComprobante.value = "";
+      setEstadoPago("registrado");
+      setMetodoPago("efectivo");
+      cuentaDestino.value = "";
+      referencia.value = "";
+      montoTotal.value = "";
+      montoEfectivo.value = "";
+      montoDebito.value = "";
+      esCuentaCorriente.checked = false;
+      observaciones.value = "";
+      actualizarBloqueMixto();
+    }
+
+    function renderizarProveedores(proveedores) {
+      proveedor.innerHTML = '<option value="">Sin proveedor</option>';
+      proveedores.forEach((item) => {
+        const option = document.createElement("option");
+        option.value = item.id;
+        option.textContent = item.nombre;
+        option.dataset.tipoImpacto = item.tipo_impacto || "otro_no_computable";
+        proveedor.appendChild(option);
+      });
+    }
+
+    function actualizarImpactoProveedor() {
+      const seleccionado = proveedoresActuales.find((item) => String(item.id) === String(proveedor.value));
+      const tipoImpacto = seleccionado?.tipo_impacto || "otro_no_computable";
+      categoriaPago.value = tipoImpacto;
+      impactoProveedor.value = proveedor.value ? impactoLabel(tipoImpacto) : "Sin proveedor";
+    }
+
+    function renderizarKpis(pagos) {
+      const hoy = hoyISO();
+      const mes = hoy.slice(0, 7);
+      const pagosDia = pagos.filter((pago) => pago.fecha === hoy && pago.estado !== "pendiente");
+      const pagosMes = pagos.filter((pago) => String(pago.fecha || "").startsWith(mes) && pago.estado !== "pendiente");
+      const totalDia = pagosDia.reduce((acc, pago) => acc + Number(pago.monto_total || 0), 0);
+      const efectivoDia = pagosDia.reduce((acc, pago) => acc + Number(pago.monto_efectivo || 0), 0);
+      const debitoDia = pagosDia.reduce((acc, pago) => acc + Number(pago.monto_debito || 0), 0);
+      const totalMes = pagosMes.reduce((acc, pago) => acc + Number(pago.monto_total || 0), 0);
+      const mayorMes = pagosMes.reduce((max, pago) => Math.max(max, Number(pago.monto_total || 0)), 0);
+      const diasConPago = new Set(pagosMes.map((pago) => pago.fecha)).size || 1;
+      const serie = Array.from({ length: 7 }, (_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - (6 - i));
+        const iso = fechaLocalISO(d);
+        const delDia = pagos.filter((pago) => pago.fecha === iso && pago.estado !== "pendiente");
+        return {
+          total: delDia.reduce((acc, pago) => acc + Number(pago.monto_total || 0), 0),
+          efectivo: delDia.reduce((acc, pago) => acc + Number(pago.monto_efectivo || 0), 0),
+          debito: delDia.reduce((acc, pago) => acc + Number(pago.monto_debito || 0), 0)
+        };
+      });
+
+      kpiDia.innerText = money(totalDia);
+      kpiEfectivo.innerText = money(efectivoDia);
+      kpiDebito.innerText = money(debitoDia);
+      kpiPendientes.innerText = String(pagos.filter((pago) => pago.estado === "pendiente").length);
+      kpiMes.innerText = money(totalMes);
+      kpiPromedio.innerText = money(totalMes / diasConPago);
+      kpiMayor.innerText = money(mayorMes);
+      renderKpiLine("kpiDiaLine", serie.map((item) => item.total), totalDia >= 0 ? "var(--success)" : "var(--danger)");
+      renderKpiLine("kpiEfectivoLine", serie.map((item) => item.efectivo), "var(--success)");
+      renderKpiLine("kpiDebitoLine", serie.map((item) => item.debito), "var(--primary)");
+    }
+
+    function renderKpiLine(id, values, color) {
+      const max = Math.max(...values, 1);
+      const min = Math.min(...values, 0);
+      const points = values.map((value, index) => {
+        const x = values.length === 1 ? 0 : (index / (values.length - 1)) * 100;
+        const y = 26 - ((value - min) / (max - min || 1)) * 22;
+        return `${x},${y}`;
+      }).join(" ");
+      document.getElementById(id).innerHTML = `<svg class="kpi-line" viewBox="0 0 100 30" preserveAspectRatio="none"><polyline points="${points}" style="stroke:${color}"></polyline></svg>`;
+    }
+
+    function renderizarPagos(pagos) {
+      pagosActuales = Array.isArray(pagos) ? pagos : [];
+      listaPagos.innerHTML = "";
+      renderizarKpis(pagosActuales);
+
+      if (pagosActuales.length === 0) {
+        listaPagos.innerHTML = '<tr><td colspan="10">No hay pagos registrados.</td></tr>';
+        resumenPagosMostrados.innerText = "Mostrando 0 pagos";
+        return;
+      }
+
+      const pagosOrdenados = [...pagosActuales].sort((a, b) => {
+        const fechaA = `${a.fecha || ""} ${a.hora || ""} ${String(a.id || "").padStart(10, "0")}`;
+        const fechaB = `${b.fecha || ""} ${b.hora || ""} ${String(b.id || "").padStart(10, "0")}`;
+        return fechaB.localeCompare(fechaA);
+      });
+      const limite = Number(limitePagos.value || 10);
+      const pagosVisibles = pagosOrdenados.slice(0, limite);
+
+      pagosVisibles.forEach((pago) => {
+        const row = document.createElement("tr");
+        const pendiente = pago.estado === "pendiente";
+        const impacto = pendiente
+          ? "Pendiente"
+          : Number(pago.monto_efectivo || 0) > 0 && Number(pago.monto_debito || 0) > 0
+            ? "Caja + cuenta"
+            : Number(pago.monto_efectivo || 0) > 0
+              ? "Caja"
+              : "Cuenta/Billetera";
+        row.innerHTML = `
+          <td>${pago.fecha || "-"} ${pago.hora || ""}</td>
+          <td>${impactoLabel(pago.categoria_pago || pago.proveedor_tipo_impacto)}</td>
+          <td>${pago.proveedor_nombre || "Sin proveedor"}</td>
+          <td>${pago.comprobante || "-"} ${pago.numero_comprobante || ""}</td>
+          <td>${pago.tipo_pago || "-"}</td>
+          <td>${pago.cuenta_destino || "-"}</td>
+          <td>${money(pago.monto_total)}</td>
+          <td>${money(ivaFavorPago(pago))}</td>
+          <td><span class="pill ${pendiente ? "pending" : ""}">${pendiente ? "Pendiente" : "Pagado"}</span></td>
+          <td>${impacto}</td>
+        `;
+        listaPagos.appendChild(row);
+      });
+
+      resumenPagosMostrados.innerText = `Mostrando ${pagosVisibles.length} de ${pagosActuales.length} pagos`;
+    }
+
+    async function cargarProveedores() {
+      try {
+        const res = await fetch("/proveedores");
+        if (!res.ok) throw new Error("No se pudo obtener proveedores");
+        proveedoresActuales = await res.json();
+        renderizarProveedores(proveedoresActuales);
+        actualizarImpactoProveedor();
+      } catch (error) {
+        console.error("Error al cargar proveedores:", error);
+      }
+    }
+
+    async function cargarCaja() {
+      try {
+        const res = await fetch("/caja/resumen");
+        resumenCaja = res.ok ? await res.json() : null;
+      } catch (error) {
+        resumenCaja = null;
+      }
+      actualizarImpacto();
+    }
+
+    async function cargarPagos() {
+      try {
+        const res = await fetch("/pagos");
+        if (!res.ok) throw new Error("No se pudo obtener pagos");
+        renderizarPagos(await res.json());
+      } catch (error) {
+        console.error("Error al cargar pagos:", error);
+        listaPagos.innerHTML = '<tr><td colspan="10">Error al cargar pagos.</td></tr>';
+        mostrarMensaje("No se pudo obtener pagos desde el servidor", true);
+      }
+    }
+
+    async function guardarPago() {
+      const payload = {
+        proveedor_id: proveedor.value ? Number(proveedor.value) : null,
+        categoria_pago: categoriaPago.value,
+        concepto: conceptoPago.value.trim(),
+        comprobante: comprobante.value,
+        numero_comprobante: numeroComprobante.value.trim(),
+        fecha: fechaPago.value,
+        tipo_pago: tipoPago.value,
+        cuenta_destino: cuentaDestino.value.trim(),
+        referencia: referencia.value.trim(),
+        monto_total: Number(montoTotal.value) || 0,
+        monto_efectivo: Number(montoEfectivo.value) || 0,
+        monto_debito: Number(montoDebito.value) || 0,
+        observaciones: observaciones.value.trim(),
+        estado: estadoPago.value,
+        es_cuenta_corriente: esCuentaCorriente.checked
+      };
+
+      if (!payload.concepto) {
+        mostrarMensaje("El concepto es obligatorio", true);
+        return;
+      }
+
+      if (payload.monto_total <= 0) {
+        mostrarMensaje("El importe debe ser mayor a cero", true);
+        return;
+      }
+
+      if (payload.tipo_pago === "mixto") {
+        const suma = Number((payload.monto_efectivo + payload.monto_debito).toFixed(2));
+        const total = Number(payload.monto_total.toFixed(2));
+        if (suma !== total) {
+          mostrarMensaje("En pago mixto, efectivo + digital debe ser igual al importe", true);
+          return;
+        }
+      }
+
+      botonGuardarPago.disabled = true;
+      mostrarMensaje("Registrando pago...");
+
+      try {
+        const res = await fetch("/pagos", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          mostrarMensaje(data.message || "Error al registrar pago", true);
+          return;
+        }
+        limpiarFormulario();
+        mostrarMensaje(data.message || "Pago registrado");
+        cerrarModalPago();
+        await cargarCaja();
+        await cargarPagos();
+      } catch (error) {
+        console.error("Error al registrar pago:", error);
+        mostrarMensaje("Error al registrar pago", true);
+      } finally {
+        botonGuardarPago.disabled = false;
+      }
+    }
+
+    proveedor.addEventListener("change", actualizarImpactoProveedor);
+    [tipoPago, estadoPago, montoTotal, montoEfectivo, montoDebito].forEach((element) => {
+      element.addEventListener("input", actualizarImpacto);
+      element.addEventListener("change", actualizarBloqueMixto);
+    });
+    document.querySelectorAll("[data-metodo-pago]").forEach((button) => {
+      button.addEventListener("click", () => setMetodoPago(button.dataset.metodoPago));
+    });
+    document.querySelectorAll("[data-estado-pago]").forEach((button) => {
+      button.addEventListener("click", () => setEstadoPago(button.dataset.estadoPago));
+    });
+    botonGuardarPago.addEventListener("click", guardarPago);
+    botonLimpiarPago.addEventListener("click", limpiarFormulario);
+    botonActualizarPagos.addEventListener("click", cargarPagos);
+    abrirPagoModal.addEventListener("click", abrirModalPago);
+    cerrarPagoModal.addEventListener("click", cerrarModalPago);
+    pagoModal.addEventListener("click", (event) => {
+      if (event.target === pagoModal) cerrarModalPago();
+    });
+    limitePagos.addEventListener("change", () => renderizarPagos(pagosActuales));
+
+    fechaPago.value = hoyISO();
+    actualizarBloqueMixto();
+    aplicarVisibilidadKpis();
+    cargarCaja();
+    cargarProveedores();
+    cargarPagos();
+  </script>
+  <script src="/nav-permissions.js?v=6" defer></script>
+  <script src="/user-menu.js?v=7" defer></script>
+</body>
+</html>
+
+
+
+
+
