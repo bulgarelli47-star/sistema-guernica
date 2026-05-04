@@ -93,17 +93,19 @@
       node.textContent = businessName;
     });
 
+    const logoEscala = Math.min(200, Math.max(50, Number(config.negocio_logo_escala) || 100));
     document.querySelectorAll(".logo-mark").forEach((node) => {
       if (logoUrl) {
         node.textContent = "";
         node.style.backgroundImage = `url("${logoUrl}")`;
-        node.style.backgroundSize = "contain";
+        node.style.backgroundSize = `${logoEscala}%`;
         node.style.backgroundPosition = "center";
         node.style.backgroundRepeat = "no-repeat";
         node.style.backgroundColor = "#ffffff";
       } else {
         node.style.backgroundImage = "";
         node.style.backgroundRepeat = "";
+        node.style.backgroundSize = "";
         node.textContent = initial;
       }
     });

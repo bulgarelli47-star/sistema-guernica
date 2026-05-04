@@ -136,6 +136,7 @@ async function initDatabase() {
     `);
 
     await ensureColumn("productos", "es_combo", "INTEGER NOT NULL DEFAULT 0");
+    await ensureColumn("productos", "aplica_para_combo", "INTEGER NOT NULL DEFAULT 0");
     await runQuery(`
       CREATE TABLE IF NOT EXISTS combo_componentes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

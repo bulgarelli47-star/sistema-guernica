@@ -841,6 +841,39 @@
     </article>
   </div>
 
+  <!-- Modal edición de pago -->
+  <div class="modal-backdrop" id="editarPagoModal" aria-hidden="true" style="display:none;position:fixed;inset:0;z-index:200;background:rgba(17,24,39,.52);display:none;place-items:center;padding:18px">
+    <article style="width:min(560px,100%);background:#fff;border-radius:20px;padding:22px;box-shadow:0 24px 70px rgba(17,24,39,.3)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div><h2 style="margin:0">Editar pago</h2><p id="editarPagoSubtitulo" style="margin:4px 0 0;color:#64748b;font-size:13px"></p></div>
+        <button type="button" id="cerrarEditarPago" style="border:1px solid #e2e8f0;border-radius:10px;width:36px;height:36px;background:#fff;cursor:pointer;font-size:18px">✕</button>
+      </div>
+      <div id="editarPagoClaveSection">
+        <p style="font-size:13px;color:#64748b;margin:0 0 10px">Ingresá la clave maestra para editar este pago.</p>
+        <div style="display:flex;gap:8px">
+          <input type="password" id="editarPagoClave" class="field" placeholder="Clave maestra" style="flex:1">
+          <button type="button" id="confirmarClavePago" class="button">Continuar</button>
+        </div>
+        <p id="editarPagoClaveError" style="color:#ef4444;font-size:12px;margin:6px 0 0;display:none"></p>
+      </div>
+      <div id="editarPagoFormSection" style="display:none">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Concepto<input class="field" id="epConcepto"></label>
+          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Monto total<input class="field" type="number" id="epMonto" step="0.01"></label>
+          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Comprobante<input class="field" id="epComprobante"></label>
+          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Nro. comprobante<input class="field" id="epNumeroComprobante"></label>
+          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Cuenta destino<input class="field" id="epCuentaDestino"></label>
+          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b;grid-column:span 2">Observaciones<textarea class="field" id="epObservaciones" style="min-height:60px;resize:vertical"></textarea></label>
+        </div>
+        <div id="editarPagoAviso" style="display:none;margin-top:10px;padding:10px;border-radius:10px;background:#fef3c7;color:#92400e;font-size:12px;font-weight:700"></div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+          <button type="button" id="cerrarEditarPago2" style="border:1px solid #e2e8f0;border-radius:10px;padding:8px 14px;background:#fff;cursor:pointer;font-weight:700">Cancelar</button>
+          <button type="button" id="guardarEditarPago" class="button">Guardar cambios</button>
+        </div>
+      </div>
+    </article>
+  </div>
+
   <script>
     const mensaje = document.getElementById("mensaje");
     const pagoModal = document.getElementById("pagoModal");
@@ -1122,7 +1155,9 @@
           <td>${money(ivaFavorPago(pago))}</td>
           <td><span class="pill ${pendiente ? "pending" : ""}">${pendiente ? "Pendiente" : "Pagado"}</span></td>
           <td>${impacto}</td>
+          <td><button type="button" class="button secondary" style="padding:5px 9px;font-size:11px" data-editar-pago="${pago.id}">Editar</button></td>
         `;
+        row.querySelector('[data-editar-pago]').addEventListener('click', () => abrirEditarPago(pago));
         listaPagos.appendChild(row);
       });
 
@@ -1255,6 +1290,101 @@
     cargarCaja();
     cargarProveedores();
     cargarPagos();
+
+    // ── Edición de pagos ──────────────────────────────────────────
+    let pagoEditandoId = null;
+    let claveConfirmada = null;
+    const editarPagoModal = document.getElementById("editarPagoModal");
+
+    function abrirEditarPago(pago) {
+      pagoEditandoId = pago.id;
+      claveConfirmada = null;
+      document.getElementById("editarPagoSubtitulo").textContent =
+        `#${pago.id} · ${pago.proveedor_nombre || "Sin proveedor"} · ${pago.fecha || ""}`;
+      document.getElementById("editarPagoClave").value = "";
+      document.getElementById("editarPagoClaveError").style.display = "none";
+      document.getElementById("editarPagoClaveSection").style.display = "block";
+      document.getElementById("editarPagoFormSection").style.display = "none";
+      document.getElementById("editarPagoAviso").style.display = "none";
+      document.getElementById("epConcepto").value = pago.concepto || "";
+      document.getElementById("epMonto").value = pago.monto_total || "";
+      document.getElementById("epComprobante").value = pago.comprobante || "";
+      document.getElementById("epNumeroComprobante").value = pago.numero_comprobante || "";
+      document.getElementById("epCuentaDestino").value = pago.cuenta_destino || "";
+      document.getElementById("epObservaciones").value = pago.observaciones || "";
+      editarPagoModal.style.display = "grid";
+    }
+
+    function cerrarEditarPagoModal() {
+      editarPagoModal.style.display = "none";
+      pagoEditandoId = null;
+      claveConfirmada = null;
+    }
+
+    document.getElementById("cerrarEditarPago").addEventListener("click", cerrarEditarPagoModal);
+    document.getElementById("cerrarEditarPago2").addEventListener("click", cerrarEditarPagoModal);
+    editarPagoModal.addEventListener("click", e => { if (e.target === editarPagoModal) cerrarEditarPagoModal(); });
+
+    document.getElementById("confirmarClavePago").addEventListener("click", () => {
+      const clave = document.getElementById("editarPagoClave").value;
+      if (clave !== "1234") {
+        document.getElementById("editarPagoClaveError").textContent = "Clave incorrecta";
+        document.getElementById("editarPagoClaveError").style.display = "block";
+        return;
+      }
+      claveConfirmada = clave;
+      document.getElementById("editarPagoClaveSection").style.display = "none";
+      document.getElementById("editarPagoFormSection").style.display = "block";
+      // Check if this pago belongs to an arqueo
+      const pago = pagosActuales.find(p => p.id === pagoEditandoId);
+      const rol = rolActual();
+      const esPrivilegiado = rol === "admin" || rol === "encargado";
+      if (pago?.caja_id && !esPrivilegiado) {
+        const aviso = document.getElementById("editarPagoAviso");
+        aviso.textContent = "⚠️ Este pago puede tener arqueo asociado. Si no tenés permiso el servidor lo bloqueará.";
+        aviso.style.display = "block";
+      }
+    });
+
+    document.getElementById("editarPagoClave").addEventListener("keydown", e => {
+      if (e.key === "Enter") document.getElementById("confirmarClavePago").click();
+    });
+
+    document.getElementById("guardarEditarPago").addEventListener("click", async () => {
+      if (!pagoEditandoId || !claveConfirmada) return;
+      const btn = document.getElementById("guardarEditarPago");
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/pagos/${pagoEditandoId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            clave: claveConfirmada,
+            rol: rolActual(),
+            concepto: document.getElementById("epConcepto").value.trim(),
+            monto_total: document.getElementById("epMonto").value,
+            comprobante: document.getElementById("epComprobante").value.trim(),
+            numero_comprobante: document.getElementById("epNumeroComprobante").value.trim(),
+            cuenta_destino: document.getElementById("epCuentaDestino").value.trim(),
+            observaciones: document.getElementById("epObservaciones").value.trim()
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          document.getElementById("editarPagoAviso").textContent = data.message || "Error al guardar";
+          document.getElementById("editarPagoAviso").style.display = "block";
+          return;
+        }
+        cerrarEditarPagoModal();
+        mostrarMensaje(data.message || "Pago actualizado");
+        await cargarPagos();
+      } catch (e) {
+        document.getElementById("editarPagoAviso").textContent = "Error de conexión";
+        document.getElementById("editarPagoAviso").style.display = "block";
+      } finally {
+        btn.disabled = false;
+      }
+    });
   </script>
   <script src="/nav-permissions.js?v=6" defer></script>
   <script src="/user-menu.js?v=7" defer></script>

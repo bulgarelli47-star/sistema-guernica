@@ -6,7 +6,14 @@
       "PowerShell(taskkill /F /IM node.exe)",
       "Bash(python3 -c ' *)",
       "PowerShell($content = [System.IO.File]::ReadAllText\\(\"c:\\\\Users\\\\bulga\\\\OneDrive\\\\Escritorio\\\\SISTEMA-GUERNICA\\\\frontend\\\\configuracion.html\", [System.Text.Encoding]::UTF8\\); $idx = $content.IndexOf\\(\"Categor\"\\); $content.Substring\\($idx - 20, 400\\))",
-      "PowerShell($content = [System.IO.File]::ReadAllText\\(\"c:\\\\Users\\\\bulga\\\\OneDrive\\\\Escritorio\\\\SISTEMA-GUERNICA\\\\frontend\\\\configuracion.html\", [System.Text.Encoding]::UTF8\\); $idx = $content.IndexOf\\(\"dashboard_pizarra_categorias\"\\); $content.Substring\\($idx - 100, 500\\))"
+      "PowerShell($content = [System.IO.File]::ReadAllText\\(\"c:\\\\Users\\\\bulga\\\\OneDrive\\\\Escritorio\\\\SISTEMA-GUERNICA\\\\frontend\\\\configuracion.html\", [System.Text.Encoding]::UTF8\\); $idx = $content.IndexOf\\(\"dashboard_pizarra_categorias\"\\); $content.Substring\\($idx - 100, 500\\))",
+      "Bash(findstr /s \"aplica_para_combo\" .)",
+      "Bash(findstr /s \"syncTipoProducto\" .)",
+      "Bash(findstr /n \"aplica_para_combo\" \"c:\\\\Users\\\\bulga\\\\OneDrive\\\\Escritorio\\\\SISTEMA-GUERNICA\\\\frontend\\\\productos.html\")",
+      "Bash(findstr \"aplica_para_combo\")",
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\bulga\\\\OneDrive\\\\Escritorio\\\\SISTEMA-GUERNICA\" -Filter \"package.json\" | ForEach-Object { Write-Output \"=== $\\($_.FullName\\) ===\"; Get-Content $_.FullName | Select-String \"start|main\" })",
+      "Bash(grep -v \"console\\\\|//\")",
+      "Bash(awk -F: '$2 > 3270 {print; exit}')"
     ]
   }
 }

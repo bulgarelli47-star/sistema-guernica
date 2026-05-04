@@ -386,12 +386,28 @@
     .modal-header {
       display: flex;
       justify-content: space-between;
-      align-items: flex-start;
+      align-items: center;
       gap: 12px;
       margin-bottom: 14px;
+      position: sticky;
+      top: -18px;
+      z-index: 10;
+      background: #fff;
+      padding-top: 18px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
     }
     .modal-header h2, .modal-header h3 { margin: 0; }
     .modal-header p { margin: 4px 0 0; color: var(--muted); }
+    .modal-header-actions { display: flex; gap: 5px; align-items: center; flex-shrink: 0; }
+    .mib { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 36px; min-height: 36px; padding: 7px 10px; border-radius: 10px; border: none; cursor: pointer; font-weight: 800; font-size: 13px; }
+    .mib .app-icon { width: 16px; height: 16px; min-width: 16px; }
+    .mib.ghost { background: #fff; color: var(--text); border: 1px solid var(--border); }
+    .mib.ghost:hover { border-color: var(--primary); color: var(--primary); }
+    .mib.ok { background: var(--success); color: #fff; }
+    .mib.ok:hover { opacity: .9; }
+    .mib.warn { background: var(--warning); color: #fff; }
+    .mib.icon-only { padding: 7px; width: 36px; height: 36px; }
     .form-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -584,7 +600,11 @@
         <div>
           <h2 id="tituloModalProveedor">Nuevo proveedor</h2>
         </div>
-        <button type="button" class="button secondary" id="cerrarProveedor">Cerrar</button>
+        <div class="modal-header-actions">
+          <button type="button" class="mib ok icon-only" id="guardarProveedor" title="Guardar proveedor" aria-label="Guardar proveedor"><span class="app-icon icon-save" aria-hidden="true"></span></button>
+          <button type="button" class="mib ghost icon-only" id="limpiarProveedor" title="Limpiar formulario" aria-label="Limpiar formulario"><span class="app-icon icon-broom" aria-hidden="true"></span></button>
+          <button type="button" class="mib ghost icon-only" id="cerrarProveedor" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+        </div>
       </div>
       <div class="form-grid proveedor-form-grid">
         <label>Nombre
@@ -633,10 +653,6 @@
         <select class="hidden" id="moneda"><option value="ARS">ARS</option><option value="USD">USD</option></select>
         <input class="hidden" type="checkbox" id="activo" checked />
       </div>
-      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:14px;">
-        <button type="button" class="button success" id="guardarProveedor">Guardar proveedor</button>
-        <button type="button" class="button secondary" id="limpiarProveedor">Limpiar</button>
-      </div>
     </article>
   </div>
 
@@ -648,7 +664,10 @@
           <p id="pagoProveedorNombre">Proveedor seleccionado</p>
           <p class="muted" id="pagoProveedorImpacto">Impacto: Otro / no computable</p>
         </div>
-        <button type="button" class="button secondary" id="cerrarPago">Cerrar</button>
+        <div class="modal-header-actions">
+          <button type="button" class="mib ok icon-only" id="confirmarPago" title="Registrar pago" aria-label="Registrar pago"><span class="app-icon icon-check" aria-hidden="true"></span></button>
+          <button type="button" class="mib ghost icon-only" id="cerrarPago" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+        </div>
       </div>
       <div class="form-grid">
         <label>Fecha
@@ -685,7 +704,6 @@
         <div class="detail-box"><span>Saldo luego del pago</span><strong id="pagoSaldoLuego">$0.00</strong></div>
         <div class="detail-box"><span>Aplicación</span><strong>Deuda más antigua</strong></div>
       </div>
-      <button type="button" class="button success" id="confirmarPago">Registrar pago</button>
     </article>
   </div>
 
@@ -696,7 +714,9 @@
           <h2 id="tituloDetalle">Detalle proveedor</h2>
           <p id="subtituloDetalle">Movimientos y condiciones comerciales</p>
         </div>
-        <button type="button" class="button secondary" id="cerrarDetalle">Cerrar</button>
+        <div class="modal-header-actions">
+          <button type="button" class="mib ghost icon-only" id="cerrarDetalle" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+        </div>
       </div>
       <div class="detail-grid" id="detalleResumen"></div>
       <div style="overflow:auto;">

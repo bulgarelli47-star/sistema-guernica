@@ -1239,7 +1239,7 @@
       </div>
       <div class="top-actions">
         <div class="top-actions-menu">
-          <button type="button" class="chip icon-chip" id="toggleNotificaciones" aria-label="Notificaciones" title="Notificaciones"><span class="app-icon icon-bell" aria-hidden="true"></span></button>
+          <button type="button" class="chip icon-chip" id="toggleNotificaciones" aria-label="Notificaciones" title="Notificaciones" style="position:relative"><span class="app-icon icon-bell" aria-hidden="true"></span><span id="notifBadge" style="display:none;position:absolute;top:4px;right:4px;width:8px;height:8px;border-radius:50%;background:#ef4444;border:2px solid rgba(255,255,255,.2)"></span></button>
           <div class="notifications-dropdown" id="notificacionesDropdown">
             <div>
               <h3>Notificaciones</h3>
@@ -1423,7 +1423,7 @@
                 <strong>$<span id="ticketSubtotal">0.00</span></strong>
               </div>
               <div class="summary-line">
-                <span>Descuentos</span>
+                <span>Ahorraste</span>
                 <strong>$<span id="ticketDescuento">0.00</span></strong>
               </div>
               <div class="summary-line total">
@@ -1579,6 +1579,22 @@
     </div>
   </div>
 
+  <div class="modal" id="modalCombo">
+    <div class="modal-card compact">
+      <div class="modal-header">
+        <div>
+          <h3 id="modalComboNombre"></h3>
+          <p class="muted" id="modalComboSubtitulo"></p>
+        </div>
+      </div>
+      <div id="modalComboDetalle" style="margin:12px 0;"></div>
+      <div class="inline-actions">
+        <button type="button" class="button secondary" id="cancelarCombo">Cancelar</button>
+        <button type="button" class="button success" id="aceptarCombo">Aceptar combo</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const buscadorProductos = document.getElementById("buscadorProductos");
     const ticketTitle = document.getElementById("ticketTitle");
@@ -1638,6 +1654,11 @@
     const modalProductos = document.getElementById("modalProductos");
     const modalProductosTitulo = document.getElementById("modalProductosTitulo");
     const modalProductosGrid = document.getElementById("modalProductosGrid");
+    const modalCombo = document.getElementById("modalCombo");
+    const modalComboNombre = document.getElementById("modalComboNombre");
+    const modalComboSubtitulo = document.getElementById("modalComboSubtitulo");
+    const modalComboDetalle = document.getElementById("modalComboDetalle");
+    let comboActual = null;
     const cerrarModalProductos = document.getElementById("cerrarModalProductos");
     const abrirCliente = document.getElementById("abrirCliente");
     const clienteResumen = document.getElementById("ticketTitle");
@@ -1710,6 +1731,9 @@
       while (notificationList.children.length > 8) {
         notificationList.removeChild(notificationList.lastElementChild);
       }
+
+      const badge = document.getElementById("notifBadge");
+      if (badge) badge.style.display = "block";
     }
 
     function escapeHtml(value) {
@@ -1728,6 +1752,34 @@
 
     function cerrarModal(elemento) {
       elemento.classList.remove("open");
+    }
+
+    async function abrirModalCombo(producto) {
+      comboActual = producto;
+      comboActual._descuento = 0;
+      modalComboNombre.innerText = producto.nombre;
+      modalComboSubtitulo.innerText = "Cargando componentes...";
+      modalComboDetalle.innerHTML = '<p class="muted">Un momento...</p>';
+      abrirModal(modalCombo);
+      try {
+        const r = await fetch(`/productos_compuestos/${producto.id}`);
+        const data = r.ok ? await r.json() : null;
+        const componentes = data?.componentes || [];
+        const precioOriginal = componentes.reduce((acc, c) => acc + Number(c.precio_venta || 0) * Number(c.cantidad || 1), 0);
+        const precioCombo = Number(producto.precio_venta || 0);
+        const descuento = Math.max(0, precioOriginal - precioCombo);
+        comboActual._descuento = descuento;
+        modalComboSubtitulo.innerText = descuento > 0 ? `Ahorrás $${formatearNumero(descuento)} con este combo` : `Precio: $${formatearNumero(precioCombo)}`;
+        modalComboDetalle.innerHTML = componentes.length ? `
+          <div>
+            ${componentes.map(c => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span>${Number(c.cantidad||1)} × ${c.producto_nombre}</span><span class="muted">$${formatearNumero(Number(c.precio_venta||0)*Number(c.cantidad||1))}</span></div>`).join("")}
+            ${descuento > 0 ? `<div style="display:flex;justify-content:space-between;padding:8px 0;color:var(--success,#2ea043);font-weight:700"><span>Ahorraste</span><span>$${formatearNumero(descuento)}</span></div>` : ""}
+            <div style="display:flex;justify-content:space-between;padding:8px 0;font-weight:800;font-size:1.1em"><span>Total combo</span><span>$${formatearNumero(precioCombo)}</span></div>
+          </div>` : '<p class="muted">Sin componentes definidos.</p>';
+      } catch {
+        modalComboSubtitulo.innerText = "Error al cargar componentes";
+        modalComboDetalle.innerHTML = "";
+      }
     }
 
     function actualizarEstadoEditor() {
@@ -1839,6 +1891,14 @@
       const mensaje = cfg.ticket_mensaje_final || "Gracias por su compra";
       const mostrarFiscal = cfg.ticket_mostrar_datos_fiscales !== false;
       const mostrarItems = cfg.ticket_mostrar_items !== false;
+      const modoEncabezado = cfg.ticket_modo_encabezado || "logo";
+      const logoUrl = String(cfg.negocio_logo_url || "").trim();
+      const logoEscala = Math.min(200, Math.max(50, Number(cfg.negocio_logo_escala) || 100));
+      const usarLogo = modoEncabezado === "logo" && logoUrl;
+      const logoWidthPct = Math.min(100, Math.max(20, Number(cfg.ticket_logo_ancho) || 65));
+      const encabezadoHtml = usarLogo
+        ? `<div style="text-align:center;margin-bottom:8px"><img src="${logoUrl}" style="width:${logoWidthPct}%;max-height:100px;height:auto;display:inline-block"></div>`
+        : `<h1 style="font-size:18px;text-align:center;margin:0 0 6px;text-transform:uppercase;font-weight:900">${escapeHtml(nombre)}</h1>`;
       const itemsHtml = mostrarItems
         ? ticketData.items.map((item) => `
             <tr>
@@ -1848,22 +1908,22 @@
           `).join("")
         : "";
       const html = `<!DOCTYPE html><html><head><title>Ticket #${escapeHtml(ticketData.ventaId || "")}</title><style>
-        @page{size:80mm auto;margin:4mm}
+        @page{size:80mm auto;margin:0}
         *{box-sizing:border-box}
-        body{margin:0;font-family:Arial,Helvetica,sans-serif;color:#111;font-size:12px}
+        body{margin:10mm 4mm 4mm 4mm;font-family:Arial,Helvetica,sans-serif;color:#111;font-size:12px}
         .ticket{width:72mm;margin:0 auto}
         h1{font-size:18px;text-align:center;margin:0 0 4px;text-transform:uppercase}
         .center{text-align:center}.muted{color:#444}.line{border-top:1px dashed #111;margin:8px 0}
         table{width:100%;border-collapse:collapse}td{padding:3px 0;vertical-align:top}.right{text-align:right;white-space:nowrap}
         .total{font-size:16px;font-weight:800}.small{font-size:11px}
       </style></head><body><div class="ticket">
-        <h1>${escapeHtml(nombre)}</h1>
-        ${mostrarFiscal ? `<div class="center small">${escapeHtml(razon)}${cuit ? `<br>CUIT ${escapeHtml(cuit)}` : ""}${direccion ? `<br>${escapeHtml(direccion)}` : ""}${telefono ? `<br>Tel ${escapeHtml(telefono)}` : ""}</div>` : ""}
-        <div class="line"></div>
-        <div class="small">Ticket: #${escapeHtml(ticketData.ventaId || "-")}<br>Fecha: ${escapeHtml(ticketData.fecha)} ${escapeHtml(ticketData.hora)}<br>Cliente: ${escapeHtml(ticketData.cliente)}<br>Pago: ${escapeHtml(ticketData.cobro)}</div>
+        ${encabezadoHtml}
+        ${mostrarFiscal ? `<table class="small" style="width:100%;border-collapse:collapse;margin-bottom:4px"><tr><td style="width:50%">${escapeHtml(razon)}</td><td style="width:50%;text-align:right">${cuit ? `CUIT ${escapeHtml(cuit)}` : ""}</td></tr>${(direccion || telefono) ? `<tr><td>${escapeHtml(direccion)}</td><td style="text-align:right">${telefono ? `Tel ${escapeHtml(telefono)}` : ""}</td></tr>` : ""}</table>` : ""}
         <div class="line"></div>
         ${mostrarItems ? `<table>${itemsHtml}</table><div class="line"></div>` : ""}
         <table><tr class="total"><td>Total</td><td class="right">$${formatearNumero(ticketData.total)}</td></tr></table>
+        <div class="line"></div>
+        <div class="small center">Ticket #${escapeHtml(ticketData.ventaId || "-")} &nbsp;·&nbsp; ${escapeHtml(ticketData.fecha)} ${escapeHtml(ticketData.hora)}<br>Cliente: ${escapeHtml(ticketData.cliente)} &nbsp;·&nbsp; Pago: ${escapeHtml(ticketData.cobro)}</div>
         <div class="line"></div>
         <div class="center">${escapeHtml(mensaje)}</div>
       </div><script>window.onload=()=>{window.print();setTimeout(()=>window.close(),300)}<\/script></body></html>`;
@@ -2007,12 +2067,22 @@
 
       ticketLista.style.display = "grid";
       ticketVacio.style.display = "none";
+      let subtotalBruto = 0;
+      let totalDescuento = 0;
       let total = 0;
 
       ticket.forEach((item) => {
-        const subtotal = item.cantidad * Number(item.precio_venta || 0);
+        const precioVenta = Number(item.precio_venta || 0);
+        const descuentoUnit = Number(item.descuento || 0);
+        const subtotal = item.cantidad * precioVenta;
+        const descuentoLinea = item.cantidad * descuentoUnit;
+        subtotalBruto += item.cantidad * (precioVenta + descuentoUnit);
+        totalDescuento += descuentoLinea;
         total += subtotal;
         const nombreProducto = String(item.nombre || "Producto sin nombre").trim() || "Producto sin nombre";
+        const infoDescuento = descuentoUnit > 0
+          ? `<small>${item.cantidad} x $${formatearNumero(precioVenta)} <span style="color:var(--success,#2ea043);font-weight:700">· Ahorraste $${formatearNumero(descuentoUnit * item.cantidad)}</span></small>`
+          : `<small>${item.cantidad} x $${formatearNumero(precioVenta)}</small>`;
 
         const row = document.createElement("div");
         row.className = "ticket-row";
@@ -2020,7 +2090,7 @@
           <div class="ticket-product">
             <div class="ticket-product-info">
               <strong>${nombreProducto}</strong>
-              <small>${item.cantidad} x $${formatearNumero(item.precio_venta)}</small>
+              ${infoDescuento}
             </div>
           </div>
           <div class="qty-controls">
@@ -2052,8 +2122,8 @@
         ticketLista.appendChild(row);
       });
 
-      ticketSubtotal.innerText = formatearNumero(total);
-      ticketDescuento.innerText = "0.00";
+      ticketSubtotal.innerText = formatearNumero(subtotalBruto);
+      ticketDescuento.innerText = formatearNumero(totalDescuento);
       ticketTotal.innerText = formatearNumero(total);
       actualizarVuelto();
     }
@@ -2189,7 +2259,11 @@
       `;
 
       card.addEventListener("click", function () {
-        agregarAlTicket(producto);
+        if (Number(producto.es_combo) === 1) {
+          abrirModalCombo(producto);
+        } else {
+          agregarAlTicket(producto);
+        }
       });
 
       return card;
@@ -2373,30 +2447,30 @@
         return coincideTermino(producto) && filtrarPorCategoria(producto);
       });
 
-      // Más vendidos: ordenados por total_vendido descendente
-      const vendidos = [...productosFiltrados].sort(
-        (a, b) => Number(b.total_vendido || 0) - Number(a.total_vendido || 0)
-      );
-      ultimaVistaVendidos = vendidos.slice(0, 15);
+      // Más vendidos: de TODOS los productos (no solo pizarra), con ventas reales > 0.
+      const vendidos = productosCargados
+        .filter(p => !Number(p.es_combo) && Number(p.total_vendido || 0) > 0 && coincideTermino(p))
+        .sort((a, b) => Number(b.total_vendido || 0) - Number(a.total_vendido || 0));
+      ultimaVistaVendidos = vendidos;
       renderProductSection(
         productosMasVendidos,
         ultimaVistaVendidos.slice(0, 5),
         termino ? "Sin resultados para la busqueda." : "Sin productos destacados por ahora."
       );
 
-      // Combos: productos con es_combo=1 (aparecen también en el grid normal si están en pizarra)
+      // Combos: solo es_combo=1 (no aplica_para_combo). Grid muestra 5, "Ver más" muestra todos.
       const todosLosCombos = productosCargados.filter((producto) => {
         if (!Number(producto.es_combo)) return false;
         return coincideTermino(producto);
       });
-      ultimaVistaCombos = todosLosCombos.slice(0, 15);
+      ultimaVistaCombos = todosLosCombos;
       renderProductSection(productosCombo, ultimaVistaCombos.slice(0, 5), "Sin combos. En Stock activá el check 'Combo' en un producto.");
 
-      // Sugeridos: baja rotación con stock
+      // Sugeridos: baja rotación, excluye combos. Grid muestra 5, "Ver más" muestra todos.
       const sugeridos = [...productosFiltrados]
-        .filter((producto) => Number(producto.stock_disponible ?? producto.stock ?? 0) > 0)
+        .filter((producto) => !Number(producto.es_combo) && Number(producto.stock_disponible ?? producto.stock ?? 0) > 0)
         .sort((a, b) => Number(a.total_vendido || 0) - Number(b.total_vendido || 0));
-      ultimaVistaSugeridos = (sugeridos.length ? sugeridos : productosFiltrados).slice(0, 15);
+      ultimaVistaSugeridos = sugeridos.length ? sugeridos : productosFiltrados.filter(p => !Number(p.es_combo));
       renderProductSection(productosSugeridos, ultimaVistaSugeridos.slice(0, 5), "Sin sugerencias disponibles.");
 
       // Ver todos: todos los productos sin filtro de pizarra
@@ -2968,7 +3042,7 @@
           </div>
           <div class="pending-controls">
             <div class="muted">Abrilo para editarlo y elegir el cobro en el ticket.</div>
-            <button type="button" class="button secondary"><span class="app-icon icon-delete" aria-hidden="true"></span></button>
+            <button type="button" class="button secondary" title="Ver ticket" aria-label="Ver ticket"><span class="app-icon icon-view" aria-hidden="true"></span></button>
             <button type="button" class="button danger">Anular</button>
           </div>
         `;
@@ -3211,6 +3285,10 @@
     toggleNotificaciones.addEventListener("click", function (event) {
       event.stopPropagation();
       notificacionesDropdown.classList.toggle("open");
+      if (notificacionesDropdown.classList.contains("open")) {
+        const badge = document.getElementById("notifBadge");
+        if (badge) badge.style.display = "none";
+      }
     });
 
     paymentButtons.addEventListener("click", function (event) {
@@ -3258,7 +3336,37 @@
       });
     });
 
-    [modalGuardarPendiente, modalPendientes, modalCliente, modalProductos].forEach((modal) => {
+    document.getElementById("cancelarCombo").addEventListener("click", function () {
+      comboActual = null;
+      cerrarModal(modalCombo);
+    });
+
+    document.getElementById("aceptarCombo").addEventListener("click", function () {
+      if (!comboActual) return;
+      const producto = comboActual;
+      const descuento = comboActual._descuento || 0;
+      const existente = ticket.find((item) => item.id === producto.id);
+      if (existente) {
+        existente.cantidad += 1;
+      } else {
+        ticket.push({
+          id: producto.id,
+          producto_id: producto.id,
+          nombre: producto.nombre,
+          precio_venta: Number(producto.precio_venta) || 0,
+          descuento,
+          cantidad: 1,
+          imagen_url: producto.imagen_url || ""
+        });
+      }
+      comboActual = null;
+      cerrarModal(modalCombo);
+      marcarPendienteEditado();
+      renderizarTicket();
+      mostrarMensaje(`Combo agregado: ${producto.nombre}`);
+    });
+
+    [modalGuardarPendiente, modalPendientes, modalCliente, modalProductos, modalCombo].forEach((modal) => {
       modal.addEventListener("click", function (event) {
         if (event.target === modal) {
           cerrarModal(modal);

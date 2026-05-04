@@ -424,6 +424,12 @@
     .equal-panel {
       min-height: 430px;
     }
+    #tab-resumen .status-meta,
+    #tab-resumen #mensaje,
+    #tab-resumen .equal-panel .meta-grid { display: none; }
+    #tab-resumen .equal-panel { min-height: auto; }
+    #tab-resumen .status-card { gap: 8px; }
+    #tab-resumen .status-banner { padding-bottom: 4px; }
 
     .movements-panel {
       display: grid;
@@ -3544,6 +3550,7 @@
         estadoApertura.innerText = "La caja de hoy todavia no fue abierta.";
         estadoCajaVisual.className = "status-pill closed";
         estadoCajaVisual.innerText = "Caja cerrada";
+        estadoCajaVisual.title = "Sin caja abierta hoy";
         usuarioCajaVisual.innerText = "-";
         horaAperturaVisual.innerText = "-";
         aperturaEstadoDot.classList.add("closed");
@@ -3577,6 +3584,7 @@
           `Caja cerrada | Fecha: ${apertura.fecha} ${apertura.hora} | Apertura: $${formatearNumero(apertura.monto_apertura)} | MP inicial: $${formatearNumero(apertura.saldo_inicial_mp)} | Esperado: $${formatearNumero(apertura.efectivo_esperado)} | Contado: $${formatearNumero(apertura.efectivo_contado)} | Diferencia: $${formatearNumero(apertura.diferencia)}`;
         estadoCajaVisual.className = "status-pill closed";
         estadoCajaVisual.innerText = "Caja cerrada";
+        estadoCajaVisual.title = estadoApertura.innerText;
         aperturaEstadoDot.classList.add("closed");
         aperturaEstadoHeader.className = "cash-state-title closed";
         aperturaEstadoTitulo.innerText = "Caja cerrada";
@@ -3599,6 +3607,7 @@
         `Caja abierta | Fecha: ${apertura.fecha} ${apertura.hora} | Monto inicial: $${formatearNumero(apertura.monto_apertura)} | MP inicial: $${formatearNumero(apertura.saldo_inicial_mp)} | Usuario: ${apertura.usuario}`;
       estadoCajaVisual.className = "status-pill open";
       estadoCajaVisual.innerText = "Caja abierta";
+      estadoCajaVisual.title = estadoApertura.innerText;
       aperturaEstadoDot.classList.remove("closed");
       aperturaEstadoHeader.className = "cash-state-title open";
       aperturaEstadoTitulo.innerText = "Caja abierta";

@@ -7,7 +7,14 @@ const crypto = require("crypto");
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
-const AUTHORIZATION_CANCEL_CODE = "1234";
+const AUTHORIZATION_CANCEL_CODE = "1234"; // migración — se sobreescribe con getClaveAutorizacion()
+async function getClaveAutorizacion() {
+  try {
+    const row = await getQuery("SELECT valor FROM configuracion WHERE clave = 'autorizacion_clave_maestra'");
+    const val = String(row?.valor || "").trim();
+    return val || AUTHORIZATION_CANCEL_CODE;
+  } catch { return AUTHORIZATION_CANCEL_CODE; }
+}
 const loginAttempts = new Map();
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_LOCK_MS = 10 * 60 * 1000;
@@ -124,7 +131,9 @@ async function ensureProductosSchema() {
   await ensureColumn("productos", "precio_referencial_proveedor", "REAL NOT NULL DEFAULT 0");
   await ensureColumn("productos", "agregar_proveedor_info", "INTEGER NOT NULL DEFAULT 0");
   await ensureColumn("productos", "es_combo", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn("productos", "aplica_para_combo", "INTEGER NOT NULL DEFAULT 0");
   await ensureColumn("productos", "tipo", "TEXT NOT NULL DEFAULT 'simple'");
+  await ensureColumn("productos", "rendimiento_receta", "INTEGER NOT NULL DEFAULT 1");
   await runQuery(`
     CREATE TABLE IF NOT EXISTS categorias (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,7 +178,7 @@ async function ensureProductosSchema() {
     )
   `);
   await runQuery(
-    "UPDATE productos SET stock = 0, maneja_stock = 0, stock_minimo = 0, alerta_stock_minimo = 0 WHERE tipo = 'compuesto'"
+    "UPDATE productos SET stock = 0, stock_minimo = 0, alerta_stock_minimo = 0 WHERE tipo = 'compuesto' AND maneja_stock = 0 AND (rendimiento_receta IS NULL OR rendimiento_receta <= 1)"
   );
 }
 
@@ -266,6 +275,7 @@ const CONFIGURACION_DEFAULTS = {
   negocio_telefono: { seccion: "negocio", valor: "" },
   negocio_email: { seccion: "negocio", valor: "" },
   negocio_logo_url: { seccion: "negocio", valor: "" },
+  negocio_logo_escala: { seccion: "negocio", valor: 100 },
   negocio_regimen_monotributo: { seccion: "negocio", valor: false },
   negocio_regimen_responsable_inscripto: { seccion: "negocio", valor: true },
   pago_efectivo_activo: { seccion: "metodos_pago", valor: true },
@@ -304,6 +314,7 @@ const CONFIGURACION_DEFAULTS = {
   cuentas_dias_a_costo: { seccion: "cuentas_corrientes", valor: 90 },
   cuentas_limite_global_activo: { seccion: "cuentas_corrientes", valor: false },
   cuentas_limite_global_monto: { seccion: "cuentas_corrientes", valor: 0 },
+  autorizacion_clave_maestra: { seccion: "usuarios_permisos", valor: "1234" },
   permiso_ajuste_stock: { seccion: "usuarios_permisos", valor: "admin" },
   permiso_ver_costos: { seccion: "usuarios_permisos", valor: "admin" },
   permiso_cierre_caja: { seccion: "usuarios_permisos", valor: "admin" },
@@ -365,6 +376,8 @@ const CONFIGURACION_DEFAULTS = {
   dashboard_pizarra_categorias: { seccion: "usuarios_permisos", valor: "cafeteria,cafe,menu,desayuno,merienda" },
   dashboard_pizarra_productos: { seccion: "usuarios_permisos", valor: "" },
   ticket_nombre: { seccion: "tickets", valor: "Guernica Bar" },
+  ticket_modo_encabezado: { seccion: "tickets", valor: "logo" },
+  ticket_logo_ancho: { seccion: "tickets", valor: 65 },
   ticket_impresora_activa: { seccion: "tickets", valor: true },
   ticket_mostrar_logo: { seccion: "tickets", valor: true },
   ticket_mostrar_datos_fiscales: { seccion: "tickets", valor: true },
@@ -597,7 +610,7 @@ async function getComponentesProductoCompuesto(productoCompuestoId) {
   return allQuery(
     `SELECT pc.id, pc.producto_compuesto_id, pc.producto_id, pc.cantidad,
             p.nombre AS producto_nombre, p.stock, p.maneja_stock, p.tipo, p.es_combo,
-            p.unidad_medida, p.precio_compra, p.costo_final
+            p.unidad_medida, p.precio_compra, p.costo_final, p.precio_venta
      FROM producto_componentes pc
      INNER JOIN productos p ON p.id = pc.producto_id
      WHERE pc.producto_compuesto_id = ?
@@ -1241,7 +1254,7 @@ async function applyStockChange(productoId, deltaCantidad, options = {}) {
   visited.add(productoKey);
 
   const producto = await getQuery(
-    "SELECT id, maneja_stock, tipo, es_combo FROM productos WHERE id = ?",
+    "SELECT id, maneja_stock, tipo, es_combo, stock, rendimiento_receta FROM productos WHERE id = ?",
     [productoId]
   );
 
@@ -1250,6 +1263,38 @@ async function applyStockChange(productoId, deltaCantidad, options = {}) {
   }
 
   if (esProductoReceta(producto)) {
+    // Modo pre-armado: tiene stock propio → descuenta de sí mismo como producto simple
+    if (Number(producto.maneja_stock) === 1) {
+      await descontarStockPropioProducto(productoId, producto, deltaCantidad);
+      return;
+    }
+
+    const rendimiento = Number(producto.rendimiento_receta) || 1;
+
+    // Modo batch counter: sin stock propio pero con rendimiento > 1
+    // El campo stock actúa como contador. Cuando llega a 0 consume ingredientes y reinicia.
+    if (rendimiento > 1) {
+      let contador = Number(producto.stock || rendimiento) - Number(deltaCantidad);
+      let batchesConsumidos = 0;
+      while (contador <= 0) {
+        batchesConsumidos++;
+        contador += rendimiento;
+      }
+      await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [contador, productoId]);
+      if (batchesConsumidos > 0) {
+        const componentes = await getComponentesProductoCompuesto(productoId);
+        for (const componente of componentes) {
+          await applyStockChange(
+            componente.producto_id,
+            Number(componente.cantidad || 0) * rendimiento * batchesConsumidos,
+            { comoComponente: true, visited: new Set(visited) }
+          );
+        }
+      }
+      return;
+    }
+
+    // Modo en el momento (sin_stock_propio, rendimiento = 1): descuenta ingredientes directo
     const componentes = await getComponentesProductoCompuesto(producto.id);
 
     if (!componentes.length) {
@@ -1825,6 +1870,7 @@ app.post("/productos", async (req, res) => {
     precio_referencial_proveedor,
     agregar_proveedor_info,
     es_combo,
+    aplica_para_combo,
     tipo,
     componentes,
     costos_extra,
@@ -1849,7 +1895,7 @@ app.post("/productos", async (req, res) => {
     const tipoProducto = normalizarTipoProducto(tipo);
     const usaCostos = tipoProducto === "simple" && (usa_costos_varios || categoriaData?.usa_costos_varios);
     const stockInicial = Number(stock) || 0;
-    const recetaSinStockFisico = tipoProducto === "compuesto";
+    const recetaSinStockFisico = tipoProducto === "compuesto" && !maneja_stock;
     const costoBase = tipoProducto === "compuesto"
       ? await calcularCostoProductoCompuestoPayload(componentes, costos_extra)
       : usaCostos ? calcularCostoPorRendimiento(costos_insumos) : Number(precio_compra) || 0;
@@ -1864,8 +1910,8 @@ app.post("/productos", async (req, res) => {
     const result = await runQuery(
       `INSERT INTO productos
       (nombre, categoria, precio_compra, precio_venta, stock, maneja_stock, proveedor_principal, proveedor_id, activo, observaciones, imagen_url, iva_porcentaje, precio_compra_incluye_iva, costo_final, categoria_id, redondeo,
-       codigo, descripcion, stock_minimo, unidad_medida, codigo_barras, marca, presentacion, ubicacion, vencimiento, alerta_stock_minimo, usa_costos_varios, precio_referencial_proveedor, agregar_proveedor_info, es_combo, tipo)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       codigo, descripcion, stock_minimo, unidad_medida, codigo_barras, marca, presentacion, ubicacion, vencimiento, alerta_stock_minimo, usa_costos_varios, precio_referencial_proveedor, agregar_proveedor_info, es_combo, aplica_para_combo, tipo, rendimiento_receta)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         String(nombre).trim(),
         categoria || "",
@@ -1897,7 +1943,9 @@ app.post("/productos", async (req, res) => {
         Number(precio_referencial_proveedor) || 0,
         agregar_proveedor_info ? 1 : 0,
         es_combo ? 1 : 0,
-        tipoProducto
+        aplica_para_combo ? 1 : 0,
+        tipoProducto,
+        Math.max(1, Number(req.body.rendimiento_receta) || 1)
       ]
     );
 
@@ -2018,6 +2066,7 @@ app.put("/productos/:id", async (req, res) => {
     precio_referencial_proveedor,
     agregar_proveedor_info,
     es_combo,
+    aplica_para_combo,
     tipo,
     componentes,
     costos_extra,
@@ -2047,8 +2096,10 @@ app.put("/productos/:id", async (req, res) => {
     }
     const tipoProducto = normalizarTipoProducto(tipo);
     const usaCostos = tipoProducto === "simple" && (usa_costos_varios || categoriaData?.usa_costos_varios);
-    const stockProducto = Number(stock) || 0;
-    const recetaSinStockFisico = tipoProducto === "compuesto";
+    const rendimientoReceta = Math.max(1, Number(req.body.rendimiento_receta) || 1);
+    const esBatchCounter = tipoProducto === "compuesto" && !maneja_stock && rendimientoReceta > 1;
+    const stockProducto = esBatchCounter ? rendimientoReceta : (Number(stock) || 0);
+    const recetaSinStockFisico = tipoProducto === "compuesto" && !maneja_stock;
     const costoBase = tipoProducto === "compuesto"
       ? await calcularCostoProductoCompuestoPayload(componentes, costos_extra)
       : usaCostos ? calcularCostoPorRendimiento(costos_insumos) : Number(precio_compra) || 0;
@@ -2066,7 +2117,7 @@ app.put("/productos/:id", async (req, res) => {
            observaciones = ?, imagen_url = ?, iva_porcentaje = ?, precio_compra_incluye_iva = ?,
            costo_final = ?, categoria_id = ?, redondeo = ?, codigo = ?, descripcion = ?, stock_minimo = ?,
            unidad_medida = ?, codigo_barras = ?, marca = ?, presentacion = ?, ubicacion = ?, vencimiento = ?,
-           alerta_stock_minimo = ?, usa_costos_varios = ?, precio_referencial_proveedor = ?, agregar_proveedor_info = ?, es_combo = ?, tipo = ?
+           alerta_stock_minimo = ?, usa_costos_varios = ?, precio_referencial_proveedor = ?, agregar_proveedor_info = ?, es_combo = ?, aplica_para_combo = ?, tipo = ?, rendimiento_receta = ?
        WHERE id = ?`,
       [
         String(nombre).trim(),
@@ -2099,7 +2150,9 @@ app.put("/productos/:id", async (req, res) => {
         Number(precio_referencial_proveedor) || 0,
         agregar_proveedor_info ? 1 : 0,
         es_combo ? 1 : 0,
+        aplica_para_combo ? 1 : 0,
         tipoProducto,
+        Math.max(1, Number(req.body.rendimiento_receta) || 1),
         productoId
       ]
     );
@@ -2149,7 +2202,7 @@ app.patch("/productos/:id/inactivar", async (req, res) => {
 
 app.patch("/productos/:id/combo", async (req, res) => {
   const productoId = Number(req.params.id);
-  const esCombo = req.body?.es_combo ? 1 : 0;
+  const aplicaParaCombo = req.body?.aplica_para_combo ? 1 : 0;
 
   try {
     const existente = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
@@ -2158,13 +2211,64 @@ app.patch("/productos/:id/combo", async (req, res) => {
       return res.status(404).json({ message: "Producto no encontrado" });
     }
 
-    await runQuery("UPDATE productos SET es_combo = ? WHERE id = ?", [esCombo, productoId]);
+    await runQuery("UPDATE productos SET aplica_para_combo = ? WHERE id = ?", [aplicaParaCombo, productoId]);
     const actualizado = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
     await registrarCambiosProducto(productoId, existente, actualizado, "admin", "combo");
-    return res.json({ message: esCombo ? "Producto marcado como combo" : "Producto quitado de combos" });
+    return res.json({ message: aplicaParaCombo ? "Producto habilitado para combos" : "Producto quitado de combos" });
   } catch (error) {
     console.error("Error al actualizar combo del producto:", error.message);
     return res.status(500).json({ message: "Error al actualizar combo del producto" });
+  }
+});
+
+// Vista previa: productos con es_combo=1 que NO son combos reales (marcados por error desde el form)
+app.get("/admin/combo-preview", async (req, res) => {
+  try {
+    const productos = await allQuery(`
+      SELECT p.id, p.nombre,
+             COALESCE(c.nombre, p.categoria, 'Sin categoría') AS categoria,
+             COALESCE(p.tipo, 'simple') AS tipo,
+             p.es_combo, p.aplica_para_combo
+      FROM productos p
+      LEFT JOIN categorias c ON c.id = p.categoria_id
+      WHERE p.es_combo = 1
+        AND COALESCE(p.tipo, 'simple') != 'compuesto'
+        AND COALESCE(p.eliminado, 0) = 0
+      ORDER BY p.nombre
+    `);
+    return res.json({ productos, total: productos.length });
+  } catch (err) {
+    console.error("Error en combo-preview:", err.message);
+    return res.status(500).json({ message: "Error al obtener preview de migración" });
+  }
+});
+
+// Aplicar corrección: mover es_combo=1 (no reales) a aplica_para_combo=1
+app.post("/admin/combo-aplicar", async (req, res) => {
+  try {
+    const afectados = await allQuery(`
+      SELECT id FROM productos
+      WHERE es_combo = 1
+        AND COALESCE(tipo, 'simple') != 'compuesto'
+        AND COALESCE(eliminado, 0) = 0
+    `);
+    if (!afectados.length) {
+      return res.json({ message: "No hay productos para corregir", total: 0 });
+    }
+    await runQuery(`
+      UPDATE productos
+      SET es_combo = 0, aplica_para_combo = 1
+      WHERE es_combo = 1
+        AND COALESCE(tipo, 'simple') != 'compuesto'
+        AND COALESCE(eliminado, 0) = 0
+    `);
+    return res.json({
+      message: `${afectados.length} producto(s) corregido(s): es_combo → aplica_para_combo`,
+      total: afectados.length
+    });
+  } catch (err) {
+    console.error("Error en combo-aplicar:", err.message);
+    return res.status(500).json({ message: "Error al aplicar corrección de combos" });
   }
 });
 
@@ -2597,16 +2701,16 @@ app.post("/productos/:id/movimientos-stock", async (req, res) => {
     if (!producto) {
       return res.status(404).json({ message: "Producto no encontrado" });
     }
-    const esStockCalculado = normalizarTipoProducto(producto.tipo) === "compuesto";
+    const esCompuesto = normalizarTipoProducto(producto.tipo) === "compuesto";
+    const esStockCalculado = esCompuesto && !Number(producto.maneja_stock);
     if (esStockCalculado) {
       return res.status(400).json({ message: "Este producto no posee stock propio. Ajusta sus ingredientes." });
     }
 
     const stockAnterior = Number(producto.stock || 0);
     const tiposPositivos = ["ingreso", "ajuste positivo", "devolucion"];
-    const stockNuevo = tiposPositivos.includes(tipoMovimiento.toLowerCase())
-      ? stockAnterior + cantidad
-      : stockAnterior - cantidad;
+    const esIngreso = tiposPositivos.includes(tipoMovimiento.toLowerCase());
+    const stockNuevo = esIngreso ? stockAnterior + cantidad : stockAnterior - cantidad;
 
     await runQuery("BEGIN TRANSACTION");
     await runQuery(
@@ -2616,6 +2720,23 @@ app.post("/productos/:id/movimientos-stock", async (req, res) => {
       [productoId, tipoMovimiento, cantidad, stockAnterior, stockNuevo, motivo, proveedorId, usuario, fecha, hora]
     );
     await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockNuevo, productoId]);
+    // Si es receta con stock propio y es un ingreso, descontar ingredientes
+    if (esCompuesto && Number(producto.maneja_stock) && esIngreso) {
+      const componentes = await getComponentesProductoCompuesto(productoId);
+      for (const comp of componentes) {
+        const consumo = cantidad * Number(comp.cantidad);
+        const ing = await getQuery("SELECT stock FROM productos WHERE id = ?", [comp.producto_id]);
+        if (ing) {
+          const nuevoStockIng = Math.max(0, Number(ing.stock || 0) - consumo);
+          await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [nuevoStockIng, comp.producto_id]);
+          await runQuery(
+            `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
+             VALUES (?, 'egreso', ?, ?, ?, ?, ?, ?, ?)`,
+            [comp.producto_id, consumo, Number(ing.stock || 0), nuevoStockIng, `Consumo receta: ${producto.nombre}`, usuario, fecha, hora]
+          );
+        }
+      }
+    }
     if (normalizarTipoProducto(producto.tipo) === "compuesto") {
       const categoria = producto.categoria_id
         ? await getQuery("SELECT margen_porcentaje FROM categorias WHERE id = ?", [producto.categoria_id])
@@ -3156,6 +3277,91 @@ app.post("/pagos", async (req, res) => {
   } catch (error) {
     console.error("Error al registrar pago:", error.message);
     return res.status(500).json({ message: "Error al registrar pago" });
+  }
+});
+
+// Editar pago — requiere clave maestra 1234. Con arqueo solo Dueño/Encargado.
+app.put("/pagos/:id", async (req, res) => {
+  const pagoId = Number(req.params.id);
+  const { clave, rol, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito,
+          categoria_pago, comprobante, numero_comprobante, cuenta_destino, observaciones } = req.body;
+
+  const claveConfig = await getClaveAutorizacion();
+  if (clave !== claveConfig) {
+    return res.status(403).json({ message: "Clave maestra incorrecta" });
+  }
+
+  try {
+    const pago = await getQuery("SELECT * FROM pagos WHERE id = ?", [pagoId]);
+    if (!pago) return res.status(404).json({ message: "Pago no encontrado" });
+
+    let tieneArqueo = false;
+    let cajaEstado = null;
+
+    if (pago.caja_id) {
+      const caja = await getQuery("SELECT estado FROM caja_aperturas WHERE id = ?", [pago.caja_id]);
+      cajaEstado = caja?.estado || null;
+      const arqueo = await getQuery("SELECT id FROM caja_arqueos WHERE caja_id = ?", [pago.caja_id]);
+      tieneArqueo = !!arqueo;
+    }
+
+    const esPrivilegiado = rol === "admin" || rol === "encargado";
+    if (tieneArqueo && !esPrivilegiado) {
+      return res.status(403).json({ message: "Este pago pertenece a un arqueo registrado. Solo Dueño o Encargado puede editarlo." });
+    }
+
+    // Preservar valores originales para campos NOT NULL que no se editan en el form
+    await runQuery(
+      `UPDATE pagos SET concepto=?, monto_total=?, tipo_pago=?, monto_efectivo=?, monto_debito=?,
+       categoria_pago=?, comprobante=?, numero_comprobante=?, cuenta_destino=?, observaciones=? WHERE id = ?`,
+      [
+        concepto ?? pago.concepto,
+        Number(monto_total) || Number(pago.monto_total) || 0,
+        tipo_pago ?? pago.tipo_pago,
+        monto_efectivo != null ? Number(monto_efectivo) : Number(pago.monto_efectivo) || 0,
+        monto_debito != null ? Number(monto_debito) : Number(pago.monto_debito) || 0,
+        categoria_pago ?? pago.categoria_pago ?? null,
+        comprobante ?? pago.comprobante ?? null,
+        numero_comprobante ?? pago.numero_comprobante ?? null,
+        cuenta_destino ?? pago.cuenta_destino ?? null,
+        observaciones ?? pago.observaciones ?? null,
+        pagoId
+      ]
+    );
+
+    return res.json({ message: "Pago actualizado correctamente", tieneArqueo, cajaEstado });
+  } catch (error) {
+    console.error("Error al editar pago:", error.message);
+    return res.status(500).json({ message: "Error al editar pago" });
+  }
+});
+
+// Eliminar pago — bloqueado si la caja está cerrada (tiene cierre registrado)
+app.delete("/pagos/:id", async (req, res) => {
+  const pagoId = Number(req.params.id);
+  const { clave, rol } = req.body;
+
+  const claveConfig = await getClaveAutorizacion();
+  if (clave !== claveConfig) {
+    return res.status(403).json({ message: "Clave maestra incorrecta" });
+  }
+
+  try {
+    const pago = await getQuery("SELECT * FROM pagos WHERE id = ?", [pagoId]);
+    if (!pago) return res.status(404).json({ message: "Pago no encontrado" });
+
+    if (pago.caja_id) {
+      const caja = await getQuery("SELECT estado FROM caja_aperturas WHERE id = ?", [pago.caja_id]);
+      if (caja?.estado === "cerrada") {
+        return res.status(403).json({ message: "No se puede eliminar un pago de una caja cerrada." });
+      }
+    }
+
+    await runQuery("DELETE FROM pagos WHERE id = ?", [pagoId]);
+    return res.json({ message: "Pago eliminado" });
+  } catch (error) {
+    console.error("Error al eliminar pago:", error.message);
+    return res.status(500).json({ message: "Error al eliminar pago" });
   }
 });
 
@@ -4566,7 +4772,8 @@ app.post("/ventas/:id/anular", async (req, res) => {
   const ventaId = req.params.id;
   const authorizationCode = String(req.body.authorization_code || "").trim();
 
-  if (authorizationCode !== AUTHORIZATION_CANCEL_CODE) {
+  const claveActual = await getClaveAutorizacion();
+  if (authorizationCode !== claveActual) {
     return res.status(403).json({ message: "Codigo de autorizacion incorrecto" });
   }
 
@@ -4650,7 +4857,8 @@ app.post("/ventas/:id/anular-cobrada", async (req, res) => {
   const ventaId = Number(req.params.id);
   const authorizationCode = String(req.body.authorization_code || "").trim();
 
-  if (authorizationCode !== AUTHORIZATION_CANCEL_CODE) {
+  const claveActual = await getClaveAutorizacion();
+  if (authorizationCode !== claveActual) {
     return res.status(403).json({ message: "Codigo de autorizacion incorrecto" });
   }
 

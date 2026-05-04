@@ -33,7 +33,7 @@
         <div class="filters">
           <label>Buscar<input id="buscar" placeholder="Nombre, usuario o email"></label>
           <label>Estado<select id="filtroEstado"><option value="todos">Todos</option><option value="activos">Activos</option><option value="inactivos">Inactivos</option></select></label>
-          <label>Rol<select id="filtroRol"><option value="">Todos los roles</option><option value="admin">Admin</option><option value="encargado">Encargado</option><option value="operador">Operador</option><option value="caja">Caja</option></select></label>
+          <label>Rol<select id="filtroRol"><option value="">Todos los roles</option><option value="admin">Dueño</option><option value="encargado">Encargado</option><option value="operador">Colaborador</option><option value="caja">Caja</option></select></label>
         </div>
       </section>
       <section class="card table-wrap">
@@ -56,7 +56,7 @@
           <label>Usuario login<input id="loginUsuario" required autocomplete="off"></label>
           <label>Email<input id="email" type="email"></label>
           <label>Teléfono<input id="telefono"></label>
-          <label>Rol<select id="rol"><option value="admin">Admin</option><option value="encargado">Encargado</option><option value="operador">Operador</option><option value="caja">Caja</option></select></label>
+          <label>Rol<select id="rol"><option value="admin">Dueño</option><option value="encargado">Encargado</option><option value="operador">Colaborador</option><option value="caja">Caja</option></select></label>
           <label class="check-row"><input id="activo" type="checkbox" checked> Usuario activo</label>
           <label id="passwordLabel">Contraseña<input id="password" type="password" autocomplete="new-password"></label>
           <label id="confirmarLabel">Confirmar contraseña<input id="confirmarPassword" type="password" autocomplete="new-password"></label>
@@ -83,7 +83,7 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const state = { usuarios: [], filtrados: [] };
-    const roles = { admin: "Admin", encargado: "Encargado", operador: "Operador", caja: "Caja" };
+    const roles = { admin: "Dueño", encargado: "Encargado", operador: "Colaborador", caja: "Caja" };
     function msg(el, text, type = "") { el.className = `message ${type}`; el.textContent = text; }
     function fecha(value) { return value ? new Date(value).toLocaleString("es-AR") : "Sin acceso"; }
     function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[c])); }
@@ -92,7 +92,7 @@
       const activos = state.usuarios.filter((u) => u.activo).length;
       const admins = state.usuarios.filter((u) => u.rol === "admin").length;
       const inactivos = total - activos;
-      $("resumen").innerHTML = [["Total", total], ["Activos", activos], ["Inactivos", inactivos], ["Admins", admins]].map(([a,b]) => `<div class="summary-box"><span>${a}</span><strong>${b}</strong></div>`).join("");
+      $("resumen").innerHTML = [["Total", total], ["Activos", activos], ["Inactivos", inactivos], ["Dueños", admins]].map(([a,b]) => `<div class="summary-box"><span>${a}</span><strong>${b}</strong></div>`).join("");
     }
     function filtrar() {
       const q = $("buscar").value.trim().toLowerCase();
