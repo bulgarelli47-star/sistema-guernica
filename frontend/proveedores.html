@@ -262,9 +262,9 @@
     }
     .filters {
       display: grid;
-      grid-template-columns: minmax(220px, 1fr) 160px 180px;
+      grid-template-columns: minmax(220px, 1fr) 160px 180px 120px;
       gap: 10px;
-      min-width: min(680px, 100%);
+      min-width: min(820px, 100%);
     }
     .field {
       width: 100%;
@@ -306,6 +306,10 @@
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { padding: 10px 9px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
     th { color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; }
+    th.sortable { cursor: pointer; user-select: none; }
+    th.sortable::after { content: ""; display: inline-block; margin-left: 5px; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid currentColor; opacity: .35; vertical-align: middle; }
+    th.sortable.active::after { opacity: .9; }
+    th.sortable.desc::after { transform: rotate(180deg); }
     .actions-menu { position: relative; display: inline-flex; }
     .dots-button {
       width: 34px;
@@ -319,10 +323,8 @@
       letter-spacing: 0;
     }
     .actions-popup {
-      position: absolute;
-      top: calc(100% + 8px);
-      right: 0;
-      z-index: 20;
+      position: fixed;
+      z-index: 200;
       width: 190px;
       display: none;
       padding: 8px;
@@ -460,6 +462,7 @@
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=7" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
+<script src="/auth-interceptor.js"></script>
 </head>
 <body>
   <header class="site-header">
@@ -565,22 +568,29 @@
               <option value="compras_mes">Orden: compras del mes</option>
               <option value="ultima_compra">Orden: Última compra</option>
             </select>
+            <select id="limiteListado" class="field">
+              <option value="5">5 filas</option>
+              <option value="10">10 filas</option>
+              <option value="15">15 filas</option>
+              <option value="25">25 filas</option>
+            </select>
           </div>
         </div>
+        <p id="contadorListado" style="font-size:12px;font-weight:700;color:var(--muted);margin:4px 0;"></p>
 
         <div style="overflow:auto;">
           <table>
             <thead>
               <tr>
-                <th>Proveedor</th>
+                <th class="sortable active" data-sort="nombre">Proveedor</th>
                 <th>Contacto</th>
                 <th>Teléfono</th>
                 <th>Email</th>
                 <th>Categoria</th>
-                <th>Compras mes</th>
+                <th class="sortable" data-sort="compras_mes">Compras mes</th>
                 <th>Impacto</th>
-                <th>Saldo pendiente</th>
-                <th>Última compra</th>
+                <th class="sortable" data-sort="saldo">Saldo pendiente</th>
+                <th class="sortable" data-sort="ultima_compra">Última compra</th>
                 <th>Estado</th>
                 <th>Acciones</th>
               </tr>
@@ -589,6 +599,11 @@
               <tr><td colspan="11">Cargando proveedores...</td></tr>
             </tbody>
           </table>
+        </div>
+        <div id="paginacionListado" style="display:none;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap;">
+          <button id="paginaAnterior" class="button secondary compact">‹ Anterior</button>
+          <span id="infoPagina" style="font-size:12px;font-weight:700;color:var(--muted)"></span>
+          <button id="paginaSiguiente" class="button secondary compact">Siguiente ›</button>
         </div>
       </section>
     </main>
@@ -747,6 +762,8 @@
     const busqueda = document.getElementById("busqueda");
     const filtroEstado = document.getElementById("filtroEstado");
     const ordenListado = document.getElementById("ordenListado");
+    const limiteListado = document.getElementById("limiteListado");
+    let ordenCampo = "nombre", ordenDir = "asc", paginaActual = 1, totalPaginasProv = 1;
     const modalProveedor = document.getElementById("modalProveedor");
     const modalPago = document.getElementById("modalPago");
     const modalDetalle = document.getElementById("modalDetalle");
@@ -975,10 +992,13 @@
       });
 
       items = [...items].sort((a, b) => {
-        if (ordenListado.value === "saldo") return Number(b.saldo_pendiente || 0) - Number(a.saldo_pendiente || 0);
-        if (ordenListado.value === "compras_mes") return Number(b.compras_mes || 0) - Number(a.compras_mes || 0);
-        if (ordenListado.value === "ultima_compra") return String(b.ultima_compra || "").localeCompare(String(a.ultima_compra || ""));
-        return String(a.nombre || "").localeCompare(String(b.nombre || ""));
+        const campo = ordenCampo || ordenListado.value;
+        let res = 0;
+        if (campo === "saldo") res = Number(b.saldo_pendiente || 0) - Number(a.saldo_pendiente || 0);
+        else if (campo === "compras_mes") res = Number(b.compras_mes || 0) - Number(a.compras_mes || 0);
+        else if (campo === "ultima_compra") res = String(b.ultima_compra || "").localeCompare(String(a.ultima_compra || ""));
+        else res = String(a.nombre || "").localeCompare(String(b.nombre || ""));
+        return ordenDir === "desc" ? -res : res;
       });
 
       return items;
@@ -991,10 +1011,31 @@
 
       if (items.length === 0) {
         tablaProveedores.innerHTML = '<tr><td colspan="11">No hay proveedores para mostrar.</td></tr>';
+        document.getElementById("contadorListado").textContent = "";
         return;
       }
 
-      items.forEach((proveedor) => {
+      const limite = Number(limiteListado.value);
+      totalPaginasProv = limite > 0 ? Math.ceil(items.length / limite) : 1;
+      paginaActual = Math.min(paginaActual, Math.max(1, totalPaginasProv));
+      const visibles = limite > 0 ? items.slice((paginaActual - 1) * limite, paginaActual * limite) : items;
+
+      const desde = limite > 0 ? (paginaActual - 1) * limite + 1 : 1;
+      const hasta = desde + visibles.length - 1;
+      document.getElementById("contadorListado").textContent = `Mostrando ${desde}–${hasta} de ${items.length}`;
+
+      const pagDiv = document.getElementById("paginacionListado");
+      const infoPag = document.getElementById("infoPagina");
+      if (limite > 0 && totalPaginasProv > 1) {
+        pagDiv.style.display = "flex";
+        infoPag.textContent = `Página ${paginaActual} de ${totalPaginasProv}`;
+        document.getElementById("paginaAnterior").disabled = paginaActual === 1;
+        document.getElementById("paginaSiguiente").disabled = paginaActual === totalPaginasProv;
+      } else {
+        pagDiv.style.display = "none";
+      }
+
+      visibles.forEach((proveedor) => {
         const row = document.createElement("tr");
         const activo = Number(proveedor.activo) === 1;
         const saldo = Number(proveedor.saldo_pendiente || 0);
@@ -1030,7 +1071,16 @@
           document.querySelectorAll(".actions-popup.open").forEach((menu) => {
             if (menu !== popup) menu.classList.remove("open");
           });
+          const rect = menuButton.getBoundingClientRect();
+          popup.style.right = (window.innerWidth - rect.right) + "px";
+          popup.style.top = (rect.bottom + 8) + "px";
           popup.classList.toggle("open");
+          if (popup.classList.contains("open")) {
+            const ph = popup.offsetHeight;
+            if (rect.bottom + 8 + ph > window.innerHeight) {
+              popup.style.top = (rect.top - ph - 8) + "px";
+            }
+          }
         });
         row.querySelector('[data-action="detalle"]').addEventListener("click", () => abrirDetalle(proveedor));
         row.querySelector('[data-action="movimientos"]').addEventListener("click", () => abrirDetalle(proveedor));
@@ -1252,10 +1302,21 @@
       event.stopPropagation();
       notificacionesDropdown.classList.toggle("open");
     });
-    [busqueda, filtroEstado, ordenListado].forEach((input) => {
-      input.addEventListener("input", renderizarProveedores);
-      input.addEventListener("change", renderizarProveedores);
+    [busqueda, filtroEstado, ordenListado, limiteListado].forEach((input) => {
+      input.addEventListener("input", () => { paginaActual = 1; renderizarProveedores(); });
+      input.addEventListener("change", () => { paginaActual = 1; renderizarProveedores(); });
     });
+    ordenListado.addEventListener("change", () => { ordenCampo = ordenListado.value; ordenDir = "asc"; });
+    document.getElementById("paginaAnterior").onclick = () => { if (paginaActual > 1) { paginaActual--; renderizarProveedores(); } };
+    document.getElementById("paginaSiguiente").onclick = () => { if (paginaActual < totalPaginasProv) { paginaActual++; renderizarProveedores(); } };
+    document.querySelectorAll("th.sortable").forEach(th => th.addEventListener("click", () => {
+      const campo = th.dataset.sort;
+      if (ordenCampo === campo) ordenDir = ordenDir === "asc" ? "desc" : "asc";
+      else { ordenCampo = campo; ordenDir = "asc"; }
+      document.querySelectorAll("th.sortable").forEach(h => h.classList.toggle("active", h.dataset.sort === ordenCampo));
+      document.querySelectorAll("th.sortable").forEach(h => h.classList.toggle("desc", h.dataset.sort === ordenCampo && ordenDir === "desc"));
+      renderizarProveedores();
+    }));
     [pagoCampos.importe, pagoCampos.estado].forEach((input) => {
       input.addEventListener("input", actualizarImpactoPago);
       input.addEventListener("change", actualizarImpactoPago);

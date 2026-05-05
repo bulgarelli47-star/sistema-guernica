@@ -2063,6 +2063,7 @@
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=7" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
+<script src="/auth-interceptor.js"></script>
 </head>
 <body>
   <header class="site-header">
@@ -2685,7 +2686,7 @@
             <div class="denomination-summary">
               <div class="mini-card"><span>Total en cambio</span><strong>$<span id="totalCambioRomaneo">0.00</span></strong></div>
               <div class="mini-card"><span>Total de retiro</span><strong>$<span id="totalRetiroRomaneo">0.00</span></strong></div>
-              <label class="mini-card"><span>Saldo físico real</span><input class="field" id="saldoFisicoRealManual" type="number" step="0.01" placeholder="Manual"></label>
+              <label class="mini-card"><span>Saldo físico real</span><input class="field" id="saldoFisicoRealManual" type="number" step="0.01" min="0" placeholder="Manual"></label>
               <div class="mini-card"><span>Caja inicio con cambio</span><strong>$<span id="cajaInicioCambio">0.00</span></strong></div>
             </div>
           </article>
@@ -3436,8 +3437,8 @@
         row.className = "accounts-row";
         row.innerHTML = `
           <label><span>Cuenta</span><input type="text" class="field" value="${cuenta.nombre}" /></label>
-          <label><span>Saldo inicial</span><input type="number" class="field" value="${cuenta.saldo_inicial}" step="0.01" /></label>
-          <label><span>Saldo actual</span><input type="number" class="field" value="${cuenta.saldo_actual}" step="0.01" /></label>
+          <label><span>Saldo inicial</span><input type="number" class="field" value="${cuenta.saldo_inicial}" step="0.01" min="0" /></label>
+          <label><span>Saldo actual</span><input type="number" class="field" value="${cuenta.saldo_actual}" step="0.01" min="0" /></label>
           <label><span>Recaudacion real</span><input type="text" class="field" value="$0.00" disabled /></label>
         `;
         const [nombre, saldoInicial, saldoActual, recaudacion] = row.querySelectorAll("input");

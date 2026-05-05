@@ -7,7 +7,7 @@ const crypto = require("crypto");
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
-const AUTHORIZATION_CANCEL_CODE = "1234"; // migración — se sobreescribe con getClaveAutorizacion()
+const AUTHORIZATION_CANCEL_CODE = "0000"; // fallback solo si la DB no tiene clave configurada
 async function getClaveAutorizacion() {
   try {
     const row = await getQuery("SELECT valor FROM configuracion_global WHERE clave = 'autorizacion_clave_maestra'");
@@ -15,7 +15,6 @@ async function getClaveAutorizacion() {
     return val || AUTHORIZATION_CANCEL_CODE;
   } catch { return AUTHORIZATION_CANCEL_CODE; }
 }
-const loginAttempts = new Map();
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_LOCK_MS = 10 * 60 * 1000;
 const PROVEEDOR_IMPACTOS = new Set([
@@ -42,6 +41,42 @@ app.use(express.static(path.join(__dirname, "../frontend"), {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   }
 }));
+
+const RUTAS_PUBLICAS = new Set(["/", "/login", "/logout"]);
+
+function logError(contexto, error, extra = "") {
+  const msg = error instanceof Error ? error.message : String(error);
+  const stack = error instanceof Error && error.stack ? `\n  ${error.stack.split("\n")[1]?.trim()}` : "";
+  console.error(`[ERROR] ${contexto}${extra ? " | " + extra : ""}: ${msg}${stack}`);
+}
+
+async function requireAuth(req, res, next) {
+  if (RUTAS_PUBLICAS.has(req.path)) return next();
+
+  const authHeader = String(req.headers.authorization || "");
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+
+  if (!token) {
+    return res.status(401).json({ message: "No autenticado. Iniciá sesión." });
+  }
+
+  try {
+    const sesion = await getQuery(
+      "SELECT usuario_id, nombre, rol FROM sesiones WHERE token = ? AND expira > datetime('now')",
+      [token]
+    );
+    if (!sesion) {
+      return res.status(401).json({ message: "Sesión expirada. Iniciá sesión nuevamente." });
+    }
+    req.usuario = { id: sesion.usuario_id, nombre: sesion.nombre, rol: sesion.rol };
+    next();
+  } catch (error) {
+    console.error("Error validando sesión:", error.message);
+    return res.status(500).json({ message: "Error de autenticación" });
+  }
+}
+
+app.use(requireAuth);
 
 const dbPath = path.join(__dirname, "../database/guernica.db");
 const db = new sqlite3.Database(dbPath);
@@ -225,6 +260,17 @@ async function ensureUsuariosSchema() {
   await ensureColumn("usuarios", "ultimo_acceso", "TEXT");
   await ensureColumn("usuarios", "creado_en", "TEXT");
   await ensureColumn("usuarios", "actualizado_en", "TEXT");
+  await ensureColumn("usuarios", "intentos_fallidos", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn("usuarios", "bloqueado_hasta", "TEXT");
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS sesiones (
+      token TEXT PRIMARY KEY,
+      usuario_id INTEGER NOT NULL,
+      nombre TEXT NOT NULL,
+      rol TEXT NOT NULL,
+      expira TEXT NOT NULL
+    )
+  `);
 }
 
 function runQuery(sql, params = []) {
@@ -636,7 +682,10 @@ async function calcularStockDisponibleCompuesto(productoCompuestoId, visited = n
   }
   visited.add(compuestoId);
 
-  const componentes = await getComponentesProductoCompuesto(productoCompuestoId);
+  const [producto, componentes] = await Promise.all([
+    getQuery("SELECT rendimiento_receta FROM productos WHERE id = ?", [compuestoId]),
+    getComponentesProductoCompuesto(productoCompuestoId)
+  ]);
 
   if (!componentes.length) {
     return 0;
@@ -655,7 +704,11 @@ async function calcularStockDisponibleCompuesto(productoCompuestoId, visited = n
     disponibilidades.push(stockBase / cantidad);
   }
 
-  return disponibilidades.length ? Math.max(0, Math.floor(Math.min(...disponibilidades))) : 0;
+  if (!disponibilidades.length) return 0;
+
+  const batchesDisponibles = Math.max(0, Math.floor(Math.min(...disponibilidades)));
+  const rendimiento = Math.max(1, Number(producto?.rendimiento_receta) || 1);
+  return batchesDisponibles * rendimiento;
 }
 
 async function getCostoConsumoUnitarioProducto(productoId, productoRow = null) {
@@ -689,7 +742,8 @@ async function calcularStockVendibleFraccionado(productoId, stockActual = 0) {
 }
 
 async function calcularCostoProductoCompuesto(productoCompuestoId) {
-  const [componentes, costosExtra] = await Promise.all([
+  const [producto, componentes, costosExtra] = await Promise.all([
+    getQuery("SELECT rendimiento_receta FROM productos WHERE id = ?", [productoCompuestoId]),
     getComponentesProductoCompuesto(productoCompuestoId),
     getCostosExtraProductoCompuesto(productoCompuestoId)
   ]);
@@ -700,10 +754,11 @@ async function calcularCostoProductoCompuesto(productoCompuestoId) {
     costoComponentes += costoUnitarioConsumo * Number(item.cantidad || 0);
   }
   const extras = costosExtra.reduce((acc, item) => acc + Number(item.monto || 0), 0);
-  return Number((costoComponentes + extras).toFixed(2));
+  const rendimiento = Math.max(1, Number(producto?.rendimiento_receta) || 1);
+  return Number(((costoComponentes + extras) / rendimiento).toFixed(2));
 }
 
-async function calcularCostoProductoCompuestoPayload(componentes = [], costosExtra = []) {
+async function calcularCostoProductoCompuestoPayload(componentes = [], costosExtra = [], rendimientoReceta = 1) {
   const componentesNormalizados = normalizarComponentesProducto(componentes);
   let costoComponentes = 0;
 
@@ -714,7 +769,8 @@ async function calcularCostoProductoCompuestoPayload(componentes = [], costosExt
 
   const extras = normalizarCostosExtraProducto(costosExtra)
     .reduce((acc, item) => acc + Number(item.monto || 0), 0);
-  return Number((costoComponentes + extras).toFixed(2));
+  const rendimiento = Math.max(1, Number(rendimientoReceta) || 1);
+  return Number(((costoComponentes + extras) / rendimiento).toFixed(2));
 }
 
 function resolveCobroData(total, tipoCobro, montoEfectivo, montoDebito) {
@@ -748,9 +804,12 @@ function resolveCobroData(total, tipoCobro, montoEfectivo, montoDebito) {
   if (tipo === "mixto") {
     const efectivo = Number(montoEfectivo) || 0;
     const debito = Number(montoDebito) || 0;
+
+    if (efectivo < 0 || debito < 0) return null;
+
     const suma = Number((efectivo + debito).toFixed(2));
 
-    if (suma !== totalRounded) {
+    if (Math.abs(suma - totalRounded) > 0.01) {
       return null;
     }
 
@@ -1026,66 +1085,71 @@ async function getPagosCaja(cajaId) {
   }));
 }
 
-async function attachOperacionDetalle(operacion) {
-  if (
-    !operacion ||
-    operacion.tipo_operacion === "cobro_cuenta_corriente" ||
-    operacion.tipo_operacion === "pago_proveedor" ||
-    operacion.tipo_operacion === "caja_movimiento_ingreso" ||
-    operacion.tipo_operacion === "caja_movimiento_egreso"
-  ) {
+
+function mapearProductosDetalle(rows) {
+  return rows.map((producto) => {
+    const cantidad = Number(producto.cantidad || 0);
+    const subtotal = Number(producto.subtotal || 0);
+    const costoFinal = Number(producto.costo_final || 0);
+    const precioCompra = Number(producto.precio_compra || 0);
+    const costoBase = costoFinal > 0 ? costoFinal : precioCompra > 0 ? precioCompra : null;
+    const sinCostoInformado = !producto.producto_id || costoBase == null;
+    const costoItem = sinCostoInformado ? null : Number((costoBase * cantidad).toFixed(2));
+    const gananciaEstimada = sinCostoInformado ? null : Number((subtotal - costoItem).toFixed(2));
     return {
-      ...operacion,
-      productos: []
+      producto_id: producto.producto_id,
+      nombre_producto: producto.nombre_producto,
+      cantidad,
+      precio_venta: Number(producto.precio_unitario || 0),
+      subtotal,
+      costo_final_usado: costoBase,
+      costo_item: costoItem,
+      ganancia_estimada: gananciaEstimada,
+      sin_costo_informado: sinCostoInformado
     };
-  }
-
-  const productos = await allQuery(
-    `SELECT dv.producto_id, dv.nombre_producto, dv.cantidad, dv.precio_unitario, dv.subtotal,
-            p.costo_final, p.precio_compra
-     FROM detalle_ventas dv
-     LEFT JOIN productos p ON p.id = dv.producto_id
-     WHERE venta_id = ?
-     ORDER BY dv.id ASC`,
-    [operacion.id]
-  );
-
-  return {
-    ...operacion,
-    productos: productos.map((producto) => {
-      const cantidad = Number(producto.cantidad || 0);
-      const subtotal = Number(producto.subtotal || 0);
-      const costoFinal = Number(producto.costo_final || 0);
-      const precioCompra = Number(producto.precio_compra || 0);
-      const costoBase = costoFinal > 0 ? costoFinal : precioCompra > 0 ? precioCompra : null;
-      const sinCostoInformado = !producto.producto_id || costoBase == null;
-      const costoItem = sinCostoInformado ? null : Number((costoBase * cantidad).toFixed(2));
-      const gananciaEstimada = sinCostoInformado ? null : Number((subtotal - costoItem).toFixed(2));
-
-      return {
-        producto_id: producto.producto_id,
-        nombre_producto: producto.nombre_producto,
-        cantidad,
-        precio_venta: Number(producto.precio_unitario || 0),
-        subtotal,
-        costo_final_usado: costoBase,
-        costo_item: costoItem,
-        ganancia_estimada: gananciaEstimada,
-        sin_costo_informado: sinCostoInformado
-      };
-    })
-  };
+  });
 }
+
+const TIPOS_SIN_DETALLE = new Set([
+  "cobro_cuenta_corriente",
+  "pago_proveedor",
+  "caja_movimiento_ingreso",
+  "caja_movimiento_egreso"
+]);
 
 async function buildCajaSnapshot(cajaId) {
   const operaciones = await getOperacionesCaja(cajaId);
-  const operacionesDetalladas = [];
 
-  for (const operacion of operaciones) {
-    operacionesDetalladas.push(await attachOperacionDetalle(operacion));
+  const ventaIds = operaciones
+    .filter((op) => !TIPOS_SIN_DETALLE.has(op.tipo_operacion))
+    .map((op) => op.id);
+
+  if (!ventaIds.length) {
+    return operaciones.map((op) => ({ ...op, productos: [] }));
   }
 
-  return operacionesDetalladas;
+  const detalles = await allQuery(
+    `SELECT dv.venta_id, dv.producto_id, dv.nombre_producto, dv.cantidad, dv.precio_unitario, dv.subtotal,
+            p.costo_final, p.precio_compra
+     FROM detalle_ventas dv
+     LEFT JOIN productos p ON p.id = dv.producto_id
+     WHERE dv.venta_id IN (${ventaIds.map(() => "?").join(",")})
+     ORDER BY dv.venta_id, dv.id ASC`,
+    ventaIds
+  );
+
+  const detalleMap = new Map();
+  for (const d of detalles) {
+    if (!detalleMap.has(d.venta_id)) detalleMap.set(d.venta_id, []);
+    detalleMap.get(d.venta_id).push(d);
+  }
+
+  return operaciones.map((operacion) => ({
+    ...operacion,
+    productos: TIPOS_SIN_DETALLE.has(operacion.tipo_operacion)
+      ? []
+      : mapearProductosDetalle(detalleMap.get(operacion.id) || [])
+  }));
 }
 
 function buildCajaResumen(ventas) {
@@ -1235,9 +1299,24 @@ async function descontarStockPropioProducto(productoId, producto, deltaCantidad)
     ? costos.reduce((acc, item) => acc + Number(item.cantidad_usada || 0), 0) * Number(deltaCantidad || 0)
     : Number(deltaCantidad || 0);
 
+  const stockAnterior = Number(producto.stock || 0);
+  const stockNuevo = stockAnterior - cantidadDescontar;
+
+  const config = await getConfiguracionGlobal();
+  if (!config.stock_permitir_negativo && stockNuevo < 0) {
+    throw new Error(`Stock insuficiente para el producto (id: ${productoId}). Disponible: ${stockAnterior}`);
+  }
+
   await runQuery(
     "UPDATE productos SET stock = stock - ? WHERE id = ?",
     [cantidadDescontar, productoId]
+  );
+
+  const { fecha, hora } = getNowParts();
+  await runQuery(
+    `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
+     VALUES (?, 'venta', ?, ?, ?, 'Descuento por venta', 'admin', ?, ?)`,
+    [productoId, cantidadDescontar, stockAnterior, stockNuevo, fecha, hora]
   );
 }
 
@@ -1283,11 +1362,21 @@ async function applyStockChange(productoId, deltaCantidad, options = {}) {
       await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [contador, productoId]);
       if (batchesConsumidos > 0) {
         const componentes = await getComponentesProductoCompuesto(productoId);
+        const { fecha, hora } = getNowParts();
         for (const componente of componentes) {
+          const cantidadConsumida = Number(componente.cantidad || 0) * rendimiento * batchesConsumidos;
+          const ingAntes = await getQuery("SELECT stock FROM productos WHERE id = ?", [componente.producto_id]);
           await applyStockChange(
             componente.producto_id,
-            Number(componente.cantidad || 0) * rendimiento * batchesConsumidos,
+            cantidadConsumida,
             { comoComponente: true, visited: new Set(visited) }
+          );
+          const ingDespues = await getQuery("SELECT stock FROM productos WHERE id = ?", [componente.producto_id]);
+          await runQuery(
+            `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
+             VALUES (?, 'venta', ?, ?, ?, ?, 'admin', ?, ?)`,
+            [componente.producto_id, cantidadConsumida, Number(ingAntes?.stock || 0), Number(ingDespues?.stock || 0),
+             `Consumo receta batch (producto id: ${productoId})`, fecha, hora]
           );
         }
       }
@@ -1429,83 +1518,97 @@ app.get("/login", (req, res) => {
   res.sendFile(path.join(__dirname, "../frontend/login.html"));
 });
 
-app.post("/login", (req, res) => {
+app.post("/logout", async (req, res) => {
+  const authHeader = String(req.headers.authorization || "");
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+  if (token) {
+    try { await runQuery("DELETE FROM sesiones WHERE token = ?", [token]); } catch {}
+  }
+  return res.json({ message: "Sesión cerrada" });
+});
+
+app.post("/login", async (req, res) => {
   const usuario = String(req.body?.usuario || "").trim();
   const password = String(req.body?.password || "");
   const remember = Boolean(req.body?.remember);
-  const attemptKey = `${req.ip || "local"}:${usuario.toLowerCase()}`;
-  const attempt = loginAttempts.get(attemptKey);
 
   if (!usuario || !password) {
     return res.status(400).json({ message: "Usuario y contrasena son obligatorios" });
   }
 
-  db.get(
-    "SELECT * FROM usuarios WHERE usuario = ?",
-    [usuario],
-    async (err, user) => {
-      if (err) {
-        console.error("Error DB login:", err.message);
-        return res.status(500).json({ message: "Error en el servidor" });
-      }
+  try {
+    const user = await getQuery("SELECT * FROM usuarios WHERE usuario = ?", [usuario]);
 
-      if (!user) {
-        registrarIntentoFallido(attemptKey);
-        return res.status(401).json({ message: "Usuario no encontrado" });
-      }
-
-      if (Number(user.activo) !== 1) {
-        registrarIntentoFallido(attemptKey);
-        return res.status(403).json({ message: "Usuario inactivo" });
-      }
-
-      const valid = await bcrypt.compare(password, user.password);
-
-      if (!valid) {
-        registrarIntentoFallido(attemptKey);
-        const updatedAttempt = loginAttempts.get(attemptKey);
-        if (updatedAttempt?.lockedUntil && updatedAttempt.lockedUntil > Date.now()) {
-          const minutes = Math.ceil((updatedAttempt.lockedUntil - Date.now()) / 60000);
-          return res.status(429).json({ message: `Demasiados intentos fallidos. Reintentar en ${minutes} min.` });
-        }
-        return res.status(401).json({ message: "Contrasena incorrecta" });
-      }
-
-      loginAttempts.delete(attemptKey);
-      const expiresInMs = remember ? 7 * 24 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000;
-      db.run("UPDATE usuarios SET ultimo_acceso = ? WHERE id = ?", [new Date().toISOString(), user.id], (updateErr) => {
-        if (updateErr) {
-          console.error("Error actualizando ultimo acceso:", updateErr.message);
-        }
-      });
-
-      return res.json({
-        message: "Login correcto",
-        token: crypto.randomBytes(32).toString("hex"),
-        expires_at: new Date(Date.now() + expiresInMs).toISOString(),
-        remember,
-        user: {
-          id: user.id,
-          nombre: user.nombre,
-          usuario: user.usuario,
-          rol: user.rol,
-          email: user.email || "",
-          telefono: user.telefono || "",
-          foto_url: user.foto_url || ""
-        }
-      });
+    if (!user) {
+      return res.status(401).json({ message: "Usuario no encontrado" });
     }
-  );
-});
 
-function registrarIntentoFallido(key) {
-  const current = loginAttempts.get(key) || { count: 0, lockedUntil: 0 };
-  const count = current.lockedUntil && current.lockedUntil < Date.now() ? 1 : current.count + 1;
-  loginAttempts.set(key, {
-    count,
-    lockedUntil: count >= MAX_LOGIN_ATTEMPTS ? Date.now() + LOGIN_LOCK_MS : 0
-  });
-}
+    if (Number(user.activo) !== 1) {
+      return res.status(403).json({ message: "Usuario inactivo" });
+    }
+
+    const intentos = Number(user.intentos_fallidos || 0);
+    if (intentos >= MAX_LOGIN_ATTEMPTS && user.bloqueado_hasta) {
+      const bloqueadoHasta = new Date(user.bloqueado_hasta).getTime();
+      if (bloqueadoHasta > Date.now()) {
+        const minutes = Math.ceil((bloqueadoHasta - Date.now()) / 60000);
+        return res.status(429).json({ message: `Demasiados intentos fallidos. Reintentar en ${minutes} min.` });
+      }
+      await runQuery("UPDATE usuarios SET intentos_fallidos = 0, bloqueado_hasta = NULL WHERE id = ?", [user.id]);
+    }
+
+    const valid = await bcrypt.compare(password, user.password);
+
+    if (!valid) {
+      const nuevosIntentos = (intentos >= MAX_LOGIN_ATTEMPTS ? 0 : intentos) + 1;
+      const bloqueadoHasta = nuevosIntentos >= MAX_LOGIN_ATTEMPTS
+        ? new Date(Date.now() + LOGIN_LOCK_MS).toISOString()
+        : null;
+      await runQuery(
+        "UPDATE usuarios SET intentos_fallidos = ?, bloqueado_hasta = ? WHERE id = ?",
+        [nuevosIntentos, bloqueadoHasta, user.id]
+      );
+      if (bloqueadoHasta) {
+        return res.status(429).json({ message: `Demasiados intentos fallidos. Cuenta bloqueada por 10 min.` });
+      }
+      return res.status(401).json({ message: "Contrasena incorrecta" });
+    }
+
+    await runQuery(
+      "UPDATE usuarios SET intentos_fallidos = 0, bloqueado_hasta = NULL, ultimo_acceso = ? WHERE id = ?",
+      [new Date().toISOString(), user.id]
+    );
+
+    const expiresInMs = remember ? 7 * 24 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000;
+    const token = crypto.randomBytes(32).toString("hex");
+    const expiraISO = new Date(Date.now() + expiresInMs).toISOString();
+
+    await runQuery(
+      "INSERT OR REPLACE INTO sesiones (token, usuario_id, nombre, rol, expira) VALUES (?, ?, ?, ?, ?)",
+      [token, user.id, user.nombre, user.rol, expiraISO]
+    );
+    await runQuery("DELETE FROM sesiones WHERE expira < datetime('now')");
+
+    return res.json({
+      message: "Login correcto",
+      token,
+      expires_at: expiraISO,
+      remember,
+      user: {
+        id: user.id,
+        nombre: user.nombre,
+        usuario: user.usuario,
+        rol: user.rol,
+        email: user.email || "",
+        telefono: user.telefono || "",
+        foto_url: user.foto_url || ""
+      }
+    });
+  } catch (error) {
+    console.error("Error en login:", error.message);
+    return res.status(500).json({ message: "Error en el servidor" });
+  }
+});
 
 function parseUsuarioPayload(body, includePassword = false) {
   const data = {
@@ -1575,7 +1678,7 @@ app.get("/usuarios", async (req, res) => {
     );
     return res.json(rows.map(usuarioResponse));
   } catch (error) {
-    console.error("Error al listar usuarios:", error.message);
+    logError("Error al listar usuarios:", error);
     return res.status(500).json({ message: "Error al obtener usuarios" });
   }
 });
@@ -1588,7 +1691,7 @@ app.get("/usuarios/:id", async (req, res) => {
     }
     return res.json(usuario);
   } catch (error) {
-    console.error("Error al obtener usuario:", error.message);
+    logError("Error al obtener usuario:", error);
     return res.status(500).json({ message: "Error al obtener usuario" });
   }
 });
@@ -1600,8 +1703,16 @@ app.post("/usuarios", async (req, res) => {
     return res.status(400).json({ message: "Nombre, usuario, contrasena y rol son obligatorios" });
   }
 
-  if (data.password.length < 6) {
-    return res.status(400).json({ message: "La contrasena debe tener al menos 6 caracteres" });
+  const ROLES_VALIDOS = ["admin", "encargado", "operador", "caja"];
+  if (!ROLES_VALIDOS.includes(data.rol)) {
+    return res.status(400).json({ message: "Rol inválido. Valores permitidos: admin, encargado, operador, caja" });
+  }
+
+  if (data.password.length < 8) {
+    return res.status(400).json({ message: "La contraseña debe tener al menos 8 caracteres" });
+  }
+  if (!/\d/.test(data.password)) {
+    return res.status(400).json({ message: "La contraseña debe incluir al menos un número" });
   }
 
   if (data.password !== data.confirmar_password) {
@@ -1624,7 +1735,7 @@ app.post("/usuarios", async (req, res) => {
 
     return res.json({ message: "Usuario creado correctamente", usuario: await getUsuarioById(result.lastID) });
   } catch (error) {
-    console.error("Error al crear usuario:", error.message);
+    logError("Error al crear usuario:", error);
     return res.status(500).json({ message: "Error al crear usuario" });
   }
 });
@@ -1635,6 +1746,11 @@ app.put("/usuarios/:id", async (req, res) => {
 
   if (!data.nombre || !data.usuario || !data.rol) {
     return res.status(400).json({ message: "Nombre, usuario y rol son obligatorios" });
+  }
+
+  const ROLES_VALIDOS_PUT = ["admin", "encargado", "operador", "caja"];
+  if (!ROLES_VALIDOS_PUT.includes(data.rol)) {
+    return res.status(400).json({ message: "Rol inválido. Valores permitidos: admin, encargado, operador, caja" });
   }
 
   try {
@@ -1657,7 +1773,7 @@ app.put("/usuarios/:id", async (req, res) => {
 
     return res.json({ message: "Usuario actualizado correctamente", usuario: await getUsuarioById(usuarioId) });
   } catch (error) {
-    console.error("Error al actualizar usuario:", error.message);
+    logError("Error al actualizar usuario:", error);
     return res.status(500).json({ message: "Error al actualizar usuario" });
   }
 });
@@ -1678,7 +1794,7 @@ app.patch("/usuarios/:id/estado", async (req, res) => {
     );
     return res.json({ message: activo ? "Usuario activado" : "Usuario desactivado", usuario: await getUsuarioById(usuarioId) });
   } catch (error) {
-    console.error("Error al cambiar estado del usuario:", error.message);
+    logError("Error al cambiar estado del usuario:", error);
     return res.status(500).json({ message: "Error al cambiar estado del usuario" });
   }
 });
@@ -1692,8 +1808,11 @@ app.patch("/usuarios/:id/password", async (req, res) => {
     return res.status(400).json({ message: "Debe completar la nueva contrasena" });
   }
 
-  if (password.length < 6) {
-    return res.status(400).json({ message: "La contrasena debe tener al menos 6 caracteres" });
+  if (password.length < 8) {
+    return res.status(400).json({ message: "La contraseña debe tener al menos 8 caracteres" });
+  }
+  if (!/\d/.test(password)) {
+    return res.status(400).json({ message: "La contraseña debe incluir al menos un número" });
   }
 
   if (password !== confirmarPassword) {
@@ -1713,7 +1832,7 @@ app.patch("/usuarios/:id/password", async (req, res) => {
     );
     return res.json({ message: "Contrasena actualizada correctamente" });
   } catch (error) {
-    console.error("Error al cambiar contrasena:", error.message);
+    logError("Error al cambiar contrasena:", error);
     return res.status(500).json({ message: "Error al cambiar contrasena" });
   }
 });
@@ -1743,7 +1862,7 @@ app.post("/usuarios/foto", async (req, res) => {
 
     return res.status(201).json({ url: `/uploads/usuarios/${fileName}` });
   } catch (error) {
-    console.error("Error al guardar foto de usuario:", error.message);
+    logError("Error al guardar foto de usuario:", error);
     return res.status(500).json({ message: "Error al guardar foto" });
   }
 });
@@ -1774,7 +1893,7 @@ app.patch("/usuarios/:id/perfil", async (req, res) => {
 
     return res.json({ message: "Perfil actualizado", usuario: await getUsuarioById(usuarioId) });
   } catch (error) {
-    console.error("Error al actualizar perfil:", error.message);
+    logError("Error al actualizar perfil:", error);
     return res.status(500).json({ message: "Error al actualizar perfil" });
   }
 });
@@ -1802,7 +1921,7 @@ app.delete("/usuarios/:id", async (req, res) => {
     await runQuery("DELETE FROM usuarios WHERE id = ?", [usuarioId]);
     return res.json({ message: "Usuario eliminado correctamente" });
   } catch (error) {
-    console.error("Error al eliminar usuario:", error.message);
+    logError("Error al eliminar usuario:", error);
     return res.status(500).json({ message: "Error al eliminar usuario" });
   }
 });
@@ -1832,7 +1951,7 @@ app.post("/productos/imagen", async (req, res) => {
 
     return res.status(201).json({ url: `/uploads/productos/${fileName}` });
   } catch (err) {
-    console.error("Error al guardar imagen de producto:", err.message);
+    logError("Error al guardar imagen de producto:", err);
     return res.status(500).json({ message: "Error al guardar imagen" });
   }
 });
@@ -1885,6 +2004,10 @@ app.post("/productos", async (req, res) => {
     return res.status(400).json({ message: "La categoria es obligatoria" });
   }
 
+  if (Number(precio_compra) < 0 || Number(precio_venta) < 0) {
+    return res.status(400).json({ message: "Los precios no pueden ser negativos" });
+  }
+
   try {
     const categoriaData = categoria_id
       ? await getQuery("SELECT margen_porcentaje, maneja_stock, usa_costos_varios FROM categorias WHERE id = ?", [Number(categoria_id)])
@@ -1899,7 +2022,7 @@ app.post("/productos", async (req, res) => {
     const rendimientoPost = recetaSinStockFisico ? Math.max(1, Number(req.body.rendimiento_receta) || 1) : 1;
     const esBatchPost = recetaSinStockFisico && rendimientoPost > 1;
     const costoBase = tipoProducto === "compuesto"
-      ? await calcularCostoProductoCompuestoPayload(componentes, costos_extra)
+      ? await calcularCostoProductoCompuestoPayload(componentes, costos_extra, rendimientoPost)
       : usaCostos ? calcularCostoPorRendimiento(costos_insumos) : Number(precio_compra) || 0;
     const costoFinal = calcularCostoFinal(costoBase, iva_porcentaje, precio_compra_incluye_iva ? 1 : 0);
     const precioVentaFinal = Number(precio_venta) || calcularPrecioSugerido(
@@ -1908,6 +2031,16 @@ app.post("/productos", async (req, res) => {
       redondeo
     );
     const codigoFinal = String(codigo || "").trim() || await generarCodigoProducto(Number(categoria_id));
+
+    if (codigoFinal) {
+      const codDuplicado = await getQuery(
+        "SELECT id FROM productos WHERE codigo = ? AND eliminado = 0",
+        [codigoFinal]
+      );
+      if (codDuplicado) {
+        return res.status(409).json({ message: `Ya existe un producto con el código "${codigoFinal}"` });
+      }
+    }
 
     const result = await runQuery(
       `INSERT INTO productos
@@ -1962,7 +2095,7 @@ app.post("/productos", async (req, res) => {
       id: result.lastID
     });
   } catch (err) {
-    console.error("Error al guardar producto:", err.message);
+    logError("Error al guardar producto:", err);
     return res.status(500).json({ message: "Error al guardar producto" });
   }
 });
@@ -1983,53 +2116,126 @@ app.get("/productos", async (req, res) => {
 
   try {
     const rows = await allQuery(sql);
-    const enriquecidos = [];
+    if (!rows.length) return res.json([]);
 
-    for (const row of rows) {
-      const costoConsumoUnitario = await getCostoConsumoUnitarioProducto(row.id, row);
+    const ids = rows.map((r) => r.id);
+    const ph = ids.map(() => "?").join(",");
 
-      if (normalizarTipoProducto(row.tipo) === "compuesto") {
-        const [stockDisponible, costoCompuesto] = await Promise.all([
-          calcularStockDisponibleCompuesto(row.id),
-          calcularCostoProductoCompuesto(row.id)
-        ]);
-        enriquecidos.push({
+    const compuestoIds = rows
+      .filter((r) => normalizarTipoProducto(r.tipo) === "compuesto" || Number(r.es_combo) === 1)
+      .map((r) => r.id);
+    const chComp = compuestoIds.length ? compuestoIds.map(() => "?").join(",") : null;
+
+    const [insumosRaw, componentesRaw, costosExtraRaw] = await Promise.all([
+      allQuery(`SELECT producto_id, costo_unitario, cantidad_usada FROM producto_costos_insumos WHERE producto_id IN (${ph})`, ids),
+      chComp ? allQuery(
+        `SELECT pc.producto_compuesto_id, pc.producto_id, pc.cantidad,
+                p.stock, p.costo_final, p.precio_compra, p.tipo, p.maneja_stock
+         FROM producto_componentes pc
+         LEFT JOIN productos p ON p.id = pc.producto_id
+         WHERE pc.producto_compuesto_id IN (${chComp})`, compuestoIds
+      ) : Promise.resolve([]),
+      chComp ? allQuery(`SELECT producto_compuesto_id, monto FROM producto_costos_extra WHERE producto_compuesto_id IN (${chComp})`, compuestoIds) : Promise.resolve([])
+    ]);
+
+    const insumosMap = new Map();
+    for (const i of insumosRaw) {
+      if (!insumosMap.has(i.producto_id)) insumosMap.set(i.producto_id, []);
+      insumosMap.get(i.producto_id).push(i);
+    }
+    const componentesMap = new Map();
+    for (const c of componentesRaw) {
+      if (!componentesMap.has(c.producto_compuesto_id)) componentesMap.set(c.producto_compuesto_id, []);
+      componentesMap.get(c.producto_compuesto_id).push(c);
+    }
+    const costosExtraMap = new Map();
+    for (const ce of costosExtraRaw) {
+      if (!costosExtraMap.has(ce.producto_compuesto_id)) costosExtraMap.set(ce.producto_compuesto_id, []);
+      costosExtraMap.get(ce.producto_compuesto_id).push(ce);
+    }
+
+    function costoCompuestoMemoria(id, rendimiento) {
+      const comps = componentesMap.get(id) || [];
+      const extras = (costosExtraMap.get(id) || []).reduce((a, e) => a + Number(e.monto || 0), 0);
+      const costoComps = comps.reduce((a, c) => a + Number(c.costo_final || c.precio_compra || 0) * Number(c.cantidad || 0), 0);
+      return Number(((costoComps + extras) / Math.max(1, Number(rendimiento) || 1)).toFixed(2));
+    }
+
+    function stockCompuestoMemoria(id, rendimiento) {
+      const comps = componentesMap.get(id) || [];
+      if (!comps.length) return 0;
+      const disp = comps
+        .filter((c) => Number(c.cantidad || 0) > 0)
+        .map((c) => Number(c.stock || 0) / Number(c.cantidad));
+      if (!disp.length) return 0;
+      return Math.max(0, Math.floor(Math.min(...disp))) * Math.max(1, Number(rendimiento) || 1);
+    }
+
+    function costoConsumoMemoria(row) {
+      const insumos = insumosMap.get(row.id) || [];
+      if (insumos.length) return Number(insumos.reduce((a, i) => a + Number(i.costo_unitario || 0), 0).toFixed(4));
+      return Number(Number(row.costo_final || row.precio_compra || 0).toFixed(4));
+    }
+
+    function stockFraccionadoMemoria(row) {
+      const insumos = normalizarInsumosCostos(insumosMap.get(row.id) || []);
+      const consumo = insumos.reduce((a, i) => a + Number(i.cantidad_usada || 0), 0);
+      if (consumo <= 0) return Math.max(0, Math.floor(Number(row.stock) || 0));
+      return Math.max(0, Math.floor((Number(row.stock) || 0) / consumo));
+    }
+
+    const enriquecidos = rows.map((row) => {
+      const esCompuesto = normalizarTipoProducto(row.tipo) === "compuesto";
+      const esCombo = Number(row.es_combo) === 1;
+
+      if (esCompuesto) {
+        const costo = costoCompuestoMemoria(row.id, row.rendimiento_receta);
+        const stock = stockCompuestoMemoria(row.id, row.rendimiento_receta);
+        return {
           ...row,
           stock_fisico: 0,
-          stock_disponible: stockDisponible,
-          stock_vendible_calculado: stockDisponible,
-          precio_compra: costoCompuesto,
-          costo_final: costoCompuesto,
-          costo_teorico: costoCompuesto,
-          costo_consumo_unitario: costoCompuesto,
-          precio_sugerido: calcularPrecioSugerido(costoCompuesto, row.margen_porcentaje, row.redondeo)
-        });
-        continue;
+          stock_disponible: stock,
+          stock_vendible_calculado: stock,
+          precio_compra: costo,
+          costo_final: costo,
+          costo_teorico: costo,
+          costo_consumo_unitario: costo,
+          precio_sugerido: calcularPrecioSugerido(costo, row.margen_porcentaje, row.redondeo)
+        };
       }
 
-      const stockDisponibleCombo = Number(row.es_combo) === 1 ? await calcularStockDisponibleCompuesto(row.id) : undefined;
-      const stockVendibleFraccionado = Number(row.es_combo) !== 1 && Number(row.usa_costos_varios) === 1 && Number(row.maneja_stock) === 1
-        ? await calcularStockVendibleFraccionado(row.id, row.stock)
-        : undefined;
-      const stockVendibleCalculado = Number(row.es_combo) === 1
-        ? stockDisponibleCombo
-        : Number(row.usa_costos_varios) === 1 && Number(row.maneja_stock) === 1
-          ? stockVendibleFraccionado
-          : Number(row.stock || 0);
-      enriquecidos.push({
+      if (esCombo) {
+        const stock = stockCompuestoMemoria(row.id, 1);
+        const costo = costoCompuestoMemoria(row.id, 1);
+        return {
+          ...row,
+          stock_fisico: 0,
+          stock_disponible: stock,
+          stock_vendible_calculado: stock,
+          costo_teorico: costo,
+          costo_consumo_unitario: costo,
+          precio_sugerido: calcularPrecioSugerido(row.costo_final, row.margen_porcentaje, row.redondeo)
+        };
+      }
+
+      const esFraccionado = Number(row.usa_costos_varios) === 1 && Number(row.maneja_stock) === 1;
+      const stockVendible = esFraccionado ? stockFraccionadoMemoria(row) : Number(row.stock || 0);
+      const costoConsumo = costoConsumoMemoria(row);
+
+      return {
         ...row,
-        stock_fisico: Number(row.es_combo) === 1 ? 0 : Number(row.stock || 0),
-        stock_disponible: stockDisponibleCombo,
-        stock_vendible_calculado: stockVendibleCalculado,
+        stock_fisico: Number(row.stock || 0),
+        stock_disponible: undefined,
+        stock_vendible_calculado: stockVendible,
         costo_teorico: Number(row.costo_final || row.precio_compra || 0),
-        costo_consumo_unitario: costoConsumoUnitario,
+        costo_consumo_unitario: costoConsumo,
         precio_sugerido: calcularPrecioSugerido(row.costo_final, row.margen_porcentaje, row.redondeo)
-      });
-    }
+      };
+    });
 
     return res.json(enriquecidos);
   } catch (err) {
-    console.error("Error al listar productos:", err.message);
+    logError("Error al listar productos:", err);
     return res.status(500).json({ message: "Error al obtener productos" });
   }
 });
@@ -2083,11 +2289,26 @@ app.put("/productos/:id", async (req, res) => {
     return res.status(400).json({ message: "La categoria es obligatoria" });
   }
 
+  if (Number(precio_compra) < 0 || Number(precio_venta) < 0) {
+    return res.status(400).json({ message: "Los precios no pueden ser negativos" });
+  }
+
   try {
     const existente = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
 
     if (!existente) {
       return res.status(404).json({ message: "Producto no encontrado" });
+    }
+
+    const codigoEditado = String(codigo || "").trim();
+    if (codigoEditado) {
+      const codDuplicado = await getQuery(
+        "SELECT id FROM productos WHERE codigo = ? AND id != ? AND eliminado = 0",
+        [codigoEditado, productoId]
+      );
+      if (codDuplicado) {
+        return res.status(409).json({ message: `Ya existe un producto con el código "${codigoEditado}"` });
+      }
     }
 
     const categoriaData = categoria_id
@@ -2103,7 +2324,7 @@ app.put("/productos/:id", async (req, res) => {
     const stockProducto = esBatchCounter ? rendimientoReceta : (Number(stock) || 0);
     const recetaSinStockFisico = tipoProducto === "compuesto" && !maneja_stock;
     const costoBase = tipoProducto === "compuesto"
-      ? await calcularCostoProductoCompuestoPayload(componentes, costos_extra)
+      ? await calcularCostoProductoCompuestoPayload(componentes, costos_extra, rendimientoReceta)
       : usaCostos ? calcularCostoPorRendimiento(costos_insumos) : Number(precio_compra) || 0;
     const costoFinal = calcularCostoFinal(costoBase, iva_porcentaje, precio_compra_incluye_iva ? 1 : 0);
     const precioVentaFinal = Number(precio_venta) || calcularPrecioSugerido(
@@ -2111,6 +2332,8 @@ app.put("/productos/:id", async (req, res) => {
       categoriaData?.margen_porcentaje || 0,
       redondeo
     );
+
+    await runQuery("BEGIN TRANSACTION");
 
     await runQuery(
       `UPDATE productos
@@ -2172,12 +2395,15 @@ app.put("/productos/:id", async (req, res) => {
       await runQuery("DELETE FROM producto_costos_extra WHERE producto_compuesto_id = ?", [productoId]);
     }
 
+    await runQuery("COMMIT");
+
     const actualizado = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
     await registrarCambiosProducto(productoId, existente, actualizado, usuario || "admin", "edicion");
 
     return res.json({ message: "Producto actualizado correctamente" });
   } catch (error) {
-    console.error("Error al actualizar producto:", error.message);
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("Error al actualizar producto", error, "id: " + productoId);
     return res.status(500).json({ message: "Error al actualizar producto" });
   }
 });
@@ -2197,7 +2423,7 @@ app.patch("/productos/:id/inactivar", async (req, res) => {
     await registrarCambiosProducto(productoId, existente, actualizado, "admin", "inactivacion");
     return res.json({ message: "Producto inactivado correctamente" });
   } catch (error) {
-    console.error("Error al inactivar producto:", error.message);
+    logError("Error al inactivar producto:", error);
     return res.status(500).json({ message: "Error al inactivar producto" });
   }
 });
@@ -2229,7 +2455,7 @@ app.patch("/productos/:id/combo", async (req, res) => {
     await registrarCambiosProducto(productoId, existente, actualizado, "admin", "combo");
     return res.json({ message: aplicaParaCombo ? "Producto habilitado para combos" : "Producto quitado de combos" });
   } catch (error) {
-    console.error("Error al actualizar combo del producto:", error.message);
+    logError("Error al actualizar combo del producto:", error);
     return res.status(500).json({ message: "Error al actualizar combo del producto" });
   }
 });
@@ -2373,10 +2599,10 @@ app.post("/productos_compuestos", async (req, res) => {
     try {
       await runQuery("ROLLBACK");
     } catch (rollbackError) {
-      console.error("Error rollback producto compuesto:", rollbackError.message);
+      logError("Rollback producto compuesto", rollbackError);
     }
 
-    console.error("Error al guardar producto compuesto:", error.message);
+    logError("Error al guardar producto compuesto:", error);
     return res.status(500).json({ message: "Error al guardar producto compuesto" });
   }
 });
@@ -2417,7 +2643,7 @@ app.get("/productos_compuestos/:id", async (req, res) => {
       costos_extra
     });
   } catch (error) {
-    console.error("Error al obtener producto compuesto:", error.message);
+    logError("Error al obtener producto compuesto:", error);
     return res.status(500).json({ message: "Error al obtener producto compuesto" });
   }
 });
@@ -2435,7 +2661,7 @@ app.get("/productos_compuestos/:id/stock_disponible", async (req, res) => {
     const stock_disponible = await calcularStockDisponibleCompuesto(productoId);
     return res.json({ producto_id: productoId, stock_disponible, stock_vendible_calculado: stock_disponible });
   } catch (error) {
-    console.error("Error al calcular stock disponible:", error.message);
+    logError("Error al calcular stock disponible:", error);
     return res.status(500).json({ message: "Error al calcular stock disponible" });
   }
 });
@@ -2500,7 +2726,7 @@ app.patch("/productos/aumento-masivo", async (req, res) => {
 
     return res.json({ message: `Aumento aplicado a ${productos.length} producto(s)`, cantidad: productos.length });
   } catch (error) {
-    console.error("Error al aplicar aumento masivo:", error.message);
+    logError("Error al aplicar aumento masivo:", error);
     return res.status(500).json({ message: "Error al aplicar aumento masivo" });
   }
 });
@@ -2520,7 +2746,7 @@ app.patch("/productos/:id/reactivar", async (req, res) => {
     await registrarCambiosProducto(productoId, existente, actualizado, "admin", "reactivacion");
     return res.json({ message: "Producto reactivado correctamente" });
   } catch (error) {
-    console.error("Error al reactivar producto:", error.message);
+    logError("Error al reactivar producto:", error);
     return res.status(500).json({ message: "Error al reactivar producto" });
   }
 });
@@ -2542,8 +2768,17 @@ app.delete("/productos/:id", async (req, res) => {
       "SELECT COUNT(*) AS total FROM detalle_ventas WHERE producto_id = ?",
       [productoId]
     );
+    const esComponente = await getQuery(
+      "SELECT COUNT(*) AS total FROM producto_componentes WHERE producto_id = ?",
+      [productoId]
+    );
 
     const tieneMovimientos = Number(usoEnDetalle?.total || 0) > 0;
+    const esIngrediente = Number(esComponente?.total || 0) > 0;
+
+    if (esIngrediente) {
+      return res.status(409).json({ message: "No se puede eliminar: este producto es componente de una o más recetas activas" });
+    }
 
     if (!tieneMovimientos) {
       await runQuery("DELETE FROM productos WHERE id = ?", [productoId]);
@@ -2564,7 +2799,7 @@ app.delete("/productos/:id", async (req, res) => {
       eliminacion: "logica"
     });
   } catch (error) {
-    console.error("Error al eliminar producto:", error.message);
+    logError("Error al eliminar producto:", error);
     return res.status(500).json({ message: "Error al eliminar producto" });
   }
 });
@@ -2576,7 +2811,7 @@ app.get("/categorias", async (req, res) => {
     );
     return res.json(categorias);
   } catch (error) {
-    console.error("Error al listar categorias:", error.message);
+    logError("Error al listar categorias:", error);
     return res.status(500).json({ message: "Error al obtener categorias" });
   }
 });
@@ -2598,7 +2833,7 @@ app.post("/categorias", async (req, res) => {
     );
     return res.json({ message: "Categoria creada correctamente", id: result.lastID });
   } catch (error) {
-    console.error("Error al crear categoria:", error.message);
+    logError("Error al crear categoria:", error);
     return res.status(500).json({ message: "Error al crear categoria" });
   }
 });
@@ -2621,7 +2856,7 @@ app.put("/categorias/:id", async (req, res) => {
     );
     return res.json({ message: "Categoria actualizada correctamente" });
   } catch (error) {
-    console.error("Error al actualizar categoria:", error.message);
+    logError("Error al actualizar categoria:", error);
     return res.status(500).json({ message: "Error al actualizar categoria" });
   }
 });
@@ -2635,7 +2870,7 @@ app.get("/productos/:id/costos-insumos", async (req, res) => {
     );
     return res.json(insumos);
   } catch (error) {
-    console.error("Error al obtener costos por rendimiento:", error.message);
+    logError("Error al obtener costos por rendimiento:", error);
     return res.status(500).json({ message: "Error al obtener costos por rendimiento" });
   }
 });
@@ -2654,7 +2889,7 @@ app.get("/productos/:id/proveedores", async (req, res) => {
     );
     return res.json(proveedores);
   } catch (error) {
-    console.error("Error al obtener proveedores del producto:", error.message);
+    logError("Error al obtener proveedores del producto:", error);
     return res.status(500).json({ message: "Error al obtener proveedores del producto" });
   }
 });
@@ -2695,7 +2930,7 @@ app.post("/productos/:id/proveedores", async (req, res) => {
     await logHistorialProducto(productoId, "proveedor_multiple", null, `${proveedorId}:${precioCompra}`, "proveedor producto", "admin");
     return res.json({ message: "Proveedor asociado correctamente" });
   } catch (error) {
-    console.error("Error al asociar proveedor al producto:", error.message);
+    logError("Error al asociar proveedor al producto:", error);
     return res.status(500).json({ message: "Error al asociar proveedor al producto" });
   }
 });
@@ -2791,7 +3026,7 @@ app.post("/productos/:id/movimientos-stock", async (req, res) => {
     try {
       await runQuery("ROLLBACK");
     } catch {}
-    console.error("Error al registrar movimiento de stock:", error.message);
+    logError("Error al registrar movimiento de stock:", error);
     return res.status(500).json({ message: "Error al registrar movimiento de stock" });
   }
 });
@@ -2810,7 +3045,7 @@ app.get("/productos/:id/movimientos-stock", async (req, res) => {
     );
     return res.json(movimientos);
   } catch (error) {
-    console.error("Error al obtener movimientos de stock:", error.message);
+    logError("Error al obtener movimientos de stock:", error);
     return res.status(500).json({ message: "Error al obtener movimientos de stock" });
   }
 });
@@ -2828,7 +3063,7 @@ app.get("/productos/:id/historial", async (req, res) => {
     );
     return res.json(historial);
   } catch (error) {
-    console.error("Error al obtener historial del producto:", error.message);
+    logError("Error al obtener historial del producto:", error);
     return res.status(500).json({ message: "Error al obtener historial del producto" });
   }
 });
@@ -2934,7 +3169,7 @@ app.get("/proveedores", async (req, res) => {
     );
     return res.json(proveedores);
   } catch (error) {
-    console.error("Error al listar proveedores:", error.message);
+    logError("Error al listar proveedores:", error);
     return res.status(500).json({ message: "Error al obtener proveedores" });
   }
 });
@@ -2969,7 +3204,7 @@ app.get("/proveedores/:id/movimientos", async (req, res) => {
 
     return res.json([...pagos, ...stock].sort((a, b) => `${b.fecha} ${b.hora} ${b.id}`.localeCompare(`${a.fecha} ${a.hora} ${a.id}`)));
   } catch (error) {
-    console.error("Error al obtener movimientos del proveedor:", error.message);
+    logError("Error al obtener movimientos del proveedor:", error);
     return res.status(500).json({ message: "Error al obtener movimientos del proveedor" });
   }
 });
@@ -3038,7 +3273,7 @@ app.post("/proveedores", async (req, res) => {
       proveedor: await getProveedorConMetricas(result.lastID)
     });
   } catch (error) {
-    console.error("Error al crear proveedor:", error.message);
+    logError("Error al crear proveedor:", error);
     return res.status(500).json({ message: "Error al crear proveedor" });
   }
 });
@@ -3106,7 +3341,7 @@ app.put("/proveedores/:id", async (req, res) => {
       proveedor: await getProveedorConMetricas(proveedorId)
     });
   } catch (error) {
-    console.error("Error al actualizar proveedor:", error.message);
+    logError("Error al actualizar proveedor:", error);
     return res.status(500).json({ message: "Error al actualizar proveedor" });
   }
 });
@@ -3127,7 +3362,7 @@ app.patch("/proveedores/:id/estado", async (req, res) => {
       proveedor: await getProveedorConMetricas(proveedorId)
     });
   } catch (error) {
-    console.error("Error al cambiar estado del proveedor:", error.message);
+    logError("Error al cambiar estado del proveedor:", error);
     return res.status(500).json({ message: "Error al cambiar estado del proveedor" });
   }
 });
@@ -3156,7 +3391,7 @@ app.delete("/proveedores/:id", async (req, res) => {
     await runQuery("DELETE FROM proveedores WHERE id = ?", [proveedorId]);
     return res.json({ message: "Proveedor eliminado correctamente" });
   } catch (error) {
-    console.error("Error al eliminar proveedor:", error.message);
+    logError("Error al eliminar proveedor:", error);
     return res.status(500).json({ message: "Error al eliminar proveedor" });
   }
 });
@@ -3183,7 +3418,7 @@ app.get("/pagos", async (req, res) => {
 
     return res.json(pagos);
   } catch (error) {
-    console.error("Error al listar pagos:", error.message);
+    logError("Error al listar pagos:", error);
     return res.status(500).json({ message: "Error al obtener pagos" });
   }
 });
@@ -3297,7 +3532,7 @@ app.post("/pagos", async (req, res) => {
       pago
     });
   } catch (error) {
-    console.error("Error al registrar pago:", error.message);
+    logError("Error al registrar pago:", error);
     return res.status(500).json({ message: "Error al registrar pago" });
   }
 });
@@ -3353,7 +3588,7 @@ app.put("/pagos/:id", async (req, res) => {
 
     return res.json({ message: "Pago actualizado correctamente", tieneArqueo, cajaEstado });
   } catch (error) {
-    console.error("Error al editar pago:", error.message);
+    logError("Error al editar pago:", error);
     return res.status(500).json({ message: "Error al editar pago" });
   }
 });
@@ -3379,10 +3614,13 @@ app.delete("/pagos/:id", async (req, res) => {
       }
     }
 
+    await runQuery("BEGIN TRANSACTION");
     await runQuery("DELETE FROM pagos WHERE id = ?", [pagoId]);
+    await runQuery("COMMIT");
     return res.json({ message: "Pago eliminado" });
   } catch (error) {
-    console.error("Error al eliminar pago:", error.message);
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("Error al eliminar pago", error, "id: " + pagoId);
     return res.status(500).json({ message: "Error al eliminar pago" });
   }
 });
@@ -3449,6 +3687,13 @@ app.post("/ventas", async (req, res) => {
     return res.status(400).json({ message: "La cuenta corriente requiere cliente asociado" });
   }
 
+  if (esCuentaCorriente && clienteId) {
+    const clienteCC = await getQuery("SELECT habilita_cuenta_corriente FROM clientes WHERE id = ?", [clienteId]);
+    if (!clienteCC || Number(clienteCC.habilita_cuenta_corriente) !== 1) {
+      return res.status(400).json({ message: "Este cliente no tiene cuenta corriente habilitada" });
+    }
+  }
+
   if (clienteId) {
     const cliente = await getQuery(
       "SELECT id FROM clientes WHERE id = ? AND activo = 1",
@@ -3469,6 +3714,7 @@ app.post("/ventas", async (req, res) => {
 
     await runQuery("BEGIN TRANSACTION");
 
+    // metodo_pago es alias legacy de tipo_cobro — ambos reciben el mismo valor
     const venta = await runQuery(
       `INSERT INTO ventas
       (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id)
@@ -3506,10 +3752,10 @@ app.post("/ventas", async (req, res) => {
     try {
       await runQuery("ROLLBACK");
     } catch (rollbackError) {
-      console.error("Error rollback venta:", rollbackError.message);
+      logError("Rollback venta", rollbackError);
     }
 
-    console.error("Error al registrar venta:", error.message);
+    logError("Error al registrar venta:", error);
     return res.status(500).json({ message: "Error al registrar venta" });
   }
 });
@@ -3564,7 +3810,7 @@ app.get("/clientes/:id/cuenta-corriente", async (req, res) => {
       ventas_pendientes: ventasPendientes
     });
   } catch (error) {
-    console.error("Error al obtener cuenta corriente:", error.message);
+    logError("Error al obtener cuenta corriente:", error);
     return res.status(500).json({ message: "Error al obtener cuenta corriente" });
   }
 });
@@ -3608,7 +3854,7 @@ app.get("/clientes/:id/movimientos-cuenta-corriente", async (req, res) => {
 
     return res.json(conSaldo);
   } catch (error) {
-    console.error("Error al obtener movimientos de cuenta corriente:", error.message);
+    logError("Error al obtener movimientos de cuenta corriente:", error);
     return res.status(500).json({ message: "Error al obtener movimientos de cuenta corriente" });
   }
 });
@@ -3672,9 +3918,9 @@ app.post("/clientes/:id/venta-cuenta", async (req, res) => {
     try {
       await runQuery("ROLLBACK");
     } catch (rollbackError) {
-      console.error("Error rollback venta a cuenta:", rollbackError.message);
+      logError("Rollback venta a cuenta", rollbackError);
     }
-    console.error("Error al registrar venta a cuenta:", error.message);
+    logError("Error al registrar venta a cuenta:", error);
     return res.status(500).json({ message: "Error al registrar venta a cuenta" });
   }
 });
@@ -3758,10 +4004,10 @@ app.post("/ventas/:id/pagar-cuenta-corriente", async (req, res) => {
     try {
       await runQuery("ROLLBACK");
     } catch (rollbackError) {
-      console.error("Error rollback pago cuenta corriente:", rollbackError.message);
+      logError("Rollback pago cuenta corriente", rollbackError);
     }
 
-    console.error("Error al pagar cuenta corriente:", error.message);
+    logError("Error al pagar cuenta corriente:", error);
     return res.status(500).json({ message: "Error al pagar cuenta corriente" });
   }
 });
@@ -3811,7 +4057,7 @@ app.get("/caja/resumen", async (req, res) => {
       ventas
     });
   } catch (error) {
-    console.error("Error al obtener resumen de caja:", error.message);
+    logError("Error al obtener resumen de caja:", error);
     return res.status(500).json({ message: "Error al obtener resumen de caja" });
   }
 });
@@ -3825,7 +4071,7 @@ app.get("/caja/apertura", async (req, res) => {
     const ultimaCaja = apertura || await getUltimaCajaRegistrada();
     return res.json({ fecha, apertura: ultimaCaja });
   } catch (error) {
-    console.error("Error al obtener apertura de caja:", error.message);
+    logError("Error al obtener apertura de caja:", error);
     return res.status(500).json({ message: "Error al obtener apertura de caja" });
   }
 });
@@ -3864,7 +4110,7 @@ app.post("/caja/apertura", async (req, res) => {
       apertura
     });
   } catch (error) {
-    console.error("Error al registrar apertura de caja:", error.message);
+    logError("Error al registrar apertura de caja:", error);
     return res.status(500).json({ message: "Error al registrar apertura de caja" });
   }
 });
@@ -3912,7 +4158,7 @@ app.post("/caja/movimientos", async (req, res) => {
       movimiento
     });
   } catch (error) {
-    console.error("Error al registrar movimiento de caja:", error.message);
+    logError("Error al registrar movimiento de caja:", error);
     return res.status(500).json({ message: "Error al registrar movimiento de caja" });
   }
 });
@@ -3967,6 +4213,8 @@ app.post("/caja/cierre", async (req, res) => {
       return res.status(400).json({ message: "La suma de caja apertura y caja fondo no puede superar el efectivo contado" });
     }
 
+    await runQuery("BEGIN TRANSACTION");
+
     await runQuery(
       `UPDATE caja_aperturas
        SET estado = 'cerrada',
@@ -4014,6 +4262,8 @@ app.post("/caja/cierre", async (req, res) => {
       ]
     );
 
+    await runQuery("COMMIT");
+
     const cajaCerrada = await getQuery(
       "SELECT * FROM caja_aperturas WHERE id = ?",
       [apertura.id]
@@ -4024,7 +4274,8 @@ app.post("/caja/cierre", async (req, res) => {
       caja: cajaCerrada
     });
   } catch (error) {
-    console.error("Error al cerrar caja:", error.message);
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("Error al cerrar caja:", error);
     return res.status(500).json({ message: "Error al cerrar caja" });
   }
 });
@@ -4118,7 +4369,7 @@ app.get("/caja/arqueos", async (req, res) => {
 
     return res.json(arqueos.map(mapCajaArqueo));
   } catch (error) {
-    console.error("Error al obtener arqueos:", error.message);
+    logError("Error al obtener arqueos:", error);
     return res.status(500).json({ message: "Error al obtener arqueos" });
   }
 });
@@ -4137,7 +4388,7 @@ app.get("/caja/arqueos/:id", async (req, res) => {
 
     return res.json(mapCajaArqueo(arqueo));
   } catch (error) {
-    console.error("Error al obtener detalle del arqueo:", error.message);
+    logError("Error al obtener detalle del arqueo:", error);
     return res.status(500).json({ message: "Error al obtener detalle del arqueo" });
   }
 });
@@ -4190,7 +4441,7 @@ app.post("/caja/arqueos", async (req, res) => {
       arqueo: mapCajaArqueo(arqueo)
     });
   } catch (error) {
-    console.error("Error al registrar arqueo:", error.message);
+    logError("Error al registrar arqueo:", error);
     return res.status(500).json({ message: "Error al registrar arqueo" });
   }
 });
@@ -4258,7 +4509,7 @@ app.put("/caja/arqueos/:id", async (req, res) => {
       arqueo: mapCajaArqueo(arqueo)
     });
   } catch (error) {
-    console.error("Error al editar arqueo:", error.message);
+    logError("Error al editar arqueo:", error);
     return res.status(500).json({ message: "Error al editar arqueo" });
   }
 });
@@ -4279,7 +4530,7 @@ app.get("/caja/cierres", async (req, res) => {
       resumen_snapshot: parseJsonOrFallback(cierre.resumen_snapshot, null)
     })));
   } catch (error) {
-    console.error("Error al obtener historial de cierres:", error.message);
+    logError("Error al obtener historial de cierres:", error);
     return res.status(500).json({ message: "Error al obtener historial de cierres" });
   }
 });
@@ -4306,7 +4557,7 @@ app.get("/caja/cierres/:id", async (req, res) => {
       pagos_snapshot: cierre.pagos_snapshot ? JSON.parse(cierre.pagos_snapshot) : []
     });
   } catch (error) {
-    console.error("Error al obtener detalle del cierre:", error.message);
+    logError("Error al obtener detalle del cierre:", error);
     return res.status(500).json({ message: "Error al obtener detalle del cierre" });
   }
 });
@@ -4323,7 +4574,7 @@ app.get("/ventas/pendientes", async (req, res) => {
 
     return res.json(pendientes);
   } catch (error) {
-    console.error("Error al listar pendientes:", error.message);
+    logError("Error al listar pendientes:", error);
     return res.status(500).json({ message: "Error al obtener tickets pendientes" });
   }
 });
@@ -4387,16 +4638,54 @@ async function getClienteConMetricas(clienteId) {
 app.get("/clientes", async (req, res) => {
   try {
     const includeInactive = String(req.query.include_inactive || "") === "1";
+    const limite = Math.min(Number(req.query.limit) || 500, 2000);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
     const clientes = await allQuery(
-      `${includeInactive ? "SELECT * FROM clientes" : "SELECT * FROM clientes WHERE activo = 1"} ORDER BY nombre ASC`
+      `${includeInactive ? "SELECT * FROM clientes" : "SELECT * FROM clientes WHERE activo = 1"} ORDER BY nombre ASC LIMIT ? OFFSET ?`,
+      [limite, offset]
     );
-    const conMetricas = [];
-    for (const cliente of clientes) {
-      conMetricas.push({ ...cliente, ...(await buildClienteCuentaResumen(cliente.id)) });
-    }
+
+    if (!clientes.length) return res.json([]);
+
+    const [ventasMetricas, pagosMetricas] = await Promise.all([
+      allQuery(
+        `SELECT cliente_id,
+                COALESCE(SUM(saldo_pendiente), 0) AS deuda_actual,
+                MIN(CASE WHEN saldo_pendiente > 0 THEN fecha ELSE NULL END) AS primera_deuda,
+                MAX(CASE WHEN es_cuenta_corriente = 1 THEN fecha ELSE NULL END) AS ultima_venta
+         FROM ventas
+         WHERE es_cuenta_corriente = 1 AND cliente_id IS NOT NULL
+         GROUP BY cliente_id`
+      ),
+      allQuery(
+        `SELECT cliente_id,
+                COALESCE(SUM(CASE WHEN fecha = date('now','localtime') THEN monto_pagado ELSE 0 END), 0) AS cobrado_hoy,
+                MAX(fecha) AS ultimo_pago
+         FROM pagos_cuenta_corriente
+         WHERE cliente_id IS NOT NULL
+         GROUP BY cliente_id`
+      )
+    ]);
+
+    const ventasMap = new Map(ventasMetricas.map((v) => [v.cliente_id, v]));
+    const pagosMap = new Map(pagosMetricas.map((p) => [p.cliente_id, p]));
+
+    const conMetricas = clientes.map((cliente) => {
+      const v = ventasMap.get(cliente.id) || {};
+      const p = pagosMap.get(cliente.id) || {};
+      return {
+        ...cliente,
+        deuda_actual: Number(v.deuda_actual || 0),
+        primera_deuda: v.primera_deuda || null,
+        ultima_venta: v.ultima_venta || null,
+        cobrado_hoy: Number(p.cobrado_hoy || 0),
+        ultimo_pago: p.ultimo_pago || null
+      };
+    });
+
     return res.json(conMetricas);
   } catch (error) {
-    console.error("Error al listar clientes:", error.message);
+    logError("Error al listar clientes:", error);
     return res.status(500).json({ message: "Error al obtener clientes" });
   }
 });
@@ -4426,7 +4715,7 @@ app.post("/clientes/imagen", async (req, res) => {
 
     return res.status(201).json({ url: `/uploads/clientes/${fileName}` });
   } catch (error) {
-    console.error("Error al guardar foto de cliente:", error.message);
+    logError("Error al guardar foto de cliente:", error);
     return res.status(500).json({ message: "Error al guardar foto" });
   }
 });
@@ -4456,7 +4745,7 @@ app.post("/configuracion/logo", async (req, res) => {
 
     return res.status(201).json({ url: `/uploads/configuracion/${fileName}` });
   } catch (error) {
-    console.error("Error al guardar logo:", error.message);
+    logError("Error al guardar logo:", error);
     return res.status(500).json({ message: "Error al guardar logo" });
   }
 });
@@ -4517,7 +4806,7 @@ app.post("/clientes", async (req, res) => {
       cliente: await getClienteConMetricas(result.lastID)
     });
   } catch (error) {
-    console.error("Error al crear cliente:", error.message);
+    logError("Error al crear cliente:", error);
     return res.status(500).json({ message: "Error al crear cliente" });
   }
 });
@@ -4571,7 +4860,7 @@ app.put("/clientes/:id", async (req, res) => {
     );
     return res.json({ message: "Cliente actualizado correctamente", cliente: await getClienteConMetricas(clienteId) });
   } catch (error) {
-    console.error("Error al actualizar cliente:", error.message);
+    logError("Error al actualizar cliente:", error);
     return res.status(500).json({ message: "Error al actualizar cliente" });
   }
 });
@@ -4586,7 +4875,7 @@ app.patch("/clientes/:id/estado", async (req, res) => {
     await runQuery("UPDATE clientes SET activo = ? WHERE id = ?", [activo, clienteId]);
     return res.json({ message: activo ? "Cliente activado" : "Cliente desactivado", cliente: await getClienteConMetricas(clienteId) });
   } catch (error) {
-    console.error("Error al cambiar estado del cliente:", error.message);
+    logError("Error al cambiar estado del cliente:", error);
     return res.status(500).json({ message: "Error al cambiar estado del cliente" });
   }
 });
@@ -4607,7 +4896,7 @@ app.delete("/clientes/:id", async (req, res) => {
     await runQuery("DELETE FROM clientes WHERE id = ?", [clienteId]);
     return res.json({ message: "Cliente eliminado correctamente" });
   } catch (error) {
-    console.error("Error al eliminar cliente:", error.message);
+    logError("Error al eliminar cliente:", error);
     return res.status(500).json({ message: "Error al eliminar cliente" });
   }
 });
@@ -4661,7 +4950,7 @@ app.get("/clientes/:id/historial", async (req, res) => {
       historial
     });
   } catch (error) {
-    console.error("Error al obtener historial del cliente:", error.message);
+    logError("Error al obtener historial del cliente:", error);
     return res.status(500).json({ message: "Error al obtener historial del cliente" });
   }
 });
@@ -4677,7 +4966,7 @@ app.get("/ventas/:id/detalle", async (req, res) => {
 
     return res.json(data);
   } catch (error) {
-    console.error("Error al obtener detalle de venta:", error.message);
+    logError("Error al obtener detalle de venta:", error);
     return res.status(500).json({ message: "Error al obtener detalle de venta" });
   }
 });
@@ -4732,17 +5021,17 @@ app.put("/ventas/:id/pendiente", async (req, res) => {
     try {
       await runQuery("ROLLBACK");
     } catch (rollbackError) {
-      console.error("Error rollback pendiente:", rollbackError.message);
+      logError("Rollback pendiente", rollbackError);
     }
 
-    console.error("Error al actualizar ticket pendiente:", error.message);
+    logError("Error al actualizar ticket pendiente:", error);
     return res.status(500).json({ message: "Error al actualizar ticket pendiente" });
   }
 });
 
 // Cobrar ticket pendiente
 app.post("/ventas/:id/cobrar", async (req, res) => {
-  const ventaId = req.params.id;
+  const ventaId = Number(req.params.id);
   const tipoCobro = req.body.tipo_cobro;
 
   try {
@@ -4768,6 +5057,8 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
       return res.status(400).json({ message: "Datos de cobro invalidos" });
     }
 
+    await runQuery("BEGIN TRANSACTION");
+
     await runQuery(
       `UPDATE ventas
        SET estado = 'cobrada', metodo_pago = ?, tipo_cobro = ?, monto_efectivo = ?, monto_debito = ?, caja_id = ?
@@ -4782,9 +5073,12 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
       ]
     );
 
+    await runQuery("COMMIT");
+
     return res.json({ message: "Ticket pendiente cobrado" });
   } catch (error) {
-    console.error("Error al cobrar ticket pendiente:", error.message);
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("Error al cobrar ticket pendiente", error, "id: " + ventaId);
     return res.status(500).json({ message: "Error al cobrar ticket pendiente" });
   }
 });
@@ -4832,10 +5126,10 @@ app.post("/ventas/:id/anular", async (req, res) => {
     try {
       await runQuery("ROLLBACK");
     } catch (rollbackError) {
-      console.error("Error rollback anulacion:", rollbackError.message);
+      logError("Rollback anulacion", rollbackError);
     }
 
-    console.error("Error al anular ticket pendiente:", error.message);
+    logError("Error al anular ticket pendiente:", error);
     return res.status(500).json({ message: "Error al anular ticket pendiente" });
   }
 });
@@ -4870,7 +5164,7 @@ app.patch("/ventas/:id/cobro", async (req, res) => {
 
     return res.json({ message: `Metodo de pago actualizado en ticket ${ventaId}` });
   } catch (error) {
-    console.error("Error al actualizar cobro:", error.message);
+    logError("Error al actualizar cobro:", error);
     return res.status(500).json({ message: "Error al actualizar cobro" });
   }
 });
@@ -4908,6 +5202,27 @@ app.post("/ventas/:id/anular-cobrada", async (req, res) => {
       [ventaId]
     );
 
+    const cajaActiva = await getCajaAbiertaActual();
+    if (cajaActiva) {
+      const { fecha, hora } = getNowParts();
+      const montoEfectivo = Number(venta.monto_efectivo || 0);
+      const montoDebito = Number(venta.monto_debito || 0);
+      if (montoEfectivo > 0) {
+        await runQuery(
+          `INSERT INTO caja_movimientos (caja_id, tipo, concepto, monto, usuario, fecha, hora)
+           VALUES (?, 'egreso', ?, ?, 'admin', ?, ?)`,
+          [cajaActiva.id, `Anulación venta #${ventaId} (efectivo)`, montoEfectivo, fecha, hora]
+        );
+      }
+      if (montoDebito > 0) {
+        await runQuery(
+          `INSERT INTO caja_movimientos (caja_id, tipo, concepto, monto, usuario, fecha, hora)
+           VALUES (?, 'egreso', ?, ?, 'admin', ?, ?)`,
+          [cajaActiva.id, `Anulación venta #${ventaId} (digital)`, montoDebito, fecha, hora]
+        );
+      }
+    }
+
     await runQuery("COMMIT");
 
     return res.json({ message: `Ticket anulado ${ventaId}` });
@@ -4915,10 +5230,10 @@ app.post("/ventas/:id/anular-cobrada", async (req, res) => {
     try {
       await runQuery("ROLLBACK");
     } catch (rollbackError) {
-      console.error("Error rollback anulacion cobrada:", rollbackError.message);
+      logError("Rollback anulacion cobrada", rollbackError);
     }
 
-    console.error("Error al anular ticket cobrado:", error.message);
+    logError("Error al anular ticket cobrado:", error);
     return res.status(500).json({ message: "Error al anular ticket cobrado" });
   }
 });
@@ -4926,10 +5241,15 @@ app.post("/ventas/:id/anular-cobrada", async (req, res) => {
 // Consultar ventas
 app.get("/ventas", async (req, res) => {
   try {
-    const ventas = await allQuery("SELECT * FROM ventas ORDER BY id DESC");
+    const limite = Math.min(Number(req.query.limit) || 500, 2000);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    const ventas = await allQuery(
+      "SELECT * FROM ventas ORDER BY id DESC LIMIT ? OFFSET ?",
+      [limite, offset]
+    );
     return res.json(ventas);
   } catch (error) {
-    console.error("Error al listar ventas:", error.message);
+    logError("Error al listar ventas:", error);
     return res.status(500).json({ message: "Error al obtener ventas" });
   }
 });
@@ -4942,7 +5262,7 @@ app.get("/detalle-ventas", async (req, res) => {
     );
     return res.json(detalleVentas);
   } catch (error) {
-    console.error("Error al listar detalle de ventas:", error.message);
+    logError("Error al listar detalle de ventas:", error);
     return res.status(500).json({ message: "Error al obtener detalle de ventas" });
   }
 });
@@ -5019,7 +5339,7 @@ app.get("/configuracion", async (req, res) => {
       )
     });
   } catch (error) {
-    console.error("Error al obtener configuracion:", error.message);
+    logError("Error al obtener configuracion:", error);
     return res.status(500).json({ message: "Error al obtener configuracion" });
   }
 });
@@ -5058,10 +5378,10 @@ app.put("/configuracion", async (req, res) => {
     try {
       await runQuery("ROLLBACK");
     } catch (rollbackError) {
-      console.error("Error rollback configuracion:", rollbackError.message);
+      logError("Rollback configuracion", rollbackError);
     }
 
-    console.error("Error al guardar configuracion:", error.message);
+    logError("Error al guardar configuracion:", error);
     return res.status(500).json({ message: "Error al guardar configuracion" });
   }
 });
@@ -5075,7 +5395,7 @@ app.get("/test-producto", (req, res) => {
     ["Producto Prueba", "Test", 100, 200, 5, 1, "Proveedor Test", 1],
     function (err) {
       if (err) {
-        console.error("Error test-producto:", err.message);
+        logError("Error test-producto", err);
         return res.status(500).send("Error al insertar producto de prueba");
       }
 
@@ -5092,12 +5412,24 @@ Promise.all([
   ensureClientesSchema(),
   ensureConfiguracionSchema()
 ])
-  .then(() => {
+  .then(async () => {
+    await Promise.all([
+      runQuery("CREATE INDEX IF NOT EXISTS idx_usuarios_usuario ON usuarios(usuario)"),
+      runQuery("CREATE INDEX IF NOT EXISTS idx_productos_activo ON productos(activo)"),
+      runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_estado ON ventas(estado)"),
+      runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_cliente ON ventas(cliente_id)"),
+      runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_caja ON ventas(caja_id)"),
+      runQuery("CREATE INDEX IF NOT EXISTS idx_detalle_ventas_venta ON detalle_ventas(venta_id)"),
+      runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_producto ON movimientos_stock(producto_id)"),
+      runQuery("CREATE INDEX IF NOT EXISTS idx_caja_movimientos_caja ON caja_movimientos(caja_id)"),
+      runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_productos_codigo_unique ON productos(codigo) WHERE codigo IS NOT NULL AND codigo != '' AND eliminado = 0"),
+      runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_dni_cuit_unique ON clientes(dni_cuit) WHERE dni_cuit IS NOT NULL AND dni_cuit != ''")
+    ]);
     app.listen(PORT, () => {
       console.log(`Servidor corriendo en http://localhost:${PORT}`);
     });
   })
   .catch((error) => {
-    console.error("Error al preparar la base de datos:", error.message);
+    logError("Error al preparar la base de datos:", error);
     process.exit(1);
   });

@@ -383,6 +383,16 @@ async function initDatabase() {
       )
     `);
 
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_usuarios_usuario ON usuarios(usuario)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_productos_codigo ON productos(codigo)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_productos_activo ON productos(activo)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_estado ON ventas(estado)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_cliente ON ventas(cliente_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_caja ON ventas(caja_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_detalle_ventas_venta ON detalle_ventas(venta_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_producto ON movimientos_stock(producto_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_movimientos_caja ON caja_movimientos(caja_id)");
+
     const existingUser = await getQuery(
       "SELECT * FROM usuarios WHERE usuario = ?",
       ["admin"]

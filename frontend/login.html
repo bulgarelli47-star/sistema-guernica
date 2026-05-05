@@ -381,7 +381,20 @@
 
     const currentSession = getSession();
     if (isValidSession(currentSession)) {
-      window.location.href = "/dashboard.html";
+      fetch("/configuracion", {
+        headers: { Authorization: `Bearer ${currentSession.token}` }
+      }).then((r) => {
+        if (r.ok) {
+          window.location.href = "/dashboard.html";
+        } else {
+          localStorage.removeItem(SESSION_KEY);
+          sessionStorage.removeItem(SESSION_KEY);
+          localStorage.removeItem(USER_KEY);
+          sessionStorage.removeItem(USER_KEY);
+        }
+      }).catch(() => {
+        window.location.href = "/dashboard.html";
+      });
     } else {
       localStorage.removeItem(SESSION_KEY);
       sessionStorage.removeItem(SESSION_KEY);

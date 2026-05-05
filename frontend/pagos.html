@@ -575,6 +575,10 @@
       font-size: 11px;
       letter-spacing: 0.04em;
     }
+    th.sortable { cursor: pointer; user-select: none; }
+    th.sortable::after { content: ""; display: inline-block; margin-left: 5px; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid currentColor; opacity: .35; vertical-align: middle; }
+    th.sortable.active::after { opacity: .9; }
+    th.sortable.desc::after { transform: rotate(180deg); }
 
     .pill {
       display: inline-flex;
@@ -634,6 +638,7 @@
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=7" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
+<script src="/auth-interceptor.js"></script>
 </head>
 <body>
   <header class="site-header">
@@ -734,15 +739,15 @@
           <table>
             <thead>
               <tr>
-                <th>Fecha</th>
+                <th class="sortable active" data-sort="fecha">Fecha</th>
                 <th>Impacto proveedor</th>
-                <th>Proveedor</th>
+                <th class="sortable" data-sort="proveedor">Proveedor</th>
                 <th>Comprobante</th>
                 <th>Forma</th>
                 <th>Cuenta</th>
-                <th>Importe</th>
+                <th class="sortable" data-sort="monto">Importe</th>
                 <th>IVA favor</th>
-                <th>Estado</th>
+                <th class="sortable" data-sort="estado">Estado</th>
                 <th>Impacto</th>
               </tr>
             </thead>
@@ -753,15 +758,21 @@
         </div>
         <div class="history-footer">
           <span id="resumenPagosMostrados">Mostrando 0 pagos</span>
-          <label class="page-size-control">Pagos visibles
-            <select id="limitePagos" class="field">
-              <option value="5">5</option>
-              <option value="10" selected>10</option>
-              <option value="20">20</option>
-              <option value="30">30</option>
-              <option value="50">50</option>
-            </select>
-          </label>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <div id="paginacionPagos" style="display:none;align-items:center;gap:8px;">
+              <button id="paginaAnteriorPagos" class="button secondary compact">‹ Anterior</button>
+              <span id="infoPaginaPagos" style="font-size:12px;font-weight:700;color:var(--muted)"></span>
+              <button id="paginaSiguientePagos" class="button secondary compact">Siguiente ›</button>
+            </div>
+            <label class="page-size-control">Filas
+              <select id="limitePagos" class="field">
+                <option value="5">5</option>
+                <option value="10" selected>10</option>
+                <option value="15">15</option>
+                <option value="25">25</option>
+              </select>
+            </label>
+          </div>
         </div>
       </article>
     </section>
@@ -859,7 +870,7 @@
       <div id="editarPagoFormSection" style="display:none">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
           <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Concepto<input class="field" id="epConcepto"></label>
-          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Monto total<input class="field" type="number" id="epMonto" step="0.01"></label>
+          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Monto total<input class="field" type="number" id="epMonto" step="0.01" min="0"></label>
           <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Comprobante<input class="field" id="epComprobante"></label>
           <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Nro. comprobante<input class="field" id="epNumeroComprobante"></label>
           <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Cuenta destino<input class="field" id="epCuentaDestino"></label>
@@ -901,6 +912,7 @@
     const listaPagos = document.getElementById("listaPagos");
     const limitePagos = document.getElementById("limitePagos");
     const resumenPagosMostrados = document.getElementById("resumenPagosMostrados");
+    let paginaPagos = 1, totalPaginasPag = 1, ordenCampoPagos = "fecha", ordenDirPagos = "desc";
     const botonGuardarPago = document.getElementById("guardarPago");
     const botonLimpiarPago = document.getElementById("limpiarPago");
     const botonActualizarPagos = document.getElementById("actualizarPagos");
@@ -1127,12 +1139,31 @@
       }
 
       const pagosOrdenados = [...pagosActuales].sort((a, b) => {
-        const fechaA = `${a.fecha || ""} ${a.hora || ""} ${String(a.id || "").padStart(10, "0")}`;
-        const fechaB = `${b.fecha || ""} ${b.hora || ""} ${String(b.id || "").padStart(10, "0")}`;
-        return fechaB.localeCompare(fechaA);
+        let res = 0;
+        if (ordenCampoPagos === "proveedor") res = String(a.proveedor_nombre || "").localeCompare(String(b.proveedor_nombre || ""));
+        else if (ordenCampoPagos === "monto") res = Number(a.monto_total || 0) - Number(b.monto_total || 0);
+        else if (ordenCampoPagos === "estado") res = String(a.estado || "").localeCompare(String(b.estado || ""));
+        else {
+          const fa = `${a.fecha || ""} ${a.hora || ""} ${String(a.id || "").padStart(10, "0")}`;
+          const fb = `${b.fecha || ""} ${b.hora || ""} ${String(b.id || "").padStart(10, "0")}`;
+          res = fa.localeCompare(fb);
+        }
+        return ordenDirPagos === "desc" ? -res : res;
       });
       const limite = Number(limitePagos.value || 10);
-      const pagosVisibles = pagosOrdenados.slice(0, limite);
+      totalPaginasPag = limite > 0 ? Math.ceil(pagosOrdenados.length / limite) : 1;
+      paginaPagos = Math.min(paginaPagos, Math.max(1, totalPaginasPag));
+      const pagosVisibles = limite > 0 ? pagosOrdenados.slice((paginaPagos - 1) * limite, paginaPagos * limite) : pagosOrdenados;
+
+      const pagDiv = document.getElementById("paginacionPagos");
+      if (limite > 0 && totalPaginasPag > 1) {
+        pagDiv.style.display = "flex";
+        document.getElementById("infoPaginaPagos").textContent = `Página ${paginaPagos} de ${totalPaginasPag}`;
+        document.getElementById("paginaAnteriorPagos").disabled = paginaPagos === 1;
+        document.getElementById("paginaSiguientePagos").disabled = paginaPagos === totalPaginasPag;
+      } else {
+        pagDiv.style.display = "none";
+      }
 
       pagosVisibles.forEach((pago) => {
         const row = document.createElement("tr");
@@ -1161,7 +1192,9 @@
         listaPagos.appendChild(row);
       });
 
-      resumenPagosMostrados.innerText = `Mostrando ${pagosVisibles.length} de ${pagosActuales.length} pagos`;
+      const desde = limite > 0 ? (paginaPagos - 1) * limite + 1 : 1;
+      const hasta = desde + pagosVisibles.length - 1;
+      resumenPagosMostrados.innerText = `Mostrando ${desde}–${hasta} de ${pagosActuales.length} pagos`;
     }
 
     async function cargarProveedores() {
@@ -1282,7 +1315,18 @@
     pagoModal.addEventListener("click", (event) => {
       if (event.target === pagoModal) cerrarModalPago();
     });
-    limitePagos.addEventListener("change", () => renderizarPagos(pagosActuales));
+    limitePagos.addEventListener("change", () => { paginaPagos = 1; renderizarPagos(pagosActuales); });
+    document.getElementById("paginaAnteriorPagos").onclick = () => { if (paginaPagos > 1) { paginaPagos--; renderizarPagos(pagosActuales); } };
+    document.getElementById("paginaSiguientePagos").onclick = () => { if (paginaPagos < totalPaginasPag) { paginaPagos++; renderizarPagos(pagosActuales); } };
+    document.querySelectorAll("th.sortable").forEach(th => th.addEventListener("click", () => {
+      const campo = th.dataset.sort;
+      if (ordenCampoPagos === campo) ordenDirPagos = ordenDirPagos === "asc" ? "desc" : "asc";
+      else { ordenCampoPagos = campo; ordenDirPagos = campo === "fecha" ? "desc" : "asc"; }
+      document.querySelectorAll("th.sortable").forEach(h => h.classList.toggle("active", h.dataset.sort === ordenCampoPagos));
+      document.querySelectorAll("th.sortable").forEach(h => h.classList.toggle("desc", h.dataset.sort === ordenCampoPagos && ordenDirPagos === "desc"));
+      paginaPagos = 1;
+      renderizarPagos(pagosActuales);
+    }));
 
     fechaPago.value = hoyISO();
     actualizarBloqueMixto();
