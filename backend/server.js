@@ -10,8 +10,8 @@ const PORT = Number(process.env.PORT) || 3000;
 const AUTHORIZATION_CANCEL_CODE = "1234"; // migración — se sobreescribe con getClaveAutorizacion()
 async function getClaveAutorizacion() {
   try {
-    const row = await getQuery("SELECT valor FROM configuracion WHERE clave = 'autorizacion_clave_maestra'");
-    const val = String(row?.valor || "").trim();
+    const row = await getQuery("SELECT valor FROM configuracion_global WHERE clave = 'autorizacion_clave_maestra'");
+    const val = String(parsearConfigValor(row?.valor) || "").trim();
     return val || AUTHORIZATION_CANCEL_CODE;
   } catch { return AUTHORIZATION_CANCEL_CODE; }
 }
@@ -1896,6 +1896,8 @@ app.post("/productos", async (req, res) => {
     const usaCostos = tipoProducto === "simple" && (usa_costos_varios || categoriaData?.usa_costos_varios);
     const stockInicial = Number(stock) || 0;
     const recetaSinStockFisico = tipoProducto === "compuesto" && !maneja_stock;
+    const rendimientoPost = recetaSinStockFisico ? Math.max(1, Number(req.body.rendimiento_receta) || 1) : 1;
+    const esBatchPost = recetaSinStockFisico && rendimientoPost > 1;
     const costoBase = tipoProducto === "compuesto"
       ? await calcularCostoProductoCompuestoPayload(componentes, costos_extra)
       : usaCostos ? calcularCostoPorRendimiento(costos_insumos) : Number(precio_compra) || 0;
@@ -1917,7 +1919,7 @@ app.post("/productos", async (req, res) => {
         categoria || "",
         costoBase,
         precioVentaFinal,
-        recetaSinStockFisico ? 0 : stockInicial,
+        esBatchPost ? rendimientoPost : (recetaSinStockFisico ? 0 : stockInicial),
         recetaSinStockFisico ? 0 : (maneja_stock ? 1 : 0),
         proveedor_principal || "",
         proveedor_id ? Number(proveedor_id) : null,
@@ -1945,7 +1947,7 @@ app.post("/productos", async (req, res) => {
         es_combo ? 1 : 0,
         aplica_para_combo ? 1 : 0,
         tipoProducto,
-        Math.max(1, Number(req.body.rendimiento_receta) || 1)
+        rendimientoPost
       ]
     );
 
@@ -2096,7 +2098,7 @@ app.put("/productos/:id", async (req, res) => {
     }
     const tipoProducto = normalizarTipoProducto(tipo);
     const usaCostos = tipoProducto === "simple" && (usa_costos_varios || categoriaData?.usa_costos_varios);
-    const rendimientoReceta = Math.max(1, Number(req.body.rendimiento_receta) || 1);
+    const rendimientoReceta = (tipoProducto === "compuesto" && !maneja_stock) ? Math.max(1, Number(req.body.rendimiento_receta) || 1) : 1;
     const esBatchCounter = tipoProducto === "compuesto" && !maneja_stock && rendimientoReceta > 1;
     const stockProducto = esBatchCounter ? rendimientoReceta : (Number(stock) || 0);
     const recetaSinStockFisico = tipoProducto === "compuesto" && !maneja_stock;
@@ -2124,7 +2126,7 @@ app.put("/productos/:id", async (req, res) => {
         categoria || "",
         costoBase,
         precioVentaFinal,
-        recetaSinStockFisico ? 0 : stockProducto,
+        esBatchCounter ? Number(existente.stock || 0) : (recetaSinStockFisico ? 0 : stockProducto),
         recetaSinStockFisico ? 0 : (maneja_stock ? 1 : 0),
         proveedor_principal || "",
         proveedor_id ? Number(proveedor_id) : null,
@@ -2152,7 +2154,7 @@ app.put("/productos/:id", async (req, res) => {
         es_combo ? 1 : 0,
         aplica_para_combo ? 1 : 0,
         tipoProducto,
-        Math.max(1, Number(req.body.rendimiento_receta) || 1),
+        rendimientoReceta,
         productoId
       ]
     );
@@ -2212,6 +2214,17 @@ app.patch("/productos/:id/combo", async (req, res) => {
     }
 
     await runQuery("UPDATE productos SET aplica_para_combo = ? WHERE id = ?", [aplicaParaCombo, productoId]);
+
+    if (!aplicaParaCombo) {
+      await runQuery(`
+        UPDATE productos SET activo = 0
+        WHERE es_combo = 1
+          AND id IN (
+            SELECT producto_compuesto_id FROM producto_componentes WHERE producto_id = ?
+          )
+      `, [productoId]);
+    }
+
     const actualizado = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
     await registrarCambiosProducto(productoId, existente, actualizado, "admin", "combo");
     return res.json({ message: aplicaParaCombo ? "Producto habilitado para combos" : "Producto quitado de combos" });
@@ -2221,7 +2234,7 @@ app.patch("/productos/:id/combo", async (req, res) => {
   }
 });
 
-// Vista previa: productos con es_combo=1 que NO son combos reales (marcados por error desde el form)
+// Vista previa: herramienta temporal de migración (read-only, sin auth)
 app.get("/admin/combo-preview", async (req, res) => {
   try {
     const productos = await allQuery(`
@@ -2243,8 +2256,13 @@ app.get("/admin/combo-preview", async (req, res) => {
   }
 });
 
-// Aplicar corrección: mover es_combo=1 (no reales) a aplica_para_combo=1
+// Aplicar corrección: mover es_combo=1 (no reales) a aplica_para_combo=1 — requiere clave maestra
 app.post("/admin/combo-aplicar", async (req, res) => {
+  const claveConfig = await getClaveAutorizacion();
+  const clave = String(req.body?.clave || "").trim();
+  if (clave !== claveConfig) {
+    return res.status(403).json({ message: "Clave maestra requerida" });
+  }
   try {
     const afectados = await allQuery(`
       SELECT id FROM productos
@@ -2702,7 +2720,8 @@ app.post("/productos/:id/movimientos-stock", async (req, res) => {
       return res.status(404).json({ message: "Producto no encontrado" });
     }
     const esCompuesto = normalizarTipoProducto(producto.tipo) === "compuesto";
-    const esStockCalculado = esCompuesto && !Number(producto.maneja_stock);
+    const esBatch = esCompuesto && !Number(producto.maneja_stock) && Number(producto.rendimiento_receta || 1) > 1;
+    const esStockCalculado = esCompuesto && !Number(producto.maneja_stock) && !esBatch;
     if (esStockCalculado) {
       return res.status(400).json({ message: "Este producto no posee stock propio. Ajusta sus ingredientes." });
     }
@@ -2764,7 +2783,10 @@ app.post("/productos/:id/movimientos-stock", async (req, res) => {
     await logHistorialProducto(productoId, "stock", stockAnterior, stockNuevo, motivo || tipoMovimiento, usuario);
     await runQuery("COMMIT");
 
-    return res.json({ message: "Movimiento registrado correctamente", stock_nuevo: stockNuevo });
+    const mensajeMovimiento = esBatch
+      ? `Contador actualizado: ${stockNuevo}/${producto.rendimiento_receta} porciones`
+      : "Movimiento registrado correctamente";
+    return res.json({ message: mensajeMovimiento, stock_nuevo: stockNuevo });
   } catch (error) {
     try {
       await runQuery("ROLLBACK");

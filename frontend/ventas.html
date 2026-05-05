@@ -1239,7 +1239,7 @@
       </div>
       <div class="top-actions">
         <div class="top-actions-menu">
-          <button type="button" class="chip icon-chip" id="toggleNotificaciones" aria-label="Notificaciones" title="Notificaciones" style="position:relative"><span class="app-icon icon-bell" aria-hidden="true"></span><span id="notifBadge" style="display:none;position:absolute;top:4px;right:4px;width:8px;height:8px;border-radius:50%;background:#ef4444;border:2px solid rgba(255,255,255,.2)"></span></button>
+          <button type="button" class="chip icon-chip" id="toggleNotificaciones" aria-label="Notificaciones" title="Notificaciones" style="position:relative"><span class="app-icon icon-bell" aria-hidden="true"></span><span id="notifBadge" style="display:none;position:absolute;top:-5px;right:-5px;min-width:18px;height:18px;border-radius:9px;background:#ef4444;border:2px solid rgba(255,255,255,.25);color:#fff;font-size:10px;font-weight:700;line-height:14px;text-align:center;padding:0 4px;pointer-events:none">0</span></button>
           <div class="notifications-dropdown" id="notificacionesDropdown">
             <div>
               <h3>Notificaciones</h3>
@@ -1543,6 +1543,26 @@
     </div>
   </div>
 
+  <div class="modal" id="modalAnularClave">
+    <div class="modal-card compact">
+      <div class="modal-header">
+        <div>
+          <h3>Anular pendiente</h3>
+          <p>Ingresá la clave maestra para confirmar la anulación.</p>
+        </div>
+        <button type="button" class="button secondary" id="cerrarModalAnularClave">Cerrar</button>
+      </div>
+      <div>
+        <input type="password" id="anularClaveInput" class="field" placeholder="Clave maestra" style="margin-top: 8px;">
+        <p id="anularClaveError" style="color: var(--danger, #ef4444); font-size: 12px; margin: 6px 0 0; display: none;"></p>
+      </div>
+      <div class="inline-actions" style="margin-top: 12px;">
+        <button type="button" class="button secondary" id="cancelarAnularClave">Cancelar</button>
+        <button type="button" class="button danger" id="confirmarAnularClave">Anular ticket</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal" id="modalCliente">
     <div class="modal-card compact">
       <div class="modal-header">
@@ -1668,6 +1688,7 @@
 
     const ticket = [];
     let productosCargados = [];
+    let _notifCount = 0;
     let siguienteManualId = -1;
     let currentPendingId = null;
     let pendingDirty = false;
@@ -1733,7 +1754,11 @@
       }
 
       const badge = document.getElementById("notifBadge");
-      if (badge) badge.style.display = "block";
+      if (badge) {
+        _notifCount++;
+        badge.textContent = _notifCount > 99 ? "99+" : _notifCount;
+        badge.style.display = "block";
+      }
     }
 
     function escapeHtml(value) {
@@ -2978,39 +3003,53 @@
       }
     }
 
-    async function anularPendiente(ventaId) {
-      const confirmacion = window.confirm("Seguro que querés anular este ticket pendiente?");
+    let _ventaParaAnular = null;
+    const modalAnularClave = document.getElementById("modalAnularClave");
 
-      if (!confirmacion) {
+    function anularPendiente(ventaId) {
+      if (!window.confirm("¿Seguro que querés anular este ticket pendiente?")) return;
+      _ventaParaAnular = ventaId;
+      document.getElementById("anularClaveInput").value = "";
+      document.getElementById("anularClaveError").style.display = "none";
+      abrirModal(modalAnularClave);
+    }
+
+    function cerrarModalAnularClave() {
+      cerrarModal(modalAnularClave);
+      _ventaParaAnular = null;
+    }
+
+    document.getElementById("cerrarModalAnularClave").onclick = cerrarModalAnularClave;
+    document.getElementById("cancelarAnularClave").onclick = cerrarModalAnularClave;
+    document.getElementById("anularClaveInput").addEventListener("keydown", e => {
+      if (e.key === "Enter") document.getElementById("confirmarAnularClave").click();
+    });
+
+    document.getElementById("confirmarAnularClave").onclick = async () => {
+      const codigo = document.getElementById("anularClaveInput").value.trim();
+      const errorEl = document.getElementById("anularClaveError");
+      if (!codigo) {
+        errorEl.textContent = "Ingresá la clave maestra";
+        errorEl.style.display = "block";
         return;
       }
-
-      const codigo = window.prompt("Ingresa el código de autorización para anular:");
-
-      if (codigo === null) {
-        return;
-      }
-
+      const btn = document.getElementById("confirmarAnularClave");
+      btn.disabled = true;
       try {
-        const res = await fetch(`/ventas/${ventaId}/anular`, {
+        const res = await fetch(`/ventas/${_ventaParaAnular}/anular`, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ authorization_code: codigo })
         });
-
         const data = await res.json();
-
         if (!res.ok) {
-          mostrarMensaje(data.message || "Error al anular pendiente", true);
+          errorEl.textContent = data.message || "Clave incorrecta";
+          errorEl.style.display = "block";
           return;
         }
-
-        if (currentPendingId === ventaId) {
-          resetTicketEditor();
-        }
-
+        const ventaAnulada = _ventaParaAnular;
+        cerrarModalAnularClave();
+        if (currentPendingId === ventaAnulada) resetTicketEditor();
         cerrarModal(modalPendientes);
         mostrarMensaje(data.message || "Ticket pendiente anulado");
         await cargarProductos();
@@ -3018,9 +3057,12 @@
         await cargarHistorialAnulados();
       } catch (error) {
         console.error("Error al anular pendiente:", error);
-        mostrarMensaje("Error al anular el ticket pendiente", true);
+        errorEl.textContent = "Error de conexión";
+        errorEl.style.display = "block";
+      } finally {
+        btn.disabled = false;
       }
-    }
+    };
 
     function renderizarPendientes(lista) {
       ticketsPendientes.innerHTML = "";
@@ -3286,6 +3328,7 @@
       event.stopPropagation();
       notificacionesDropdown.classList.toggle("open");
       if (notificacionesDropdown.classList.contains("open")) {
+        _notifCount = 0;
         const badge = document.getElementById("notifBadge");
         if (badge) badge.style.display = "none";
       }

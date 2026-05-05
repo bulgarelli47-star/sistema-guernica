@@ -1326,9 +1326,9 @@
     editarPagoModal.addEventListener("click", e => { if (e.target === editarPagoModal) cerrarEditarPagoModal(); });
 
     document.getElementById("confirmarClavePago").addEventListener("click", () => {
-      const clave = document.getElementById("editarPagoClave").value;
-      if (clave !== "1234") {
-        document.getElementById("editarPagoClaveError").textContent = "Clave incorrecta";
+      const clave = document.getElementById("editarPagoClave").value.trim();
+      if (!clave) {
+        document.getElementById("editarPagoClaveError").textContent = "Ingresá la clave maestra";
         document.getElementById("editarPagoClaveError").style.display = "block";
         return;
       }

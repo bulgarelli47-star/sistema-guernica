@@ -13,7 +13,16 @@
       "Bash(findstr \"aplica_para_combo\")",
       "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\bulga\\\\OneDrive\\\\Escritorio\\\\SISTEMA-GUERNICA\" -Filter \"package.json\" | ForEach-Object { Write-Output \"=== $\\($_.FullName\\) ===\"; Get-Content $_.FullName | Select-String \"start|main\" })",
       "Bash(grep -v \"console\\\\|//\")",
-      "Bash(awk -F: '$2 > 3270 {print; exit}')"
+      "Bash(awk -F: '$2 > 3270 {print; exit}')",
+      "Bash(powershell -Command \"Get-Content -Path 'c:\\\\Users\\\\bulga\\\\OneDrive\\\\Escritorio\\\\SISTEMA-GUERNICA\\\\frontend\\\\productos.html' -TotalCount 60 | Select-Object -Index 34..57\")",
+      "Bash(powershell -Command \"\\(Get-Content -Path 'c:\\\\Users\\\\bulga\\\\OneDrive\\\\Escritorio\\\\SISTEMA-GUERNICA\\\\frontend\\\\productos.html' | Select-Object -Index \\(34..57\\)\\) -join [System.Environment]::NewLine\")",
+      "PowerShell(Get-Process -Name \"node\" -ErrorAction SilentlyContinue)",
+      "Bash(timeout 8 node backend/server.js)",
+      "Bash(node backend/server.js)",
+      "Bash(curl -s http://localhost:3000/configuracion)",
+      "PowerShell(Stop-Process -Force)",
+      "Bash(node reset-data.js)",
+      "Bash(node -e \"const sqlite3=require\\('sqlite3'\\).verbose\\(\\);const db=new sqlite3.Database\\('database/guernica.db'\\);db.all\\(\\\\\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\\\\\",[],\\(e,r\\)=>{console.log\\(r.map\\(x=>x.name\\).join\\('\\\\n'\\)\\);db.close\\(\\)}\\)\")"
     ]
   }
 }

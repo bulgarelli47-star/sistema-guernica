@@ -1,0 +1,17 @@
+# Dependencias
+node_modules/
+
+# Base de datos (no subir datos reales)
+database/*.db
+database/*.db-shm
+database/*.db-wal
+
+# Imágenes subidas por usuarios
+uploads/
+
+# Configuración local de Claude Code
+.claude/settings.local.json
+
+# Archivos temporales de Windows / macOS
+Thumbs.db
+.DS_Store
