@@ -26,7 +26,8 @@
   }
 
   function normalizeRole(role) {
-    return String(role || "operador").trim().toLowerCase().replace(/\s+/g, "_");
+    const normalized = String(role || "colaborador").trim().toLowerCase().replace(/\s+/g, "_");
+    return { operador: "colaborador", caja: "colaborador", cajero: "colaborador" }[normalized] || normalized;
   }
 
   function getModuleFromLink(link) {

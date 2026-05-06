@@ -820,7 +820,7 @@
       return `$${Number(valor || 0).toFixed(2)}`;
     }
 
-    function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",cajero:"caja"}[raw]||raw}
+    function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[raw]||raw}
     function mostrarKpisComplejos(config){const tipo=String(config?.[`dashboard_tipo_${rolActual()}`]??"").replace(/^"+|"+$/g,"").toLowerCase();const complejo=tipo ? tipo==="complejo" : ["admin","encargado"].includes(rolActual());if(kpiGrid)kpiGrid.style.display=complejo?"grid":"none"}
 
     function hoyISO() {
@@ -1355,7 +1355,6 @@
   <script src="/user-menu.js?v=7" defer></script>
 </body>
 </html>
-
 
 
 

@@ -34,7 +34,7 @@
         <div class="filters">
           <label>Buscar<input id="buscar" placeholder="Nombre, usuario o email"></label>
           <label>Estado<select id="filtroEstado"><option value="todos">Todos</option><option value="activos">Activos</option><option value="inactivos">Inactivos</option></select></label>
-          <label>Rol<select id="filtroRol"><option value="">Todos los roles</option><option value="admin">Dueño</option><option value="encargado">Encargado</option><option value="operador">Colaborador</option><option value="caja">Caja</option></select></label>
+          <label>Rol<select id="filtroRol"><option value="">Todos los roles</option><option value="admin">Dueño</option><option value="encargado">Encargado</option><option value="colaborador">Colaborador</option></select></label>
         </div>
       </section>
       <section class="card table-wrap">
@@ -57,7 +57,7 @@
           <label>Usuario login<input id="loginUsuario" required autocomplete="off"></label>
           <label>Email<input id="email" type="email"></label>
           <label>Teléfono<input id="telefono"></label>
-          <label>Rol<select id="rol"><option value="admin">Dueño</option><option value="encargado">Encargado</option><option value="operador">Colaborador</option><option value="caja">Caja</option></select></label>
+          <label>Rol<select id="rol"><option value="admin">Dueño</option><option value="encargado">Encargado</option><option value="colaborador">Colaborador</option></select></label>
           <label class="check-row"><input id="activo" type="checkbox" checked> Usuario activo</label>
           <label id="passwordLabel">Contraseña<input id="password" type="password" autocomplete="new-password"></label>
           <label id="confirmarLabel">Confirmar contraseña<input id="confirmarPassword" type="password" autocomplete="new-password"></label>
@@ -84,7 +84,8 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const state = { usuarios: [], filtrados: [] };
-    const roles = { admin: "Dueño", encargado: "Encargado", operador: "Colaborador", caja: "Caja" };
+    const roles = { admin: "Dueño", encargado: "Encargado", colaborador: "Colaborador", operador: "Colaborador", caja: "Colaborador" };
+    const normalizarRol = (rol) => ({ operador: "colaborador", caja: "colaborador", cajero: "colaborador" }[String(rol || "").toLowerCase()] || String(rol || "colaborador").toLowerCase());
     function msg(el, text, type = "") { el.className = `message ${type}`; el.textContent = text; }
     function fecha(value) { return value ? new Date(value).toLocaleString("es-AR") : "Sin acceso"; }
     function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[c])); }
@@ -102,7 +103,7 @@
       state.filtrados = state.usuarios.filter((u) => {
         const matchText = !q || [u.nombre, u.usuario, u.email, u.telefono].some((v) => String(v || "").toLowerCase().includes(q));
         const matchEstado = estado === "todos" || (estado === "activos" ? u.activo : !u.activo);
-        const matchRol = !rol || u.rol === rol;
+        const matchRol = !rol || normalizarRol(u.rol) === rol;
         return matchText && matchEstado && matchRol;
       });
       renderTabla();
@@ -113,7 +114,7 @@
         <tr>
           <td><div class="user-name"><strong>${escapeHtml(u.nombre)}</strong><small class="muted">ID ${u.id}</small></div></td>
           <td>${escapeHtml(u.usuario)}</td>
-          <td><span class="badge role">${escapeHtml(roles[u.rol] || u.rol)}</span></td>
+          <td><span class="badge role">${escapeHtml(roles[normalizarRol(u.rol)] || u.rol)}</span></td>
           <td><span class="badge ${u.activo ? "ok" : "off"}">${u.activo ? "Activo" : "Inactivo"}</span></td>
           <td>${fecha(u.ultimo_acceso)}</td>
           <td><small>${escapeHtml(u.email || "-")}<br>${escapeHtml(u.telefono || "-")}</small></td>
@@ -147,7 +148,7 @@
       $("loginUsuario").value = user?.usuario || "";
       $("email").value = user?.email || "";
       $("telefono").value = user?.telefono || "";
-      $("rol").value = user?.rol || "operador";
+      $("rol").value = normalizarRol(user?.rol || "colaborador");
       $("activo").checked = user ? Boolean(user.activo) : true;
       $("passwordLabel").style.display = user ? "none" : "grid";
       $("confirmarLabel").style.display = user ? "none" : "grid";
@@ -233,6 +234,5 @@
   <script src="/user-menu.js?v=7" defer></script>
 </body>
 </html>
-
 
 

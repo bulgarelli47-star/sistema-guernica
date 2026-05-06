@@ -29,7 +29,10 @@
 
   function roleLabel(value) {
     if (!value) return "Administrador";
-    return String(value).replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+    const normalized = String(value).trim().toLowerCase().replace(/\s+/g, "_");
+    const canonical = { operador: "colaborador", caja: "colaborador", cajero: "colaborador" }[normalized] || normalized;
+    return { admin: "Dueño", encargado: "Encargado", colaborador: "Colaborador" }[canonical]
+      || canonical.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
   }
 
   function showToast(text) {

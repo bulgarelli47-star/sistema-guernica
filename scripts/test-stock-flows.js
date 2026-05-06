@@ -243,37 +243,44 @@ async function testBatchComoComponente() {
   }
 }
 
-async function testPermisosOperador() {
+async function testPermisosColaborador() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
   try {
     await withServer(dbPath, async (baseUrl) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
+      const configAdmin = await requestJson(baseUrl, "GET", "/configuracion", null, adminToken);
+      if (!configAdmin.data?.config?.permisos_acciones_roles?.caja?.colaborador) {
+        throw new Error("La configuracion debe exponer permisos para rol colaborador");
+      }
       await requestJson(baseUrl, "POST", "/usuarios", {
-        nombre: "Operador Test",
-        usuario: "operador_test",
-        password: "operador123",
-        confirmar_password: "operador123",
-        rol: "operador",
+        nombre: "Colaborador Test",
+        usuario: "colaborador_test",
+        password: "colaborador123",
+        confirmar_password: "colaborador123",
+        rol: "colaborador",
         activo: true
       }, adminToken);
 
-      const operadorToken = await login(baseUrl, "operador_test", "operador123");
-      const lecturaProductos = await requestJson(baseUrl, "GET", "/productos", null, operadorToken);
-      if (!lecturaProductos.response.ok) throw new Error("El operador debe poder leer productos");
+      const colaboradorToken = await login(baseUrl, "colaborador_test", "colaborador123");
+      const lecturaProductos = await requestJson(baseUrl, "GET", "/productos", null, colaboradorToken);
+      if (!lecturaProductos.response.ok) throw new Error("El colaborador debe poder leer productos");
+
+      const lecturaCaja = await requestJson(baseUrl, "GET", "/caja/resumen", null, colaboradorToken);
+      if (!lecturaCaja.response.ok) throw new Error("El colaborador debe poder acceder a caja");
 
       const stock = await requestJson(baseUrl, "POST", "/productos/3/movimientos-stock", {
         tipo_movimiento: "ingreso",
         cantidad: 1,
-        motivo: "TEST operador bloqueado",
-        usuario: "operador_test"
-      }, operadorToken);
-      assertEqual(stock.response.status, 403, "El operador no debe modificar stock");
+        motivo: "TEST colaborador bloqueado",
+        usuario: "colaborador_test"
+      }, colaboradorToken);
+      assertEqual(stock.response.status, 403, "El colaborador no debe modificar stock");
 
       const config = await requestJson(baseUrl, "PUT", "/configuracion", {
         ticket_nombre: "No autorizado"
-      }, operadorToken);
-      assertEqual(config.response.status, 403, "El operador no debe modificar configuracion");
+      }, colaboradorToken);
+      assertEqual(config.response.status, 403, "El colaborador no debe modificar configuracion");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -374,7 +381,7 @@ async function testAnularVentaCobradaReponeStock() {
 (async () => {
   await testBatchManual();
   await testBatchComoComponente();
-  await testPermisosOperador();
+  await testPermisosColaborador();
   await testVentaContadoImpactaStockYCaja();
   await testPendienteNoImpactaCajaHastaCobro();
   await testAnularVentaCobradaReponeStock();

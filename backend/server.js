@@ -81,12 +81,13 @@ app.use(requireAuth);
 const ROLES = {
   ADMIN: new Set(["admin"]),
   ADMIN_ENCARGADO: new Set(["admin", "encargado"]),
-  CAJA: new Set(["admin", "encargado", "caja"]),
-  TODOS: new Set(["admin", "encargado", "operador", "caja"])
+  CAJA: new Set(["admin", "encargado", "colaborador"]),
+  TODOS: new Set(["admin", "encargado", "colaborador"])
 };
 
 function normalizarRol(rol) {
-  return String(rol || "").trim().toLowerCase().replace(/\s+/g, "_");
+  const normalizado = String(rol || "").trim().toLowerCase().replace(/\s+/g, "_");
+  return { operador: "colaborador", caja: "colaborador", cajero: "colaborador" }[normalizado] || normalizado;
 }
 
 function puedeRol(req, roles) {
@@ -349,6 +350,8 @@ async function ensureUsuariosSchema() {
       expira TEXT NOT NULL
     )
   `);
+  await runQuery("UPDATE usuarios SET rol = 'colaborador' WHERE rol IN ('operador', 'caja', 'cajero')");
+  await runQuery("UPDATE sesiones SET rol = 'colaborador' WHERE rol IN ('operador', 'caja', 'cajero')");
 }
 
 function runQuery(sql, params = []) {
@@ -443,7 +446,7 @@ const CONFIGURACION_DEFAULTS = {
   permiso_ver_costos: { seccion: "usuarios_permisos", valor: "admin" },
   permiso_cierre_caja: { seccion: "usuarios_permisos", valor: "admin" },
   permiso_eliminar_registros: { seccion: "usuarios_permisos", valor: "admin" },
-  permisos_acciones_roles: { seccion: "usuarios_permisos", valor: '{"ver_stock":{"admin":true,"encargado":true,"operador":true,"caja":false},"sumar_stock":{"admin":true,"encargado":true,"operador":false,"caja":false},"ver_acciones":{"admin":true,"encargado":true,"operador":false,"caja":false},"ver_costos":{"admin":true,"encargado":true,"operador":false,"caja":false},"caja":{"admin":true,"encargado":true,"operador":false,"caja":true},"registros":{"admin":true,"encargado":true,"operador":false,"caja":false},"anular_ticket":{"admin":true,"encargado":true,"operador":false,"caja":false},"editar_ticket":{"admin":true,"encargado":true,"operador":true,"caja":true}}' },
+  permisos_acciones_roles: { seccion: "usuarios_permisos", valor: '{"ver_stock":{"admin":true,"encargado":true,"colaborador":true},"sumar_stock":{"admin":true,"encargado":true,"colaborador":false},"ver_acciones":{"admin":true,"encargado":true,"colaborador":false},"ver_costos":{"admin":true,"encargado":true,"colaborador":false},"caja":{"admin":true,"encargado":true,"colaborador":true},"registros":{"admin":true,"encargado":true,"colaborador":false},"anular_ticket":{"admin":true,"encargado":true,"colaborador":false},"editar_ticket":{"admin":true,"encargado":true,"colaborador":true}}' },
   modulo_inicio_admin: { seccion: "usuarios_permisos", valor: true },
   modulo_ventas_admin: { seccion: "usuarios_permisos", valor: true },
   modulo_caja_admin: { seccion: "usuarios_permisos", valor: true },
@@ -474,6 +477,16 @@ const CONFIGURACION_DEFAULTS = {
   modulo_reportes_operador: { seccion: "usuarios_permisos", valor: false },
   modulo_usuarios_operador: { seccion: "usuarios_permisos", valor: false },
   modulo_configuracion_operador: { seccion: "usuarios_permisos", valor: false },
+  modulo_inicio_colaborador: { seccion: "usuarios_permisos", valor: true },
+  modulo_ventas_colaborador: { seccion: "usuarios_permisos", valor: true },
+  modulo_caja_colaborador: { seccion: "usuarios_permisos", valor: true },
+  modulo_pagos_colaborador: { seccion: "usuarios_permisos", valor: false },
+  modulo_stock_colaborador: { seccion: "usuarios_permisos", valor: true },
+  modulo_clientes_colaborador: { seccion: "usuarios_permisos", valor: true },
+  modulo_proveedores_colaborador: { seccion: "usuarios_permisos", valor: false },
+  modulo_reportes_colaborador: { seccion: "usuarios_permisos", valor: false },
+  modulo_usuarios_colaborador: { seccion: "usuarios_permisos", valor: false },
+  modulo_configuracion_colaborador: { seccion: "usuarios_permisos", valor: false },
   modulo_inicio_caja: { seccion: "usuarios_permisos", valor: true },
   modulo_ventas_caja: { seccion: "usuarios_permisos", valor: true },
   modulo_caja_caja: { seccion: "usuarios_permisos", valor: true },
@@ -497,6 +510,7 @@ const CONFIGURACION_DEFAULTS = {
   dashboard_tipo_encargado: { seccion: "usuarios_permisos", valor: "complejo" },
   dashboard_tipo_operador: { seccion: "usuarios_permisos", valor: "simple" },
   dashboard_tipo_caja: { seccion: "usuarios_permisos", valor: "simple" },
+  dashboard_tipo_colaborador: { seccion: "usuarios_permisos", valor: "simple" },
   dashboard_pizarra_categorias: { seccion: "usuarios_permisos", valor: "cafeteria,cafe,menu,desayuno,merienda" },
   dashboard_pizarra_productos: { seccion: "usuarios_permisos", valor: "" },
   ticket_nombre: { seccion: "tickets", valor: "Guernica Bar" },
@@ -530,6 +544,23 @@ function parsearConfigValor(valor) {
   }
 }
 
+function normalizarPermisosAccionesRoles(permisos) {
+  const parsed = typeof permisos === "string" ? parsearConfigValor(permisos) : permisos;
+  const defaults = parsearConfigValor(CONFIGURACION_DEFAULTS.permisos_acciones_roles.valor);
+  const resultado = {};
+
+  Object.keys(defaults).forEach((accion) => {
+    const actual = parsed?.[accion] || {};
+    resultado[accion] = {
+      admin: actual.admin ?? defaults[accion].admin ?? false,
+      encargado: actual.encargado ?? defaults[accion].encargado ?? false,
+      colaborador: actual.colaborador ?? Boolean(actual.operador || actual.caja || defaults[accion].colaborador)
+    };
+  });
+
+  return resultado;
+}
+
 async function getConfiguracionGlobal() {
   const rows = await allQuery("SELECT clave, valor FROM configuracion_global");
   const config = Object.fromEntries(
@@ -557,6 +588,8 @@ async function getConfiguracionGlobal() {
       config[clave] = CONFIGURACION_DEFAULTS[clave].valor;
     }
   });
+
+  config.permisos_acciones_roles = normalizarPermisosAccionesRoles(config.permisos_acciones_roles);
 
   return config;
 }
@@ -1668,9 +1701,10 @@ app.post("/login", async (req, res) => {
     const token = crypto.randomBytes(32).toString("hex");
     const expiraISO = new Date(Date.now() + expiresInMs).toISOString();
 
+    const rolSesion = normalizarRol(user.rol);
     await runQuery(
       "INSERT OR REPLACE INTO sesiones (token, usuario_id, nombre, rol, expira) VALUES (?, ?, ?, ?, ?)",
-      [token, user.id, user.nombre, user.rol, expiraISO]
+      [token, user.id, user.nombre, rolSesion, expiraISO]
     );
     await runQuery("DELETE FROM sesiones WHERE expira < datetime('now')");
 
@@ -1683,7 +1717,7 @@ app.post("/login", async (req, res) => {
         id: user.id,
         nombre: user.nombre,
         usuario: user.usuario,
-        rol: user.rol,
+        rol: rolSesion,
         email: user.email || "",
         telefono: user.telefono || "",
         foto_url: user.foto_url || ""
@@ -1699,7 +1733,7 @@ function parseUsuarioPayload(body, includePassword = false) {
   const data = {
     nombre: String(body?.nombre || "").trim(),
     usuario: String(body?.usuario || "").trim(),
-    rol: String(body?.rol || "operador").trim().toLowerCase(),
+    rol: normalizarRol(body?.rol || "colaborador"),
     email: String(body?.email || "").trim(),
     telefono: String(body?.telefono || "").trim(),
     activo: body?.activo === false || Number(body?.activo) === 0 ? 0 : 1
@@ -1718,7 +1752,7 @@ function usuarioResponse(row) {
     id: row.id,
     nombre: row.nombre,
     usuario: row.usuario,
-    rol: row.rol,
+    rol: normalizarRol(row.rol),
     email: row.email || "",
     telefono: row.telefono || "",
     foto_url: row.foto_url || "",
@@ -1742,15 +1776,20 @@ async function getUsuarioById(id) {
 
 app.get("/usuarios", async (req, res) => {
   const estado = String(req.query.estado || "todos").toLowerCase();
-  const rol = String(req.query.rol || "").trim().toLowerCase();
+  const rol = normalizarRol(req.query.rol || "");
   const params = [];
   const where = [];
 
   if (estado === "activos") where.push("activo = 1");
   if (estado === "inactivos") where.push("activo = 0");
   if (rol) {
-    where.push("rol = ?");
-    params.push(rol);
+    if (rol === "colaborador") {
+      where.push("rol IN (?, ?, ?)");
+      params.push("colaborador", "operador", "caja");
+    } else {
+      where.push("rol = ?");
+      params.push(rol);
+    }
   }
 
   try {
@@ -1788,9 +1827,9 @@ app.post("/usuarios", async (req, res) => {
     return res.status(400).json({ message: "Nombre, usuario, contrasena y rol son obligatorios" });
   }
 
-  const ROLES_VALIDOS = ["admin", "encargado", "operador", "caja"];
+  const ROLES_VALIDOS = ["admin", "encargado", "colaborador"];
   if (!ROLES_VALIDOS.includes(data.rol)) {
-    return res.status(400).json({ message: "Rol inválido. Valores permitidos: admin, encargado, operador, caja" });
+    return res.status(400).json({ message: "Rol inválido. Valores permitidos: admin, encargado, colaborador" });
   }
 
   if (data.password.length < 8) {
@@ -1833,9 +1872,9 @@ app.put("/usuarios/:id", async (req, res) => {
     return res.status(400).json({ message: "Nombre, usuario y rol son obligatorios" });
   }
 
-  const ROLES_VALIDOS_PUT = ["admin", "encargado", "operador", "caja"];
+  const ROLES_VALIDOS_PUT = ["admin", "encargado", "colaborador"];
   if (!ROLES_VALIDOS_PUT.includes(data.rol)) {
-    return res.status(400).json({ message: "Rol inválido. Valores permitidos: admin, encargado, operador, caja" });
+    return res.status(400).json({ message: "Rol inválido. Valores permitidos: admin, encargado, colaborador" });
   }
 
   try {

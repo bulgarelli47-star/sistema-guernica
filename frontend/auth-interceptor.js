@@ -86,7 +86,8 @@
     const user = getUser();
     const nombre = user.nombre || user.usuario || "Usuario";
     const rol = String(user.rol || "").toLowerCase();
-    const rolLabel = { admin: "Dueño", encargado: "Encargado", operador: "Colaborador", caja: "Caja" }[rol] || rol;
+    const rolNormalizado = { operador: "colaborador", caja: "colaborador", cajero: "colaborador" }[rol] || rol;
+    const rolLabel = { admin: "Dueño", encargado: "Encargado", colaborador: "Colaborador" }[rolNormalizado] || rolNormalizado;
     const inicial = nombre.charAt(0).toUpperCase();
 
     const avatar = userBox.querySelector(".avatar");
@@ -111,3 +112,4 @@
     }
   });
 })();
+
