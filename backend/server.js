@@ -110,7 +110,7 @@ function requireServerPermissions(req, res, next) {
   const pathname = req.path;
   const esLectura = method === "GET";
 
-  if (pathname.startsWith("/admin") || pathname === "/test-producto") {
+  if (pathname.startsWith("/admin")) {
     if (!puedeRol(req, ROLES.ADMIN)) return res.status(403).json({ message: "No tenes permisos para esta accion" });
     return next();
   }
@@ -5519,24 +5519,6 @@ app.put("/configuracion", async (req, res) => {
     logError("Error al guardar configuracion:", error);
     return res.status(500).json({ message: "Error al guardar configuracion" });
   }
-});
-
-// Producto de prueba
-app.get("/test-producto", (req, res) => {
-  db.run(
-    `INSERT INTO productos
-    (nombre, categoria, precio_compra, precio_venta, stock, maneja_stock, proveedor_principal, activo)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ["Producto Prueba", "Test", 100, 200, 5, 1, "Proveedor Test", 1],
-    function (err) {
-      if (err) {
-        logError("Error test-producto", err);
-        return res.status(500).send("Error al insertar producto de prueba");
-      }
-
-      return res.send(`Producto de prueba insertado con ID ${this.lastID}`);
-    }
-  );
 });
 
 Promise.all([
