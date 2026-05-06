@@ -1,4 +1,5 @@
 const fs = require("fs");
+const net = require("net");
 const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
@@ -28,12 +29,42 @@ async function prepareDb(dbPath, statements) {
   }
 }
 
+function resetOperationalDataStatements() {
+  return [
+    ["DELETE FROM caja_arqueos"],
+    ["DELETE FROM caja_movimientos"],
+    ["DELETE FROM caja_aperturas"],
+    ["DELETE FROM pagos_cuenta_corriente"],
+    ["DELETE FROM detalle_ventas"],
+    ["DELETE FROM ventas"],
+    ["DELETE FROM pagos"],
+    ["UPDATE productos SET stock = 80, precio_venta = 100, costo_final = 50, precio_compra = 50 WHERE id = 11"],
+    [
+      `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)
+       VALUES ('autorizacion_clave_maestra', '"1234"', 'usuarios_permisos', datetime('now'))
+       ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, seccion = excluded.seccion, actualizado_en = excluded.actualizado_en`
+    ]
+  ];
+}
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const port = server.address().port;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
 async function waitForServer(baseUrl) {
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 80; i++) {
     try {
       const response = await fetch(`${baseUrl}/login`);
       if (response.ok) return;
@@ -44,7 +75,7 @@ async function waitForServer(baseUrl) {
 }
 
 async function withServer(dbPath, fn) {
-  const port = 3200 + Math.floor(Math.random() * 1000);
+  const port = await getFreePort();
   const baseUrl = `http://localhost:${port}`;
   const child = spawn(process.execPath, ["backend/server.js"], {
     cwd: ROOT,
@@ -59,9 +90,19 @@ async function withServer(dbPath, fn) {
   try {
     await waitForServer(baseUrl);
     await fn(baseUrl);
+  } catch (error) {
+    error.message = `${error.message}\nServidor test pid=${child.pid} port=${port}\n${logs}`;
+    throw error;
   } finally {
-    child.kill();
-    await delay(200);
+    if (!child.killed) child.kill("SIGTERM");
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 1000);
+      child.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    if (child.exitCode === null && !child.killed) child.kill("SIGKILL");
   }
 
   if (child.exitCode && child.exitCode !== 0) {
@@ -95,6 +136,45 @@ async function getProduct(baseUrl, token, id) {
   const { response, data } = await requestJson(baseUrl, "GET", "/productos", null, token);
   if (!response.ok) throw new Error(`No se pudo listar productos: ${response.status}`);
   return data.find((producto) => Number(producto.id) === Number(id));
+}
+
+async function getVentas(baseUrl, token) {
+  const { response, data } = await requestJson(baseUrl, "GET", "/ventas", null, token);
+  if (!response.ok) throw new Error(`No se pudo listar ventas: ${response.status}`);
+  return data;
+}
+
+async function getCajaResumen(baseUrl, token) {
+  const { response, data } = await requestJson(baseUrl, "GET", "/caja/resumen", null, token);
+  if (!response.ok) throw new Error(`No se pudo obtener caja/resumen: ${response.status}`);
+  return data;
+}
+
+async function abrirCaja(baseUrl, token, montoApertura = 1000) {
+  const result = await requestJson(baseUrl, "POST", "/caja/apertura", {
+    monto_apertura: montoApertura,
+    saldo_inicial_mp: 0,
+    usuario: "test"
+  }, token);
+  if (!result.response.ok) {
+    throw new Error(`No se pudo abrir caja: ${result.data?.message || result.response.status}`);
+  }
+  return result.data.apertura;
+}
+
+function ventaSimplePayload(overrides = {}) {
+  return {
+    usuario: "test",
+    tipo: "normal",
+    tipo_cobro: "efectivo",
+    items: [{
+      producto_id: 11,
+      nombre_producto: "Coca Cola 1250",
+      cantidad: 2,
+      precio_unitario: 100
+    }],
+    ...overrides
+  };
 }
 
 function assertEqual(actual, expected, message) {
@@ -200,11 +280,105 @@ async function testPermisosOperador() {
   }
 }
 
+async function testVentaContadoImpactaStockYCaja() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!venta.response.ok) throw new Error(`Venta contado fallo: ${venta.data?.message || venta.response.status}`);
+      assertEqual(venta.data.total, 200, "La venta contado debe totalizar 200");
+      assertEqual((await getProduct(baseUrl, token, 11)).stock, 78, "La venta contado debe descontar stock");
+
+      const resumen = await getCajaResumen(baseUrl, token);
+      assertEqual(resumen.resumen.total_efectivo, 200, "La caja debe sumar efectivo de venta contado");
+      assertEqual(resumen.resumen.total_ventas, 200, "La caja debe sumar total de ventas");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testPendienteNoImpactaCajaHastaCobro() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const pendiente = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo: "pendiente",
+        identificador_pendiente: "Mesa Test",
+        tipo_cobro: undefined
+      }), token);
+      if (!pendiente.response.ok) throw new Error(`Ticket pendiente fallo: ${pendiente.data?.message || pendiente.response.status}`);
+      assertEqual((await getProduct(baseUrl, token, 11)).stock, 78, "El pendiente debe reservar/descontar stock");
+
+      const resumenAntes = await getCajaResumen(baseUrl, token);
+      assertEqual(resumenAntes.resumen.total_ventas, 0, "El pendiente sin cobrar no debe impactar ventas de caja");
+      assertEqual(resumenAntes.resumen.total_efectivo, 0, "El pendiente sin cobrar no debe impactar efectivo");
+
+      const cobro = await requestJson(baseUrl, "POST", `/ventas/${pendiente.data.venta_id}/cobrar`, {
+        tipo_cobro: "efectivo"
+      }, token);
+      if (!cobro.response.ok) throw new Error(`Cobro pendiente fallo: ${cobro.data?.message || cobro.response.status}`);
+
+      const resumenDespues = await getCajaResumen(baseUrl, token);
+      assertEqual(resumenDespues.resumen.total_ventas, 200, "El pendiente cobrado debe impactar ventas de caja");
+      assertEqual(resumenDespues.resumen.total_efectivo, 200, "El pendiente cobrado debe impactar efectivo");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAnularVentaCobradaReponeStock() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!venta.response.ok) throw new Error(`Venta para anular fallo: ${venta.data?.message || venta.response.status}`);
+      assertEqual((await getProduct(baseUrl, token, 11)).stock, 78, "La venta debe descontar stock antes de anular");
+
+      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${venta.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anulacion.response.ok) throw new Error(`Anulacion cobrada fallo: ${anulacion.data?.message || anulacion.response.status}`);
+      assertEqual((await getProduct(baseUrl, token, 11)).stock, 80, "La anulacion cobrada debe reponer stock");
+
+      const ventas = await getVentas(baseUrl, token);
+      const ventaAnulada = ventas.find((item) => Number(item.id) === Number(venta.data.venta_id));
+      if (ventaAnulada?.estado !== "anulado") {
+        throw new Error(`La venta anulada debe quedar en estado anulado. Estado=${ventaAnulada?.estado}`);
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 (async () => {
   await testBatchManual();
   await testBatchComoComponente();
   await testPermisosOperador();
-  console.log("OK stock batch counter y permisos basicos");
+  await testVentaContadoImpactaStockYCaja();
+  await testPendienteNoImpactaCajaHastaCobro();
+  await testAnularVentaCobradaReponeStock();
+  console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
   console.error(error.message);
   process.exit(1);
