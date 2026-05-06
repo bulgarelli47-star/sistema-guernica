@@ -78,7 +78,85 @@ async function requireAuth(req, res, next) {
 
 app.use(requireAuth);
 
-const dbPath = path.join(__dirname, "../database/guernica.db");
+const ROLES = {
+  ADMIN: new Set(["admin"]),
+  ADMIN_ENCARGADO: new Set(["admin", "encargado"]),
+  CAJA: new Set(["admin", "encargado", "caja"]),
+  TODOS: new Set(["admin", "encargado", "operador", "caja"])
+};
+
+function normalizarRol(rol) {
+  return String(rol || "").trim().toLowerCase().replace(/\s+/g, "_");
+}
+
+function puedeRol(req, roles) {
+  return roles.has(normalizarRol(req.usuario?.rol));
+}
+
+function esUsuarioPropio(req, pathname) {
+  const match = pathname.match(/^\/usuarios\/(\d+)\//);
+  return Number(match?.[1] || 0) === Number(req.usuario?.id || 0);
+}
+
+function endpointUsuarioPropio(pathname) {
+  return /^\/usuarios\/\d+\/(perfil|password)$/.test(pathname);
+}
+
+function requireServerPermissions(req, res, next) {
+  if (RUTAS_PUBLICAS.has(req.path)) return next();
+  if (!req.usuario) return next();
+
+  const method = req.method.toUpperCase();
+  const pathname = req.path;
+  const esLectura = method === "GET";
+
+  if (pathname.startsWith("/admin") || pathname === "/test-producto") {
+    if (!puedeRol(req, ROLES.ADMIN)) return res.status(403).json({ message: "No tenes permisos para esta accion" });
+    return next();
+  }
+
+  if (pathname.startsWith("/usuarios")) {
+    if (pathname === "/usuarios/foto") return next();
+    if (endpointUsuarioPropio(pathname) && (puedeRol(req, ROLES.ADMIN) || esUsuarioPropio(req, pathname))) return next();
+    if (!puedeRol(req, ROLES.ADMIN)) return res.status(403).json({ message: "No tenes permisos para administrar usuarios" });
+    return next();
+  }
+
+  if (pathname.startsWith("/configuracion")) {
+    if (esLectura) return next();
+    if (!puedeRol(req, ROLES.ADMIN)) return res.status(403).json({ message: "No tenes permisos para modificar configuracion" });
+    return next();
+  }
+
+  if (
+    pathname.startsWith("/productos")
+    || pathname.startsWith("/productos_compuestos")
+    || pathname.startsWith("/categorias")
+  ) {
+    if (esLectura) return next();
+    if (!puedeRol(req, ROLES.ADMIN_ENCARGADO)) return res.status(403).json({ message: "No tenes permisos para modificar stock" });
+    return next();
+  }
+
+  if (pathname.startsWith("/proveedores") || pathname.startsWith("/pagos")) {
+    if (esLectura) return next();
+    if (!puedeRol(req, ROLES.ADMIN_ENCARGADO)) return res.status(403).json({ message: "No tenes permisos para esta accion" });
+    return next();
+  }
+
+  if (pathname.startsWith("/caja")) {
+    if (!puedeRol(req, ROLES.CAJA)) return res.status(403).json({ message: "No tenes permisos para caja" });
+    return next();
+  }
+
+  return next();
+}
+
+app.use(requireServerPermissions);
+
+const dbPath = process.env.GUERNICA_DB_PATH
+  ? path.resolve(process.env.GUERNICA_DB_PATH)
+  : path.join(__dirname, "../database/guernica.db");
 const db = new sqlite3.Database(dbPath);
 
 async function ensureCajaMovimientosTable() {
@@ -1286,18 +1364,25 @@ async function replaceVentaDetalle(ventaId, items) {
   }
 }
 
-async function descontarStockPropioProducto(productoId, producto, deltaCantidad) {
+async function descontarStockPropioProducto(productoId, producto, deltaCantidad, comoComponente = false) {
   if (Number(producto.maneja_stock) !== 1) {
     return;
   }
 
-  const costos = await normalizarInsumosCostos(await allQuery(
-    "SELECT * FROM producto_costos_insumos WHERE producto_id = ? ORDER BY id ASC",
-    [productoId]
-  ));
-  const cantidadDescontar = costos.length
-    ? costos.reduce((acc, item) => acc + Number(item.cantidad_usada || 0), 0) * Number(deltaCantidad || 0)
-    : Number(deltaCantidad || 0);
+  let cantidadDescontar;
+  if (comoComponente) {
+    // Cuando es ingrediente de una receta, el delta ya viene en unidades correctas
+    // NO aplicar el multiplicador de fracciones (cantidad_usada) — evita over-consumo en productos gr/ml
+    cantidadDescontar = Number(deltaCantidad || 0);
+  } else {
+    const costos = await normalizarInsumosCostos(await allQuery(
+      "SELECT * FROM producto_costos_insumos WHERE producto_id = ? ORDER BY id ASC",
+      [productoId]
+    ));
+    cantidadDescontar = costos.length
+      ? costos.reduce((acc, item) => acc + Number(item.cantidad_usada || 0), 0) * Number(deltaCantidad || 0)
+      : Number(deltaCantidad || 0);
+  }
 
   const stockAnterior = Number(producto.stock || 0);
   const stockNuevo = stockAnterior - cantidadDescontar;
@@ -1344,7 +1429,7 @@ async function applyStockChange(productoId, deltaCantidad, options = {}) {
   if (esProductoReceta(producto)) {
     // Modo pre-armado: tiene stock propio → descuenta de sí mismo como producto simple
     if (Number(producto.maneja_stock) === 1) {
-      await descontarStockPropioProducto(productoId, producto, deltaCantidad);
+      await descontarStockPropioProducto(productoId, producto, deltaCantidad, options.comoComponente || false);
       return;
     }
 
@@ -1353,7 +1438,7 @@ async function applyStockChange(productoId, deltaCantidad, options = {}) {
     // Modo batch counter: sin stock propio pero con rendimiento > 1
     // El campo stock actúa como contador. Cuando llega a 0 consume ingredientes y reinicia.
     if (rendimiento > 1) {
-      let contador = Number(producto.stock || rendimiento) - Number(deltaCantidad);
+      let contador = Number(producto.stock ?? rendimiento) - Number(deltaCantidad);
       let batchesConsumidos = 0;
       while (contador <= 0) {
         batchesConsumidos++;
@@ -1401,7 +1486,7 @@ async function applyStockChange(productoId, deltaCantidad, options = {}) {
     return;
   }
 
-  await descontarStockPropioProducto(productoId, producto, deltaCantidad);
+  await descontarStockPropioProducto(productoId, producto, deltaCantidad, options.comoComponente || false);
 }
 
 async function applyStockForNewItems(items) {
@@ -2966,28 +3051,78 @@ app.post("/productos/:id/movimientos-stock", async (req, res) => {
     const esIngreso = tiposPositivos.includes(tipoMovimiento.toLowerCase());
     const stockNuevo = esIngreso ? stockAnterior + cantidad : stockAnterior - cantidad;
 
+    // Para batch counter: si el egreso lo deja en <= 0, activar replenishment automático
+    let stockFinal = stockNuevo;
+    let batchesReponer = 0;
+    if (esBatch && !esIngreso && stockNuevo <= 0) {
+      const rendimiento = Number(producto.rendimiento_receta);
+      let restante = stockNuevo;
+      while (restante <= 0) {
+        batchesReponer++;
+        restante += rendimiento;
+      }
+      stockFinal = restante;
+    }
+
     await runQuery("BEGIN TRANSACTION");
     await runQuery(
       `INSERT INTO movimientos_stock
       (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, proveedor_id, usuario, fecha, hora)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [productoId, tipoMovimiento, cantidad, stockAnterior, stockNuevo, motivo, proveedorId, usuario, fecha, hora]
+      [productoId, tipoMovimiento, cantidad, stockAnterior, stockFinal, motivo, proveedorId, usuario, fecha, hora]
     );
-    await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockNuevo, productoId]);
+    await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockFinal, productoId]);
+
+    // Batch counter: consumir ingredientes de los batches necesarios
+    if (esBatch && batchesReponer > 0) {
+      const rendimiento = Number(producto.rendimiento_receta);
+      const componentes = await getComponentesProductoCompuesto(productoId);
+      for (const comp of componentes) {
+        const consumo = Number(comp.cantidad || 0) * rendimiento * batchesReponer;
+        if (consumo <= 0) continue;
+        const ing = await getQuery("SELECT stock FROM productos WHERE id = ?", [comp.producto_id]);
+        if (ing) {
+          const nuevoStockIng = Number(ing.stock || 0) - consumo;
+          await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [nuevoStockIng, comp.producto_id]);
+          await runQuery(
+            `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
+             VALUES (?, 'egreso', ?, ?, ?, ?, ?, ?, ?)`,
+            [comp.producto_id, consumo, Number(ing.stock || 0), nuevoStockIng,
+             `Replenishment batch: ${producto.nombre} (${batchesReponer} lote/s)`, usuario, fecha, hora]
+          );
+        }
+      }
+    }
+
     // Si es receta con stock propio y es un ingreso, descontar ingredientes
     if (esCompuesto && Number(producto.maneja_stock) && esIngreso) {
       const componentes = await getComponentesProductoCompuesto(productoId);
       for (const comp of componentes) {
         const consumo = cantidad * Number(comp.cantidad);
-        const ing = await getQuery("SELECT stock FROM productos WHERE id = ?", [comp.producto_id]);
-        if (ing) {
-          const nuevoStockIng = Math.max(0, Number(ing.stock || 0) - consumo);
-          await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [nuevoStockIng, comp.producto_id]);
-          await runQuery(
-            `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
-             VALUES (?, 'egreso', ?, ?, ?, ?, ?, ?, ?)`,
-            [comp.producto_id, consumo, Number(ing.stock || 0), nuevoStockIng, `Consumo receta: ${producto.nombre}`, usuario, fecha, hora]
-          );
+        // Para batch counters: usar applyStockChange (dispara replenishment si llega a 0)
+        // Para el resto: descuento directo (evita doble-multiplicación de fracciones gr/ml)
+        const compProd = await getQuery(
+          "SELECT tipo, maneja_stock, rendimiento_receta FROM productos WHERE id = ?",
+          [comp.producto_id]
+        );
+        const esCompBatch = compProd
+          && normalizarTipoProducto(compProd.tipo) === "compuesto"
+          && !Number(compProd.maneja_stock)
+          && Number(compProd.rendimiento_receta || 1) > 1;
+
+        if (esCompBatch) {
+          await applyStockChange(comp.producto_id, consumo);
+        } else {
+          const ing = await getQuery("SELECT stock FROM productos WHERE id = ?", [comp.producto_id]);
+          if (ing) {
+            const nuevoStockIng = Math.max(0, Number(ing.stock || 0) - consumo);
+            await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [nuevoStockIng, comp.producto_id]);
+            await runQuery(
+              `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
+               VALUES (?, 'egreso', ?, ?, ?, ?, ?, ?, ?)`,
+              [comp.producto_id, consumo, Number(ing.stock || 0), nuevoStockIng, `Consumo receta: ${producto.nombre}`, usuario, fecha, hora]
+            );
+          }
         }
       }
     }

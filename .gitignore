@@ -5,6 +5,7 @@ node_modules/
 database/*.db
 database/*.db-shm
 database/*.db-wal
+backups/
 
 # Imágenes subidas por usuarios
 uploads/
