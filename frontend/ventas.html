@@ -1704,6 +1704,10 @@
     let configVentas = {};
     const CONSUMIDOR_FINAL_ID = "1";
 
+    function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[raw]||raw}
+    function permisosAcciones(){const raw=configVentas?.permisos_acciones_roles||{};if(typeof raw==="string"){try{return JSON.parse(raw)}catch{return {}}}return raw||{}}
+    function puedeAccion(accion){const rol=rolActual();const permisos=permisosAcciones();const valor=permisos?.[accion]?.[rol];if(valor!==undefined)return valor===true||valor==="true"||valor===1||valor==="1";if(rol==="admin")return true;if(rol==="encargado")return !["usuarios","configuracion"].includes(accion);return ["ver_stock","caja","editar_ticket"].includes(accion)}
+
     function mostrarMensaje(texto, esError = false, opciones = {}) {
       const textoNormalizado = String(texto || "").toLowerCase();
       const debeNotificar = [
@@ -3008,6 +3012,10 @@
     const modalAnularClave = document.getElementById("modalAnularClave");
 
     function anularPendiente(ventaId) {
+      if (!puedeAccion("anular_ticket")) {
+        mostrarMensaje("No tenés permisos para anular tickets", true, { notificar: true });
+        return;
+      }
       if (!window.confirm("¿Seguro que querés anular este ticket pendiente?")) return;
       _ventaParaAnular = ventaId;
       document.getElementById("anularClaveInput").value = "";
@@ -3076,6 +3084,9 @@
       lista.forEach((venta) => {
         const bloque = document.createElement("div");
         bloque.className = "pending-card";
+        const botonAnularHtml = puedeAccion("anular_ticket")
+          ? '<button type="button" class="button danger" data-anular-pendiente>Anular</button>'
+          : '';
         bloque.innerHTML = `
           <div class="pending-top">
             <div>
@@ -3086,17 +3097,18 @@
           <div class="pending-controls">
             <div class="muted">Abrilo para editarlo y elegir el cobro en el ticket.</div>
             <button type="button" class="button secondary" title="Ver ticket" aria-label="Ver ticket"><span class="app-icon icon-view" aria-hidden="true"></span></button>
-            <button type="button" class="button danger">Anular</button>
+            ${botonAnularHtml}
           </div>
         `;
 
-        const [botonAbrir, botonAnular] = bloque.querySelectorAll("button");
+        const botonAbrir = bloque.querySelector("button");
+        const botonAnular = bloque.querySelector("[data-anular-pendiente]");
 
         botonAbrir.addEventListener("click", function () {
           abrirPendiente(Number(venta.id));
         });
 
-        botonAnular.addEventListener("click", function () {
+        botonAnular?.addEventListener("click", function () {
           anularPendiente(Number(venta.id));
         });
 
@@ -3431,11 +3443,12 @@
     actualizarEstadoEditor();
     actualizarAccionesTicket();
     actualizarCobroNormalUI();
-    cargarConfiguracionVentas();
     cargarClientes();
-    cargarProductos();
-    cargarPendientes();
-    cargarHistorialAnulados();
+    cargarConfiguracionVentas().finally(() => {
+      cargarProductos();
+      cargarPendientes();
+      cargarHistorialAnulados();
+    });
     window.setTimeout(() => {
       const pendingId = sessionStorage.getItem("guernicaOpenPendingId");
       if (pendingId) {
@@ -3449,6 +3462,3 @@
   <script src="/user-menu.js?v=7" defer></script>
 </body>
 </html>
-
-
-

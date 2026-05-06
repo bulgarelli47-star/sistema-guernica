@@ -8,12 +8,107 @@ const crypto = require("crypto");
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const AUTHORIZATION_CANCEL_CODE = "0000"; // fallback solo si la DB no tiene clave configurada
+
+const ROLES_PERMISOS = ["admin", "encargado", "colaborador"];
+const PERMISOS_ACCIONES_DEFAULTS = {
+  ventas_editar_ticket: { admin: true, encargado: true, colaborador: true },
+  ventas_anular_ticket: { admin: true, encargado: true, colaborador: false },
+  ventas_eliminar_pendiente: { admin: true, encargado: true, colaborador: false },
+  stock_ver: { admin: true, encargado: true, colaborador: true },
+  stock_crear_producto: { admin: true, encargado: true, colaborador: false },
+  stock_editar_producto: { admin: true, encargado: true, colaborador: false },
+  stock_ajustar: { admin: true, encargado: true, colaborador: false },
+  stock_eliminar_producto: { admin: true, encargado: false, colaborador: false },
+  stock_ver_costos: { admin: true, encargado: true, colaborador: false },
+  caja_abrir: { admin: true, encargado: true, colaborador: true },
+  caja_cerrar: { admin: true, encargado: true, colaborador: false },
+  caja_registrar_arqueo: { admin: true, encargado: true, colaborador: true },
+  caja_movimientos: { admin: true, encargado: true, colaborador: true },
+  pagos_crear: { admin: true, encargado: true, colaborador: false },
+  pagos_editar: { admin: true, encargado: true, colaborador: false },
+  pagos_eliminar: { admin: true, encargado: false, colaborador: false },
+  admin_usuarios: { admin: true, encargado: false, colaborador: false },
+  admin_configuracion: { admin: true, encargado: false, colaborador: false },
+  // Deprecated: mantener por compatibilidad hasta migrar la UI/configuracion.
+  ver_stock: { admin: true, encargado: true, colaborador: true },
+  sumar_stock: { admin: true, encargado: true, colaborador: false },
+  ver_acciones: { admin: true, encargado: true, colaborador: false },
+  ver_costos: { admin: true, encargado: true, colaborador: false },
+  anular_ticket: { admin: true, encargado: true, colaborador: false },
+  editar_ticket: { admin: true, encargado: true, colaborador: true },
+  registros: { admin: true, encargado: true, colaborador: false },
+  caja: { admin: true, encargado: true, colaborador: true }
+};
+
+const PERMISOS_LEGACY_ALIASES = {
+  stock_ver: ["ver_stock"],
+  stock_ajustar: ["sumar_stock"],
+  stock_ver_costos: ["ver_costos"],
+  ventas_anular_ticket: ["anular_ticket"],
+  ventas_editar_ticket: ["editar_ticket"],
+  ventas_eliminar_pendiente: ["anular_ticket"],
+  caja_movimientos: ["registros", "caja"],
+  caja_abrir: ["caja"],
+  caja_cerrar: ["caja"],
+  caja_registrar_arqueo: ["registros", "caja"]
+};
+const PERMISOS_ACCIONES_COMPAT = {
+  ver_stock: "stock_ver",
+  sumar_stock: "stock_ajustar",
+  ver_costos: "stock_ver_costos",
+  anular_ticket: "ventas_anular_ticket",
+  editar_ticket: "ventas_editar_ticket",
+  registros: "caja_movimientos",
+  caja: "caja_movimientos",
+  crear_producto: "stock_crear_producto",
+  editar_producto: "stock_editar_producto",
+  ajustar_stock: "stock_ajustar",
+  eliminar_producto: "stock_eliminar_producto",
+  abrir_caja: "caja_abrir",
+  cerrar_caja: "caja_cerrar",
+  registrar_arqueo: "caja_registrar_arqueo",
+  movimientos_caja: "caja_movimientos",
+  crear_pago: "pagos_crear",
+  editar_pago: "pagos_editar",
+  eliminar_pago: "pagos_eliminar",
+  usuarios: "admin_usuarios",
+  configuracion: "admin_configuracion"
+};
+
 async function getClaveAutorizacion() {
   try {
     const row = await getQuery("SELECT valor FROM configuracion_global WHERE clave = 'autorizacion_clave_maestra'");
     const val = String(parsearConfigValor(row?.valor) || "").trim();
     return val || AUTHORIZATION_CANCEL_CODE;
   } catch { return AUTHORIZATION_CANCEL_CODE; }
+}
+
+function configBool(value) {
+  return value === true || value === "true" || value === 1 || value === "1";
+}
+
+async function tienePermisoAccion(req, accion) {
+  if (!req.usuario) return true;
+  const rol = normalizarRol(req.usuario.rol);
+  const accionNormalizada = PERMISOS_ACCIONES_COMPAT[accion] || accion;
+  const accionConocida = Object.prototype.hasOwnProperty.call(PERMISOS_ACCIONES_DEFAULTS, accionNormalizada);
+  if (!accionConocida) return false;
+  if (rol === "admin") return true;
+  const config = await getConfiguracionGlobal();
+  const permisos = config.permisos_acciones_roles || {};
+  const valor = permisos?.[accionNormalizada]?.[rol];
+  if (valor !== undefined) return configBool(valor);
+  return configBool(PERMISOS_ACCIONES_DEFAULTS?.[accionNormalizada]?.[rol]);
+}
+
+async function puedeAccionUsuario(req, accion) {
+  return tienePermisoAccion(req, accion);
+}
+
+async function requirePermiso(req, res, accion, mensaje) {
+  if (await tienePermisoAccion(req, accion)) return true;
+  res.status(403).json({ message: mensaje || "No tenes permisos para esta accion" });
+  return false;
 }
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_LOCK_MS = 10 * 60 * 1000;
@@ -103,7 +198,7 @@ function endpointUsuarioPropio(pathname) {
   return /^\/usuarios\/\d+\/(perfil|password)$/.test(pathname);
 }
 
-function requireServerPermissions(req, res, next) {
+async function requireServerPermissions(req, res, next) {
   if (RUTAS_PUBLICAS.has(req.path)) return next();
   if (!req.usuario) return next();
 
@@ -119,12 +214,14 @@ function requireServerPermissions(req, res, next) {
   if (pathname.startsWith("/usuarios")) {
     if (pathname === "/usuarios/foto") return next();
     if (endpointUsuarioPropio(pathname) && (puedeRol(req, ROLES.ADMIN) || esUsuarioPropio(req, pathname))) return next();
+    if (!(await tienePermisoAccion(req, "admin_usuarios"))) return res.status(403).json({ message: "No tenes permisos para administrar usuarios" });
     if (!puedeRol(req, ROLES.ADMIN)) return res.status(403).json({ message: "No tenes permisos para administrar usuarios" });
     return next();
   }
 
   if (pathname.startsWith("/configuracion")) {
     if (esLectura) return next();
+    if (!(await tienePermisoAccion(req, "admin_configuracion"))) return res.status(403).json({ message: "No tenes permisos para modificar configuracion" });
     if (!puedeRol(req, ROLES.ADMIN)) return res.status(403).json({ message: "No tenes permisos para modificar configuracion" });
     return next();
   }
@@ -446,7 +543,7 @@ const CONFIGURACION_DEFAULTS = {
   permiso_ver_costos: { seccion: "usuarios_permisos", valor: "admin" },
   permiso_cierre_caja: { seccion: "usuarios_permisos", valor: "admin" },
   permiso_eliminar_registros: { seccion: "usuarios_permisos", valor: "admin" },
-  permisos_acciones_roles: { seccion: "usuarios_permisos", valor: '{"ver_stock":{"admin":true,"encargado":true,"colaborador":true},"sumar_stock":{"admin":true,"encargado":true,"colaborador":false},"ver_acciones":{"admin":true,"encargado":true,"colaborador":false},"ver_costos":{"admin":true,"encargado":true,"colaborador":false},"caja":{"admin":true,"encargado":true,"colaborador":true},"registros":{"admin":true,"encargado":true,"colaborador":false},"anular_ticket":{"admin":true,"encargado":true,"colaborador":false},"editar_ticket":{"admin":true,"encargado":true,"colaborador":true}}' },
+  permisos_acciones_roles: { seccion: "usuarios_permisos", valor: JSON.stringify(PERMISOS_ACCIONES_DEFAULTS) },
   modulo_inicio_admin: { seccion: "usuarios_permisos", valor: true },
   modulo_ventas_admin: { seccion: "usuarios_permisos", valor: true },
   modulo_caja_admin: { seccion: "usuarios_permisos", valor: true },
@@ -544,17 +641,35 @@ function parsearConfigValor(valor) {
   }
 }
 
+function getPermisoConfig(permisos, accion) {
+  return permisos?.[accion] || {};
+}
+
 function normalizarPermisosAccionesRoles(permisos) {
   const parsed = typeof permisos === "string" ? parsearConfigValor(permisos) : permisos;
-  const defaults = parsearConfigValor(CONFIGURACION_DEFAULTS.permisos_acciones_roles.valor);
+  const defaults = parsearConfigValor(CONFIGURACION_DEFAULTS.permisos_acciones_roles.valor) || {};
   const resultado = {};
 
   Object.keys(defaults).forEach((accion) => {
+    const actual = getPermisoConfig(parsed, accion);
+    const aliasesLegacy = PERMISOS_LEGACY_ALIASES[accion] || [];
+    resultado[accion] = {
+      admin: actual.admin ?? aliasesLegacy.map((alias) => getPermisoConfig(parsed, alias).admin).find((valor) => valor !== undefined) ?? defaults[accion].admin ?? false,
+      encargado: actual.encargado ?? aliasesLegacy.map((alias) => getPermisoConfig(parsed, alias).encargado).find((valor) => valor !== undefined) ?? defaults[accion].encargado ?? false,
+      colaborador: actual.colaborador ?? aliasesLegacy.map((alias) => getPermisoConfig(parsed, alias).colaborador).find((valor) => valor !== undefined) ?? Boolean(actual.operador || actual.caja || aliasesLegacy.some((alias) => {
+        const legacy = getPermisoConfig(parsed, alias);
+        return legacy.operador || legacy.caja;
+      }) || defaults[accion].colaborador)
+    };
+  });
+
+  Object.keys(parsed || {}).forEach((accion) => {
+    if (resultado[accion]) return;
     const actual = parsed?.[accion] || {};
     resultado[accion] = {
-      admin: actual.admin ?? defaults[accion].admin ?? false,
-      encargado: actual.encargado ?? defaults[accion].encargado ?? false,
-      colaborador: actual.colaborador ?? Boolean(actual.operador || actual.caja || defaults[accion].colaborador)
+      admin: actual.admin ?? false,
+      encargado: actual.encargado ?? false,
+      colaborador: actual.colaborador ?? Boolean(actual.operador || actual.caja)
     };
   });
 
@@ -2082,6 +2197,8 @@ app.post("/productos/imagen", async (req, res) => {
 
 // Crear producto
 app.post("/productos", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_crear_producto", "No tenes permisos para crear productos"))) return;
+
   const {
     nombre,
     categoria,
@@ -2366,6 +2483,8 @@ app.get("/productos", async (req, res) => {
 
 // Editar producto
 app.put("/productos/:id", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar productos"))) return;
+
   const productoId = Number(req.params.id);
   const {
     nombre,
@@ -2533,6 +2652,8 @@ app.put("/productos/:id", async (req, res) => {
 });
 
 app.patch("/productos/:id/inactivar", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_eliminar_producto", "No tenes permisos para eliminar productos"))) return;
+
   const productoId = Number(req.params.id);
 
   try {
@@ -2553,6 +2674,8 @@ app.patch("/productos/:id/inactivar", async (req, res) => {
 });
 
 app.patch("/productos/:id/combo", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar productos"))) return;
+
   const productoId = Number(req.params.id);
   const aplicaParaCombo = req.body?.aplica_para_combo ? 1 : 0;
 
@@ -2641,6 +2764,8 @@ app.post("/admin/combo-aplicar", async (req, res) => {
 });
 
 app.post("/productos_compuestos", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_crear_producto", "No tenes permisos para crear productos"))) return;
+
   const {
     nombre,
     categoria,
@@ -2791,6 +2916,8 @@ app.get("/productos_compuestos/:id/stock_disponible", async (req, res) => {
 });
 
 app.patch("/productos/aumento-masivo", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar productos"))) return;
+
   const proveedorId = req.body?.proveedor_id ? Number(req.body.proveedor_id) : null;
   const categoriaId = req.body?.categoria_id ? Number(req.body.categoria_id) : null;
   const porcentaje = Number(req.body?.porcentaje) || 0;
@@ -2856,6 +2983,8 @@ app.patch("/productos/aumento-masivo", async (req, res) => {
 });
 
 app.patch("/productos/:id/reactivar", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar productos"))) return;
+
   const productoId = Number(req.params.id);
 
   try {
@@ -2876,6 +3005,8 @@ app.patch("/productos/:id/reactivar", async (req, res) => {
 });
 
 app.delete("/productos/:id", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_eliminar_producto", "No tenes permisos para eliminar productos"))) return;
+
   const productoId = Number(req.params.id);
 
   try {
@@ -2941,6 +3072,8 @@ app.get("/categorias", async (req, res) => {
 });
 
 app.post("/categorias", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_crear_producto", "No tenes permisos para crear categorias"))) return;
+
   const nombre = String(req.body.nombre || "").trim();
   const margen = Number(req.body.margen_porcentaje) || 0;
   const manejaStock = req.body.maneja_stock === false ? 0 : 1;
@@ -2963,6 +3096,8 @@ app.post("/categorias", async (req, res) => {
 });
 
 app.put("/categorias/:id", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar categorias"))) return;
+
   const categoriaId = Number(req.params.id);
   const nombre = String(req.body.nombre || "").trim();
   const margen = Number(req.body.margen_porcentaje) || 0;
@@ -3019,6 +3154,8 @@ app.get("/productos/:id/proveedores", async (req, res) => {
 });
 
 app.post("/productos/:id/proveedores", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar productos"))) return;
+
   const productoId = Number(req.params.id);
   const proveedorId = Number(req.body.proveedor_id) || 0;
   const precioCompra = Number(req.body.precio_compra) || 0;
@@ -3060,6 +3197,8 @@ app.post("/productos/:id/proveedores", async (req, res) => {
 });
 
 app.post("/productos/:id/movimientos-stock", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_ajustar", "No tenes permisos para ajustar stock"))) return;
+
   const productoId = Number(req.params.id);
   const tipoMovimiento = String(req.body.tipo_movimiento || "").trim();
   const cantidad = Number(req.body.cantidad) || 0;
@@ -3599,6 +3738,8 @@ app.get("/pagos", async (req, res) => {
 
 // Registrar pago
 app.post("/pagos", async (req, res) => {
+  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para registrar pagos"))) return;
+
   const proveedorId = req.body.proveedor_id ? Number(req.body.proveedor_id) : null;
   const concepto = String(req.body.concepto || "").trim();
   const montoTotal = Number(req.body.monto_total) || 0;
@@ -3713,6 +3854,8 @@ app.post("/pagos", async (req, res) => {
 
 // Editar pago — requiere clave maestra 1234. Con arqueo solo Dueño/Encargado.
 app.put("/pagos/:id", async (req, res) => {
+  if (!(await requirePermiso(req, res, "pagos_editar", "No tenes permisos para editar pagos"))) return;
+
   const pagoId = Number(req.params.id);
   const { clave, rol, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito,
           categoria_pago, comprobante, numero_comprobante, cuenta_destino, observaciones } = req.body;
@@ -3769,6 +3912,8 @@ app.put("/pagos/:id", async (req, res) => {
 
 // Eliminar pago — bloqueado si la caja está cerrada (tiene cierre registrado)
 app.delete("/pagos/:id", async (req, res) => {
+  if (!(await requirePermiso(req, res, "pagos_eliminar", "No tenes permisos para eliminar pagos"))) return;
+
   const pagoId = Number(req.params.id);
   const { clave, rol } = req.body;
 
@@ -4252,6 +4397,8 @@ app.get("/caja/apertura", async (req, res) => {
 
 // Registrar apertura de caja
 app.post("/caja/apertura", async (req, res) => {
+  if (!(await requirePermiso(req, res, "caja_abrir", "No tenes permisos para abrir caja"))) return;
+
   const montoApertura = Number(req.body.monto_apertura) || 0;
   const saldoInicialMp = Number(req.body.saldo_inicial_mp) || 0;
   const usuario = String(req.body.usuario || "admin").trim() || "admin";
@@ -4290,6 +4437,8 @@ app.post("/caja/apertura", async (req, res) => {
 });
 
 app.post("/caja/movimientos", async (req, res) => {
+  if (!(await requirePermiso(req, res, "caja_movimientos", "No tenes permisos para movimientos de caja"))) return;
+
   const tipo = String(req.body.tipo || "").trim().toLowerCase();
   const concepto = String(req.body.concepto || "").trim();
   const monto = Number(req.body.monto) || 0;
@@ -4339,6 +4488,8 @@ app.post("/caja/movimientos", async (req, res) => {
 
 // Cerrar caja
 app.post("/caja/cierre", async (req, res) => {
+  if (!(await requirePermiso(req, res, "caja_cerrar", "No tenes permisos para cerrar caja"))) return;
+
   const { fecha, hora } = getNowParts();
   const conteo = req.body.conteo || {};
   const montoCajaApertura = Number(req.body.monto_caja_apertura) || 0;
@@ -4569,6 +4720,8 @@ app.get("/caja/arqueos/:id", async (req, res) => {
 
 // Registrar arqueo de caja
 app.post("/caja/arqueos", async (req, res) => {
+  if (!(await requirePermiso(req, res, "caja_registrar_arqueo", "No tenes permisos para registrar arqueos"))) return;
+
   const { fecha, hora } = getNowParts();
   const registradoCierre = Number(req.body.registrado_cierre) === 1 ? 1 : 0;
 
@@ -4622,6 +4775,8 @@ app.post("/caja/arqueos", async (req, res) => {
 
 // Editar arqueo de caja
 app.put("/caja/arqueos/:id", async (req, res) => {
+  if (!(await requirePermiso(req, res, "caja_registrar_arqueo", "No tenes permisos para registrar arqueos"))) return;
+
   const arqueoId = Number(req.params.id);
   const registradoCierre = Number(req.body.registrado_cierre) === 1 ? 1 : 0;
 
@@ -5262,6 +5417,10 @@ app.post("/ventas/:id/anular", async (req, res) => {
   const ventaId = req.params.id;
   const authorizationCode = String(req.body.authorization_code || "").trim();
 
+  if (!(await tienePermisoAccion(req, "ventas_eliminar_pendiente"))) {
+    return res.status(403).json({ message: "No tenes permisos para eliminar tickets pendientes" });
+  }
+
   const claveActual = await getClaveAutorizacion();
   if (authorizationCode !== claveActual) {
     return res.status(403).json({ message: "Codigo de autorizacion incorrecto" });
@@ -5311,6 +5470,10 @@ app.post("/ventas/:id/anular", async (req, res) => {
 app.patch("/ventas/:id/cobro", async (req, res) => {
   const ventaId = Number(req.params.id);
 
+  if (!(await tienePermisoAccion(req, "ventas_editar_ticket"))) {
+    return res.status(403).json({ message: "No tenes permisos para editar tickets" });
+  }
+
   try {
     const venta = await getQuery("SELECT * FROM ventas WHERE id = ?", [ventaId]);
 
@@ -5346,6 +5509,10 @@ app.patch("/ventas/:id/cobro", async (req, res) => {
 app.post("/ventas/:id/anular-cobrada", async (req, res) => {
   const ventaId = Number(req.params.id);
   const authorizationCode = String(req.body.authorization_code || "").trim();
+
+  if (!(await tienePermisoAccion(req, "ventas_anular_ticket"))) {
+    return res.status(403).json({ message: "No tenes permisos para anular tickets" });
+  }
 
   const claveActual = await getClaveAutorizacion();
   if (authorizationCode !== claveActual) {
@@ -5516,6 +5683,15 @@ app.get("/configuracion", async (req, res) => {
     logError("Error al obtener configuracion:", error);
     return res.status(500).json({ message: "Error al obtener configuracion" });
   }
+});
+
+app.post("/autorizacion/validar", async (req, res) => {
+  const clave = String(req.body?.clave || "").trim();
+  const claveActual = await getClaveAutorizacion();
+  if (clave !== claveActual) {
+    return res.status(403).json({ message: "Clave maestra incorrecta" });
+  }
+  return res.json({ ok: true });
 });
 
 app.put("/configuracion", async (req, res) => {

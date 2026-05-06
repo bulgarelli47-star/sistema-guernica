@@ -22,7 +22,25 @@
       "Bash(curl -s http://localhost:3000/configuracion)",
       "PowerShell(Stop-Process -Force)",
       "Bash(node reset-data.js)",
-      "Bash(node -e \"const sqlite3=require\\('sqlite3'\\).verbose\\(\\);const db=new sqlite3.Database\\('database/guernica.db'\\);db.all\\(\\\\\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\\\\\",[],\\(e,r\\)=>{console.log\\(r.map\\(x=>x.name\\).join\\('\\\\n'\\)\\);db.close\\(\\)}\\)\")"
+      "Bash(node -e \"const sqlite3=require\\('sqlite3'\\).verbose\\(\\);const db=new sqlite3.Database\\('database/guernica.db'\\);db.all\\(\\\\\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\\\\\",[],\\(e,r\\)=>{console.log\\(r.map\\(x=>x.name\\).join\\('\\\\n'\\)\\);db.close\\(\\)}\\)\")",
+      "Bash(node --check backend/server.js)",
+      "Bash(node --check database/init-db.js)",
+      "Bash(node -e \"const d=require\\('fs'\\).readFileSync\\('/dev/stdin','utf8'\\);console.log\\(JSON.parse\\(d\\).config?'OK: servidor responde':'WARN: respuesta inesperada'\\)\")",
+      "Bash(curl -s http://localhost:3000/productos)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\bulga\\\\OneDrive\\\\Escritorio\\\\SISTEMA-GUERNICA\" -Recurse -Filter \"*.js\" -o \"*.html\" -o \"*.json\")",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(grep -E \"\\\\$\\\\{|\\\\\".*\\\\+|\\\\\\\\+\")",
+      "Bash(grep -n \"\\\\`SELECT.*\\\\${\" \"c:\\\\Users\\\\bulga\\\\OneDrive\\\\Escritorio\\\\SISTEMA-GUERNICA\\\\backend\\\\server.js\")",
+      "Bash(grep -n \"sendFile\\\\|res.send.*html\\\\|app.get.*/$\" backend/server.js)",
+      "Bash(node -e \"const sqlite3=require\\('sqlite3'\\);const db=new sqlite3.Database\\('database/guernica.db'\\);db.get\\('SELECT COUNT\\(*\\) as total FROM productos WHERE eliminado=0',[],\\(e,r\\)=>{console.log\\('Productos en BD:',r?.total\\);db.close\\(\\)}\\)\")",
+      "Bash(xargs grep *)",
+      "Bash(grep -v \":1$\")",
+      "Bash(sed -i 's/console\\\\.error\\(\\\\\\(\"Error al [^\"]*\"\\\\\\), error\\\\.message\\)/logError\\(\\\\1, error\\)/g' backend/server.js)",
+      "Bash(sed -i 's/console\\\\.error\\(\\\\\\(\"Error al [^\"]*\"\\\\\\), err\\\\.message\\)/logError\\(\\\\1, err\\)/g' backend/server.js)",
+      "Bash(node -e ' *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   }
 }
