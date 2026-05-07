@@ -65,4 +65,29 @@ async function getResumenReportes({ desde = null, hasta = null } = {}) {
   };
 }
 
-module.exports = { getResumenReportes };
+async function getProductosMasVendidos({ desde = null, hasta = null, limite = 20 } = {}) {
+  const where = ["v.estado != 'anulado'"];
+  const params = [];
+
+  if (desde) { where.push("v.fecha >= ?"); params.push(desde); }
+  if (hasta) { where.push("v.fecha <= ?"); params.push(hasta); }
+
+  params.push(Number(limite) || 20);
+
+  return allQuery(
+    `SELECT
+       dv.producto_id,
+       dv.nombre_producto              AS nombre,
+       COALESCE(SUM(dv.cantidad), 0)   AS cantidad_total,
+       COALESCE(SUM(dv.subtotal), 0)   AS total_vendido
+     FROM detalle_ventas dv
+     JOIN ventas v ON v.id = dv.venta_id
+     WHERE ${where.join(" AND ")}
+     GROUP BY dv.producto_id, dv.nombre_producto
+     ORDER BY cantidad_total DESC
+     LIMIT ?`,
+    params
+  );
+}
+
+module.exports = { getResumenReportes, getProductosMasVendidos };
