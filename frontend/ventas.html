@@ -1480,6 +1480,12 @@
                   <input type="number" id="montoDebitoNormal" class="field" placeholder="Monto débito" step="0.01" min="0" />
                 </div>
               </div>
+              <div id="cuentaCobroVentaWrap" class="hidden">
+                <label class="muted" for="cuentaCobroVenta">Cuenta / terminal</label>
+                <select id="cuentaCobroVenta" class="field">
+                  <option value="">Sin asignar</option>
+                </select>
+              </div>
             </div>
 
             <div class="divider"></div>
@@ -1654,6 +1660,8 @@
     const montoEfectivoNormal = document.getElementById("montoEfectivoNormal");
     const montoDebitoNormal = document.getElementById("montoDebitoNormal");
     const esCuentaCorriente = document.getElementById("esCuentaCorriente");
+    const cuentaCobroVenta = document.getElementById("cuentaCobroVenta");
+    const cuentaCobroVentaWrap = document.getElementById("cuentaCobroVentaWrap");
     const paymentButtons = document.getElementById("paymentButtons");
     const ticketsPendientes = document.getElementById("ticketsPendientes");
     const ticketsAnulados = document.getElementById("ticketsAnulados");
@@ -2011,6 +2019,30 @@
       vueltoCalculado.innerText = formatearNumero(vuelto);
     }
 
+    async function cargarCuentasCobroVenta(tipo, selected = "") {
+      if (!cuentaCobroVenta || !cuentaCobroVentaWrap) return;
+      cuentaCobroVenta.innerHTML = '<option value="">Sin asignar</option>';
+      cuentaCobroVentaWrap.classList.add("hidden");
+      if (!tipo || tipo === "mixto" || tipo === "cuenta_corriente") return;
+      try {
+        const res = await fetch(`/cuentas_cobro/tipo/${encodeURIComponent(tipo)}`);
+        if (!res.ok) throw new Error("fallo");
+        const cuentas = await res.json();
+        if (!Array.isArray(cuentas) || !cuentas.length) return;
+        cuentas.forEach((cuenta) => {
+          const opt = document.createElement("option");
+          opt.value = cuenta.id;
+          opt.textContent = cuenta.nombre;
+          cuentaCobroVenta.appendChild(opt);
+        });
+        cuentaCobroVenta.value = selected ? String(selected) : "";
+        cuentaCobroVentaWrap.classList.remove("hidden");
+        actualizarCobroNormalUI();
+      } catch {
+        cuentaCobroVenta.value = "";
+      }
+    }
+
     function actualizarCobroNormalUI() {
       document.querySelectorAll(".payment-button").forEach((button) => {
         const tipo = button.dataset.payment;
@@ -2025,6 +2057,7 @@
 
       montosMixtosNormal.classList.toggle("hidden", !esMixto);
       recibidoWrapper.classList.toggle("hidden", !esEfectivo);
+      cuentaCobroVentaWrap?.classList.toggle("hidden", esMixto || cuentaCorrienteActiva || cuentaCobroVenta.options.length <= 1);
 
       montoEfectivoNormal.disabled = !esMixto;
       montoDebitoNormal.disabled = !esMixto;
@@ -2078,8 +2111,10 @@
       montoDebitoNormal.value = "";
       montoRecibido.value = "";
       esCuentaCorriente.checked = false;
+      cuentaCobroVenta.value = "";
       actualizarAccionesTicket();
       actualizarCobroNormalUI();
+      cargarCuentasCobroVenta(tipoCobroNormal.value);
     }
 
     function renderizarTicket() {
@@ -2805,7 +2840,8 @@
             total,
             cobro.tipo_cobro,
             cobro.monto_efectivo,
-            cobro.monto_debito
+            cobro.monto_debito,
+            cuentaCobroVenta?.value || null
           );
           return;
         }
@@ -2820,6 +2856,7 @@
             tipo: "normal",
             estado: "registrada",
             es_cuenta_corriente: esCuentaCorriente.checked,
+            cuenta_cobro_id: cuentaCobroVenta?.value ? Number(cuentaCobroVenta.value) : null,
             ...cobro
           })
         });
@@ -2950,9 +2987,11 @@
         selectedPaymentMode = "efectivo";
         esCuentaCorriente.checked = false;
         tipoCobroNormal.value = "efectivo";
+        cuentaCobroVenta.value = "";
         renderizarTicket();
         actualizarAccionesTicket();
         actualizarCobroNormalUI();
+        cargarCuentasCobroVenta(tipoCobroNormal.value);
         actualizarEstadoEditor();
         cerrarModal(modalPendientes);
         mostrarMensaje(`Pendiente abierto: ${identificadorPendiente.value || currentPendingId}`);
@@ -2962,7 +3001,7 @@
       }
     }
 
-    async function cobrarPendiente(ventaId, totalVenta, tipoCobro, montoEfectivo = "", montoDebito = "") {
+    async function cobrarPendiente(ventaId, totalVenta, tipoCobro, montoEfectivo = "", montoDebito = "", cuentaCobroId = null) {
       try {
         const cobro = resolvePendingCobroInput(tipoCobro, montoEfectivo, montoDebito, totalVenta);
 
@@ -2979,7 +3018,8 @@
           body: JSON.stringify({
             tipo_cobro: cobro.tipo_cobro,
             monto_efectivo: cobro.monto_efectivo,
-            monto_debito: cobro.monto_debito
+            monto_debito: cobro.monto_debito,
+            cuenta_cobro_id: cuentaCobroId ? Number(cuentaCobroId) : null
           })
         });
 
@@ -3226,6 +3266,7 @@
       }
 
       actualizarCobroNormalUI();
+      cargarCuentasCobroVenta(tipoCobroNormal.value);
     }
 
     buscadorProductos.addEventListener("input", function () {
@@ -3360,6 +3401,7 @@
     montoEfectivoNormal.addEventListener("input", actualizarVuelto);
     montoDebitoNormal.addEventListener("input", actualizarVuelto);
     montoRecibido.addEventListener("input", actualizarVuelto);
+    cuentaCobroVenta?.addEventListener("change", marcarPendienteEditado);
     modalIdentificadorPendiente.addEventListener("keydown", function (event) {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -3443,6 +3485,7 @@
     actualizarEstadoEditor();
     actualizarAccionesTicket();
     actualizarCobroNormalUI();
+    cargarCuentasCobroVenta(tipoCobroNormal.value);
     cargarClientes();
     cargarConfiguracionVentas().finally(() => {
       cargarProductos();

@@ -839,6 +839,11 @@
             <input type="number" id="montoDebito" class="field" step="0.01" min="0" />
           </label>
         </div>
+        <label id="cuentaCobroPagoWrap" class="hidden">Cuenta / terminal
+          <select id="cuentaCobroPago" class="field">
+            <option value="">Sin asignar</option>
+          </select>
+        </label>
         <input type="hidden" id="comprobante" value="comprobante" />
         <input type="hidden" id="cuentaDestino" value="" />
         <input type="hidden" id="referencia" value="" />
@@ -874,6 +879,7 @@
           <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Comprobante<input class="field" id="epComprobante"></label>
           <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Nro. comprobante<input class="field" id="epNumeroComprobante"></label>
           <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Cuenta destino<input class="field" id="epCuentaDestino"></label>
+          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Cuenta / terminal<select class="field" id="epCuentaCobro"><option value="">Sin asignar</option></select></label>
           <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b;grid-column:span 2">Observaciones<textarea class="field" id="epObservaciones" style="min-height:60px;resize:vertical"></textarea></label>
         </div>
         <div id="editarPagoAviso" style="display:none;margin-top:10px;padding:10px;border-radius:10px;background:#fef3c7;color:#92400e;font-size:12px;font-weight:700"></div>
@@ -885,6 +891,7 @@
     </article>
   </div>
 
+  <script src="/kpi-visibility.js?v=1"></script>
   <script>
     const mensaje = document.getElementById("mensaje");
     const pagoModal = document.getElementById("pagoModal");
@@ -902,6 +909,8 @@
     const numeroComprobante = document.getElementById("numeroComprobante");
     const tipoPago = document.getElementById("tipoPago");
     const cuentaDestino = document.getElementById("cuentaDestino");
+    const cuentaCobroPago = document.getElementById("cuentaCobroPago");
+    const cuentaCobroPagoWrap = document.getElementById("cuentaCobroPagoWrap");
     const referencia = document.getElementById("referencia");
     const montoTotal = document.getElementById("montoTotal");
     const montoEfectivo = document.getElementById("montoEfectivo");
@@ -932,11 +941,12 @@
     let proveedoresActuales = [];
     let resumenCaja = null;
     let configPagos = {};
+    let cuentasCobroPagoActuales = [];
 
     function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[raw]||raw}
-    function puedeAdministrarPagos(){return ["admin","encargado"].includes(rolActual())}
+    function puedeAdministrarPagos(){const rol=rolActual();let p=configPagos?.permisos_acciones_roles;if(typeof p==="string"){try{p=JSON.parse(p)}catch{p=null}}if(p&&"pagos_crear" in p)return p.pagos_crear?.[rol]===true;return ["admin","encargado","colaborador"].includes(rol)}
     function aplicarPermisosPagosUI(){if(abrirPagoModal)abrirPagoModal.style.display=puedeAdministrarPagos()?"":"none"}
-    function mostrarKpisComplejos(config){const tipo=String(config?.[`dashboard_tipo_${rolActual()}`]??"").replace(/^"+|"+$/g,"").toLowerCase();const complejo=tipo ? tipo==="complejo" : ["admin","encargado"].includes(rolActual());if(kpiGrid)kpiGrid.style.display=complejo?"grid":"none"}
+    function mostrarKpisComplejos(config){const tipo=String(config?.[`dashboard_tipo_${rolActual()}`]??"").replace(/^"+|"+$/g,"").toLowerCase();const complejo=tipo ? tipo==="complejo" : ["admin","encargado"].includes(rolActual());if(window.initKpiVisibility){window.initKpiVisibility({storageKey:"guernica_kpis_pagos",enabled:complejo})}else if(kpiGrid){kpiGrid.style.display=complejo?"grid":"none"}}
     async function aplicarVisibilidadKpis(){try{const res=await fetch("/configuracion");const data=res.ok ? await res.json():{config:{}};configPagos=data.config||{};mostrarKpisComplejos(configPagos)}catch{configPagos={};mostrarKpisComplejos({})}finally{aplicarPermisosPagosUI()}}
 
     function impactoLabel(valor) {
@@ -1022,6 +1032,60 @@
         button.classList.toggle("active", button.dataset.metodoPago === metodo);
       });
       actualizarBloqueMixto();
+      cargarCuentasCobroPago(metodo);
+    }
+
+    async function cargarCuentasCobroPago(metodo, selected = "") {
+      if (!cuentaCobroPago || !cuentaCobroPagoWrap) return;
+      cuentaCobroPago.innerHTML = '<option value="">Sin asignar</option>';
+      cuentaCobroPagoWrap.classList.add("hidden");
+      cuentasCobroPagoActuales = [];
+      if (!metodo || metodo === "mixto") return;
+      try {
+        const res = await fetch(`/cuentas_cobro/tipo/${encodeURIComponent(metodo)}`);
+        if (!res.ok) throw new Error("fallo");
+        const cuentas = await res.json();
+        if (!Array.isArray(cuentas) || !cuentas.length) return;
+        cuentasCobroPagoActuales = cuentas;
+        cuentas.forEach((cuenta) => {
+          const opt = document.createElement("option");
+          opt.value = cuenta.id;
+          opt.textContent = cuenta.nombre;
+          cuentaCobroPago.appendChild(opt);
+        });
+        cuentaCobroPago.value = selected ? String(selected) : "";
+        cuentaCobroPagoWrap.classList.remove("hidden");
+      } catch {
+        cuentaCobroPago.value = "";
+      }
+    }
+
+    async function cargarCuentasCobroEdicion(tipo, selected = "") {
+      const select = document.getElementById("epCuentaCobro");
+      if (!select) return;
+      select.innerHTML = '<option value="">Sin asignar</option>';
+      if (selected) {
+        const actual = document.createElement("option");
+        actual.value = selected;
+        actual.textContent = "Cuenta actual";
+        select.appendChild(actual);
+        select.value = String(selected);
+      }
+      try {
+        const res = await fetch(`/cuentas_cobro/tipo/${encodeURIComponent(tipo || "")}`);
+        if (!res.ok) throw new Error("fallo");
+        const cuentas = await res.json();
+        if (!Array.isArray(cuentas)) return;
+        cuentas.forEach((cuenta) => {
+          const opt = document.createElement("option");
+          opt.value = cuenta.id;
+          opt.textContent = cuenta.nombre;
+          select.appendChild(opt);
+        });
+        select.value = selected ? String(selected) : "";
+      } catch {
+        select.value = "";
+      }
     }
 
     function setEstadoPago(estado) {
@@ -1188,7 +1252,7 @@
           <td>${pago.proveedor_nombre || "Sin proveedor"}</td>
           <td>${pago.comprobante || "-"} ${pago.numero_comprobante || ""}</td>
           <td>${pago.tipo_pago || "-"}</td>
-          <td>${pago.cuenta_destino || "-"}</td>
+          <td>${pago.cuenta_cobro_nombre || pago.cuenta_destino || "-"}</td>
           <td>${money(pago.monto_total)}</td>
           <td>${money(ivaFavorPago(pago))}</td>
           <td><span class="pill ${pendiente ? "pending" : ""}">${pendiente ? "Pendiente" : "Pagado"}</span></td>
@@ -1247,6 +1311,7 @@
         numero_comprobante: numeroComprobante.value.trim(),
         fecha: fechaPago.value,
         tipo_pago: tipoPago.value,
+        cuenta_cobro_id: cuentaCobroPago?.value ? Number(cuentaCobroPago.value) : null,
         cuenta_destino: cuentaDestino.value.trim(),
         referencia: referencia.value.trim(),
         monto_total: Number(montoTotal.value) || 0,
@@ -1363,6 +1428,7 @@
 
     fechaPago.value = hoyISO();
     actualizarBloqueMixto();
+    cargarCuentasCobroPago(tipoPago.value);
     aplicarVisibilidadKpis();
     cargarCaja();
     cargarProveedores();
@@ -1394,6 +1460,7 @@
       document.getElementById("epNumeroComprobante").value = pago.numero_comprobante || "";
       document.getElementById("epCuentaDestino").value = pago.cuenta_destino || "";
       document.getElementById("epObservaciones").value = pago.observaciones || "";
+      cargarCuentasCobroEdicion(pago.tipo_pago, pago.cuenta_cobro_id);
       editarPagoModal.style.display = "grid";
     }
 
@@ -1469,6 +1536,7 @@
             comprobante: document.getElementById("epComprobante").value.trim(),
             numero_comprobante: document.getElementById("epNumeroComprobante").value.trim(),
             cuenta_destino: document.getElementById("epCuentaDestino").value.trim(),
+            cuenta_cobro_id: document.getElementById("epCuentaCobro").value ? Number(document.getElementById("epCuentaCobro").value) : null,
             observaciones: document.getElementById("epObservaciones").value.trim()
           })
         });
@@ -1493,4 +1561,3 @@
   <script src="/user-menu.js?v=7" defer></script>
 </body>
 </html>
-
