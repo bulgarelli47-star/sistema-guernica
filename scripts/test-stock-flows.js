@@ -808,6 +808,249 @@ async function testPagoCalculaIvaCreditoFiscal() {
   }
 }
 
+async function testTipoPagoEfectivoPrevioTiposPago() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      const pago = await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST tipo_pago efectivo previo",
+        monto_total: 120,
+        tipo_pago: "efectivo",
+        estado: "registrado"
+      });
+
+      if (pago.tipo_pago !== "efectivo") {
+        throw new Error(`Pago efectivo debe guardar tipo_pago efectivo. Actual=${pago.tipo_pago}`);
+      }
+      assertEqual(pago.monto_efectivo, 120, "Pago efectivo debe guardar monto_efectivo");
+      assertEqual(pago.monto_debito, 0, "Pago efectivo no debe guardar monto_debito");
+
+      const resumen = await getCajaResumen(baseUrl, token);
+      assertEqual(resumen.resumen.total_pagos_efectivo, 120, "Pago efectivo debe impactar egreso efectivo en caja");
+      assertEqual(resumen.resumen.total_pagos_general, 120, "Pago efectivo debe impactar total pagos en caja");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testTipoPagoDebitoPrevioTiposPago() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      const pago = await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST tipo_pago debito previo",
+        monto_total: 230,
+        tipo_pago: "debito",
+        estado: "registrado"
+      });
+
+      if (pago.tipo_pago !== "debito") {
+        throw new Error(`Pago debito debe guardar tipo_pago debito. Actual=${pago.tipo_pago}`);
+      }
+      assertEqual(pago.monto_efectivo, 0, "Pago debito no debe guardar monto_efectivo");
+      assertEqual(pago.monto_debito, 230, "Pago debito debe guardar monto_debito");
+
+      const resumen = await getCajaResumen(baseUrl, token);
+      assertEqual(resumen.resumen.total_pagos_debito, 230, "Pago debito debe impactar egreso digital en caja");
+      assertEqual(resumen.resumen.total_pagos_general, 230, "Pago debito debe impactar total pagos en caja");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testTipoPagoTransferenciaPrevioTiposPago() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      const pago = await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST tipo_pago transferencia previo",
+        monto_total: 340,
+        tipo_pago: "transferencia",
+        estado: "registrado"
+      });
+
+      if (pago.tipo_pago !== "transferencia") {
+        throw new Error(`Pago transferencia debe guardar tipo_pago transferencia. Actual=${pago.tipo_pago}`);
+      }
+      assertEqual(pago.monto_efectivo, 0, "Pago transferencia no debe guardar monto_efectivo");
+      assertEqual(pago.monto_debito, 340, "Pago transferencia debe guardar monto_debito como campo digital actual");
+
+      const resumen = await getCajaResumen(baseUrl, token);
+      assertEqual(resumen.resumen.total_pagos_debito, 340, "Pago transferencia debe impactar egreso digital en caja");
+      assertEqual(resumen.resumen.total_pagos_general, 340, "Pago transferencia no debe romper total pagos en caja");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testTipoPagoMixtoPrevioTiposPago() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      const pago = await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST tipo_pago mixto previo",
+        monto_total: 450,
+        tipo_pago: "mixto",
+        monto_efectivo: 150,
+        monto_debito: 300,
+        estado: "registrado"
+      });
+
+      if (pago.tipo_pago !== "mixto") {
+        throw new Error(`Pago mixto debe guardar tipo_pago mixto. Actual=${pago.tipo_pago}`);
+      }
+      assertEqual(pago.monto_efectivo + pago.monto_debito, pago.monto_total, "Pago mixto debe guardar suma igual al total");
+      assertEqual(pago.monto_efectivo, 150, "Pago mixto debe guardar monto_efectivo");
+      assertEqual(pago.monto_debito, 300, "Pago mixto debe guardar monto_debito");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testTipoPagoPendientePrevioTiposPago() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      const pago = await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST tipo_pago pendiente previo",
+        monto_total: 560,
+        tipo_pago: "efectivo",
+        estado: "pendiente"
+      });
+
+      assertEqual(pago.caja_id || 0, 0, "Pago pendiente previo tipos_pago no debe tener caja_id");
+      assertEqual(pago.monto_efectivo, 0, "Pago pendiente previo tipos_pago no debe guardar monto_efectivo");
+      assertEqual(pago.monto_debito, 0, "Pago pendiente previo tipos_pago no debe guardar monto_debito");
+
+      const resumen = await getCajaResumen(baseUrl, token);
+      assertEqual(resumen.resumen.total_pagos_general, 0, "Pago pendiente previo tipos_pago no debe impactar caja");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testCierreConservaTipoPagoStringEnPagosSnapshot() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST snapshot efectivo",
+        monto_total: 100,
+        tipo_pago: "efectivo",
+        estado: "registrado"
+      });
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST snapshot debito",
+        monto_total: 200,
+        tipo_pago: "debito",
+        estado: "registrado"
+      });
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST snapshot transferencia",
+        monto_total: 300,
+        tipo_pago: "transferencia",
+        estado: "registrado"
+      });
+
+      const cierre = await cerrarCaja(baseUrl, token, 900, 900, 0);
+      const detalle = await getCierreDetalle(baseUrl, token, cierre.id);
+      const tiposSnapshot = detalle.pagos_snapshot.map((pago) => pago.tipo_cobro).sort();
+
+      if (tiposSnapshot.join(",") !== "debito,efectivo,transferencia") {
+        throw new Error(`pagos_snapshot debe conservar metodo de pago como tipo_cobro string. Actual=${JSON.stringify(detalle.pagos_snapshot)}`);
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testPagoHeredaCategoriaPagoDesdeImpactoProveedor() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedor = await crearProveedor(baseUrl, token, {
+        tipo_impacto: "inversion"
+      });
+
+      const pago = await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        categoria_pago: "costo_fijo_operativo",
+        concepto: "TEST hereda impacto proveedor",
+        monto_total: 670,
+        tipo_pago: "efectivo",
+        estado: "registrado"
+      });
+
+      if (pago.categoria_pago !== "inversion") {
+        throw new Error(`Pago debe heredar categoria_pago desde proveedor.tipo_impacto. Esperado=inversion, actual=${pago.categoria_pago}`);
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testCierreGuardaSnapshotsParseables() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -1212,6 +1455,13 @@ async function testMovimientoManualRegistraStockAnteriorYNuevo() {
   await testPagoPendienteNoImpactaCaja();
   await testPagoMixtoGuardaMontosYCaja();
   await testPagoCalculaIvaCreditoFiscal();
+  await testTipoPagoEfectivoPrevioTiposPago();
+  await testTipoPagoDebitoPrevioTiposPago();
+  await testTipoPagoTransferenciaPrevioTiposPago();
+  await testTipoPagoMixtoPrevioTiposPago();
+  await testTipoPagoPendientePrevioTiposPago();
+  await testCierreConservaTipoPagoStringEnPagosSnapshot();
+  await testPagoHeredaCategoriaPagoDesdeImpactoProveedor();
   await testCierreGuardaSnapshotsParseables();
   await testCierreInmutableAnteVentaPosterior();
   await testCierreInmutableAntePagoPosterior();
