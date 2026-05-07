@@ -680,7 +680,7 @@
       "cuentas-corrientes": ["Clientes con deuda", "Detalle de movimientos", "Cobros recibidos", "Clientes excedidos"],
       "proveedores-pagos": ["Pagos realizados", "Saldos pendientes", "Compras del periodo", "Detalle por proveedor"]
     };
-    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales" };
+    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null };
 
     function setMessage(text, type = "") {
       $("mensaje").className = `message ${type}`;
@@ -699,6 +699,21 @@
       } catch {
         return fallback;
       }
+    }
+
+    async function cargarResumenBackend() {
+      const desde = $("desde").value;
+      const hasta = $("hasta").value;
+      if (!desde || !hasta) { state.resumenBackend = null; return; }
+      try {
+        const res = await fetch(`/reportes/resumen?desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}`);
+        if (!res.ok) throw new Error("fallo");
+        state.resumenBackend = await res.json();
+      } catch {
+        state.resumenBackend = null;
+      }
+      renderKpis();
+      renderKpiCharts();
     }
 
     function setRange(range) {
@@ -808,10 +823,11 @@
     function renderKpiCharts() {
       const ventas = ventasPeriodo();
       const pagos = pagosPeriodo();
-      const total = ventas.reduce((a, v) => a + n(v.total), 0);
-      const totalPagos = pagos.reduce((a, p) => a + n(p.monto_total || p.monto), 0);
-      const ivaFavor = pagos.reduce((a, p) => a + ivaFavorPago(p), 0);
-      const balance = total - totalPagos;
+      const rb = state.resumenBackend;
+      const total      = rb ? rb.ventas_totales     : ventas.reduce((a, v) => a + n(v.total), 0);
+      const totalPagos = rb ? rb.pagos_totales       : pagos.reduce((a, p) => a + n(p.monto_total || p.monto), 0);
+      const ivaFavor   = rb ? rb.iva_credito_fiscal  : pagos.reduce((a, p) => a + ivaFavorPago(p), 0);
+      const balance    = rb ? rb.balance_general     : (total - totalPagos);
       const ivaBruto = total * 0.21 / 1.21;
       const ivaNetoPct = total > 0 ? (ivaBruto / total * 100).toFixed(1) : '0.0';
       const ivaFavorPct = ivaBruto > 0 ? (ivaFavor / ivaBruto * 100).toFixed(1) : '0.0';
@@ -901,12 +917,13 @@
       const ventas = ventasPeriodo();
       const pagos = pagosPeriodo();
       const anterior = periodoAnteriorVentas();
-      const total = ventas.reduce((acc, venta) => acc + n(venta.total), 0);
+      const rb = state.resumenBackend;
+      const total      = rb ? rb.ventas_totales    : ventas.reduce((acc, venta) => acc + n(venta.total), 0);
       const totalAnterior = anterior.reduce((acc, venta) => acc + n(venta.total), 0);
-      const totalPagos = pagos.reduce((acc, pago) => acc + n(pago.monto_total || pago.monto), 0);
-      const ivaFavor = pagos.reduce((acc, pago) => acc + ivaFavorPago(pago), 0);
+      const totalPagos = rb ? rb.pagos_totales      : pagos.reduce((acc, pago) => acc + n(pago.monto_total || pago.monto), 0);
+      const ivaFavor   = rb ? rb.iva_credito_fiscal : pagos.reduce((acc, pago) => acc + ivaFavorPago(pago), 0);
       const utilidad = total * 0.34;
-      const ticket = ventas.length ? total / ventas.length : 0;
+      const ticket     = rb ? rb.ticket_promedio    : (ventas.length ? total / ventas.length : 0);
       const datos = [
         ["V", "Ventas totales", money(total), pct(total, totalAnterior)],
         ["U", "Utilidad bruta", money(utilidad), pct(utilidad, totalAnterior * 0.34)],
@@ -1190,6 +1207,7 @@
       ]);
       Object.assign(state, { ventas, detalle, productos, clientes, pagos, proveedores, config: configData.config || {} });
       render();
+      cargarResumenBackend();
     }
 
     $("actualizar").onclick = cargarDatos;
@@ -1201,7 +1219,11 @@
     $("confirmarExportacion").onclick = confirmarExportacion;
     $("exportModulo").onchange = () => { renderContenidoExportacion(); actualizarNombreArchivo(); };
     ["exportFormato", "exportDesde", "exportHasta"].forEach((id) => $(id).addEventListener("input", actualizarNombreArchivo));
-    ["desde", "hasta", "comparacion"].forEach((id) => $(id).addEventListener("input", render));
+    ["desde", "hasta", "comparacion"].forEach((id) => $(id).addEventListener("input", () => {
+      if (id !== "comparacion") state.resumenBackend = null;
+      render();
+      if (id !== "comparacion") cargarResumenBackend();
+    }));
     $("moduloFiltro").onchange = () => { state.modulo = $("moduloFiltro").value; render(); };
     setRange("30");
     cargarDatos();
