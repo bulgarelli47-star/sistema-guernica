@@ -52,7 +52,7 @@ const PERMISOS_LEGACY_ALIASES = {
   caja_cerrar: ["caja"],
   caja_registrar_arqueo: ["registros", "caja"]
 };
-const PERMISOS_ACCIONES_COMPAT = {
+const MAPEO_PERMISOS = {
   ver_stock: "stock_ver",
   sumar_stock: "stock_ajustar",
   ver_costos: "stock_ver_costos",
@@ -90,7 +90,7 @@ function configBool(value) {
 async function tienePermisoAccion(req, accion) {
   if (!req.usuario) return true;
   const rol = normalizarRol(req.usuario.rol);
-  const accionNormalizada = PERMISOS_ACCIONES_COMPAT[accion] || accion;
+  const accionNormalizada = MAPEO_PERMISOS[accion] || accion;
   const accionConocida = Object.prototype.hasOwnProperty.call(PERMISOS_ACCIONES_DEFAULTS, accionNormalizada);
   if (!accionConocida) return false;
   if (rol === "admin") return true;
