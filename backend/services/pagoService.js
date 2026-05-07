@@ -84,6 +84,41 @@ async function getTiposPagoActivos() {
   return TIPOS_PAGO_DEFAULTS.filter((tipo) => Number(tipo.activo) === 1);
 }
 
+async function getTodosTiposPago() {
+  try {
+    const tipos = await allQuery(
+      `SELECT id, codigo, nombre, activo, impacta_caja, impacta_digital, permite_mixto, requiere_caja_abierta, orden
+       FROM tipos_pago
+       ORDER BY orden ASC, nombre ASC`
+    );
+    return tipos.length ? tipos : TIPOS_PAGO_DEFAULTS;
+  } catch {
+    return TIPOS_PAGO_DEFAULTS;
+  }
+}
+
+async function crearTipoPago({ codigo, nombre, orden }) {
+  await runQuery(
+    `INSERT INTO tipos_pago (codigo, nombre, activo, impacta_caja, impacta_digital, permite_mixto, requiere_caja_abierta, orden)
+     VALUES (?, ?, 1, 0, 1, 0, 1, ?)`,
+    [codigo, nombre, Number(orden) || 50]
+  );
+}
+
+async function actualizarTipoPago(id, { nombre, orden }) {
+  await runQuery(
+    `UPDATE tipos_pago SET nombre = ?, orden = ? WHERE id = ?`,
+    [nombre, Number(orden) || 0, id]
+  );
+}
+
+async function toggleActivoTipoPago(id, activo) {
+  await runQuery(
+    `UPDATE tipos_pago SET activo = ? WHERE id = ?`,
+    [activo ? 1 : 0, id]
+  );
+}
+
 function resolvePagoData(total, tipoPago, montoEfectivo, montoDebito) {
   return resolveCobroData(total, tipoPago, montoEfectivo, montoDebito);
 }
@@ -91,6 +126,10 @@ function resolvePagoData(total, tipoPago, montoEfectivo, montoDebito) {
 module.exports = {
   TIPOS_PAGO_DEFAULTS,
   getTiposPagoActivos,
+  getTodosTiposPago,
+  crearTipoPago,
+  actualizarTipoPago,
+  toggleActivoTipoPago,
   resolvePagoData,
   seedTiposPagoDefaults
 };

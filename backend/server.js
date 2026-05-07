@@ -50,6 +50,10 @@ const {
 } = require("./services/ventaService");
 const {
   getTiposPagoActivos,
+  getTodosTiposPago,
+  crearTipoPago,
+  actualizarTipoPago,
+  toggleActivoTipoPago,
   resolvePagoData,
   seedTiposPagoDefaults
 } = require("./services/pagoService");
@@ -2419,10 +2423,64 @@ app.get("/pagos", async (req, res) => {
 
 app.get("/tipos_pago", async (req, res) => {
   try {
-    return res.json(await getTiposPagoActivos());
+    const todos = req.query.todos === "1";
+    return res.json(todos ? await getTodosTiposPago() : await getTiposPagoActivos());
   } catch (error) {
     logError("Error al listar tipos de pago:", error);
     return res.status(500).json({ message: "Error al obtener tipos de pago" });
+  }
+});
+
+app.post("/tipos_pago", async (req, res) => {
+  const nombre = String(req.body.nombre || "").trim();
+  const codigo = String(req.body.codigo || "").trim().toLowerCase().replace(/\s+/g, "_");
+  const orden = Number(req.body.orden) || 50;
+
+  if (!nombre) return res.status(400).json({ message: "El nombre es obligatorio" });
+  if (!codigo) return res.status(400).json({ message: "El código es obligatorio" });
+  if (!/^[a-z0-9_]+$/.test(codigo)) return res.status(400).json({ message: "El código solo puede tener letras, números y guiones bajos" });
+
+  try {
+    await crearTipoPago({ codigo, nombre, orden });
+    return res.json({ message: "Tipo de pago creado" });
+  } catch (error) {
+    if (String(error.message).includes("UNIQUE")) {
+      return res.status(400).json({ message: `Ya existe un tipo con código '${codigo}'` });
+    }
+    logError("Error al crear tipo de pago:", error);
+    return res.status(500).json({ message: "Error al crear tipo de pago" });
+  }
+});
+
+app.put("/tipos_pago/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const nombre = String(req.body.nombre || "").trim();
+  const orden = Number(req.body.orden) || 0;
+
+  if (!id) return res.status(400).json({ message: "ID inválido" });
+  if (!nombre) return res.status(400).json({ message: "El nombre es obligatorio" });
+
+  try {
+    await actualizarTipoPago(id, { nombre, orden });
+    return res.json({ message: "Tipo de pago actualizado" });
+  } catch (error) {
+    logError("Error al actualizar tipo de pago:", error);
+    return res.status(500).json({ message: "Error al actualizar tipo de pago" });
+  }
+});
+
+app.patch("/tipos_pago/:id/activo", async (req, res) => {
+  const id = Number(req.params.id);
+  const activo = req.body.activo !== false && req.body.activo !== 0 && req.body.activo !== "0";
+
+  if (!id) return res.status(400).json({ message: "ID inválido" });
+
+  try {
+    await toggleActivoTipoPago(id, activo);
+    return res.json({ message: activo ? "Tipo activado" : "Tipo desactivado" });
+  } catch (error) {
+    logError("Error al cambiar estado de tipo de pago:", error);
+    return res.status(500).json({ message: "Error al cambiar estado" });
   }
 });
 
