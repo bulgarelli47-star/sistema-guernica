@@ -649,6 +649,7 @@
     </div>
   </div>
 
+  <script src="/kpi-visibility.js?v=2"></script>
   <script>
     const $ = (id) => document.getElementById(id);
     const money = (value) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS" }).format(Number(value) || 0);
@@ -1172,6 +1173,13 @@
       renderProductos();
       renderCuentas();
       renderModulo();
+      window.initKpiVisibility?.({
+        gridSelector: "#kpis",
+        targetSelectors: ["#kpis", "#kpiChartsRow"],
+        storageKey: "guernica_kpis_reportes",
+        barId: "kpiToggleBarReportes",
+        buttonId: "toggleKpisBtnReportes"
+      });
       setMessage("Reportes actualizados.", "ok");
     }
 
@@ -1301,7 +1309,6 @@
   <script src="/user-menu.js?v=7" defer></script>
 </body>
 </html>
-
 
 
 

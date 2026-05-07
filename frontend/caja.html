@@ -2910,6 +2910,7 @@
     </main>
   </div>
 
+  <script src="/kpi-visibility.js?v=2"></script>
   <script>
     const toggleNotificaciones = document.getElementById("toggleNotificaciones");
     const notificacionesDropdown = document.getElementById("notificacionesDropdown");
@@ -4754,6 +4755,12 @@
     renderizarCuentasDigitales();
     renderizarArqueosVisuales();
     actualizarGraficoMetodos();
+    window.initKpiVisibility?.({
+      gridSelector: "#tab-resumen .metrics-grid",
+      storageKey: "guernica_kpis_caja",
+      barId: "kpiToggleBarCaja",
+      buttonId: "toggleKpisBtnCaja"
+    });
     cargarCaja();
     cargarHistorialCierres();
     cargarHistorialArqueos();

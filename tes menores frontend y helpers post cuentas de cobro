@@ -1,0 +1,18 @@
+warning: in the working copy of 'backend/services/configService.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/services/pagoService.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/services/stockService.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/caja.html', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/dashboard.html', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/pagos.html', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/proveedores.html', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/reportes.html', LF will be replaced by CRLF the next time Git touches it
+ backend/services/configService.js |  2 [32m+[m[31m-[m
+ backend/services/pagoService.js   |  5 [32m+++++[m
+ backend/services/stockService.js  |  6 [32m++++[m[31m--[m
+ frontend/caja.html                |  7 [32m+++++++[m
+ frontend/dashboard.html           |  6 [32m+++[m[31m---[m
+ frontend/pagos.html               |  2 [32m+[m[31m-[m
+ frontend/productos.html           | 12 [32m++++++[m[31m------[m
+ frontend/proveedores.html         |  5 [32m++[m[31m---[m
+ frontend/reportes.html            |  9 [32m++++++++[m[31m-[m
+ 9 files changed, 37 insertions(+), 17 deletions(-)

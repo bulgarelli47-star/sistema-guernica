@@ -14,7 +14,7 @@ const PERMISOS_ACCIONES_DEFAULTS = {
   caja_cerrar: { admin: true, encargado: true, colaborador: false },
   caja_registrar_arqueo: { admin: true, encargado: true, colaborador: true },
   caja_movimientos: { admin: true, encargado: true, colaborador: true },
-  pagos_crear: { admin: true, encargado: true, colaborador: false },
+  pagos_crear: { admin: true, encargado: true, colaborador: true },
   pagos_editar: { admin: true, encargado: true, colaborador: false },
   pagos_eliminar: { admin: true, encargado: false, colaborador: false },
   admin_usuarios: { admin: true, encargado: false, colaborador: false },

@@ -219,7 +219,8 @@ async function calcularCostoProductoCompuesto(productoCompuestoId) {
   }
   const extras = costosExtra.reduce((acc, item) => acc + Number(item.monto || 0), 0);
   const rendimiento = Math.max(1, Number(producto?.rendimiento_receta) || 1);
-  return Number(((costoComponentes + extras) / rendimiento).toFixed(2));
+  const extrasPorPorcion = Number((extras / rendimiento).toFixed(4));
+  return Number((costoComponentes + extrasPorPorcion).toFixed(2));
 }
 
 async function calcularCostoProductoCompuestoPayload(componentes = [], costosExtra = [], rendimientoReceta = 1) {
@@ -234,7 +235,8 @@ async function calcularCostoProductoCompuestoPayload(componentes = [], costosExt
   const extras = normalizarCostosExtraProducto(costosExtra)
     .reduce((acc, item) => acc + Number(item.monto || 0), 0);
   const rendimiento = Math.max(1, Number(rendimientoReceta) || 1);
-  return Number(((costoComponentes + extras) / rendimiento).toFixed(2));
+  const extrasPorPorcion = Number((extras / rendimiento).toFixed(4));
+  return Number((costoComponentes + extrasPorPorcion).toFixed(2));
 }
 
 async function descontarStockFisicoProducto(productoId, producto, deltaCantidad, comoComponente = false) {

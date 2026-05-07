@@ -119,6 +119,10 @@ async function toggleActivoTipoPago(id, activo) {
   );
 }
 
+async function eliminarTipoPago(id) {
+  await runQuery(`DELETE FROM tipos_pago WHERE id = ?`, [id]);
+}
+
 function resolvePagoData(total, tipoPago, montoEfectivo, montoDebito) {
   return resolveCobroData(total, tipoPago, montoEfectivo, montoDebito);
 }
@@ -129,6 +133,7 @@ module.exports = {
   getTodosTiposPago,
   crearTipoPago,
   actualizarTipoPago,
+  eliminarTipoPago,
   toggleActivoTipoPago,
   resolvePagoData,
   seedTiposPagoDefaults
