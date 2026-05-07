@@ -265,6 +265,61 @@ async function getPagos(baseUrl, token) {
   return data;
 }
 
+async function crearCategoria(baseUrl, token, nombre, overrides = {}) {
+  const result = await requestJson(baseUrl, "POST", "/categorias", {
+    nombre,
+    margen_porcentaje: 0,
+    maneja_stock: true,
+    usa_costos_varios: false,
+    ...overrides
+  }, token);
+
+  if (!result.response.ok) {
+    throw new Error(`No se pudo crear categoria ${nombre}: ${result.data?.message || result.response.status}`);
+  }
+
+  return result.data.id;
+}
+
+async function crearProducto(baseUrl, token, payload) {
+  const result = await requestJson(baseUrl, "POST", "/productos", {
+    categoria: payload.categoria || "TEST",
+    precio_compra: 10,
+    precio_venta: 100,
+    stock: 0,
+    maneja_stock: true,
+    activo: true,
+    iva_porcentaje: 0,
+    precio_compra_incluye_iva: false,
+    redondeo: 0,
+    unidad_medida: "unidad",
+    usuario: "test",
+    ...payload
+  }, token);
+
+  if (!result.response.ok) {
+    throw new Error(`No se pudo crear producto ${payload.nombre}: ${result.data?.message || result.response.status}`);
+  }
+
+  return result.data.id;
+}
+
+async function crearProductoCompuesto(baseUrl, token, payload) {
+  const result = await requestJson(baseUrl, "POST", "/productos_compuestos", {
+    precio_venta: 100,
+    componentes: [],
+    costos_extra: [],
+    usuario: "test",
+    ...payload
+  }, token);
+
+  if (!result.response.ok) {
+    throw new Error(`No se pudo crear producto compuesto ${payload.nombre}: ${result.data?.message || result.response.status}`);
+  }
+
+  return result.data.id;
+}
+
 function ventaSimplePayload(overrides = {}) {
   return {
     usuario: "test",
@@ -920,6 +975,229 @@ async function testCajaCerradaNoRecibeOperacionPosterior() {
   }
 }
 
+async function testSimpleConRendimientoDescuentaStockFisicoUnaVez() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const categoriaId = await crearCategoria(baseUrl, token, "TEST Rendimiento Simple");
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Simple con rendimiento",
+        categoria: "TEST Rendimiento Simple",
+        categoria_id: categoriaId,
+        stock: 10,
+        rendimiento_receta: 5
+      });
+      await runSql(dbPath, "UPDATE productos SET rendimiento_receta = 5 WHERE id = ?", [productoId]);
+
+      const productoAntes = await getProduct(baseUrl, token, productoId);
+      assertEqual(productoAntes.rendimiento_receta, 5, "El producto simple de prueba debe tener rendimiento_receta cargado");
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [{
+          producto_id: productoId,
+          nombre_producto: "TEST Simple con rendimiento",
+          cantidad: 2,
+          precio_unitario: 100
+        }]
+      }, token);
+      if (!venta.response.ok) throw new Error(`Venta simple con rendimiento fallo: ${venta.data?.message || venta.response.status}`);
+
+      assertEqual((await getProduct(baseUrl, token, productoId)).stock, 8, "Producto simple con rendimiento debe descontar solo stock fisico vendido");
+      const movimientos = await getMovimientosStock(baseUrl, token, productoId);
+      const movimientoVenta = movimientos.find((mov) => mov.tipo_movimiento === "venta" && Number(mov.stock_anterior) === 10);
+      if (!movimientoVenta) throw new Error("La venta simple con rendimiento debe registrar movimiento_stock de venta");
+      assertEqual(movimientoVenta.cantidad, 2, "Rendimiento_receta no debe duplicar cantidad descontada en producto simple");
+      assertEqual(movimientoVenta.stock_nuevo, 8, "Rendimiento_receta no debe alterar stock_nuevo de producto simple");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testCompuestoConComponenteFraccionadoDescuentaCantidadUsada() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const categoriaId = await crearCategoria(baseUrl, token, "TEST Fraccionados");
+      const componenteId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Harina fraccionada",
+        categoria: "TEST Fraccionados",
+        categoria_id: categoriaId,
+        stock: 10,
+        unidad_medida: "kg",
+        precio_compra: 20,
+        precio_venta: 50
+      });
+      const compuestoId = await crearProductoCompuesto(baseUrl, token, {
+        nombre: "TEST Compuesto fraccionado",
+        categoria: "TEST Fraccionados",
+        categoria_id: categoriaId,
+        precio_venta: 200,
+        componentes: [{ producto_id: componenteId, cantidad: 1.25 }],
+        costos_extra: []
+      });
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [{
+          producto_id: compuestoId,
+          nombre_producto: "TEST Compuesto fraccionado",
+          cantidad: 2,
+          precio_unitario: 200
+        }]
+      }, token);
+      if (!venta.response.ok) throw new Error(`Venta compuesto fraccionado fallo: ${venta.data?.message || venta.response.status}`);
+
+      assertApprox((await getProduct(baseUrl, token, componenteId)).stock, 7.5, "Vender compuesto debe descontar solo cantidad usada del componente fraccionado");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testCompuestoConStockPropioNoDuplicaDescuento() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const categoriaId = await crearCategoria(baseUrl, token, "TEST Compuesto Stock Propio");
+      const componenteId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Ingrediente stock propio",
+        categoria: "TEST Compuesto Stock Propio",
+        categoria_id: categoriaId,
+        stock: 20
+      });
+      const compuestoId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Compuesto con stock propio",
+        categoria: "TEST Compuesto Stock Propio",
+        categoria_id: categoriaId,
+        tipo: "compuesto",
+        maneja_stock: true,
+        stock: 5,
+        precio_venta: 300,
+        componentes: [{ producto_id: componenteId, cantidad: 2 }],
+        costos_extra: []
+      });
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [{
+          producto_id: compuestoId,
+          nombre_producto: "TEST Compuesto con stock propio",
+          cantidad: 1,
+          precio_unitario: 300
+        }]
+      }, token);
+      if (!venta.response.ok) throw new Error(`Venta compuesto con stock propio fallo: ${venta.data?.message || venta.response.status}`);
+
+      assertEqual((await getProduct(baseUrl, token, compuestoId)).stock, 4, "Compuesto con stock propio debe descontar su stock fisico");
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 20, "Vender compuesto con stock propio no debe duplicar descuento en componentes");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAnularVentaCompuestaReponeComponente() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const categoriaId = await crearCategoria(baseUrl, token, "TEST Anular Compuesto");
+      const componenteId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Ingrediente anular compuesto",
+        categoria: "TEST Anular Compuesto",
+        categoria_id: categoriaId,
+        stock: 20
+      });
+      const compuestoId = await crearProductoCompuesto(baseUrl, token, {
+        nombre: "TEST Compuesto anular",
+        categoria: "TEST Anular Compuesto",
+        categoria_id: categoriaId,
+        precio_venta: 250,
+        componentes: [{ producto_id: componenteId, cantidad: 4 }],
+        costos_extra: []
+      });
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [{
+          producto_id: compuestoId,
+          nombre_producto: "TEST Compuesto anular",
+          cantidad: 2,
+          precio_unitario: 250
+        }]
+      }, token);
+      if (!venta.response.ok) throw new Error(`Venta compuesto para anular fallo: ${venta.data?.message || venta.response.status}`);
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 12, "Venta compuesta debe descontar componente antes de anular");
+
+      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${venta.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anulacion.response.ok) throw new Error(`Anulacion venta compuesta fallo: ${anulacion.data?.message || anulacion.response.status}`);
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 20, "Anular venta compuesta debe reponer stock del componente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMovimientoManualRegistraStockAnteriorYNuevo() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const result = await requestJson(baseUrl, "POST", "/productos/11/movimientos-stock", {
+        tipo_movimiento: "ingreso",
+        cantidad: 7,
+        motivo: "TEST movimiento manual stock",
+        usuario: "test"
+      }, token);
+      if (!result.response.ok) throw new Error(`Movimiento manual stock fallo: ${result.data?.message || result.response.status}`);
+
+      assertEqual((await getProduct(baseUrl, token, 11)).stock, 87, "Ingreso manual debe actualizar stock fisico");
+      const movimientos = await getMovimientosStock(baseUrl, token, 11);
+      const movimientoManual = movimientos.find((mov) => mov.motivo === "TEST movimiento manual stock");
+      if (!movimientoManual) throw new Error("Ingreso manual debe registrar movimiento_stock");
+      assertEqual(movimientoManual.cantidad, 7, "Movimiento manual debe guardar cantidad");
+      assertEqual(movimientoManual.stock_anterior, 80, "Movimiento manual debe guardar stock_anterior");
+      assertEqual(movimientoManual.stock_nuevo, 87, "Movimiento manual debe guardar stock_nuevo");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 (async () => {
   await testBatchManual();
   await testBatchComoComponente();
@@ -938,6 +1216,11 @@ async function testCajaCerradaNoRecibeOperacionPosterior() {
   await testCierreInmutableAnteVentaPosterior();
   await testCierreInmutableAntePagoPosterior();
   await testCajaCerradaNoRecibeOperacionPosterior();
+  await testSimpleConRendimientoDescuentaStockFisicoUnaVez();
+  await testCompuestoConComponenteFraccionadoDescuentaCantidadUsada();
+  await testCompuestoConStockPropioNoDuplicaDescuento();
+  await testAnularVentaCompuestaReponeComponente();
+  await testMovimientoManualRegistraStockAnteriorYNuevo();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
   console.error(error.message);
