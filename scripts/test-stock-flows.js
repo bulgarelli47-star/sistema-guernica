@@ -174,6 +174,59 @@ async function abrirCaja(baseUrl, token, montoApertura = 1000) {
   return result.data.apertura;
 }
 
+function buildConteoMonto(monto) {
+  let restante = Number(monto) || 0;
+  const conteo = {};
+  const denominaciones = [20000, 10000, 2000, 1000, 500, 200, 100, 50, 20, 10];
+
+  for (const denominacion of denominaciones) {
+    const cantidad = Math.floor(restante / denominacion);
+    if (cantidad > 0) {
+      conteo[String(denominacion)] = cantidad;
+      restante -= cantidad * denominacion;
+    }
+  }
+
+  return conteo;
+}
+
+async function registrarArqueoCierre(baseUrl, token, efectivoContado) {
+  const result = await requestJson(baseUrl, "POST", "/caja/arqueos", {
+    usuario: "test",
+    conteo: buildConteoMonto(efectivoContado),
+    cuentas: [],
+    observaciones: "TEST arqueo cierre",
+    registrado_cierre: 1
+  }, token);
+
+  if (!result.response.ok) {
+    throw new Error(`No se pudo registrar arqueo de cierre: ${result.data?.message || result.response.status}`);
+  }
+
+  return result.data.arqueo;
+}
+
+async function cerrarCaja(baseUrl, token, efectivoContado, montoCajaApertura = 0, montoCajaFondo = 0) {
+  await registrarArqueoCierre(baseUrl, token, efectivoContado);
+  const result = await requestJson(baseUrl, "POST", "/caja/cierre", {
+    conteo: buildConteoMonto(efectivoContado),
+    monto_caja_apertura: montoCajaApertura,
+    monto_caja_fondo: montoCajaFondo
+  }, token);
+
+  if (!result.response.ok) {
+    throw new Error(`No se pudo cerrar caja: ${result.data?.message || result.response.status}`);
+  }
+
+  return result.data.caja;
+}
+
+async function getCierreDetalle(baseUrl, token, cierreId) {
+  const { response, data } = await requestJson(baseUrl, "GET", `/caja/cierres/${cierreId}`, null, token);
+  if (!response.ok) throw new Error(`No se pudo obtener cierre ${cierreId}: ${data?.message || response.status}`);
+  return data;
+}
+
 async function crearProveedor(baseUrl, token, overrides = {}) {
   const suffix = `${Date.now()}${Math.floor(Math.random() * 10000)}`;
   const result = await requestJson(baseUrl, "POST", "/proveedores", {
@@ -700,6 +753,173 @@ async function testPagoCalculaIvaCreditoFiscal() {
   }
 }
 
+async function testCierreGuardaSnapshotsParseables() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!venta.response.ok) throw new Error(`Venta para cierre fallo: ${venta.data?.message || venta.response.status}`);
+
+      const cierre = await cerrarCaja(baseUrl, token, 1200, 1000, 200);
+      const detalle = await getCierreDetalle(baseUrl, token, cierre.id);
+
+      if (detalle.estado !== "cerrada") {
+        throw new Error(`El cierre debe quedar en estado cerrada. Estado=${detalle.estado}`);
+      }
+      if (!detalle.resumen_snapshot || typeof detalle.resumen_snapshot !== "object") {
+        throw new Error("El cierre debe guardar resumen_snapshot parseable");
+      }
+      if (!Array.isArray(detalle.ventas_snapshot)) {
+        throw new Error("El cierre debe guardar ventas_snapshot parseable como array");
+      }
+      if (!Array.isArray(detalle.pagos_snapshot)) {
+        throw new Error("El cierre debe guardar pagos_snapshot parseable como array");
+      }
+
+      assertEqual(detalle.resumen_snapshot.total_ventas, 200, "El snapshot de cierre debe conservar total de ventas");
+      assertEqual(detalle.ventas_snapshot.length, 1, "El snapshot de cierre debe conservar la venta registrada");
+      assertEqual(detalle.pagos_snapshot.length, 0, "El snapshot de cierre debe conservar pagos vacios si no hubo pagos");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testCierreInmutableAnteVentaPosterior() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const ventaInicial = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!ventaInicial.response.ok) throw new Error(`Venta inicial para cierre fallo: ${ventaInicial.data?.message || ventaInicial.response.status}`);
+
+      const cierre = await cerrarCaja(baseUrl, token, 1200, 1000, 200);
+      const detalleAntes = await getCierreDetalle(baseUrl, token, cierre.id);
+      const resumenAntes = JSON.stringify(detalleAntes.resumen_snapshot);
+      const ventasAntes = JSON.stringify(detalleAntes.ventas_snapshot);
+      const pagosAntes = JSON.stringify(detalleAntes.pagos_snapshot);
+
+      await abrirCaja(baseUrl, token, 500);
+      const ventaPosterior = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        usuario: "test posterior"
+      }), token);
+      if (!ventaPosterior.response.ok) throw new Error(`Venta posterior al cierre fallo: ${ventaPosterior.data?.message || ventaPosterior.response.status}`);
+
+      const detalleDespues = await getCierreDetalle(baseUrl, token, cierre.id);
+      if (JSON.stringify(detalleDespues.resumen_snapshot) !== resumenAntes) {
+        throw new Error("El resumen_snapshot del cierre anterior cambio luego de una venta posterior");
+      }
+      if (JSON.stringify(detalleDespues.ventas_snapshot) !== ventasAntes) {
+        throw new Error("El ventas_snapshot del cierre anterior cambio luego de una venta posterior");
+      }
+      if (JSON.stringify(detalleDespues.pagos_snapshot) !== pagosAntes) {
+        throw new Error("El pagos_snapshot del cierre anterior cambio luego de una venta posterior");
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testCierreInmutableAntePagoPosterior() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedorInicial = await crearProveedor(baseUrl, token);
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!venta.response.ok) throw new Error(`Venta para cierre con pago fallo: ${venta.data?.message || venta.response.status}`);
+
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedorInicial.id,
+        concepto: "TEST pago antes de cierre",
+        monto_total: 300,
+        tipo_pago: "efectivo",
+        estado: "registrado"
+      });
+
+      const cierre = await cerrarCaja(baseUrl, token, 900, 900, 0);
+      const detalleAntes = await getCierreDetalle(baseUrl, token, cierre.id);
+      const resumenAntes = JSON.stringify(detalleAntes.resumen_snapshot);
+      const ventasAntes = JSON.stringify(detalleAntes.ventas_snapshot);
+      const pagosAntes = JSON.stringify(detalleAntes.pagos_snapshot);
+      assertEqual(detalleAntes.pagos_snapshot.length, 1, "El cierre inicial debe guardar el pago previo");
+
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedorPosterior = await crearProveedor(baseUrl, token);
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedorPosterior.id,
+        concepto: "TEST pago posterior al cierre",
+        monto_total: 150,
+        tipo_pago: "efectivo",
+        estado: "registrado"
+      });
+
+      const detalleDespues = await getCierreDetalle(baseUrl, token, cierre.id);
+      if (JSON.stringify(detalleDespues.resumen_snapshot) !== resumenAntes) {
+        throw new Error("El resumen_snapshot del cierre anterior cambio luego de un pago posterior");
+      }
+      if (JSON.stringify(detalleDespues.ventas_snapshot) !== ventasAntes) {
+        throw new Error("El ventas_snapshot del cierre anterior cambio luego de un pago posterior");
+      }
+      if (JSON.stringify(detalleDespues.pagos_snapshot) !== pagosAntes) {
+        throw new Error("El pagos_snapshot del cierre anterior cambio luego de un pago posterior");
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testCajaCerradaNoRecibeOperacionPosterior() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const ventaInicial = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!ventaInicial.response.ok) throw new Error(`Venta antes de cerrar caja fallo: ${ventaInicial.data?.message || ventaInicial.response.status}`);
+
+      const cajaCerrada = await cerrarCaja(baseUrl, token, 1200, 1000, 200);
+      assertEqual(cajaCerrada.estado === "cerrada" ? 1 : 0, 1, "La caja debe quedar cerrada");
+
+      const cajaNueva = await abrirCaja(baseUrl, token, 500);
+      const ventaPosterior = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        usuario: "test caja nueva"
+      }), token);
+      if (!ventaPosterior.response.ok) throw new Error(`Venta posterior con caja nueva fallo: ${ventaPosterior.data?.message || ventaPosterior.response.status}`);
+
+      const detalleVentaPosterior = await getVentaDetalle(baseUrl, token, ventaPosterior.data.venta_id);
+      assertEqual(detalleVentaPosterior.venta.caja_id, cajaNueva.id, "La operacion posterior debe asociarse a la caja nueva");
+      if (Number(detalleVentaPosterior.venta.caja_id) === Number(cajaCerrada.id)) {
+        throw new Error("La operacion posterior no debe asociarse a la caja cerrada");
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 (async () => {
   await testBatchManual();
   await testBatchComoComponente();
@@ -714,6 +934,10 @@ async function testPagoCalculaIvaCreditoFiscal() {
   await testPagoPendienteNoImpactaCaja();
   await testPagoMixtoGuardaMontosYCaja();
   await testPagoCalculaIvaCreditoFiscal();
+  await testCierreGuardaSnapshotsParseables();
+  await testCierreInmutableAnteVentaPosterior();
+  await testCierreInmutableAntePagoPosterior();
+  await testCajaCerradaNoRecibeOperacionPosterior();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
   console.error(error.message);
