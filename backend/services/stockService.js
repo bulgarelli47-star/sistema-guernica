@@ -201,6 +201,10 @@ async function calcularStockVendibleFraccionado(productoId, stockActual = 0) {
   return Math.max(0, Math.floor((Number(stockActual) || 0) / consumoUnidad));
 }
 
+async function calcularStockVendible(productoId, stockActual = 0) {
+  return calcularStockVendibleFraccionado(productoId, stockActual);
+}
+
 async function calcularCostoProductoCompuesto(productoCompuestoId) {
   const [producto, componentes, costosExtra] = await Promise.all([
     getQuery("SELECT rendimiento_receta FROM productos WHERE id = ?", [productoCompuestoId]),
@@ -233,7 +237,7 @@ async function calcularCostoProductoCompuestoPayload(componentes = [], costosExt
   return Number(((costoComponentes + extras) / rendimiento).toFixed(2));
 }
 
-async function descontarStockPropioProducto(productoId, producto, deltaCantidad, comoComponente = false) {
+async function descontarStockFisicoProducto(productoId, producto, deltaCantidad, comoComponente = false) {
   if (Number(producto.maneja_stock) !== 1) {
     return;
   }
@@ -274,6 +278,60 @@ async function descontarStockPropioProducto(productoId, producto, deltaCantidad,
   );
 }
 
+async function descontarStockPropioProducto(productoId, producto, deltaCantidad, comoComponente = false) {
+  return descontarStockFisicoProducto(productoId, producto, deltaCantidad, comoComponente);
+}
+
+async function actualizarContadorBatch(productoId, producto, deltaCantidad, visited) {
+  const rendimiento = Number(producto.rendimiento_receta) || 1;
+  let contador = Number(producto.stock ?? rendimiento) - Number(deltaCantidad);
+  let batchesConsumidos = 0;
+
+  while (contador <= 0) {
+    batchesConsumidos++;
+    contador += rendimiento;
+  }
+
+  await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [contador, productoId]);
+
+  if (batchesConsumidos > 0) {
+    const componentes = await getComponentesProductoCompuesto(productoId);
+    const { fecha, hora } = getNowParts();
+    for (const componente of componentes) {
+      const cantidadConsumida = Number(componente.cantidad || 0) * rendimiento * batchesConsumidos;
+      const ingAntes = await getQuery("SELECT stock FROM productos WHERE id = ?", [componente.producto_id]);
+      await applyStockChange(
+        componente.producto_id,
+        cantidadConsumida,
+        { comoComponente: true, visited: new Set(visited) }
+      );
+      const ingDespues = await getQuery("SELECT stock FROM productos WHERE id = ?", [componente.producto_id]);
+      await runQuery(
+        `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
+         VALUES (?, 'venta', ?, ?, ?, ?, 'admin', ?, ?)`,
+        [componente.producto_id, cantidadConsumida, Number(ingAntes?.stock || 0), Number(ingDespues?.stock || 0),
+         `Consumo receta batch (producto id: ${productoId})`, fecha, hora]
+      );
+    }
+  }
+}
+
+async function descontarComponentesReceta(productoId, deltaCantidad, visited) {
+  const componentes = await getComponentesProductoCompuesto(productoId);
+
+  if (!componentes.length) {
+    return;
+  }
+
+  for (const componente of componentes) {
+    await applyStockChange(
+      componente.producto_id,
+      Number(deltaCantidad || 0) * Number(componente.cantidad || 0),
+      { comoComponente: true, visited: new Set(visited) }
+    );
+  }
+}
+
 async function applyStockChange(productoId, deltaCantidad, options = {}) {
   if (!productoId || deltaCantidad === 0) {
     return;
@@ -298,7 +356,7 @@ async function applyStockChange(productoId, deltaCantidad, options = {}) {
   if (esProductoReceta(producto)) {
     // Modo pre-armado: tiene stock propio → descuenta de sí mismo como producto simple
     if (Number(producto.maneja_stock) === 1) {
-      await descontarStockPropioProducto(productoId, producto, deltaCantidad, options.comoComponente || false);
+      await descontarStockFisicoProducto(productoId, producto, deltaCantidad, options.comoComponente || false);
       return;
     }
 
@@ -307,55 +365,17 @@ async function applyStockChange(productoId, deltaCantidad, options = {}) {
     // Modo batch counter: sin stock propio pero con rendimiento > 1
     // El campo stock actúa como contador. Cuando llega a 0 consume ingredientes y reinicia.
     if (rendimiento > 1) {
-      let contador = Number(producto.stock ?? rendimiento) - Number(deltaCantidad);
-      let batchesConsumidos = 0;
-      while (contador <= 0) {
-        batchesConsumidos++;
-        contador += rendimiento;
-      }
-      await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [contador, productoId]);
-      if (batchesConsumidos > 0) {
-        const componentes = await getComponentesProductoCompuesto(productoId);
-        const { fecha, hora } = getNowParts();
-        for (const componente of componentes) {
-          const cantidadConsumida = Number(componente.cantidad || 0) * rendimiento * batchesConsumidos;
-          const ingAntes = await getQuery("SELECT stock FROM productos WHERE id = ?", [componente.producto_id]);
-          await applyStockChange(
-            componente.producto_id,
-            cantidadConsumida,
-            { comoComponente: true, visited: new Set(visited) }
-          );
-          const ingDespues = await getQuery("SELECT stock FROM productos WHERE id = ?", [componente.producto_id]);
-          await runQuery(
-            `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
-             VALUES (?, 'venta', ?, ?, ?, ?, 'admin', ?, ?)`,
-            [componente.producto_id, cantidadConsumida, Number(ingAntes?.stock || 0), Number(ingDespues?.stock || 0),
-             `Consumo receta batch (producto id: ${productoId})`, fecha, hora]
-          );
-        }
-      }
+      await actualizarContadorBatch(productoId, producto, deltaCantidad, visited);
       return;
     }
 
     // Modo en el momento (sin_stock_propio, rendimiento = 1): descuenta ingredientes directo
-    const componentes = await getComponentesProductoCompuesto(producto.id);
-
-    if (!componentes.length) {
-      return;
-    }
-
-    for (const componente of componentes) {
-      await applyStockChange(
-        componente.producto_id,
-        Number(deltaCantidad || 0) * Number(componente.cantidad || 0),
-        { comoComponente: true, visited: new Set(visited) }
-      );
-    }
+    await descontarComponentesReceta(producto.id, deltaCantidad, visited);
 
     return;
   }
 
-  await descontarStockPropioProducto(productoId, producto, deltaCantidad, options.comoComponente || false);
+  await descontarStockFisicoProducto(productoId, producto, deltaCantidad, options.comoComponente || false);
 }
 
 async function applyStockForNewItems(items) {
@@ -404,10 +424,14 @@ module.exports = {
   getCostosExtraProductoCompuesto,
   calcularStockDisponibleCompuesto,
   getCostoConsumoUnitarioProducto,
+  calcularStockVendible,
   calcularStockVendibleFraccionado,
   calcularCostoProductoCompuesto,
   calcularCostoProductoCompuestoPayload,
+  descontarStockFisicoProducto,
   descontarStockPropioProducto,
+  descontarComponentesReceta,
+  actualizarContadorBatch,
   applyStockChange,
   applyStockForNewItems,
   applyStockDiff
