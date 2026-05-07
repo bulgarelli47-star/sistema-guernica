@@ -48,6 +48,7 @@ const {
   replaceVentaDetalle,
   resolveCobroData
 } = require("./services/ventaService");
+const { getResumenReportes } = require("./services/reportesService");
 const {
   getTiposPagoActivos,
   getTodosTiposPago,
@@ -4303,6 +4304,16 @@ function normalizarFormatoReporte(formato) {
 function nombreArchivoReporte(modulo, desde, hasta, formato) {
   return `${modulo}_${desde}_${hasta}.${normalizarFormatoReporte(formato)}`;
 }
+
+app.get("/reportes/resumen", async (req, res) => {
+  const { desde = null, hasta = null } = req.query;
+  try {
+    return res.json(await getResumenReportes({ desde, hasta }));
+  } catch (error) {
+    logError("Error al obtener resumen de reportes:", error);
+    return res.status(500).json({ message: "Error al obtener resumen" });
+  }
+});
 
 // Contrato base para reportes futuros
 app.get("/reportes/:modulo", async (req, res) => {
