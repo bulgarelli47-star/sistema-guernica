@@ -90,4 +90,31 @@ async function getProductosMasVendidos({ desde = null, hasta = null, limite = 20
   );
 }
 
-module.exports = { getResumenReportes, getProductosMasVendidos };
+async function getResumenProveedoresPagos({ desde = null, hasta = null } = {}) {
+  const where = [];
+  const params = [];
+
+  if (desde) { where.push("p.fecha >= ?"); params.push(desde); }
+  if (hasta) { where.push("p.fecha <= ?"); params.push(hasta); }
+
+  const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+  return allQuery(
+    `SELECT
+       p.proveedor_id,
+       COALESCE(pr.nombre, 'Sin proveedor')                                                    AS proveedor_nombre,
+       COALESCE(pr.tipo_impacto, p.categoria_pago, 'otro_no_computable')                       AS tipo_impacto,
+       COALESCE(SUM(CASE WHEN p.estado != 'pendiente' THEN p.monto_total       ELSE 0 END), 0) AS total_pagado,
+       COALESCE(SUM(CASE WHEN p.estado  = 'pendiente' THEN p.monto_total       ELSE 0 END), 0) AS total_pendiente,
+       COALESCE(SUM(CASE WHEN p.estado != 'pendiente' THEN p.iva_credito_fiscal ELSE 0 END), 0) AS iva_credito_fiscal,
+       COUNT(*) AS cantidad_pagos
+     FROM pagos p
+     LEFT JOIN proveedores pr ON pr.id = p.proveedor_id
+     ${whereClause}
+     GROUP BY p.proveedor_id, proveedor_nombre, tipo_impacto
+     ORDER BY total_pagado DESC`,
+    params
+  );
+}
+
+module.exports = { getResumenReportes, getProductosMasVendidos, getResumenProveedoresPagos };

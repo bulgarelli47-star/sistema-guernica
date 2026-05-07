@@ -48,7 +48,7 @@ const {
   replaceVentaDetalle,
   resolveCobroData
 } = require("./services/ventaService");
-const { getResumenReportes, getProductosMasVendidos } = require("./services/reportesService");
+const { getResumenReportes, getProductosMasVendidos, getResumenProveedoresPagos } = require("./services/reportesService");
 const {
   getTiposPagoActivos,
   getTodosTiposPago,
@@ -4322,6 +4322,16 @@ app.get("/reportes/productos-mas-vendidos", async (req, res) => {
   } catch (error) {
     logError("Error al obtener productos mas vendidos:", error);
     return res.status(500).json({ message: "Error al obtener productos mas vendidos" });
+  }
+});
+
+app.get("/reportes/proveedores-pagos", async (req, res) => {
+  const { desde = null, hasta = null } = req.query;
+  try {
+    return res.json(await getResumenProveedoresPagos({ desde, hasta }));
+  } catch (error) {
+    logError("Error al obtener resumen de proveedores y pagos:", error);
+    return res.status(500).json({ message: "Error al obtener resumen de proveedores y pagos" });
   }
 });
 
