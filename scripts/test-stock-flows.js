@@ -2196,6 +2196,157 @@ async function testTipoPagoGetTodosIncluyeInactivos() {
   }
 }
 
+async function testVentasPorDiaDevuelveClaves() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!venta.response.ok) throw new Error(`Venta fallo: ${venta.data?.message || venta.response.status}`);
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/ventas-por-dia", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/ventas-por-dia fallo: ${data?.message || response.status}`);
+      if (!Array.isArray(data)) throw new Error("GET /reportes/ventas-por-dia debe devolver un array");
+      if (!data.length) throw new Error("GET /reportes/ventas-por-dia debe devolver al menos un item");
+
+      const item = data[0];
+      for (const clave of ["fecha", "total", "cantidad_ventas"]) {
+        if (!(clave in item)) {
+          throw new Error(`Cada item debe tener clave '${clave}'. Item=${JSON.stringify(item)}`);
+        }
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testVentasPorDiaExcluyeAnuladas() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const ventaOk = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!ventaOk.response.ok) throw new Error(`Venta cobrada fallo: ${ventaOk.data?.message || ventaOk.response.status}`);
+
+      const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!ventaAnular.response.ok) throw new Error(`Venta a anular fallo: ${ventaAnular.data?.message || ventaAnular.response.status}`);
+
+      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${ventaAnular.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anulacion.response.ok) throw new Error(`Anulacion fallo: ${anulacion.data?.message || anulacion.response.status}`);
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/ventas-por-dia", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/ventas-por-dia fallo: ${data?.message || response.status}`);
+      if (!data.length) throw new Error("Debe devolver al menos una entrada");
+
+      const hoy = data[0];
+      assertApprox(hoy.total, 200, "Ventas por dia debe excluir ventas anuladas del total");
+      assertEqual(hoy.cantidad_ventas, 1, "Ventas por dia debe excluir ventas anuladas de cantidad_ventas");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testVentasPorDiaAgrupaVentas() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      // Dos ventas del mismo dia (hoy)
+      const v1 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!v1.response.ok) throw new Error(`Venta 1 fallo: ${v1.data?.message || v1.response.status}`);
+      const v2 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!v2.response.ok) throw new Error(`Venta 2 fallo: ${v2.data?.message || v2.response.status}`);
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/ventas-por-dia", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/ventas-por-dia fallo: ${data?.message || response.status}`);
+
+      const entrada = data.find((d) => Number(d.cantidad_ventas) >= 2);
+      if (!entrada) throw new Error(`Las 2 ventas del mismo dia deben agruparse en una sola entrada. Respuesta=${JSON.stringify(data)}`);
+      assertApprox(entrada.total, 400, "El total agrupado debe sumar ambas ventas (200 + 200 = 400)");
+      assertEqual(entrada.cantidad_ventas, 2, "cantidad_ventas debe contar ambas ventas del dia");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testVentasPorDiaRespetaFiltroFechas() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!venta.response.ok) throw new Error(`Venta fallo: ${venta.data?.message || venta.response.status}`);
+
+      // Rango amplio: incluye la venta de hoy
+      const { response: r1, data: d1 } = await requestJson(baseUrl, "GET", "/reportes/ventas-por-dia?desde=2000-01-01&hasta=2099-12-31", null, token);
+      if (!r1.ok) throw new Error(`GET rango amplio fallo: ${d1?.message || r1.status}`);
+      if (!d1.length) throw new Error("Rango amplio debe devolver al menos una entrada con la venta de hoy");
+
+      // Rango historico sin datos
+      const { response: r2, data: d2 } = await requestJson(baseUrl, "GET", "/reportes/ventas-por-dia?desde=2010-01-01&hasta=2010-12-31", null, token);
+      if (!r2.ok) throw new Error(`GET rango historico fallo: ${d2?.message || r2.status}`);
+      if (d2.length !== 0) throw new Error(`Rango historico debe devolver array vacio. Actual=${JSON.stringify(d2)}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testVentasPorDiaOrdenaAscendente() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, [
+      ...resetOperationalDataStatements(),
+      // Insertar 3 ventas con fechas conocidas en orden no ascendente
+      ["INSERT INTO ventas (fecha, hora, usuario, total, tipo, estado, tipo_cobro, monto_efectivo, monto_debito, es_cuenta_corriente, saldo_pendiente) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ["2024-01-05", "12:00:00", "test", 300, "normal", "cobrada", "efectivo", 300, 0, 0, 0]],
+      ["INSERT INTO ventas (fecha, hora, usuario, total, tipo, estado, tipo_cobro, monto_efectivo, monto_debito, es_cuenta_corriente, saldo_pendiente) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ["2024-01-01", "10:00:00", "test", 100, "normal", "cobrada", "efectivo", 100, 0, 0, 0]],
+      ["INSERT INTO ventas (fecha, hora, usuario, total, tipo, estado, tipo_cobro, monto_efectivo, monto_debito, es_cuenta_corriente, saldo_pendiente) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ["2024-01-03", "11:00:00", "test", 200, "normal", "cobrada", "efectivo", 200, 0, 0, 0]]
+    ]);
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/ventas-por-dia?desde=2024-01-01&hasta=2024-01-31", null, token);
+      if (!response.ok) throw new Error(`GET ventas-por-dia fallo: ${data?.message || response.status}`);
+      if (data.length < 3) throw new Error(`Debe devolver 3 entradas para las 3 fechas distintas. Actual=${data.length}`);
+
+      for (let i = 1; i < data.length; i++) {
+        if (data[i].fecha < data[i - 1].fecha) {
+          throw new Error(`Ventas por dia no estan ordenadas ASC. ${data[i - 1].fecha} > ${data[i].fecha}`);
+        }
+      }
+      if (data[0].fecha !== "2024-01-01") throw new Error(`Primera entrada debe ser 2024-01-01. Actual=${data[0].fecha}`);
+      if (data[data.length - 1].fecha !== "2024-01-05") throw new Error(`Ultima entrada debe ser 2024-01-05. Actual=${data[data.length - 1].fecha}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 (async () => {
   await testBatchManual();
   await testBatchComoComponente();
@@ -2251,6 +2402,11 @@ async function testTipoPagoGetTodosIncluyeInactivos() {
   await testTipoPagoReactiva();
   await testTipoPagoGetExcluyeInactivos();
   await testTipoPagoGetTodosIncluyeInactivos();
+  await testVentasPorDiaDevuelveClaves();
+  await testVentasPorDiaExcluyeAnuladas();
+  await testVentasPorDiaAgrupaVentas();
+  await testVentasPorDiaRespetaFiltroFechas();
+  await testVentasPorDiaOrdenaAscendente();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
   console.error(error.message);
