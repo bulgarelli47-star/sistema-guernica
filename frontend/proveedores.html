@@ -1347,9 +1347,34 @@
       }
     });
 
+    async function cargarTiposPago() {
+      const select = document.getElementById("pagoForma");
+      try {
+        const res = await fetch("/tipos_pago");
+        if (!res.ok) throw new Error("fallo");
+        const tipos = await res.json();
+        if (!Array.isArray(tipos) || tipos.length === 0) throw new Error("vacío");
+        const actual = select.value;
+        select.innerHTML = "";
+        tipos
+          .filter((t) => !t.permite_mixto)
+          .forEach((tipo) => {
+            const opt = document.createElement("option");
+            opt.value = tipo.codigo;
+            opt.textContent = tipo.nombre;
+            select.appendChild(opt);
+          });
+        select.value = actual;
+        if (!select.value && select.options.length > 0) select.value = select.options[0].value;
+      } catch {
+        // fallback: mantener opciones hardcodeadas
+      }
+    }
+
     limpiarFormulario();
     pagoCampos.fecha.value = hoyISO();
     cargarProveedores();
+    cargarTiposPago();
   </script>
   <script src="/nav-permissions.js?v=6" defer></script>
   <script src="/user-menu.js?v=7" defer></script>

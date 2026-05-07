@@ -1308,8 +1308,9 @@
       element.addEventListener("input", actualizarImpacto);
       element.addEventListener("change", actualizarBloqueMixto);
     });
-    document.querySelectorAll("[data-metodo-pago]").forEach((button) => {
-      button.addEventListener("click", () => setMetodoPago(button.dataset.metodoPago));
+    document.getElementById("metodosPagoBotones").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-metodo-pago]");
+      if (btn) setMetodoPago(btn.dataset.metodoPago);
     });
     document.querySelectorAll("[data-estado-pago]").forEach((button) => {
       button.addEventListener("click", () => setEstadoPago(button.dataset.estadoPago));
@@ -1335,12 +1336,38 @@
       renderizarPagos(pagosActuales);
     }));
 
+    async function cargarTiposPago() {
+      const contenedor = document.getElementById("metodosPagoBotones");
+      try {
+        const res = await fetch("/tipos_pago");
+        if (!res.ok) throw new Error("fallo");
+        const tipos = await res.json();
+        if (!Array.isArray(tipos) || tipos.length === 0) throw new Error("vacío");
+        const actual = tipoPago.value || "efectivo";
+        contenedor.innerHTML = "";
+        tipos.forEach((tipo) => {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "method-button" + (tipo.codigo === actual ? " active" : "");
+          btn.dataset.metodoPago = tipo.codigo;
+          btn.textContent = tipo.nombre;
+          contenedor.appendChild(btn);
+        });
+        if (!tipos.find((t) => t.codigo === actual)) {
+          setMetodoPago(tipos[0].codigo);
+        }
+      } catch {
+        // fallback: mantener botones hardcodeados
+      }
+    }
+
     fechaPago.value = hoyISO();
     actualizarBloqueMixto();
     aplicarVisibilidadKpis();
     cargarCaja();
     cargarProveedores();
     cargarPagos();
+    cargarTiposPago();
 
     // ── Edición de pagos ──────────────────────────────────────────
     let pagoEditandoId = null;
