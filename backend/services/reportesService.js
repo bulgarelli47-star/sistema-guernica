@@ -117,4 +117,24 @@ async function getResumenProveedoresPagos({ desde = null, hasta = null } = {}) {
   );
 }
 
-module.exports = { getResumenReportes, getProductosMasVendidos, getResumenProveedoresPagos };
+async function getVentasPorDia({ desde = null, hasta = null } = {}) {
+  const where = ["estado != 'anulado'"];
+  const params = [];
+
+  if (desde) { where.push("fecha >= ?"); params.push(desde); }
+  if (hasta) { where.push("fecha <= ?"); params.push(hasta); }
+
+  return allQuery(
+    `SELECT
+       fecha,
+       COALESCE(SUM(total), 0) AS total,
+       COUNT(*)                AS cantidad_ventas
+     FROM ventas
+     WHERE ${where.join(" AND ")}
+     GROUP BY fecha
+     ORDER BY fecha ASC`,
+    params
+  );
+}
+
+module.exports = { getResumenReportes, getProductosMasVendidos, getResumenProveedoresPagos, getVentasPorDia };
