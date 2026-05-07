@@ -48,7 +48,11 @@ const {
   replaceVentaDetalle,
   resolveCobroData
 } = require("./services/ventaService");
-const { resolvePagoData } = require("./services/pagoService");
+const {
+  getTiposPagoActivos,
+  resolvePagoData,
+  seedTiposPagoDefaults
+} = require("./services/pagoService");
 const {
   PROVEEDOR_IMPACTOS,
   calcularIvaCreditoFiscal,
@@ -230,6 +234,23 @@ async function ensureProveedoresSchema() {
   await ensureColumn("proveedores", "tipo_comprobante", "TEXT NOT NULL DEFAULT 'otro'");
   await ensureColumn("proveedores", "iva_alicuota", "REAL NOT NULL DEFAULT 21");
   await ensureColumn("pagos", "iva_credito_fiscal", "REAL NOT NULL DEFAULT 0");
+}
+
+async function ensureTiposPagoSchema() {
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS tipos_pago (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      codigo TEXT NOT NULL UNIQUE,
+      nombre TEXT NOT NULL,
+      activo INTEGER NOT NULL DEFAULT 1,
+      impacta_caja INTEGER NOT NULL DEFAULT 0,
+      impacta_digital INTEGER NOT NULL DEFAULT 0,
+      permite_mixto INTEGER NOT NULL DEFAULT 0,
+      requiere_caja_abierta INTEGER NOT NULL DEFAULT 1,
+      orden INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  await seedTiposPagoDefaults();
 }
 
 async function ensureProductosSchema() {
@@ -2396,6 +2417,15 @@ app.get("/pagos", async (req, res) => {
   }
 });
 
+app.get("/tipos_pago", async (req, res) => {
+  try {
+    return res.json(await getTiposPagoActivos());
+  } catch (error) {
+    logError("Error al listar tipos de pago:", error);
+    return res.status(500).json({ message: "Error al obtener tipos de pago" });
+  }
+});
+
 // Registrar pago
 app.post("/pagos", async (req, res) => {
   if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para registrar pagos"))) return;
@@ -4331,6 +4361,7 @@ Promise.all([
   ensureUsuariosSchema(),
   ensureCajaMovimientosTable(),
   ensureProveedoresSchema(),
+  ensureTiposPagoSchema(),
   ensureProductosSchema(),
   ensureClientesSchema(),
   ensureConfiguracionSchema()

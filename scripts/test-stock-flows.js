@@ -842,6 +842,36 @@ async function testTipoPagoEfectivoPrevioTiposPago() {
   }
 }
 
+async function testTiposPagoEndpointDefaultsCompatibles() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const { response, data } = await requestJson(baseUrl, "GET", "/tipos_pago", null, token);
+      if (!response.ok) throw new Error(`GET /tipos_pago fallo: ${data?.message || response.status}`);
+      if (!Array.isArray(data)) throw new Error("GET /tipos_pago debe devolver un array");
+
+      const codigos = data.map((tipo) => tipo.codigo);
+      ["efectivo", "debito", "transferencia", "mixto"].forEach((codigo) => {
+        if (!codigos.includes(codigo)) {
+          throw new Error(`GET /tipos_pago debe incluir ${codigo}. Actual=${JSON.stringify(codigos)}`);
+        }
+      });
+
+      const efectivo = data.find((tipo) => tipo.codigo === "efectivo");
+      const mixto = data.find((tipo) => tipo.codigo === "mixto");
+      assertEqual(efectivo.impacta_caja, 1, "Tipo efectivo debe impactar caja");
+      assertEqual(efectivo.impacta_digital, 0, "Tipo efectivo no debe impactar digital");
+      assertEqual(mixto.permite_mixto, 1, "Tipo mixto debe permitir mixto");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testTipoPagoDebitoPrevioTiposPago() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -1456,6 +1486,7 @@ async function testMovimientoManualRegistraStockAnteriorYNuevo() {
   await testPagoMixtoGuardaMontosYCaja();
   await testPagoCalculaIvaCreditoFiscal();
   await testTipoPagoEfectivoPrevioTiposPago();
+  await testTiposPagoEndpointDefaultsCompatibles();
   await testTipoPagoDebitoPrevioTiposPago();
   await testTipoPagoTransferenciaPrevioTiposPago();
   await testTipoPagoMixtoPrevioTiposPago();
