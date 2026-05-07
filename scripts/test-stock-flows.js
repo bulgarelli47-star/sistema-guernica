@@ -1442,6 +1442,185 @@ async function testAnularVentaCompuestaReponeComponente() {
   }
 }
 
+async function testResumenReporteDevuelveClaves() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/resumen", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/resumen fallo: ${data?.message || response.status}`);
+      const claves = ["ventas_totales", "pagos_totales", "balance_general", "iva_credito_fiscal", "ticket_promedio", "total_ventas", "total_pagos", "ventas_efectivo", "ventas_debito", "pagos_efectivo", "pagos_debito"];
+      for (const clave of claves) {
+        if (!(clave in data)) {
+          throw new Error(`GET /reportes/resumen debe devolver clave '${clave}'. Respuesta=${JSON.stringify(data)}`);
+        }
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testResumenReporteExcluyeVentasAnuladas() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const ventaOk = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!ventaOk.response.ok) throw new Error(`Venta cobrada fallo: ${ventaOk.data?.message || ventaOk.response.status}`);
+
+      const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!ventaAnular.response.ok) throw new Error(`Venta a anular fallo: ${ventaAnular.data?.message || ventaAnular.response.status}`);
+
+      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${ventaAnular.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anulacion.response.ok) throw new Error(`Anulacion fallo: ${anulacion.data?.message || anulacion.response.status}`);
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/resumen", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/resumen fallo: ${data?.message || response.status}`);
+
+      assertApprox(data.ventas_totales, 200, "Resumen debe excluir ventas anuladas de ventas_totales");
+      assertEqual(data.total_ventas, 1, "Resumen debe excluir ventas anuladas de total_ventas");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testResumenReporteExcluyePagosPendientes() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST pago registrado resumen",
+        monto_total: 300,
+        tipo_pago: "efectivo",
+        estado: "registrado"
+      });
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST pago pendiente resumen",
+        monto_total: 400,
+        tipo_pago: "efectivo",
+        estado: "pendiente"
+      });
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/resumen", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/resumen fallo: ${data?.message || response.status}`);
+
+      assertApprox(data.pagos_totales, 300, "Resumen debe excluir pagos pendientes de pagos_totales");
+      assertEqual(data.total_pagos, 1, "Resumen debe excluir pagos pendientes de total_pagos");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testResumenReporteCalculaBalanceGeneral() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!venta.response.ok) throw new Error(`Venta para balance fallo: ${venta.data?.message || venta.response.status}`);
+
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST pago balance",
+        monto_total: 80,
+        tipo_pago: "efectivo",
+        estado: "registrado"
+      });
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/resumen", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/resumen fallo: ${data?.message || response.status}`);
+
+      assertApprox(data.ventas_totales, 200, "balance: ventas_totales debe ser 200");
+      assertApprox(data.pagos_totales, 80, "balance: pagos_totales debe ser 80");
+      assertApprox(data.balance_general, 120, "balance_general debe ser ventas_totales - pagos_totales");
+      assertApprox(data.balance_general, data.ventas_totales - data.pagos_totales, "balance_general debe coincidir con la resta de los totales devueltos");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testResumenReporteCalculaTicketPromedio() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const v1 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!v1.response.ok) throw new Error(`Venta 1 ticket promedio fallo: ${v1.data?.message || v1.response.status}`);
+      const v2 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!v2.response.ok) throw new Error(`Venta 2 ticket promedio fallo: ${v2.data?.message || v2.response.status}`);
+      const v3 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!v3.response.ok) throw new Error(`Venta 3 ticket promedio fallo: ${v3.data?.message || v3.response.status}`);
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/resumen", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/resumen fallo: ${data?.message || response.status}`);
+
+      assertEqual(data.total_ventas, 3, "Resumen debe contar 3 ventas en total_ventas");
+      assertApprox(data.ventas_totales, 600, "Resumen debe sumar 600 en ventas_totales (3 x 200)");
+      assertApprox(data.ticket_promedio, 200, "ticket_promedio debe ser ventas_totales / total_ventas = 200");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testResumenReporteRespetaFiltroFechas() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!venta.response.ok) throw new Error(`Venta filtro fechas fallo: ${venta.data?.message || venta.response.status}`);
+
+      // Rango amplio: cubre cualquier fecha que el servidor pueda haber guardado
+      const { response: r1, data: d1 } = await requestJson(baseUrl, "GET", "/reportes/resumen?desde=2000-01-01&hasta=2099-12-31", null, token);
+      if (!r1.ok) throw new Error(`GET /reportes/resumen rango amplio fallo: ${d1?.message || r1.status}`);
+      assertApprox(d1.ventas_totales, 200, "Resumen con rango amplio debe incluir la venta");
+      assertEqual(d1.total_ventas, 1, "Resumen con rango amplio debe contar 1 venta");
+
+      // Rango histórico sin datos: la venta creada es de hoy, no de 2010
+      const { response: r2, data: d2 } = await requestJson(baseUrl, "GET", "/reportes/resumen?desde=2010-01-01&hasta=2010-12-31", null, token);
+      if (!r2.ok) throw new Error(`GET /reportes/resumen rango historico fallo: ${d2?.message || r2.status}`);
+      assertApprox(d2.ventas_totales, 0, "Resumen con rango historico debe excluir la venta de hoy");
+      assertEqual(d2.total_ventas, 0, "Resumen con rango historico debe contar 0 ventas");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testMovimientoManualRegistraStockAnteriorYNuevo() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -1502,6 +1681,12 @@ async function testMovimientoManualRegistraStockAnteriorYNuevo() {
   await testCompuestoConStockPropioNoDuplicaDescuento();
   await testAnularVentaCompuestaReponeComponente();
   await testMovimientoManualRegistraStockAnteriorYNuevo();
+  await testResumenReporteDevuelveClaves();
+  await testResumenReporteExcluyeVentasAnuladas();
+  await testResumenReporteExcluyePagosPendientes();
+  await testResumenReporteCalculaBalanceGeneral();
+  await testResumenReporteCalculaTicketPromedio();
+  await testResumenReporteRespetaFiltroFechas();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
   console.error(error.message);
