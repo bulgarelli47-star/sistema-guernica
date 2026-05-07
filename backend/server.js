@@ -55,6 +55,7 @@ const {
   crearTipoPago,
   actualizarTipoPago,
   toggleActivoTipoPago,
+  eliminarTipoPago,
   resolvePagoData,
   seedTiposPagoDefaults
 } = require("./services/pagoService");
@@ -69,6 +70,14 @@ const {
   buildClienteCuentaResumen,
   getClienteConMetricas
 } = require("./services/clienteService");
+const {
+  actualizarCuentaCobro,
+  crearCuentaCobro,
+  getCuentasCobro,
+  getCuentasCobroPorTipo,
+  toggleActivoCuentaCobro,
+  validarCuentaCobroParaTipo
+} = require("./services/cuentaCobroService");
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -261,6 +270,31 @@ async function ensureTiposPagoSchema() {
     )
   `);
   await seedTiposPagoDefaults();
+}
+
+async function ensureCuentasCobroSchema() {
+  await ensureColumn("pagos", "cuenta_cobro_id", "INTEGER");
+  await ensureColumn("ventas", "cuenta_cobro_id", "INTEGER");
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS cuentas_cobro (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nombre TEXT NOT NULL,
+      tipo_pago_codigo TEXT NOT NULL,
+      tipo_cuenta TEXT,
+      proveedor_integracion TEXT,
+      activo INTEGER NOT NULL DEFAULT 1,
+      orden INTEGER NOT NULL DEFAULT 0,
+      alias TEXT,
+      cbu_cvu TEXT,
+      external_id TEXT,
+      terminal_id TEXT,
+      store_id TEXT,
+      pos_id TEXT,
+      metadata_json TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    )
+  `);
 }
 
 async function ensureProductosSchema() {
@@ -2415,6 +2449,7 @@ app.get("/pagos", async (req, res) => {
       `SELECT p.*, pr.nombre AS proveedor_nombre, pr.tipo_impacto AS proveedor_tipo_impacto,
               pr.condicion_iva AS proveedor_condicion_iva, pr.tipo_comprobante AS proveedor_tipo_comprobante,
               pr.iva_alicuota AS proveedor_iva_alicuota,
+              cc.nombre AS cuenta_cobro_nombre,
               CASE
                 WHEN p.estado != 'pendiente'
                  AND pr.condicion_iva = 'responsable_inscripto'
@@ -2425,6 +2460,7 @@ app.get("/pagos", async (req, res) => {
               END AS iva_credito_fiscal_estimado
        FROM pagos p
        LEFT JOIN proveedores pr ON pr.id = p.proveedor_id
+       LEFT JOIN cuentas_cobro cc ON cc.id = p.cuenta_cobro_id
        ORDER BY p.fecha DESC, p.hora DESC, p.id DESC`
     );
 
@@ -2442,6 +2478,64 @@ app.get("/tipos_pago", async (req, res) => {
   } catch (error) {
     logError("Error al listar tipos de pago:", error);
     return res.status(500).json({ message: "Error al obtener tipos de pago" });
+  }
+});
+
+app.get("/cuentas_cobro", async (req, res) => {
+  try {
+    return res.json(await getCuentasCobro({ todos: req.query.todos === "1" }));
+  } catch (error) {
+    logError("Error al listar cuentas de cobro:", error);
+    return res.status(500).json({ message: "Error al obtener cuentas de cobro" });
+  }
+});
+
+app.get("/cuentas_cobro/tipo/:codigo", async (req, res) => {
+  try {
+    return res.json(await getCuentasCobroPorTipo(req.params.codigo));
+  } catch (error) {
+    logError("Error al listar cuentas de cobro por tipo:", error);
+    return res.status(500).json({ message: "Error al obtener cuentas de cobro" });
+  }
+});
+
+app.post("/cuentas_cobro", async (req, res) => {
+  try {
+    const cuenta = await crearCuentaCobro(req.body);
+    return res.json({ message: "Cuenta de cobro creada", cuenta });
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
+    logError("Error al crear cuenta de cobro:", error);
+    return res.status(500).json({ message: "Error al crear cuenta de cobro" });
+  }
+});
+
+app.put("/cuentas_cobro/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "ID invalido" });
+
+  try {
+    const cuenta = await actualizarCuentaCobro(id, req.body);
+    if (!cuenta) return res.status(404).json({ message: "Cuenta de cobro no encontrada" });
+    return res.json({ message: "Cuenta de cobro actualizada", cuenta });
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
+    logError("Error al actualizar cuenta de cobro:", error);
+    return res.status(500).json({ message: "Error al actualizar cuenta de cobro" });
+  }
+});
+
+app.patch("/cuentas_cobro/:id/activo", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "ID invalido" });
+
+  try {
+    const cuenta = await toggleActivoCuentaCobro(id, req.body.activo);
+    if (!cuenta) return res.status(404).json({ message: "Cuenta de cobro no encontrada" });
+    return res.json({ message: Number(cuenta.activo) === 1 ? "Cuenta activada" : "Cuenta desactivada", cuenta });
+  } catch (error) {
+    logError("Error al cambiar estado de cuenta de cobro:", error);
+    return res.status(500).json({ message: "Error al cambiar estado" });
   }
 });
 
@@ -2498,6 +2592,33 @@ app.patch("/tipos_pago/:id/activo", async (req, res) => {
   }
 });
 
+app.delete("/tipos_pago/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "ID inválido" });
+
+  const CODIGOS_DEFAULT = new Set(["efectivo", "debito", "transferencia", "mixto"]);
+
+  try {
+    const tipo = await getQuery("SELECT id, codigo, nombre FROM tipos_pago WHERE id = ?", [id]);
+    if (!tipo) return res.status(404).json({ message: "Tipo de pago no encontrado" });
+
+    if (CODIGOS_DEFAULT.has(tipo.codigo)) {
+      return res.status(400).json({ message: `"${tipo.nombre}" es un método predeterminado del sistema y no puede eliminarse` });
+    }
+
+    const enUso = await getQuery("SELECT id FROM pagos WHERE tipo_pago = ? LIMIT 1", [tipo.codigo]);
+    if (enUso) {
+      return res.status(400).json({ message: `No se puede eliminar: hay pagos registrados con el método "${tipo.nombre}"` });
+    }
+
+    await eliminarTipoPago(id);
+    return res.json({ message: `Tipo de pago "${tipo.nombre}" eliminado` });
+  } catch (error) {
+    logError("Error al eliminar tipo de pago:", error);
+    return res.status(500).json({ message: "Error al eliminar tipo de pago" });
+  }
+});
+
 // Registrar pago
 app.post("/pagos", async (req, res) => {
   if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para registrar pagos"))) return;
@@ -2514,6 +2635,7 @@ app.post("/pagos", async (req, res) => {
   const observaciones = String(req.body.observaciones || "").trim();
   const estadoPago = String(req.body.estado || "registrado").trim().toLowerCase();
   const esCuentaCorriente = req.body.es_cuenta_corriente ? 1 : 0;
+  const cuentaCobroId = req.body.cuenta_cobro_id ?? null;
   const nowParts = getNowParts();
   const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.fecha || ""))
     ? String(req.body.fecha)
@@ -2567,6 +2689,11 @@ app.post("/pagos", async (req, res) => {
     const requiereCaja = estadoPago !== "pendiente";
     const cajaActiva = requiereCaja ? await getCajaAbiertaActual() : null;
     const ivaCreditoFiscal = estadoPago === "pendiente" ? 0 : calcularIvaCreditoFiscal(montoTotal, proveedorPago);
+    const cuentaCobro = await validarCuentaCobroParaTipo(cuentaCobroId, cobro.tipo_cobro);
+
+    if (!cuentaCobro.ok) {
+      return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
+    }
 
     if (requiereCaja && !cajaActiva) {
       return res.status(400).json({ message: "No hay una caja abierta para registrar el pago" });
@@ -2575,8 +2702,8 @@ app.post("/pagos", async (req, res) => {
     const result = await runQuery(
       `INSERT INTO pagos
       (proveedor_id, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito, fecha, hora, estado, caja_id,
-       categoria_pago, comprobante, numero_comprobante, cuenta_destino, referencia, observaciones, es_cuenta_corriente, iva_credito_fiscal)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       categoria_pago, comprobante, numero_comprobante, cuenta_destino, referencia, observaciones, es_cuenta_corriente, iva_credito_fiscal, cuenta_cobro_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         proveedorId,
         concepto,
@@ -2595,7 +2722,8 @@ app.post("/pagos", async (req, res) => {
         referencia,
         observaciones,
         esCuentaCorriente,
-        ivaCreditoFiscal
+        ivaCreditoFiscal,
+        cuentaCobro.cuenta_cobro_id
       ]
     );
 
@@ -2620,7 +2748,7 @@ app.put("/pagos/:id", async (req, res) => {
 
   const pagoId = Number(req.params.id);
   const { clave, rol, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito,
-          categoria_pago, comprobante, numero_comprobante, cuenta_destino, observaciones } = req.body;
+          categoria_pago, comprobante, numero_comprobante, cuenta_destino, observaciones, cuenta_cobro_id } = req.body;
 
   const claveConfig = await getClaveAutorizacion();
   if (clave !== claveConfig) {
@@ -2646,14 +2774,29 @@ app.put("/pagos/:id", async (req, res) => {
       return res.status(403).json({ message: "Este pago pertenece a un arqueo registrado. Solo Dueño o Encargado puede editarlo." });
     }
 
+    const tipoPagoFinal = String(tipo_pago ?? pago.tipo_pago ?? "").trim().toLowerCase();
+    let cuentaCobroFinal = pago.cuenta_cobro_id ?? null;
+    if (Object.prototype.hasOwnProperty.call(req.body, "cuenta_cobro_id")) {
+      const cuentaCobro = await validarCuentaCobroParaTipo(cuenta_cobro_id, tipoPagoFinal);
+      if (!cuentaCobro.ok) {
+        return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
+      }
+      cuentaCobroFinal = cuentaCobro.cuenta_cobro_id;
+    } else if (cuentaCobroFinal) {
+      const cuentaCobro = await validarCuentaCobroParaTipo(cuentaCobroFinal, tipoPagoFinal);
+      if (!cuentaCobro.ok) {
+        return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
+      }
+    }
+
     // Preservar valores originales para campos NOT NULL que no se editan en el form
     await runQuery(
       `UPDATE pagos SET concepto=?, monto_total=?, tipo_pago=?, monto_efectivo=?, monto_debito=?,
-       categoria_pago=?, comprobante=?, numero_comprobante=?, cuenta_destino=?, observaciones=? WHERE id = ?`,
+       categoria_pago=?, comprobante=?, numero_comprobante=?, cuenta_destino=?, observaciones=?, cuenta_cobro_id=? WHERE id = ?`,
       [
         concepto ?? pago.concepto,
         Number(monto_total) || Number(pago.monto_total) || 0,
-        tipo_pago ?? pago.tipo_pago,
+        tipoPagoFinal || pago.tipo_pago,
         monto_efectivo != null ? Number(monto_efectivo) : Number(pago.monto_efectivo) || 0,
         monto_debito != null ? Number(monto_debito) : Number(pago.monto_debito) || 0,
         categoria_pago ?? pago.categoria_pago ?? null,
@@ -2661,6 +2804,7 @@ app.put("/pagos/:id", async (req, res) => {
         numero_comprobante ?? pago.numero_comprobante ?? null,
         cuenta_destino ?? pago.cuenta_destino ?? null,
         observaciones ?? pago.observaciones ?? null,
+        cuentaCobroFinal,
         pagoId
       ]
     );
@@ -2718,7 +2862,8 @@ app.post("/ventas", async (req, res) => {
     es_cuenta_corriente,
     tipo_cobro,
     monto_efectivo,
-    monto_debito
+    monto_debito,
+    cuenta_cobro_id
   } = req.body;
 
   if (!Array.isArray(items) || items.length === 0) {
@@ -2764,6 +2909,14 @@ app.post("/ventas", async (req, res) => {
     return res.status(400).json({ message: "Datos de cobro invalidos" });
   }
 
+  let cuentaCobroVenta = { cuenta_cobro_id: null };
+  if (tipoVenta === "normal" && !esCuentaCorriente) {
+    cuentaCobroVenta = await validarCuentaCobroParaTipo(cuenta_cobro_id, cobro.tipo_cobro);
+    if (!cuentaCobroVenta.ok) {
+      return res.status(cuentaCobroVenta.statusCode || 400).json({ message: cuentaCobroVenta.message });
+    }
+  }
+
   if (esCuentaCorriente && !clienteId) {
     return res.status(400).json({ message: "La cuenta corriente requiere cliente asociado" });
   }
@@ -2798,8 +2951,8 @@ app.post("/ventas", async (req, res) => {
     // metodo_pago es alias legacy de tipo_cobro — ambos reciben el mismo valor
     const venta = await runQuery(
       `INSERT INTO ventas
-      (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id, cuenta_cobro_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         fecha,
         hora,
@@ -2815,7 +2968,8 @@ app.post("/ventas", async (req, res) => {
         clienteId,
         esCuentaCorriente ? 1 : 0,
         esCuentaCorriente ? total : 0,
-        tipoVenta === "normal" ? cajaActiva.id : null
+        tipoVenta === "normal" ? cajaActiva.id : null,
+        cuentaCobroVenta.cuenta_cobro_id
       ]
     );
 
@@ -4024,11 +4178,16 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
       return res.status(400).json({ message: "Datos de cobro invalidos" });
     }
 
+    const cuentaCobro = await validarCuentaCobroParaTipo(req.body.cuenta_cobro_id, cobroReal.tipo_cobro);
+    if (!cuentaCobro.ok) {
+      return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
+    }
+
     await runQuery("BEGIN TRANSACTION");
 
     await runQuery(
       `UPDATE ventas
-       SET estado = 'cobrada', metodo_pago = ?, tipo_cobro = ?, monto_efectivo = ?, monto_debito = ?, caja_id = ?
+       SET estado = 'cobrada', metodo_pago = ?, tipo_cobro = ?, monto_efectivo = ?, monto_debito = ?, caja_id = ?, cuenta_cobro_id = ?
        WHERE id = ?`,
       [
         cobroReal.tipo_cobro,
@@ -4036,6 +4195,7 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
         cobroReal.monto_efectivo,
         cobroReal.monto_debito,
         cajaActiva.id,
+        cuentaCobro.cuenta_cobro_id,
         ventaId
       ]
     );
@@ -4130,11 +4290,25 @@ app.patch("/ventas/:id/cobro", async (req, res) => {
       return res.status(400).json({ message: "Datos de cobro invalidos" });
     }
 
+    let cuentaCobroFinal = venta.cuenta_cobro_id ?? null;
+    if (Object.prototype.hasOwnProperty.call(req.body, "cuenta_cobro_id")) {
+      const cuentaCobro = await validarCuentaCobroParaTipo(req.body.cuenta_cobro_id, cobro.tipo_cobro);
+      if (!cuentaCobro.ok) {
+        return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
+      }
+      cuentaCobroFinal = cuentaCobro.cuenta_cobro_id;
+    } else if (cuentaCobroFinal) {
+      const cuentaCobro = await validarCuentaCobroParaTipo(cuentaCobroFinal, cobro.tipo_cobro);
+      if (!cuentaCobro.ok) {
+        return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
+      }
+    }
+
     await runQuery(
       `UPDATE ventas
-       SET metodo_pago = ?, tipo_cobro = ?, monto_efectivo = ?, monto_debito = ?
+       SET metodo_pago = ?, tipo_cobro = ?, monto_efectivo = ?, monto_debito = ?, cuenta_cobro_id = ?
        WHERE id = ?`,
-      [cobro.tipo_cobro, cobro.tipo_cobro, cobro.monto_efectivo, cobro.monto_debito, ventaId]
+      [cobro.tipo_cobro, cobro.tipo_cobro, cobro.monto_efectivo, cobro.monto_debito, cuentaCobroFinal, ventaId]
     );
 
     return res.json({ message: `Metodo de pago actualizado en ticket ${ventaId}` });
@@ -4223,7 +4397,10 @@ app.get("/ventas", async (req, res) => {
     const limite = Math.min(Number(req.query.limit) || 500, 2000);
     const offset = Math.max(Number(req.query.offset) || 0, 0);
     const ventas = await allQuery(
-      "SELECT * FROM ventas ORDER BY id DESC LIMIT ? OFFSET ?",
+      `SELECT v.*, cc.nombre AS cuenta_cobro_nombre
+       FROM ventas v
+       LEFT JOIN cuentas_cobro cc ON cc.id = v.cuenta_cobro_id
+       ORDER BY v.id DESC LIMIT ? OFFSET ?`,
       [limite, offset]
     );
     return res.json(ventas);
@@ -4419,6 +4596,7 @@ Promise.all([
   ensureCajaMovimientosTable(),
   ensureProveedoresSchema(),
   ensureTiposPagoSchema(),
+  ensureCuentasCobroSchema(),
   ensureProductosSchema(),
   ensureClientesSchema(),
   ensureConfiguracionSchema()

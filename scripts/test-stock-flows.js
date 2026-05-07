@@ -259,6 +259,24 @@ async function registrarPago(baseUrl, token, payload) {
   return result.data.pago;
 }
 
+async function crearCuentaCobro(baseUrl, token, payload) {
+  const result = await requestJson(baseUrl, "POST", "/cuentas_cobro", {
+    nombre: `Cuenta cobro TEST ${Date.now()}`,
+    tipo_pago_codigo: "efectivo",
+    tipo_cuenta: "terminal",
+    proveedor_integracion: "interno",
+    activo: true,
+    orden: 10,
+    ...payload
+  }, token);
+
+  if (!result.response.ok) {
+    throw new Error(`No se pudo crear cuenta_cobro: ${result.data?.message || result.response.status}`);
+  }
+
+  return result.data.cuenta;
+}
+
 async function getPagos(baseUrl, token) {
   const { response, data } = await requestJson(baseUrl, "GET", "/pagos", null, token);
   if (!response.ok) throw new Error(`No se pudo listar pagos: ${response.status}`);
@@ -2196,6 +2214,99 @@ async function testTipoPagoGetTodosIncluyeInactivos() {
   }
 }
 
+async function testCuentasCobroEtapa2PagosYVentas() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const cuentaEfectivo1 = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Caja mostrador TEST",
+        tipo_pago_codigo: "efectivo",
+        orden: 10
+      });
+      const cuentaEfectivo2 = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Caja salon TEST",
+        tipo_pago_codigo: "efectivo",
+        orden: 20
+      });
+      const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Terminal debito TEST",
+        tipo_pago_codigo: "debito",
+        orden: 30,
+        terminal_id: "TERM-TEST"
+      });
+
+      const { response: cuentasResponse, data: cuentasEfectivo } = await requestJson(baseUrl, "GET", "/cuentas_cobro/tipo/efectivo", null, token);
+      if (!cuentasResponse.ok) throw new Error(`GET /cuentas_cobro/tipo/efectivo fallo: ${cuentasEfectivo?.message || cuentasResponse.status}`);
+      const cuentasEfectivoIds = cuentasEfectivo.map((cuenta) => Number(cuenta.id));
+      if (!cuentasEfectivoIds.includes(Number(cuentaEfectivo1.id)) || !cuentasEfectivoIds.includes(Number(cuentaEfectivo2.id))) {
+        throw new Error("Debe permitir varias cuentas_cobro para el mismo tipo_pago efectivo");
+      }
+
+      const proveedor = await crearProveedor(baseUrl, token);
+      const pagoValido = await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST pago con cuenta cobro",
+        monto_total: 120,
+        tipo_pago: "efectivo",
+        estado: "registrado",
+        cuenta_cobro_id: cuentaEfectivo1.id
+      });
+      assertEqual(pagoValido.cuenta_cobro_id, cuentaEfectivo1.id, "Pago con cuenta_cobro_id valida debe quedar guardado");
+
+      const pagoTipoIncorrecto = await requestJson(baseUrl, "POST", "/pagos", {
+        proveedor_id: proveedor.id,
+        concepto: "TEST pago cuenta tipo incorrecto",
+        monto_total: 90,
+        tipo_pago: "efectivo",
+        estado: "registrado",
+        cuenta_cobro_id: cuentaDebito.id
+      }, token);
+      if (pagoTipoIncorrecto.response.ok) throw new Error("Pago con cuenta_cobro_id de otro tipo_pago debe fallar");
+      assertEqual(pagoTipoIncorrecto.response.status, 400, "Pago con cuenta_cobro_id de otro tipo_pago debe devolver 400");
+
+      const pagoLegacy = await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST pago sin cuenta cobro",
+        monto_total: 70,
+        tipo_pago: "efectivo",
+        estado: "registrado",
+        cuenta_cobro_id: null
+      });
+      assertEqual(pagoLegacy.cuenta_cobro_id || 0, 0, "Pago con cuenta_cobro_id null debe seguir funcionando");
+
+      const ventaValida = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "debito",
+        cuenta_cobro_id: cuentaDebito.id
+      }), token);
+      if (!ventaValida.response.ok) throw new Error(`Venta con cuenta_cobro_id valida fallo: ${ventaValida.data?.message || ventaValida.response.status}`);
+      const detalleVentaValida = await getVentaDetalle(baseUrl, token, ventaValida.data.venta_id);
+      assertEqual(detalleVentaValida.venta.cuenta_cobro_id, cuentaDebito.id, "Venta con cuenta_cobro_id valida debe quedar guardada");
+
+      const ventaTipoIncorrecto = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "efectivo",
+        cuenta_cobro_id: cuentaDebito.id
+      }), token);
+      if (ventaTipoIncorrecto.response.ok) throw new Error("Venta con cuenta_cobro_id de otro tipo_cobro debe fallar");
+      assertEqual(ventaTipoIncorrecto.response.status, 400, "Venta con cuenta_cobro_id de otro tipo_cobro debe devolver 400");
+
+      const ventaLegacy = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "efectivo",
+        cuenta_cobro_id: null
+      }), token);
+      if (!ventaLegacy.response.ok) throw new Error(`Venta con cuenta_cobro_id null fallo: ${ventaLegacy.data?.message || ventaLegacy.response.status}`);
+      const detalleVentaLegacy = await getVentaDetalle(baseUrl, token, ventaLegacy.data.venta_id);
+      assertEqual(detalleVentaLegacy.venta.cuenta_cobro_id || 0, 0, "Venta con cuenta_cobro_id null debe seguir funcionando");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testVentasPorDiaDevuelveClaves() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -2620,6 +2731,7 @@ async function testCompuestoUsaCostoUnitarioDeComponenteFraccionado() {
   await testTipoPagoReactiva();
   await testTipoPagoGetExcluyeInactivos();
   await testTipoPagoGetTodosIncluyeInactivos();
+  await testCuentasCobroEtapa2PagosYVentas();
   await testVentasPorDiaDevuelveClaves();
   await testVentasPorDiaExcluyeAnuladas();
   await testVentasPorDiaAgrupaVentas();

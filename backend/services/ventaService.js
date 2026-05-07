@@ -62,7 +62,13 @@ async function getPagoCuentaCorrienteTotal(ventaId) {
 }
 
 async function getVentaCuentaCorrienteSnapshot(ventaId) {
-  const venta = await getQuery("SELECT * FROM ventas WHERE id = ?", [ventaId]);
+  const venta = await getQuery(
+    `SELECT v.*, cc.nombre AS cuenta_cobro_nombre
+     FROM ventas v
+     LEFT JOIN cuentas_cobro cc ON cc.id = v.cuenta_cobro_id
+     WHERE v.id = ?`,
+    [ventaId]
+  );
 
   if (!venta) {
     return null;
