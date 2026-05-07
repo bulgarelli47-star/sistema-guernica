@@ -733,6 +733,24 @@
       renderModulo();
     }
 
+    async function cargarVentasPorDiaBackend() {
+      const desde = $("desde").value;
+      const hasta = $("hasta").value;
+      if (!desde || !hasta) return;
+      try {
+        const res = await fetch(`/reportes/ventas-por-dia?desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}`);
+        if (!res.ok) throw new Error("fallo");
+        const datos = await res.json();
+        if (!Array.isArray(datos)) throw new Error("formato inesperado");
+        const max = Math.max(1, ...datos.map(d => Number(d.total)));
+        $("ventasPorDia").innerHTML = datos.length
+          ? datos.map(d => `<div class="bar-row"><span>${String(d.fecha).slice(5)}</span><div class="bar-track"><div class="bar-fill" style="width:${Math.max(5, Number(d.total) / max * 100)}%"></div></div><strong>${money(Number(d.total))}</strong></div>`).join("")
+          : `<div class="empty">Sin ventas para el rango seleccionado.</div>`;
+      } catch {
+        // fallback: renderVentasPorDia() ya renderizó el cálculo local
+      }
+    }
+
     async function cargarProductosMasVendidos() {
       const desde = $("desde").value;
       const hasta = $("hasta").value;
@@ -1258,6 +1276,7 @@
       cargarResumenBackend();
       cargarProductosMasVendidos();
       cargarProveedoresPagosBackend();
+      cargarVentasPorDiaBackend();
     }
 
     $("actualizar").onclick = cargarDatos;
@@ -1272,7 +1291,7 @@
     ["desde", "hasta", "comparacion"].forEach((id) => $(id).addEventListener("input", () => {
       if (id !== "comparacion") { state.resumenBackend = null; state.proveedoresPagosBackend = null; }
       render();
-      if (id !== "comparacion") { cargarResumenBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); }
+      if (id !== "comparacion") { cargarResumenBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); cargarVentasPorDiaBackend(); }
     }));
     $("moduloFiltro").onchange = () => { state.modulo = $("moduloFiltro").value; render(); };
     setRange("30");
