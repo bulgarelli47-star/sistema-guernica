@@ -680,7 +680,7 @@
       "cuentas-corrientes": ["Clientes con deuda", "Detalle de movimientos", "Cobros recibidos", "Clientes excedidos"],
       "proveedores-pagos": ["Pagos realizados", "Saldos pendientes", "Compras del periodo", "Detalle por proveedor"]
     };
-    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null };
+    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null, proveedoresPagosBackend: null };
 
     function setMessage(text, type = "") {
       $("mensaje").className = `message ${type}`;
@@ -714,6 +714,23 @@
       }
       renderKpis();
       renderKpiCharts();
+    }
+
+    async function cargarProveedoresPagosBackend() {
+      const desde = $("desde").value;
+      const hasta = $("hasta").value;
+      if (!desde || !hasta) { state.proveedoresPagosBackend = null; return; }
+      try {
+        const res = await fetch(`/reportes/proveedores-pagos?desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}`);
+        if (!res.ok) throw new Error("fallo");
+        const datos = await res.json();
+        if (!Array.isArray(datos)) throw new Error("formato inesperado");
+        state.proveedoresPagosBackend = datos;
+      } catch {
+        state.proveedoresPagosBackend = null;
+      }
+      renderKpiCharts();
+      renderModulo();
     }
 
     async function cargarProductosMasVendidos() {
@@ -851,14 +868,21 @@
       const balCol = balance >= 0 ? '#22a35a' : '#e05252';
 
       // Top proveedor por pagos del período
-      const porProv = new Map();
-      pagos.forEach(p => {
-        const nombre = p.proveedor_nombre || 'Sin proveedor';
-        porProv.set(nombre, (porProv.get(nombre) || 0) + n(p.monto_total || p.monto));
-      });
-      const topProv = [...porProv.entries()].sort((a, b) => b[1] - a[1]);
-      const topProvNombre = topProv[0]?.[0] || '-';
-      const topProvMonto = topProv[0]?.[1] || 0;
+      let topProvNombre, topProvMonto;
+      const ppb = state.proveedoresPagosBackend;
+      if (ppb && ppb.length) {
+        topProvNombre = ppb[0].proveedor_nombre;
+        topProvMonto  = Number(ppb[0].total_pagado);
+      } else {
+        const porProv = new Map();
+        pagos.forEach(p => {
+          const nombre = p.proveedor_nombre || 'Sin proveedor';
+          porProv.set(nombre, (porProv.get(nombre) || 0) + n(p.monto_total || p.monto));
+        });
+        const topProv = [...porProv.entries()].sort((a, b) => b[1] - a[1]);
+        topProvNombre = topProv[0]?.[0] || '-';
+        topProvMonto  = topProv[0]?.[1] || 0;
+      }
 
       // Serie diaria de pagos
       const pagosByDay = new Map();
@@ -1055,7 +1079,14 @@
         caja: [["Ingresos periodo", money(totalVentas)], ["Egresos periodo", money(totalPagos)], ["IVA a favor", money(ivaFavor)], ["Balance caja", money(totalVentas - totalPagos)], ["Operaciones", ventas.length + pagos.length], ["Pagos registrados", pagos.length]],
         stock: [["Productos activos", state.productos.filter((p) => Number(p.activo) !== 0).length], ["Bajo stock", bajoStock], ["Stock valorizado", money(stockValorizado)], ["Items vendidos", detalle.reduce((acc, d) => acc + n(d.cantidad), 0)], ["Categorias", new Set(state.productos.map((p) => p.categoria || p.categoria_nombre).filter(Boolean)).size], ["Sin stock", state.productos.filter((p) => n(p.maneja_stock) && n(p.stock) <= 0).length]],
         "cuentas-corrientes": [["Clientes", state.clientes.length], ["Con deuda", state.clientes.filter((c) => n(c.deuda_actual) > 0).length], ["Deuda total", money(deudaTotal)], ["Excedidos", state.clientes.filter((c) => n(c.limite_credito) > 0 && n(c.deuda_actual) > n(c.limite_credito)).length], ["Cobrado hoy", money(state.clientes.reduce((acc, c) => acc + n(c.cobrado_hoy), 0))], ["Inactivos", state.clientes.filter((c) => Number(c.activo) === 0).length]],
-        "proveedores-pagos": [["Proveedores", state.proveedores.length], ["Pagos periodo", pagos.length], ["Total pagado", money(totalPagos)], ["IVA a favor", money(ivaFavor)], ["Saldo pendiente", money(state.proveedores.reduce((acc, p) => acc + n(p.saldo_pendiente), 0))], ["Compras mes", money(state.proveedores.reduce((acc, p) => acc + n(p.compras_mes), 0))], ["Activos", state.proveedores.filter((p) => Number(p.activo) !== 0).length]]
+        "proveedores-pagos": (() => {
+          const _ppb = state.proveedoresPagosBackend;
+          const _tp   = _ppb ? _ppb.reduce((a, x) => a + Number(x.total_pagado     || 0), 0) : totalPagos;
+          const _iva  = _ppb ? _ppb.reduce((a, x) => a + Number(x.iva_credito_fiscal|| 0), 0) : ivaFavor;
+          const _np   = _ppb ? _ppb.reduce((a, x) => a + Number(x.cantidad_pagos   || 0), 0) : pagos.length;
+          const _pend = _ppb ? _ppb.reduce((a, x) => a + Number(x.total_pendiente  || 0), 0) : state.proveedores.reduce((acc, p) => acc + n(p.saldo_pendiente), 0);
+          return [["Proveedores", state.proveedores.length], ["Pagos periodo", _np], ["Total pagado", money(_tp)], ["IVA a favor", money(_iva)], ["Saldo pendiente", money(_pend)], ["Compras mes", money(state.proveedores.reduce((acc, p) => acc + n(p.compras_mes), 0))], ["Activos", state.proveedores.filter((p) => Number(p.activo) !== 0).length]];
+        })()
       };
       return map[state.modulo] || map.generales;
     }
@@ -1226,6 +1257,7 @@
       render();
       cargarResumenBackend();
       cargarProductosMasVendidos();
+      cargarProveedoresPagosBackend();
     }
 
     $("actualizar").onclick = cargarDatos;
@@ -1238,9 +1270,9 @@
     $("exportModulo").onchange = () => { renderContenidoExportacion(); actualizarNombreArchivo(); };
     ["exportFormato", "exportDesde", "exportHasta"].forEach((id) => $(id).addEventListener("input", actualizarNombreArchivo));
     ["desde", "hasta", "comparacion"].forEach((id) => $(id).addEventListener("input", () => {
-      if (id !== "comparacion") state.resumenBackend = null;
+      if (id !== "comparacion") { state.resumenBackend = null; state.proveedoresPagosBackend = null; }
       render();
-      if (id !== "comparacion") { cargarResumenBackend(); cargarProductosMasVendidos(); }
+      if (id !== "comparacion") { cargarResumenBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); }
     }));
     $("moduloFiltro").onchange = () => { state.modulo = $("moduloFiltro").value; render(); };
     setRange("30");
