@@ -1134,7 +1134,8 @@ app.get("/productos", async (req, res) => {
       allQuery(`SELECT producto_id, costo_unitario, cantidad_usada FROM producto_costos_insumos WHERE producto_id IN (${ph})`, ids),
       chComp ? allQuery(
         `SELECT pc.producto_compuesto_id, pc.producto_id, pc.cantidad,
-                p.stock, p.costo_final, p.precio_compra, p.tipo, p.maneja_stock
+                p.stock, p.costo_final, p.precio_compra, p.tipo, p.maneja_stock,
+                (SELECT SUM(ci.costo_unitario) FROM producto_costos_insumos ci WHERE ci.producto_id = p.id) AS costo_consumo_unitario
          FROM producto_componentes pc
          LEFT JOIN productos p ON p.id = pc.producto_id
          WHERE pc.producto_compuesto_id IN (${chComp})`, compuestoIds
@@ -1161,8 +1162,15 @@ app.get("/productos", async (req, res) => {
     function costoCompuestoMemoria(id, rendimiento) {
       const comps = componentesMap.get(id) || [];
       const extras = (costosExtraMap.get(id) || []).reduce((a, e) => a + Number(e.monto || 0), 0);
-      const costoComps = comps.reduce((a, c) => a + Number(c.costo_final || c.precio_compra || 0) * Number(c.cantidad || 0), 0);
-      return Number(((costoComps + extras) / Math.max(1, Number(rendimiento) || 1)).toFixed(2));
+      const costoComps = comps.reduce((a, c) => {
+        const cu = c.costo_consumo_unitario != null
+          ? Number(c.costo_consumo_unitario)
+          : Number(c.costo_final || c.precio_compra || 0);
+        return a + cu * Number(c.cantidad || 0);
+      }, 0);
+      const rend = Math.max(1, Number(rendimiento) || 1);
+      const extrasPorPorcion = Number((extras / rend).toFixed(4));
+      return Number((costoComps + extrasPorPorcion).toFixed(2));
     }
 
     function stockCompuestoMemoria(id, rendimiento) {
