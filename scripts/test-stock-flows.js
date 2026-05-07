@@ -1650,6 +1650,182 @@ async function testMovimientoManualRegistraStockAnteriorYNuevo() {
   }
 }
 
+async function testProductosMasVendidosDevuelveClaves() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!venta.response.ok) throw new Error(`Venta fallo: ${venta.data?.message || venta.response.status}`);
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/productos-mas-vendidos", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/productos-mas-vendidos fallo: ${data?.message || response.status}`);
+      if (!Array.isArray(data)) throw new Error("GET /reportes/productos-mas-vendidos debe devolver un array");
+      if (!data.length) throw new Error("GET /reportes/productos-mas-vendidos debe devolver al menos un item");
+
+      const item = data[0];
+      for (const clave of ["producto_id", "nombre", "cantidad_total", "total_vendido"]) {
+        if (!(clave in item)) {
+          throw new Error(`Cada item debe tener clave '${clave}'. Item=${JSON.stringify(item)}`);
+        }
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testProductosMasVendidosExcluyeVentasAnuladas() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const ventaOk = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!ventaOk.response.ok) throw new Error(`Venta cobrada fallo: ${ventaOk.data?.message || ventaOk.response.status}`);
+
+      const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!ventaAnular.response.ok) throw new Error(`Venta a anular fallo: ${ventaAnular.data?.message || ventaAnular.response.status}`);
+
+      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${ventaAnular.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anulacion.response.ok) throw new Error(`Anulacion fallo: ${anulacion.data?.message || anulacion.response.status}`);
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/productos-mas-vendidos", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/productos-mas-vendidos fallo: ${data?.message || response.status}`);
+
+      const item = data.find((d) => Number(d.producto_id) === 11);
+      if (!item) throw new Error("El producto 11 debe aparecer en el reporte tras la venta no anulada");
+      assertApprox(item.cantidad_total, 2, "Productos mas vendidos debe excluir ventas anuladas de cantidad_total");
+      assertApprox(item.total_vendido, 200, "Productos mas vendidos debe excluir ventas anuladas de total_vendido");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testProductosMasVendidosOrdenaPorCantidad() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const categoriaId = await crearCategoria(baseUrl, token, "TEST Orden Productos");
+      const productoSecundarioId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Producto Secundario Orden",
+        categoria: "TEST Orden Productos",
+        categoria_id: categoriaId,
+        stock: 50,
+        precio_venta: 50
+      });
+
+      // Producto 11: 4 unidades en total (2 ventas × 2)
+      await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+
+      // Producto secundario: 1 unidad
+      const ventaSecundaria = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [{ producto_id: productoSecundarioId, nombre_producto: "TEST Producto Secundario Orden", cantidad: 1, precio_unitario: 50 }]
+      }, token);
+      if (!ventaSecundaria.response.ok) throw new Error(`Venta secundaria fallo: ${ventaSecundaria.data?.message || ventaSecundaria.response.status}`);
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/productos-mas-vendidos", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/productos-mas-vendidos fallo: ${data?.message || response.status}`);
+      if (data.length < 2) throw new Error(`Reporte debe devolver al menos 2 productos. Actual=${data.length}`);
+
+      if (Number(data[0].cantidad_total) < Number(data[1].cantidad_total)) {
+        throw new Error(`Reporte debe ordenar por cantidad_total DESC. Primero=${data[0].cantidad_total}, Segundo=${data[1].cantidad_total}`);
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testProductosMasVendidosRespetaFiltroFechas() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!venta.response.ok) throw new Error(`Venta fallo: ${venta.data?.message || venta.response.status}`);
+
+      // Rango amplio: incluye la venta de hoy
+      const { response: r1, data: d1 } = await requestJson(baseUrl, "GET", "/reportes/productos-mas-vendidos?desde=2000-01-01&hasta=2099-12-31", null, token);
+      if (!r1.ok) throw new Error(`GET rango amplio fallo: ${d1?.message || r1.status}`);
+      if (!d1.length) throw new Error("Rango amplio debe devolver al menos un producto vendido");
+
+      // Rango historico sin datos: excluye la venta de hoy
+      const { response: r2, data: d2 } = await requestJson(baseUrl, "GET", "/reportes/productos-mas-vendidos?desde=2010-01-01&hasta=2010-12-31", null, token);
+      if (!r2.ok) throw new Error(`GET rango historico fallo: ${d2?.message || r2.status}`);
+      if (d2.length !== 0) throw new Error(`Rango historico debe devolver array vacio. Actual=${JSON.stringify(d2)}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testProductosMasVendidosRespetaLimite() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const categoriaId = await crearCategoria(baseUrl, token, "TEST Limite Productos");
+      const productoExtraId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Producto Limite Extra",
+        categoria: "TEST Limite Productos",
+        categoria_id: categoriaId,
+        stock: 50,
+        precio_venta: 50
+      });
+
+      // 2 productos distintos con ventas
+      await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const ventaExtra = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [{ producto_id: productoExtraId, nombre_producto: "TEST Producto Limite Extra", cantidad: 1, precio_unitario: 50 }]
+      }, token);
+      if (!ventaExtra.response.ok) throw new Error(`Venta extra fallo: ${ventaExtra.data?.message || ventaExtra.response.status}`);
+
+      // limite=1 debe devolver exactamente 1 resultado
+      const { response: r1, data: d1 } = await requestJson(baseUrl, "GET", "/reportes/productos-mas-vendidos?limite=1", null, token);
+      if (!r1.ok) throw new Error(`GET limite=1 fallo: ${d1?.message || r1.status}`);
+      assertEqual(d1.length, 1, "Con limite=1 el endpoint debe devolver exactamente 1 producto");
+
+      // limite=100 debe devolver todos (ambos productos)
+      const { response: r2, data: d2 } = await requestJson(baseUrl, "GET", "/reportes/productos-mas-vendidos?limite=100", null, token);
+      if (!r2.ok) throw new Error(`GET limite=100 fallo: ${d2?.message || r2.status}`);
+      if (d2.length < 2) throw new Error(`Con limite=100 debe devolver todos los productos vendidos. Actual=${d2.length}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 (async () => {
   await testBatchManual();
   await testBatchComoComponente();
@@ -1687,6 +1863,11 @@ async function testMovimientoManualRegistraStockAnteriorYNuevo() {
   await testResumenReporteCalculaBalanceGeneral();
   await testResumenReporteCalculaTicketPromedio();
   await testResumenReporteRespetaFiltroFechas();
+  await testProductosMasVendidosDevuelveClaves();
+  await testProductosMasVendidosExcluyeVentasAnuladas();
+  await testProductosMasVendidosOrdenaPorCantidad();
+  await testProductosMasVendidosRespetaFiltroFechas();
+  await testProductosMasVendidosRespetaLimite();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
   console.error(error.message);
