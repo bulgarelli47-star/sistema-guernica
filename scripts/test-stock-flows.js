@@ -1826,6 +1826,185 @@ async function testProductosMasVendidosRespetaLimite() {
   }
 }
 
+async function testProveedoresPagosDevuelveClaves() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST claves endpoint proveedores",
+        monto_total: 200,
+        tipo_pago: "efectivo",
+        estado: "registrado"
+      });
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/proveedores-pagos fallo: ${data?.message || response.status}`);
+      if (!Array.isArray(data)) throw new Error("GET /reportes/proveedores-pagos debe devolver un array");
+      if (!data.length) throw new Error("GET /reportes/proveedores-pagos debe devolver al menos un item");
+
+      const item = data[0];
+      for (const clave of ["proveedor_id", "proveedor_nombre", "tipo_impacto", "total_pagado", "total_pendiente", "iva_credito_fiscal", "cantidad_pagos"]) {
+        if (!(clave in item)) {
+          throw new Error(`Cada item debe tener clave '${clave}'. Item=${JSON.stringify(item)}`);
+        }
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testProveedoresPagosSumaTotalPagado() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST pagado 1", monto_total: 300, tipo_pago: "efectivo", estado: "registrado" });
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST pagado 2", monto_total: 200, tipo_pago: "efectivo", estado: "registrado" });
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST pendiente no suma", monto_total: 100, tipo_pago: "efectivo", estado: "pendiente" });
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/proveedores-pagos fallo: ${data?.message || response.status}`);
+
+      const item = data.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
+      if (!item) throw new Error("El proveedor debe aparecer en el reporte de proveedores");
+      assertApprox(item.total_pagado, 500, "total_pagado debe sumar solo pagos registrados (300 + 200 = 500)");
+      assertEqual(item.cantidad_pagos, 3, "cantidad_pagos debe contar todos los pagos del proveedor (registrados + pendientes)");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testProveedoresPagosSumaTotalPendiente() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST registrado", monto_total: 300, tipo_pago: "efectivo", estado: "registrado" });
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST pendiente 1", monto_total: 150, tipo_pago: "efectivo", estado: "pendiente" });
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST pendiente 2", monto_total: 250, tipo_pago: "efectivo", estado: "pendiente" });
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/proveedores-pagos fallo: ${data?.message || response.status}`);
+
+      const item = data.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
+      if (!item) throw new Error("El proveedor debe aparecer en el reporte de proveedores");
+      assertApprox(item.total_pendiente, 400, "total_pendiente debe sumar solo pagos pendientes (150 + 250 = 400)");
+      assertApprox(item.total_pagado, 300, "total_pagado no debe incluir pagos pendientes");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testProveedoresPagosCalculaIvaSoloRegistrados() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedor = await crearProveedor(baseUrl, token, {
+        condicion_iva: "responsable_inscripto",
+        tipo_comprobante: "factura_a",
+        iva_alicuota: 21
+      });
+
+      // Pago registrado: monto 1210 → IVA = 1210 × 21 / 121 ≈ 210
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST IVA registrado", monto_total: 1210, tipo_pago: "transferencia", estado: "registrado" });
+      // Pago pendiente: servidor almacena iva_credito_fiscal = 0 para pendientes
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST IVA pendiente", monto_total: 2420, tipo_pago: "efectivo", estado: "pendiente" });
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/proveedores-pagos fallo: ${data?.message || response.status}`);
+
+      const item = data.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
+      if (!item) throw new Error("El proveedor debe aparecer en el reporte");
+      assertApprox(item.iva_credito_fiscal, 210, "iva_credito_fiscal debe calcularse solo sobre pagos registrados", 1);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testProveedoresPagosRespetaFiltroFechas() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST filtro fecha proveedor", monto_total: 300, tipo_pago: "efectivo", estado: "registrado" });
+
+      // Rango amplio: incluye el pago de hoy
+      const { response: r1, data: d1 } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos?desde=2000-01-01&hasta=2099-12-31", null, token);
+      if (!r1.ok) throw new Error(`GET rango amplio fallo: ${d1?.message || r1.status}`);
+      const itemAmplio = d1.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
+      if (!itemAmplio) throw new Error("Rango amplio debe incluir el proveedor con pagos de hoy");
+      assertApprox(itemAmplio.total_pagado, 300, "Rango amplio debe incluir el pago registrado");
+
+      // Rango histórico sin datos: el proveedor no debe aparecer
+      const { response: r2, data: d2 } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos?desde=2010-01-01&hasta=2010-12-31", null, token);
+      if (!r2.ok) throw new Error(`GET rango historico fallo: ${d2?.message || r2.status}`);
+      const itemHistorico = d2.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
+      if (itemHistorico) throw new Error(`Rango historico no debe incluir el proveedor. Encontrado=${JSON.stringify(itemHistorico)}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testProveedoresPagosSinProveedor() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      await registrarPago(baseUrl, token, {
+        concepto: "TEST pago sin proveedor agrupado",
+        monto_total: 150,
+        tipo_pago: "efectivo",
+        estado: "registrado"
+      });
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/proveedores-pagos fallo: ${data?.message || response.status}`);
+
+      const sinProveedor = data.find((d) => d.proveedor_nombre === "Sin proveedor");
+      if (!sinProveedor) throw new Error(`Pagos sin proveedor deben agruparse como 'Sin proveedor'. Nombres=${JSON.stringify(data.map((d) => d.proveedor_nombre))}`);
+      assertApprox(sinProveedor.total_pagado, 150, "Sin proveedor debe sumar el monto del pago registrado");
+      assertEqual(sinProveedor.cantidad_pagos, 1, "Sin proveedor debe contar el pago correctamente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 (async () => {
   await testBatchManual();
   await testBatchComoComponente();
@@ -1868,6 +2047,12 @@ async function testProductosMasVendidosRespetaLimite() {
   await testProductosMasVendidosOrdenaPorCantidad();
   await testProductosMasVendidosRespetaFiltroFechas();
   await testProductosMasVendidosRespetaLimite();
+  await testProveedoresPagosDevuelveClaves();
+  await testProveedoresPagosSumaTotalPagado();
+  await testProveedoresPagosSumaTotalPendiente();
+  await testProveedoresPagosCalculaIvaSoloRegistrados();
+  await testProveedoresPagosRespetaFiltroFechas();
+  await testProveedoresPagosSinProveedor();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
   console.error(error.message);
