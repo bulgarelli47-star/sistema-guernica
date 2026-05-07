@@ -716,6 +716,23 @@
       renderKpiCharts();
     }
 
+    async function cargarProductosMasVendidos() {
+      const desde = $("desde").value;
+      const hasta = $("hasta").value;
+      if (!desde || !hasta) return;
+      try {
+        const res = await fetch(`/reportes/productos-mas-vendidos?desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}&limite=6`);
+        if (!res.ok) throw new Error("fallo");
+        const datos = await res.json();
+        if (!Array.isArray(datos)) throw new Error("formato inesperado");
+        $("topProductos").innerHTML = datos.length
+          ? datos.map(d => `<div class="item"><div><strong>${d.nombre}</strong><small>${d.cantidad_total} unidades vendidas</small></div><strong>${money(Number(d.total_vendido))}</strong></div>`).join("")
+          : `<div class="empty">Sin detalle de productos para el periodo.</div>`;
+      } catch {
+        // fallback: renderProductos() ya renderizó el cálculo local
+      }
+    }
+
     function setRange(range) {
       const today = new Date();
       let from = new Date(today);
@@ -1208,6 +1225,7 @@
       Object.assign(state, { ventas, detalle, productos, clientes, pagos, proveedores, config: configData.config || {} });
       render();
       cargarResumenBackend();
+      cargarProductosMasVendidos();
     }
 
     $("actualizar").onclick = cargarDatos;
@@ -1222,7 +1240,7 @@
     ["desde", "hasta", "comparacion"].forEach((id) => $(id).addEventListener("input", () => {
       if (id !== "comparacion") state.resumenBackend = null;
       render();
-      if (id !== "comparacion") cargarResumenBackend();
+      if (id !== "comparacion") { cargarResumenBackend(); cargarProductosMasVendidos(); }
     }));
     $("moduloFiltro").onchange = () => { state.modulo = $("moduloFiltro").value; render(); };
     setRange("30");
