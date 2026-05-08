@@ -666,6 +666,61 @@
       flex: 0 0 auto;
     }
 
+    .cuentas-cobro-card {
+      display: none;
+      gap: 12px;
+    }
+
+    .cuentas-cobro-card.visible {
+      display: grid;
+    }
+
+    .cuentas-cobro-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
+
+    .cuenta-cobro-item {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #fff;
+      padding: 12px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .cuenta-cobro-top,
+    .cuenta-cobro-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .cuenta-cobro-top strong {
+      overflow-wrap: anywhere;
+    }
+
+    .cuenta-cobro-row {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .cuenta-cobro-balance {
+      font-size: 18px;
+      font-weight: 900;
+    }
+
+    .cuenta-cobro-balance.negativo {
+      color: var(--danger);
+    }
+
+    .cuenta-cobro-balance.positivo {
+      color: var(--success);
+    }
+
     .method-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2192,6 +2247,16 @@
             <small>Comparación con arqueo</small>
           </div>
         </div>
+
+        <article class="card cuentas-cobro-card" id="resumenCuentasCobroCard">
+          <div class="section-header">
+            <div>
+              <h3>Resumen por cuenta / terminal</h3>
+              <small>Ingresos, egresos y balance asociados a cuentas de cobro.</small>
+            </div>
+          </div>
+          <div class="cuentas-cobro-grid" id="resumenCuentasCobro"></div>
+        </article>
 
         <div class="summary-detail-grid">
           <div class="card status-card equal-panel">
@@ -4381,6 +4446,51 @@
       }
     }
 
+    function renderizarResumenCuentasCobro(cuentas) {
+      const card = document.getElementById("resumenCuentasCobroCard");
+      const grid = document.getElementById("resumenCuentasCobro");
+      if (!card || !grid) return;
+
+      const items = Array.isArray(cuentas) ? cuentas : [];
+      if (!items.length) {
+        card.classList.remove("visible");
+        grid.innerHTML = "";
+        return;
+      }
+
+      const ordenados = [...items].sort((a, b) => Number(b.balance || 0) - Number(a.balance || 0));
+      grid.innerHTML = ordenados.map((cuenta) => {
+        const balance = Number(cuenta.balance || 0);
+        const claseBalance = balance < 0 ? "negativo" : "positivo";
+        return `
+          <div class="cuenta-cobro-item">
+            <div class="cuenta-cobro-top">
+              <strong>${cuenta.cuenta_nombre || "Sin cuenta"}</strong>
+              <span class="cuenta-cobro-balance ${claseBalance}">${money(balance)}</span>
+            </div>
+            <div class="cuenta-cobro-row"><span>Ingresos</span><strong>${money(cuenta.ingresos)}</strong></div>
+            <div class="cuenta-cobro-row"><span>Egresos</span><strong>${money(cuenta.egresos)}</strong></div>
+            <div class="cuenta-cobro-row"><span>Movimientos</span><strong>${Number(cuenta.ventas || 0)} ventas · ${Number(cuenta.pagos || 0)} pagos</strong></div>
+          </div>
+        `;
+      }).join("");
+      card.classList.add("visible");
+    }
+
+    async function cargarResumenCuentasCobro(cajaId = null) {
+      const card = document.getElementById("resumenCuentasCobroCard");
+      try {
+        const url = cajaId ? `/caja/resumen/cuentas?caja_id=${encodeURIComponent(cajaId)}` : "/caja/resumen/cuentas";
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("No se pudo obtener resumen por cuenta");
+        const data = await res.json();
+        renderizarResumenCuentasCobro(data.cuentas);
+      } catch (error) {
+        console.error("Error al cargar resumen por cuenta:", error);
+        card?.classList.remove("visible");
+      }
+    }
+
     async function cargarCaja() {
       try {
         const [res, configRes] = await Promise.all([
@@ -4396,6 +4506,7 @@
         renderizarApertura(data.apertura);
         renderizarResumen(data.resumen);
         renderizarVentas(data.ventas);
+        cargarResumenCuentasCobro(data.apertura?.id || null);
       } catch (error) {
         console.error("Error al cargar caja:", error);
         estadoApertura.innerText = "Error al cargar apertura.";

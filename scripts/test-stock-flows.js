@@ -150,6 +150,13 @@ async function getCajaResumen(baseUrl, token) {
   return data;
 }
 
+async function getCajaResumenCuentas(baseUrl, token, cajaId = null) {
+  const url = cajaId ? `/caja/resumen/cuentas?caja_id=${cajaId}` : "/caja/resumen/cuentas";
+  const { response, data } = await requestJson(baseUrl, "GET", url, null, token);
+  if (!response.ok) throw new Error(`No se pudo obtener caja/resumen/cuentas: ${data?.message || response.status}`);
+  return data;
+}
+
 async function getMovimientosStock(baseUrl, token, productoId) {
   const { response, data } = await requestJson(baseUrl, "GET", `/productos/${productoId}/movimientos-stock`, null, token);
   if (!response.ok) throw new Error(`No se pudo obtener movimientos de stock: ${response.status}`);
@@ -2307,6 +2314,127 @@ async function testCuentasCobroEtapa2PagosYVentas() {
   }
 }
 
+async function testCajaResumenPorCuentaCobro() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const apertura = await abrirCaja(baseUrl, token, 1000);
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Caja efectivo resumen TEST",
+        tipo_pago_codigo: "efectivo",
+        orden: 10
+      });
+      const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Terminal debito resumen TEST",
+        tipo_pago_codigo: "debito",
+        orden: 20
+      });
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      const ventaEfectivo = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "efectivo",
+        cuenta_cobro_id: cuentaEfectivo.id
+      }), token);
+      if (!ventaEfectivo.response.ok) throw new Error(`Venta efectivo con cuenta fallo: ${ventaEfectivo.data?.message || ventaEfectivo.response.status}`);
+
+      const ventaDebito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "debito",
+        cuenta_cobro_id: cuentaDebito.id
+      }), token);
+      if (!ventaDebito.response.ok) throw new Error(`Venta debito con cuenta fallo: ${ventaDebito.data?.message || ventaDebito.response.status}`);
+
+      const ventaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "efectivo",
+        cuenta_cobro_id: null
+      }), token);
+      if (!ventaSinCuenta.response.ok) throw new Error(`Venta sin cuenta fallo: ${ventaSinCuenta.data?.message || ventaSinCuenta.response.status}`);
+
+      const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "efectivo",
+        cuenta_cobro_id: cuentaEfectivo.id
+      }), token);
+      if (!ventaAnular.response.ok) throw new Error(`Venta a anular fallo: ${ventaAnular.data?.message || ventaAnular.response.status}`);
+      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${ventaAnular.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anulacion.response.ok) throw new Error(`Anulacion de venta con cuenta fallo: ${anulacion.data?.message || anulacion.response.status}`);
+
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST egreso cuenta efectivo",
+        monto_total: 50,
+        tipo_pago: "efectivo",
+        estado: "registrado",
+        cuenta_cobro_id: cuentaEfectivo.id
+      });
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST egreso cuenta debito",
+        monto_total: 30,
+        tipo_pago: "debito",
+        estado: "registrado",
+        cuenta_cobro_id: cuentaDebito.id
+      });
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST egreso sin cuenta",
+        monto_total: 20,
+        tipo_pago: "efectivo",
+        estado: "registrado",
+        cuenta_cobro_id: null
+      });
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST pendiente no impacta cuenta",
+        monto_total: 40,
+        tipo_pago: "efectivo",
+        estado: "pendiente",
+        cuenta_cobro_id: cuentaEfectivo.id
+      });
+
+      const resumenAbierta = await getCajaResumenCuentas(baseUrl, token);
+      assertEqual(resumenAbierta.caja.id, apertura.id, "Resumen por cuenta sin caja_id debe usar caja abierta");
+      const porNombre = Object.fromEntries(resumenAbierta.cuentas.map((cuenta) => [cuenta.cuenta_nombre, cuenta]));
+      const efectivo = porNombre["Caja efectivo resumen TEST"];
+      const debito = porNombre["Terminal debito resumen TEST"];
+      const sinCuenta = porNombre["Sin cuenta"];
+
+      if (!efectivo || !debito || !sinCuenta) {
+        throw new Error(`Resumen por cuenta debe incluir ambas cuentas y Sin cuenta. Actual=${JSON.stringify(resumenAbierta.cuentas)}`);
+      }
+
+      assertApprox(efectivo.ingresos, 200, "Venta con cuenta_cobro debe sumar ingreso correcto");
+      assertApprox(efectivo.egresos, 50, "Pago registrado con cuenta_cobro debe sumar egreso correcto");
+      assertApprox(efectivo.balance, 150, "Balance cuenta efectivo debe ser ingresos - egresos");
+      assertEqual(efectivo.ventas, 1, "Venta anulada no debe contar como venta por cuenta");
+      assertEqual(efectivo.pagos, 1, "Pago pendiente no debe contar como pago por cuenta");
+
+      assertApprox(debito.ingresos, 200, "Varias cuentas deben separar ingresos");
+      assertApprox(debito.egresos, 30, "Varias cuentas deben separar egresos");
+      assertApprox(debito.balance, 170, "Balance cuenta debito debe ser ingresos - egresos");
+
+      assertApprox(sinCuenta.ingresos, 200, "Movimientos sin cuenta deben sumar ingresos en Sin cuenta");
+      assertApprox(sinCuenta.egresos, 20, "Movimientos sin cuenta deben sumar egresos en Sin cuenta");
+      assertApprox(sinCuenta.balance, 180, "Balance Sin cuenta debe ser ingresos - egresos");
+
+      if (resumenAbierta.cuentas[0].cuenta_nombre !== "Sin cuenta") {
+        throw new Error(`Resumen debe ordenarse por mayor balance DESC. Primero=${resumenAbierta.cuentas[0].cuenta_nombre}`);
+      }
+
+      const cajaCerrada = await cerrarCaja(baseUrl, token, 2000, 0, 0);
+      const resumenCerrada = await getCajaResumenCuentas(baseUrl, token);
+      assertEqual(resumenCerrada.caja.id, cajaCerrada.id, "Resumen por cuenta sin caja abierta debe usar ultima caja cerrada");
+      const efectivoCerrada = resumenCerrada.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Caja efectivo resumen TEST");
+      assertApprox(efectivoCerrada?.balance, 150, "Resumen por cuenta de ultima caja cerrada debe conservar balance");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testVentasPorDiaDevuelveClaves() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -2732,6 +2860,7 @@ async function testCompuestoUsaCostoUnitarioDeComponenteFraccionado() {
   await testTipoPagoGetExcluyeInactivos();
   await testTipoPagoGetTodosIncluyeInactivos();
   await testCuentasCobroEtapa2PagosYVentas();
+  await testCajaResumenPorCuentaCobro();
   await testVentasPorDiaDevuelveClaves();
   await testVentasPorDiaExcluyeAnuladas();
   await testVentasPorDiaAgrupaVentas();

@@ -37,6 +37,7 @@ const {
   getCajaAbiertaActual,
   getCajaParaArqueos,
   getPagosCaja,
+  getResumenPorCuentaCobro,
   getUltimaCajaRegistrada,
   mapCajaArqueo,
   parseJsonOrFallback
@@ -3294,6 +3295,27 @@ app.get("/caja/resumen", async (req, res) => {
   } catch (error) {
     logError("Error al obtener resumen de caja:", error);
     return res.status(500).json({ message: "Error al obtener resumen de caja" });
+  }
+});
+
+app.get("/caja/resumen/cuentas", async (req, res) => {
+  try {
+    const cajaId = Number(req.query.caja_id) || null;
+    const caja = cajaId
+      ? await getQuery("SELECT * FROM caja_aperturas WHERE id = ?", [cajaId])
+      : await getCajaAbiertaActual() || await getUltimaCajaRegistrada();
+
+    if (!caja) {
+      return res.json({ caja: null, cuentas: [] });
+    }
+
+    return res.json({
+      caja,
+      cuentas: await getResumenPorCuentaCobro({ cajaId: caja.id })
+    });
+  } catch (error) {
+    logError("Error al obtener resumen por cuenta de cobro:", error);
+    return res.status(500).json({ message: "Error al obtener resumen por cuenta de cobro" });
   }
 });
 

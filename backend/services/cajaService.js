@@ -293,6 +293,72 @@ async function buildCajaSnapshot(cajaId) {
   }));
 }
 
+function mapResumenCuenta(row) {
+  const ingresos = Number(row.ingresos || 0);
+  const egresos = Number(row.egresos || 0);
+  return {
+    cuenta_cobro_id: row.cuenta_cobro_id == null ? null : Number(row.cuenta_cobro_id),
+    cuenta_nombre: row.cuenta_nombre || "Sin cuenta",
+    ingresos: Number(ingresos.toFixed(2)),
+    egresos: Number(egresos.toFixed(2)),
+    balance: Number((ingresos - egresos).toFixed(2)),
+    ventas: Number(row.ventas || 0),
+    pagos: Number(row.pagos || 0)
+  };
+}
+
+async function getResumenPorCuentaCobro({ cajaId } = {}) {
+  if (!cajaId) {
+    return [];
+  }
+
+  const rows = await allQuery(
+    `WITH movimientos AS (
+       SELECT
+         v.cuenta_cobro_id AS cuenta_cobro_id,
+         COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+         SUM(COALESCE(v.total, 0)) AS ingresos,
+         0 AS egresos,
+         COUNT(*) AS ventas,
+         0 AS pagos
+       FROM ventas v
+       LEFT JOIN cuentas_cobro cc ON cc.id = v.cuenta_cobro_id
+       WHERE v.caja_id = ?
+         AND v.estado = 'cobrada'
+         AND COALESCE(v.estado, '') != 'anulado'
+       GROUP BY v.cuenta_cobro_id, COALESCE(cc.nombre, 'Sin cuenta')
+
+       UNION ALL
+
+       SELECT
+         p.cuenta_cobro_id AS cuenta_cobro_id,
+         COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+         0 AS ingresos,
+         SUM(COALESCE(p.monto_total, 0)) AS egresos,
+         0 AS ventas,
+         COUNT(*) AS pagos
+       FROM pagos p
+       LEFT JOIN cuentas_cobro cc ON cc.id = p.cuenta_cobro_id
+       WHERE p.caja_id = ?
+         AND p.estado = 'registrado'
+       GROUP BY p.cuenta_cobro_id, COALESCE(cc.nombre, 'Sin cuenta')
+     )
+     SELECT
+       cuenta_cobro_id,
+       cuenta_nombre,
+       SUM(ingresos) AS ingresos,
+       SUM(egresos) AS egresos,
+       SUM(ventas) AS ventas,
+       SUM(pagos) AS pagos
+     FROM movimientos
+     GROUP BY cuenta_cobro_id, cuenta_nombre
+     ORDER BY (SUM(ingresos) - SUM(egresos)) DESC, cuenta_nombre ASC`,
+    [cajaId, cajaId]
+  );
+
+  return rows.map(mapResumenCuenta);
+}
+
 function buildCajaResumen(ventas) {
   const resumen = ventas.reduce(
     (acc, movimiento) => {
@@ -479,6 +545,7 @@ module.exports = {
   buildCajaResumen,
   buildCajaResumenConSaldoMp,
   buildCajaSnapshot,
+  getResumenPorCuentaCobro,
   buildConteoBilletes,
   ensureCajaArqueosTable,
   ensureCajaMovimientosTable,
