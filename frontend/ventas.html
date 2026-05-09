@@ -1913,6 +1913,17 @@
       return Number((Number(precioBase || 0) + calcularExtrasModificadores(modificadores)).toFixed(2));
     }
 
+    function calcularPrecioBaseDesdeDetalle(item) {
+      const precioDetalle = Number(item?.precio_unitario || 0) || 0;
+      const modificadores = normalizarModificadoresTicket(item?.modificadores);
+      if (!modificadores.length) return precioDetalle;
+
+      // El backend guarda detalle_ventas.precio_unitario como precio final historico.
+      // Para reabrir/editar pendientes, reconstruimos el precio base restando extras.
+      const precioBase = precioDetalle - calcularExtrasModificadores(modificadores);
+      return Number(Math.max(0, precioBase).toFixed(2));
+    }
+
     function tieneModificadoresItem(item) {
       return normalizarModificadoresTicket(item?.modificadores).length > 0;
     }
@@ -3231,8 +3242,8 @@
 
         data.items.forEach((item) => {
           const modificadores = normalizarModificadoresTicket(item.modificadores);
-          // precio_unitario desde la API es SIEMPRE el precio base (sin extras)
-          const precioBase = Number(item.precio_unitario) || 0;
+          const precioFinal = Number(item.precio_unitario) || 0;
+          const precioBase = calcularPrecioBaseDesdeDetalle(item);
           ticket.push({
             id: modificadores.length
               ? `${item.producto_id || "manual"}-${item.id || Date.now()}`
@@ -3240,7 +3251,7 @@
             producto_id: item.producto_id ? Number(item.producto_id) : null,
             nombre: item.nombre_producto,
             precio_base: precioBase,
-            precio_venta: precioFinalItem(precioBase, modificadores),
+            precio_venta: modificadores.length ? precioFinal : precioBase,
             cantidad: Number(item.cantidad) || 0,
             imagen_url: item.imagen_url || "",
             modificadores
