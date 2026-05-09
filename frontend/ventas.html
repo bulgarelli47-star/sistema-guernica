@@ -842,6 +842,20 @@
       display: block;
     }
 
+    .ticket-edit-extras {
+      border: none;
+      background: none;
+      color: var(--primary, #6d28d9);
+      font-size: 11px;
+      font-weight: 800;
+      cursor: pointer;
+      padding: 2px 0;
+      margin-top: 2px;
+      display: inline-block;
+      opacity: 0.75;
+    }
+    .ticket-edit-extras:hover { opacity: 1; }
+
     .qty-controls {
       display: flex;
       align-items: center;
@@ -1792,6 +1806,7 @@
     let configVentas = {};
     let productoModificadoresActual = null;
     let modificadoresDisponiblesActuales = [];
+    let ticketItemEditandoId = null;
     const modificadoresCache = new Map();
     const CONSUMIDOR_FINAL_ID = "1";
 
@@ -1980,6 +1995,42 @@
         input.addEventListener("change", actualizarTotalModalModificadores);
       });
       actualizarTotalModalModificadores();
+    }
+
+    async function editarExtrasItem(itemId) {
+      const item = ticket.find((i) => i.id === itemId);
+      if (!item || !item.producto_id) return;
+
+      const mods = await cargarModificadoresProducto(item.producto_id);
+      if (!mods.length) {
+        mostrarMensaje("Este producto no tiene extras disponibles", true);
+        return;
+      }
+
+      // Simular producto para el modal usando precio_base del ítem
+      const productoSimulado = {
+        id: item.producto_id,
+        nombre: item.nombre,
+        precio_venta: Number(item.precio_base ?? item.precio_venta ?? 0)
+      };
+
+      ticketItemEditandoId = itemId;
+      renderModalModificadores(productoSimulado, mods);
+
+      // Pre-chequear los modificadores ya aplicados al ítem
+      const modsActuales = normalizarModificadoresTicket(item.modificadores);
+      listaModificadoresVenta.querySelectorAll("[data-modificador-id]").forEach((row) => {
+        const modId = Number(row.dataset.modificadorId);
+        const aplicado = modsActuales.find((m) => Number(m.modificador_id) === modId);
+        if (aplicado) {
+          const check = row.querySelector("[data-mod-check]");
+          if (check) check.checked = true;
+          const cantInput = row.querySelector("[data-mod-cantidad]");
+          if (cantInput) cantInput.value = aplicado.cantidad;
+        }
+      });
+      actualizarTotalModalModificadores();
+      abrirModal(modalModificadores);
     }
 
     function agregarProductoConModificadores(producto, modificadores = []) {
@@ -2370,6 +2421,7 @@
               <strong>${nombreProducto}</strong>
               ${infoDescuento}
               ${modsHtml}
+              ${item.producto_id ? `<button type="button" class="ticket-edit-extras">Editar extras</button>` : ""}
             </div>
           </div>
           <div class="qty-controls">
@@ -2397,6 +2449,11 @@
         botonEliminar.addEventListener("click", function () {
           eliminarDelTicket(item.id);
         });
+
+        const botonExtras = row.querySelector(".ticket-edit-extras");
+        if (botonExtras) {
+          botonExtras.addEventListener("click", () => editarExtrasItem(item.id));
+        }
 
         ticketLista.appendChild(row);
       });
@@ -3590,26 +3647,55 @@
       cerrarModal(modalProductos);
     });
 
-    cerrarModalModificadores.addEventListener("click", function () {
+    function cerrarModalModificadoresLimpio() {
+      ticketItemEditandoId = null;
       productoModificadoresActual = null;
       modificadoresDisponiblesActuales = [];
       cerrarModal(modalModificadores);
-    });
+    }
+
+    cerrarModalModificadores.addEventListener("click", cerrarModalModificadoresLimpio);
 
     agregarSinModificadores.addEventListener("click", function () {
+      if (ticketItemEditandoId !== null) {
+        // Modo edición: limpiar extras del ítem existente
+        const idx = ticket.findIndex((i) => i.id === ticketItemEditandoId);
+        if (idx >= 0) {
+          const precioBase = Number(ticket[idx].precio_base ?? ticket[idx].precio_venta ?? 0);
+          ticket[idx].modificadores = [];
+          ticket[idx].precio_venta = precioBase;
+          marcarPendienteEditado();
+          renderizarTicket();
+        }
+        cerrarModalModificadoresLimpio();
+        return;
+      }
+      // Modo agregar: comportamiento original
       if (!productoModificadoresActual) return;
       agregarProductoConModificadores(productoModificadoresActual, []);
-      productoModificadoresActual = null;
-      modificadoresDisponiblesActuales = [];
-      cerrarModal(modalModificadores);
+      cerrarModalModificadoresLimpio();
     });
 
     aplicarModificadores.addEventListener("click", function () {
+      if (ticketItemEditandoId !== null) {
+        // Modo edición: actualizar extras del ítem existente
+        const idx = ticket.findIndex((i) => i.id === ticketItemEditandoId);
+        if (idx >= 0) {
+          const seleccionados = obtenerModificadoresSeleccionados();
+          const mods = normalizarModificadoresTicket(seleccionados);
+          const precioBase = Number(ticket[idx].precio_base ?? ticket[idx].precio_venta ?? 0);
+          ticket[idx].modificadores = mods;
+          ticket[idx].precio_venta = precioFinalItem(precioBase, mods);
+          marcarPendienteEditado();
+          renderizarTicket();
+        }
+        cerrarModalModificadoresLimpio();
+        return;
+      }
+      // Modo agregar: comportamiento original
       if (!productoModificadoresActual) return;
       agregarProductoConModificadores(productoModificadoresActual, obtenerModificadoresSeleccionados());
-      productoModificadoresActual = null;
-      modificadoresDisponiblesActuales = [];
-      cerrarModal(modalModificadores);
+      cerrarModalModificadoresLimpio();
     });
 
     toggleNotificaciones.addEventListener("click", function (event) {
