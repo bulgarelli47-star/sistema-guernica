@@ -157,6 +157,19 @@ async function getCajaResumenCuentas(baseUrl, token, cajaId = null) {
   return data;
 }
 
+async function getCajaConciliacionesCuentas(baseUrl, token, cajaId = null) {
+  const url = cajaId ? `/caja/conciliaciones/cuentas?caja_id=${cajaId}` : "/caja/conciliaciones/cuentas";
+  const { response, data } = await requestJson(baseUrl, "GET", url, null, token);
+  if (!response.ok) throw new Error(`No se pudo obtener caja/conciliaciones/cuentas: ${data?.message || response.status}`);
+  return data;
+}
+
+async function guardarConciliacionCuenta(baseUrl, token, payload) {
+  const { response, data } = await requestJson(baseUrl, "POST", "/caja/conciliaciones/cuentas", payload, token);
+  if (!response.ok) throw new Error(`No se pudo guardar conciliacion cuenta: ${data?.message || response.status}`);
+  return data;
+}
+
 async function getMovimientosStock(baseUrl, token, productoId) {
   const { response, data } = await requestJson(baseUrl, "GET", `/productos/${productoId}/movimientos-stock`, null, token);
   if (!response.ok) throw new Error(`No se pudo obtener movimientos de stock: ${response.status}`);
@@ -2435,6 +2448,126 @@ async function testCajaResumenPorCuentaCobro() {
   }
 }
 
+async function testConciliacionManualPorCuentaCobro() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const apertura = await abrirCaja(baseUrl, token, 1000);
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Caja efectivo conciliacion TEST",
+        tipo_pago_codigo: "efectivo",
+        orden: 10
+      });
+      const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Terminal debito conciliacion TEST",
+        tipo_pago_codigo: "debito",
+        orden: 20
+      });
+
+      for (const payload of [
+        { tipo_cobro: "efectivo", cuenta_cobro_id: cuentaEfectivo.id },
+        { tipo_cobro: "debito", cuenta_cobro_id: cuentaDebito.id },
+        { tipo_cobro: "efectivo", cuenta_cobro_id: null }
+      ]) {
+        const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(payload), token);
+        if (!venta.response.ok) throw new Error(`Venta para conciliacion fallo: ${venta.data?.message || venta.response.status}`);
+      }
+
+      const resumenAntes = await getCajaResumenCuentas(baseUrl, token);
+      assertEqual(resumenAntes.caja.id, apertura.id, "Conciliaciones sin caja_id deben tomar caja abierta");
+      const efectivo = resumenAntes.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Caja efectivo conciliacion TEST");
+      const debito = resumenAntes.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Terminal debito conciliacion TEST");
+      const sinCuenta = resumenAntes.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Sin cuenta");
+
+      if (!efectivo || !debito || !sinCuenta) {
+        throw new Error(`Resumen para conciliacion incompleto: ${JSON.stringify(resumenAntes.cuentas)}`);
+      }
+
+      const creada = await guardarConciliacionCuenta(baseUrl, token, {
+        cuenta_cobro_id: cuentaEfectivo.id,
+        monto_sistema: efectivo.balance,
+        monto_real: efectivo.balance,
+        observaciones: "TEST conciliacion nueva",
+        usuario: "test"
+      });
+      assertEqual(creada.caja.id, apertura.id, "POST conciliacion sin caja_id debe usar caja abierta");
+      assertApprox(creada.conciliacion.diferencia, 0, "Diferencia cero debe guardarse en 0");
+      if (creada.conciliacion.estado !== "conciliado") {
+        throw new Error(`Diferencia cero debe quedar conciliado. Actual=${creada.conciliacion.estado}`);
+      }
+
+      const actualizada = await guardarConciliacionCuenta(baseUrl, token, {
+        caja_id: apertura.id,
+        cuenta_cobro_id: cuentaEfectivo.id,
+        monto_sistema: efectivo.balance,
+        monto_real: efectivo.balance + 50,
+        observaciones: "TEST diferencia positiva",
+        usuario: "test"
+      });
+      assertEqual(actualizada.conciliacion.id, creada.conciliacion.id, "Guardar dos veces misma caja/cuenta debe actualizar conciliacion existente");
+      assertApprox(actualizada.conciliacion.diferencia, 50, "Diferencia positiva debe calcularse como real - sistema");
+      if (actualizada.conciliacion.estado !== "diferencia") {
+        throw new Error(`Diferencia positiva debe quedar en estado diferencia. Actual=${actualizada.conciliacion.estado}`);
+      }
+
+      const negativa = await guardarConciliacionCuenta(baseUrl, token, {
+        caja_id: apertura.id,
+        cuenta_cobro_id: cuentaDebito.id,
+        monto_sistema: debito.balance,
+        monto_real: debito.balance - 30,
+        observaciones: "TEST diferencia negativa",
+        usuario: "test"
+      });
+      assertApprox(negativa.conciliacion.diferencia, -30, "Diferencia negativa debe calcularse como real - sistema");
+
+      const ceroSinCuenta = await guardarConciliacionCuenta(baseUrl, token, {
+        caja_id: apertura.id,
+        cuenta_cobro_id: null,
+        monto_sistema: sinCuenta.balance,
+        monto_real: sinCuenta.balance,
+        observaciones: "TEST sin cuenta conciliado",
+        usuario: "test"
+      });
+      if (ceroSinCuenta.conciliacion.estado !== "conciliado") {
+        throw new Error(`Conciliacion Sin cuenta sin diferencia debe quedar conciliado. Actual=${ceroSinCuenta.conciliacion.estado}`);
+      }
+
+      const conciliaciones = await getCajaConciliacionesCuentas(baseUrl, token, apertura.id);
+      assertEqual(conciliaciones.caja.id, apertura.id, "GET conciliaciones debe devolver la caja solicitada");
+      if (conciliaciones.conciliaciones.length !== 3) {
+        throw new Error(`GET conciliaciones debe devolver tres conciliaciones. Actual=${JSON.stringify(conciliaciones.conciliaciones)}`);
+      }
+
+      const resumenDespues = await getCajaResumenCuentas(baseUrl, token, apertura.id);
+      assertApprox(
+        resumenDespues.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Caja efectivo conciliacion TEST")?.balance,
+        efectivo.balance,
+        "Conciliar no debe alterar resumen original"
+      );
+
+      const cajaCerrada = await cerrarCaja(baseUrl, token, 2000, 0, 0);
+      const conciliacionesCerrada = await getCajaConciliacionesCuentas(baseUrl, token);
+      assertEqual(conciliacionesCerrada.caja.id, cajaCerrada.id, "GET conciliaciones sin caja abierta debe usar ultima caja cerrada");
+
+      const updateCerrada = await guardarConciliacionCuenta(baseUrl, token, {
+        cuenta_cobro_id: cuentaEfectivo.id,
+        monto_sistema: efectivo.balance,
+        monto_real: efectivo.balance + 25,
+        observaciones: "TEST actualiza caja cerrada",
+        usuario: "test"
+      });
+      assertEqual(updateCerrada.caja.id, cajaCerrada.id, "POST conciliacion sin caja abierta debe usar ultima caja cerrada");
+      assertEqual(updateCerrada.conciliacion.id, actualizada.conciliacion.id, "Actualizar ultima caja cerrada debe reutilizar conciliacion existente");
+      assertApprox(updateCerrada.conciliacion.diferencia, 25, "Conciliacion sobre ultima caja cerrada debe recalcular diferencia");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testVentasPorDiaDevuelveClaves() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -2861,6 +2994,7 @@ async function testCompuestoUsaCostoUnitarioDeComponenteFraccionado() {
   await testTipoPagoGetTodosIncluyeInactivos();
   await testCuentasCobroEtapa2PagosYVentas();
   await testCajaResumenPorCuentaCobro();
+  await testConciliacionManualPorCuentaCobro();
   await testVentasPorDiaDevuelveClaves();
   await testVentasPorDiaExcluyeAnuladas();
   await testVentasPorDiaAgrupaVentas();

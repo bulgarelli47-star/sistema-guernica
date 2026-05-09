@@ -721,6 +721,40 @@
       color: var(--success);
     }
 
+    .cuenta-cobro-status {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 11px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .cuenta-cobro-status.conciliado {
+      background: rgba(34, 163, 90, 0.12);
+      color: var(--success);
+    }
+
+    .cuenta-cobro-status.diferencia {
+      background: rgba(217, 154, 33, 0.14);
+      color: var(--warning);
+    }
+
+    .cuenta-cobro-status.pendiente {
+      background: #eef1f7;
+      color: var(--muted);
+    }
+
+    .cuenta-cobro-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-top: 2px;
+    }
+
     .method-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2952,6 +2986,39 @@
         </div>
       </div>
 
+      <div class="modal" id="modalConciliacionCuenta">
+        <div class="modal-card">
+          <div class="daily-card-header">
+            <h3 id="conciliacionCuentaTitulo">Conciliar cuenta</h3>
+            <button type="button" class="button secondary compact" id="cerrarModalConciliacionCuenta">Cerrar</button>
+          </div>
+          <input type="hidden" id="conciliacionCajaId" />
+          <input type="hidden" id="conciliacionCuentaId" />
+          <div class="field-grid">
+            <label>
+              <span>Monto sistema</span>
+              <input type="number" id="conciliacionMontoSistema" class="field" step="0.01" readonly />
+            </label>
+            <label>
+              <span>Monto real</span>
+              <input type="number" id="conciliacionMontoReal" class="field" step="0.01" />
+            </label>
+            <label>
+              <span>Diferencia</span>
+              <input type="number" id="conciliacionDiferencia" class="field" step="0.01" readonly />
+            </label>
+            <label>
+              <span>Observaciones</span>
+              <input type="text" id="conciliacionObservaciones" class="field" placeholder="Opcional" />
+            </label>
+          </div>
+          <div class="daily-card-header">
+            <div class="muted">La conciliacion registra el control manual, no modifica movimientos ni cierres.</div>
+            <button type="button" class="button success" id="guardarConciliacionCuenta">Guardar conciliacion</button>
+          </div>
+        </div>
+      </div>
+
       <div class="toast" id="toastCaja" role="status" aria-live="polite"></div>
 
       <span id="totalPagosEfectivo" hidden>0.00</span>
@@ -3068,6 +3135,16 @@
     const movimientoCajaUsuario = document.getElementById("movimientoCajaUsuario");
     const movimientoCajaAyuda = document.getElementById("movimientoCajaAyuda");
     const confirmarMovimientoCaja = document.getElementById("confirmarMovimientoCaja");
+    const modalConciliacionCuenta = document.getElementById("modalConciliacionCuenta");
+    const cerrarModalConciliacionCuenta = document.getElementById("cerrarModalConciliacionCuenta");
+    const conciliacionCuentaTitulo = document.getElementById("conciliacionCuentaTitulo");
+    const conciliacionCajaId = document.getElementById("conciliacionCajaId");
+    const conciliacionCuentaId = document.getElementById("conciliacionCuentaId");
+    const conciliacionMontoSistema = document.getElementById("conciliacionMontoSistema");
+    const conciliacionMontoReal = document.getElementById("conciliacionMontoReal");
+    const conciliacionDiferencia = document.getElementById("conciliacionDiferencia");
+    const conciliacionObservaciones = document.getElementById("conciliacionObservaciones");
+    const guardarConciliacionCuentaBtn = document.getElementById("guardarConciliacionCuenta");
     const toastCaja = document.getElementById("toastCaja");
     const filtroGraficoMetodos = document.getElementById("filtroGraficoMetodos");
     const graficoMetodosPago = document.getElementById("graficoMetodosPago");
@@ -3158,6 +3235,9 @@
     let arqueosFiltroTexto = "";
     let arqueoGuardadoId = null;
     let arqueoPreparadoParaCierre = false;
+    let cajaResumenCuentasActual = null;
+    let resumenCuentasCobroActual = [];
+    let conciliacionesCuentasActuales = [];
     let tipoMovimientoCajaActivo = "ingreso";
     let toastTimer = null;
 
@@ -4446,6 +4526,78 @@
       }
     }
 
+    function getCuentaCobroKey(cuenta) {
+      const id = cuenta?.cuenta_cobro_id;
+      return id === null || id === undefined || id === "" ? "sin-cuenta" : String(id);
+    }
+
+    function getConciliacionPorCuenta(cuenta) {
+      const key = getCuentaCobroKey(cuenta);
+      return conciliacionesCuentasActuales.find((item) => getCuentaCobroKey(item) === key) || null;
+    }
+
+    function getConciliacionEstado(conciliacion) {
+      if (!conciliacion) {
+        return { clase: "pendiente", texto: "Sin conciliacion" };
+      }
+      if (conciliacion.estado === "conciliado") {
+        return { clase: "conciliado", texto: "Conciliado" };
+      }
+      return { clase: "diferencia", texto: `Diferencia ${money(conciliacion.diferencia)}` };
+    }
+
+    function actualizarDiferenciaConciliacion() {
+      const sistema = Number(conciliacionMontoSistema?.value || 0);
+      const real = Number(conciliacionMontoReal?.value || 0);
+      if (conciliacionDiferencia) {
+        conciliacionDiferencia.value = (real - sistema).toFixed(2);
+      }
+    }
+
+    function abrirConciliacionCuenta(key) {
+      const cuenta = resumenCuentasCobroActual.find((item) => getCuentaCobroKey(item) === key);
+      if (!cuenta) return;
+
+      const conciliacion = getConciliacionPorCuenta(cuenta);
+      conciliacionCuentaTitulo.innerText = `Conciliar ${cuenta.cuenta_nombre || "Sin cuenta"}`;
+      conciliacionCajaId.value = cajaResumenCuentasActual?.id || aperturaActual?.id || "";
+      conciliacionCuentaId.value = cuenta.cuenta_cobro_id == null ? "" : cuenta.cuenta_cobro_id;
+      conciliacionMontoSistema.value = Number(cuenta.balance || 0).toFixed(2);
+      conciliacionMontoReal.value = conciliacion ? Number(conciliacion.monto_real || 0).toFixed(2) : Number(cuenta.balance || 0).toFixed(2);
+      conciliacionObservaciones.value = conciliacion?.observaciones || "";
+      actualizarDiferenciaConciliacion();
+      abrirModal(modalConciliacionCuenta);
+    }
+
+    async function guardarConciliacionCuenta() {
+      try {
+        const payload = {
+          caja_id: conciliacionCajaId.value ? Number(conciliacionCajaId.value) : null,
+          cuenta_cobro_id: conciliacionCuentaId.value ? Number(conciliacionCuentaId.value) : null,
+          monto_sistema: Number(conciliacionMontoSistema.value || 0),
+          monto_real: Number(conciliacionMontoReal.value || 0),
+          observaciones: conciliacionObservaciones.value.trim(),
+          usuario: usuarioCajaVisual.innerText || "admin"
+        };
+
+        const res = await fetch("/caja/conciliaciones/cuentas", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.message || "No se pudo guardar conciliacion");
+        }
+        cerrarModal(modalConciliacionCuenta);
+        mostrarToast("Conciliacion guardada.");
+        await cargarResumenCuentasCobro(payload.caja_id);
+      } catch (error) {
+        console.error("Error al guardar conciliacion:", error);
+        mostrarToast(error.message || "Error al guardar conciliacion.", true);
+      }
+    }
+
     function renderizarResumenCuentasCobro(cuentas) {
       const card = document.getElementById("resumenCuentasCobroCard");
       const grid = document.getElementById("resumenCuentasCobro");
@@ -4462,6 +4614,9 @@
       grid.innerHTML = ordenados.map((cuenta) => {
         const balance = Number(cuenta.balance || 0);
         const claseBalance = balance < 0 ? "negativo" : "positivo";
+        const conciliacion = getConciliacionPorCuenta(cuenta);
+        const estado = getConciliacionEstado(conciliacion);
+        const key = getCuentaCobroKey(cuenta);
         return `
           <div class="cuenta-cobro-item">
             <div class="cuenta-cobro-top">
@@ -4471,9 +4626,16 @@
             <div class="cuenta-cobro-row"><span>Ingresos</span><strong>${money(cuenta.ingresos)}</strong></div>
             <div class="cuenta-cobro-row"><span>Egresos</span><strong>${money(cuenta.egresos)}</strong></div>
             <div class="cuenta-cobro-row"><span>Movimientos</span><strong>${Number(cuenta.ventas || 0)} ventas · ${Number(cuenta.pagos || 0)} pagos</strong></div>
+            <div class="cuenta-cobro-actions">
+              <span class="cuenta-cobro-status ${estado.clase}">${estado.texto}</span>
+              <button type="button" class="button secondary compact" data-conciliar-cuenta="${key}">Conciliar</button>
+            </div>
           </div>
         `;
       }).join("");
+      grid.querySelectorAll("[data-conciliar-cuenta]").forEach((button) => {
+        button.addEventListener("click", () => abrirConciliacionCuenta(button.dataset.conciliarCuenta));
+      });
       card.classList.add("visible");
     }
 
@@ -4484,7 +4646,22 @@
         const res = await fetch(url);
         if (!res.ok) throw new Error("No se pudo obtener resumen por cuenta");
         const data = await res.json();
-        renderizarResumenCuentasCobro(data.cuentas);
+        cajaResumenCuentasActual = data.caja || null;
+        resumenCuentasCobroActual = Array.isArray(data.cuentas) ? data.cuentas : [];
+        try {
+          const conciliacionesUrl = cajaId
+            ? `/caja/conciliaciones/cuentas?caja_id=${encodeURIComponent(cajaId)}`
+            : "/caja/conciliaciones/cuentas";
+          const conciliacionesRes = await fetch(conciliacionesUrl);
+          const conciliacionesData = conciliacionesRes.ok ? await conciliacionesRes.json() : { conciliaciones: [] };
+          conciliacionesCuentasActuales = Array.isArray(conciliacionesData.conciliaciones)
+            ? conciliacionesData.conciliaciones
+            : [];
+        } catch (error) {
+          console.error("Error al cargar conciliaciones por cuenta:", error);
+          conciliacionesCuentasActuales = [];
+        }
+        renderizarResumenCuentasCobro(resumenCuentasCobroActual);
       } catch (error) {
         console.error("Error al cargar resumen por cuenta:", error);
         card?.classList.remove("visible");
@@ -4784,6 +4961,13 @@
       cerrarModal(modalMovimientoCaja);
     });
 
+    cerrarModalConciliacionCuenta.addEventListener("click", function () {
+      cerrarModal(modalConciliacionCuenta);
+    });
+
+    conciliacionMontoReal.addEventListener("input", actualizarDiferenciaConciliacion);
+    guardarConciliacionCuentaBtn.addEventListener("click", guardarConciliacionCuenta);
+
     botonGuardarArqueo.addEventListener("click", guardarArqueo);
     botonEditarArqueo.addEventListener("click", editarArqueo);
     botonRegistrarArqueo.addEventListener("click", registrarArqueo);
@@ -4851,7 +5035,7 @@
       cerrarModal(modalDetalleArqueo);
     });
 
-    [modalMovimientosCaja, modalArqueosCaja, modalDetalleApertura, modalDetalleCierre, modalDetalleArqueo, modalMovimientoCaja].forEach((modal) => {
+    [modalMovimientosCaja, modalArqueosCaja, modalDetalleApertura, modalDetalleCierre, modalDetalleArqueo, modalMovimientoCaja, modalConciliacionCuenta].forEach((modal) => {
       modal.addEventListener("click", function (event) {
         if (event.target === modal) {
           cerrarModal(modal);

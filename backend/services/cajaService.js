@@ -49,6 +49,30 @@ async function ensureCajaArqueosTable() {
   await ensureColumn("caja_arqueos", "registrado_cierre", "INTEGER NOT NULL DEFAULT 1");
 }
 
+async function ensureConciliacionesCuentasCobroTable() {
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS conciliaciones_cuentas_cobro (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      caja_id INTEGER NOT NULL,
+      cuenta_cobro_id INTEGER,
+      monto_sistema REAL NOT NULL DEFAULT 0,
+      monto_real REAL NOT NULL DEFAULT 0,
+      diferencia REAL NOT NULL DEFAULT 0,
+      estado TEXT NOT NULL,
+      observaciones TEXT,
+      fecha TEXT NOT NULL,
+      hora TEXT NOT NULL,
+      usuario TEXT NOT NULL DEFAULT 'admin',
+      UNIQUE(caja_id, cuenta_cobro_id)
+    )
+  `);
+  await runQuery(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_conciliaciones_cuentas_sin_cuenta
+    ON conciliaciones_cuentas_cobro(caja_id)
+    WHERE cuenta_cobro_id IS NULL
+  `);
+}
+
 async function getCajaAperturaHoy(fecha) {
   return getQuery(
     `SELECT *
@@ -359,6 +383,77 @@ async function getResumenPorCuentaCobro({ cajaId } = {}) {
   return rows.map(mapResumenCuenta);
 }
 
+async function getConciliacionesCuentaCobro({ cajaId } = {}) {
+  if (!cajaId) {
+    return [];
+  }
+  await ensureConciliacionesCuentasCobroTable();
+  return allQuery(
+    `SELECT c.*, cc.nombre AS cuenta_nombre
+     FROM conciliaciones_cuentas_cobro c
+     LEFT JOIN cuentas_cobro cc ON cc.id = c.cuenta_cobro_id
+     WHERE c.caja_id = ?
+     ORDER BY c.id ASC`,
+    [cajaId]
+  );
+}
+
+async function guardarConciliacionCuentaCobro({
+  cajaId,
+  cuentaCobroId = null,
+  montoSistema = 0,
+  montoReal = 0,
+  observaciones = "",
+  usuario = "admin",
+  fecha,
+  hora
+} = {}) {
+  await ensureConciliacionesCuentasCobroTable();
+  const caja = Number(cajaId) || 0;
+  if (!caja) {
+    const error = new Error("Caja invalida");
+    error.statusCode = 400;
+    throw error;
+  }
+  const cuenta = cuentaCobroId === null || cuentaCobroId === undefined || cuentaCobroId === "" ? null : Number(cuentaCobroId);
+  const sistema = Number(Number(montoSistema || 0).toFixed(2));
+  const real = Number(Number(montoReal || 0).toFixed(2));
+  const diferencia = Number((real - sistema).toFixed(2));
+  const estado = Math.abs(diferencia) < 0.01 ? "conciliado" : "diferencia";
+  const obs = String(observaciones || "").trim();
+  const user = String(usuario || "admin").trim() || "admin";
+  const fechaFinal = fecha || new Date().toISOString().slice(0, 10);
+  const horaFinal = hora || new Date().toTimeString().slice(0, 8);
+
+  const existente = cuenta == null
+    ? await getQuery(
+        "SELECT id FROM conciliaciones_cuentas_cobro WHERE caja_id = ? AND cuenta_cobro_id IS NULL",
+        [caja]
+      )
+    : await getQuery(
+        "SELECT id FROM conciliaciones_cuentas_cobro WHERE caja_id = ? AND cuenta_cobro_id = ?",
+        [caja, cuenta]
+      );
+
+  if (existente) {
+    await runQuery(
+      `UPDATE conciliaciones_cuentas_cobro
+       SET monto_sistema = ?, monto_real = ?, diferencia = ?, estado = ?, observaciones = ?, fecha = ?, hora = ?, usuario = ?
+       WHERE id = ?`,
+      [sistema, real, diferencia, estado, obs, fechaFinal, horaFinal, user, existente.id]
+    );
+    return getQuery("SELECT * FROM conciliaciones_cuentas_cobro WHERE id = ?", [existente.id]);
+  }
+
+  const result = await runQuery(
+    `INSERT INTO conciliaciones_cuentas_cobro
+     (caja_id, cuenta_cobro_id, monto_sistema, monto_real, diferencia, estado, observaciones, fecha, hora, usuario)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [caja, cuenta, sistema, real, diferencia, estado, obs, fechaFinal, horaFinal, user]
+  );
+  return getQuery("SELECT * FROM conciliaciones_cuentas_cobro WHERE id = ?", [result.lastID]);
+}
+
 function buildCajaResumen(ventas) {
   const resumen = ventas.reduce(
     (acc, movimiento) => {
@@ -549,12 +644,15 @@ module.exports = {
   buildConteoBilletes,
   ensureCajaArqueosTable,
   ensureCajaMovimientosTable,
+  ensureConciliacionesCuentasCobroTable,
   getCajaAbiertaActual,
   getCajaAperturaHoy,
   getCajaParaArqueos,
   getOperacionesCaja,
   getPagosCaja,
   getUltimaCajaRegistrada,
+  getConciliacionesCuentaCobro,
+  guardarConciliacionCuentaCobro,
   mapCajaArqueo,
   parseJsonOrFallback
 };
