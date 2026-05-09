@@ -398,6 +398,22 @@
     }
     .summary-box span { color: var(--muted); font-size: 13px; font-weight: 700; }
     .summary-box strong { font-size: 20px; }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      min-width: 96px;
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 12px;
+      font-weight: 800;
+      background: #f3f4f6;
+      color: #4b5563;
+    }
+    .status-pill.conciliado { background: #dcfce7; color: #166534; }
+    .status-pill.diferencia { background: #fef3c7; color: #92400e; }
+    .status-pill.pendiente { background: #f3f4f6; color: #4b5563; }
     .table-wrap { overflow: auto; }
     table { width: 100%; border-collapse: collapse; min-width: 720px; }
     th, td { padding: 12px 10px; border-bottom: 1px solid var(--border); text-align: left; }
@@ -591,6 +607,30 @@
             <div class="summary-grid" id="estadoCuentas"></div>
           </div>
         </div>
+        <div class="panel" id="cuentasCobroPanel" style="margin-top:18px;display:none;">
+          <div class="section-head" style="margin-bottom:10px;">
+            <div>
+              <h3>Cuentas / terminales</h3>
+              <p class="message" style="min-height:0;margin:4px 0 0;">Ingresos, egresos y conciliación por cuenta de cobro.</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Cuenta</th>
+                  <th>Ingresos</th>
+                  <th>Egresos</th>
+                  <th>Balance</th>
+                  <th>Conciliaciones</th>
+                  <th>Diferencias</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody id="cuentasCobroBody"></tbody>
+            </table>
+          </div>
+        </div>
       </section>
 
       <section class="card export-only-panel">
@@ -681,7 +721,7 @@
       "cuentas-corrientes": ["Clientes con deuda", "Detalle de movimientos", "Cobros recibidos", "Clientes excedidos"],
       "proveedores-pagos": ["Pagos realizados", "Saldos pendientes", "Compras del periodo", "Detalle por proveedor"]
     };
-    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null, proveedoresPagosBackend: null };
+    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null, proveedoresPagosBackend: null, cuentasCobroBackend: null };
 
     function setMessage(text, type = "") {
       $("mensaje").className = `message ${type}`;
@@ -750,6 +790,22 @@
       } catch {
         // fallback: renderVentasPorDia() ya renderizó el cálculo local
       }
+    }
+
+    async function cargarCuentasCobroBackend() {
+      const desde = $("desde").value;
+      const hasta = $("hasta").value;
+      if (!desde || !hasta) { state.cuentasCobroBackend = null; return; }
+      try {
+        const res = await fetch(`/reportes/cuentas-cobro?desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}`);
+        if (!res.ok) throw new Error("fallo");
+        const datos = await res.json();
+        if (!Array.isArray(datos)) throw new Error("formato inesperado");
+        state.cuentasCobroBackend = datos;
+      } catch {
+        state.cuentasCobroBackend = null;
+      }
+      renderCuentasCobro();
     }
 
     async function cargarProductosMasVendidos() {
@@ -1082,6 +1138,75 @@
       ].map(([label, value]) => `<div class="summary-box"><span>${label}</span><strong>${value}</strong></div>`).join("");
     }
 
+    function estadoCuentaCobroHtml(estado) {
+      const normalizado = String(estado || "pendiente").toLowerCase();
+      const icono = normalizado === "conciliado" ? "✔" : normalizado === "diferencia" ? "⚠" : "⏳";
+      const texto = normalizado === "conciliado" ? "Conciliado" : normalizado === "diferencia" ? "Diferencia" : "Pendiente";
+      return `<span class="status-pill ${normalizado}">${icono} ${texto}</span>`;
+    }
+
+    function cuentasCobroFallbackLocal() {
+      const map = new Map();
+      const ensure = (id, nombre, tipo) => {
+        const key = id == null ? "sin_cuenta" : String(id);
+        if (!map.has(key)) {
+          map.set(key, {
+            cuenta_cobro_id: id ?? null,
+            cuenta_nombre: nombre || "Sin cuenta",
+            tipo_pago_codigo: tipo || null,
+            ingresos: 0,
+            egresos: 0,
+            balance: 0,
+            ventas: 0,
+            pagos: 0,
+            conciliaciones: 0,
+            diferencias: 0,
+            estado_conciliacion: "pendiente"
+          });
+        }
+        return map.get(key);
+      };
+
+      ventasPeriodo().forEach((venta) => {
+        const row = ensure(venta.cuenta_cobro_id, venta.cuenta_cobro_nombre, venta.tipo_cobro);
+        row.ingresos += n(venta.total);
+        row.ventas += 1;
+      });
+      pagosPeriodo().filter((pago) => pago.estado !== "pendiente").forEach((pago) => {
+        const row = ensure(pago.cuenta_cobro_id, pago.cuenta_cobro_nombre, pago.tipo_pago);
+        row.egresos += n(pago.monto_total || pago.monto);
+        row.pagos += 1;
+      });
+
+      return [...map.values()].map((row) => ({
+        ...row,
+        ingresos: Number(row.ingresos.toFixed(2)),
+        egresos: Number(row.egresos.toFixed(2)),
+        balance: Number((row.ingresos - row.egresos).toFixed(2))
+      })).sort((a, b) => b.balance - a.balance);
+    }
+
+    function renderCuentasCobro() {
+      const datos = state.cuentasCobroBackend || cuentasCobroFallbackLocal();
+      const panel = $("cuentasCobroPanel");
+      const body = $("cuentasCobroBody");
+      if (!panel || !body) return;
+      panel.style.display = datos.length ? "" : "none";
+      body.innerHTML = datos.length
+        ? datos.map((cuenta) => `
+          <tr>
+            <td><strong>${cuenta.cuenta_nombre || "Sin cuenta"}</strong><br><small class="muted">${cuenta.tipo_pago_codigo || "-"}</small></td>
+            <td>${money(cuenta.ingresos)}</td>
+            <td>${money(cuenta.egresos)}</td>
+            <td><strong>${money(cuenta.balance)}</strong></td>
+            <td>${Number(cuenta.conciliaciones || 0)}</td>
+            <td>${money(cuenta.diferencias)}</td>
+            <td>${estadoCuentaCobroHtml(cuenta.estado_conciliacion)}</td>
+          </tr>
+        `).join("")
+        : `<tr><td colspan="7" class="empty">Sin cuentas o terminales en el periodo.</td></tr>`;
+    }
+
     function resumenModulo() {
       const ventas = ventasPeriodo();
       const pagos = pagosPeriodo();
@@ -1172,6 +1297,7 @@
       renderMetodos();
       renderProductos();
       renderCuentas();
+      renderCuentasCobro();
       renderModulo();
       window.initKpiVisibility?.({
         gridSelector: "#kpis",
@@ -1285,6 +1411,7 @@
       cargarProductosMasVendidos();
       cargarProveedoresPagosBackend();
       cargarVentasPorDiaBackend();
+      cargarCuentasCobroBackend();
     }
 
     $("actualizar").onclick = cargarDatos;
@@ -1297,9 +1424,9 @@
     $("exportModulo").onchange = () => { renderContenidoExportacion(); actualizarNombreArchivo(); };
     ["exportFormato", "exportDesde", "exportHasta"].forEach((id) => $(id).addEventListener("input", actualizarNombreArchivo));
     ["desde", "hasta", "comparacion"].forEach((id) => $(id).addEventListener("input", () => {
-      if (id !== "comparacion") { state.resumenBackend = null; state.proveedoresPagosBackend = null; }
+      if (id !== "comparacion") { state.resumenBackend = null; state.proveedoresPagosBackend = null; state.cuentasCobroBackend = null; }
       render();
-      if (id !== "comparacion") { cargarResumenBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); cargarVentasPorDiaBackend(); }
+      if (id !== "comparacion") { cargarResumenBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); cargarVentasPorDiaBackend(); cargarCuentasCobroBackend(); }
     }));
     $("moduloFiltro").onchange = () => { state.modulo = $("moduloFiltro").value; render(); };
     setRange("30");
@@ -1309,7 +1436,3 @@
   <script src="/user-menu.js?v=7" defer></script>
 </body>
 </html>
-
-
-
-

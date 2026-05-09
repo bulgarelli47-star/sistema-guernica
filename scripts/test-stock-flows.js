@@ -43,6 +43,7 @@ async function prepareDb(dbPath, statements) {
 function resetOperationalDataStatements() {
   return [
     ["DELETE FROM caja_arqueos"],
+    ["DELETE FROM conciliaciones_cuentas_cobro"],
     ["DELETE FROM caja_movimientos"],
     ["DELETE FROM caja_aperturas"],
     ["DELETE FROM pagos_cuenta_corriente"],
@@ -3771,6 +3772,160 @@ async function testConciliacionManualPorCuentaCobro() {
   }
 }
 
+async function testReporteCuentasCobro() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Reporte cuenta efectivo TEST",
+        tipo_pago_codigo: "efectivo",
+        orden: 10
+      });
+      const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Reporte terminal debito TEST",
+        tipo_pago_codigo: "debito",
+        orden: 20
+      });
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      const ventaEfectivo = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "efectivo",
+        cuenta_cobro_id: cuentaEfectivo.id
+      }), token);
+      if (!ventaEfectivo.response.ok) throw new Error(`Venta efectivo reporte cuentas fallo: ${ventaEfectivo.data?.message || ventaEfectivo.response.status}`);
+
+      const ventaDebito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "debito",
+        cuenta_cobro_id: cuentaDebito.id
+      }), token);
+      if (!ventaDebito.response.ok) throw new Error(`Venta debito reporte cuentas fallo: ${ventaDebito.data?.message || ventaDebito.response.status}`);
+
+      const ventaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "efectivo",
+        cuenta_cobro_id: null
+      }), token);
+      if (!ventaSinCuenta.response.ok) throw new Error(`Venta sin cuenta reporte cuentas fallo: ${ventaSinCuenta.data?.message || ventaSinCuenta.response.status}`);
+
+      const ventaAnulada = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "efectivo",
+        cuenta_cobro_id: cuentaEfectivo.id
+      }), token);
+      if (!ventaAnulada.response.ok) throw new Error(`Venta anulada reporte cuentas fallo: ${ventaAnulada.data?.message || ventaAnulada.response.status}`);
+      const anular = await requestJson(baseUrl, "POST", `/ventas/${ventaAnulada.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anular.response.ok) throw new Error(`Anular venta reporte cuentas fallo: ${anular.data?.message || anular.response.status}`);
+
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST egreso reporte efectivo",
+        monto_total: 50,
+        tipo_pago: "efectivo",
+        estado: "registrado",
+        cuenta_cobro_id: cuentaEfectivo.id
+      });
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST egreso reporte debito",
+        monto_total: 30,
+        tipo_pago: "debito",
+        estado: "registrado",
+        cuenta_cobro_id: cuentaDebito.id
+      });
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST egreso reporte sin cuenta",
+        monto_total: 20,
+        tipo_pago: "efectivo",
+        estado: "registrado",
+        cuenta_cobro_id: null
+      });
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST pendiente no impacta reporte cuenta",
+        monto_total: 70,
+        tipo_pago: "efectivo",
+        estado: "pendiente",
+        cuenta_cobro_id: cuentaEfectivo.id
+      });
+
+      const resumenCaja = await getCajaResumenCuentas(baseUrl, token);
+      const efectivo = resumenCaja.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Reporte cuenta efectivo TEST");
+      const debito = resumenCaja.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Reporte terminal debito TEST");
+      const sinCuenta = resumenCaja.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Sin cuenta");
+      if (!efectivo || !debito || !sinCuenta) throw new Error(`Resumen caja previo incompleto: ${JSON.stringify(resumenCaja.cuentas)}`);
+
+      await guardarConciliacionCuenta(baseUrl, token, {
+        cuenta_cobro_id: cuentaEfectivo.id,
+        monto_sistema: efectivo.balance,
+        monto_real: efectivo.balance + 10,
+        observaciones: "TEST reporte diferencia",
+        usuario: "test"
+      });
+      await guardarConciliacionCuenta(baseUrl, token, {
+        cuenta_cobro_id: cuentaDebito.id,
+        monto_sistema: debito.balance,
+        monto_real: debito.balance,
+        observaciones: "TEST reporte conciliado",
+        usuario: "test"
+      });
+
+      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/cuentas-cobro?desde=2000-01-01&hasta=2099-12-31", null, token);
+      if (!response.ok) throw new Error(`GET /reportes/cuentas-cobro fallo: ${data?.message || response.status}`);
+      if (!Array.isArray(data)) throw new Error("GET /reportes/cuentas-cobro debe devolver un array");
+
+      const porNombre = Object.fromEntries(data.map((cuenta) => [cuenta.cuenta_nombre, cuenta]));
+      const repEfectivo = porNombre["Reporte cuenta efectivo TEST"];
+      const repDebito = porNombre["Reporte terminal debito TEST"];
+      const repSinCuenta = porNombre["Sin cuenta"];
+      if (!repEfectivo || !repDebito || !repSinCuenta) {
+        throw new Error(`Reporte debe incluir cuentas y Sin cuenta. Actual=${JSON.stringify(data)}`);
+      }
+
+      assertApprox(repEfectivo.ingresos, 200, "Reporte debe devolver ingresos por cuenta");
+      assertApprox(repEfectivo.egresos, 50, "Reporte debe devolver egresos por cuenta");
+      assertApprox(repEfectivo.balance, 150, "Reporte debe calcular balance ingresos - egresos");
+      assertEqual(repEfectivo.ventas, 1, "Reporte debe excluir ventas anuladas");
+      assertEqual(repEfectivo.pagos, 1, "Reporte debe excluir pagos pendientes");
+      assertApprox(repEfectivo.diferencias, 10, "Reporte debe sumar diferencias conciliadas en valor absoluto");
+      if (repEfectivo.estado_conciliacion !== "diferencia") {
+        throw new Error(`Cuenta con diferencia debe quedar diferencia. Actual=${repEfectivo.estado_conciliacion}`);
+      }
+
+      assertApprox(repDebito.ingresos, 200, "Reporte debe separar ingresos por terminal");
+      assertApprox(repDebito.egresos, 30, "Reporte debe separar egresos por terminal");
+      assertApprox(repDebito.balance, 170, "Reporte debe calcular balance por terminal");
+      if (repDebito.estado_conciliacion !== "conciliado") {
+        throw new Error(`Cuenta conciliada debe quedar conciliado. Actual=${repDebito.estado_conciliacion}`);
+      }
+
+      assertApprox(repSinCuenta.ingresos, 200, "Reporte debe incluir ingresos Sin cuenta");
+      assertApprox(repSinCuenta.egresos, 20, "Reporte debe incluir egresos Sin cuenta");
+      assertApprox(repSinCuenta.balance, 180, "Reporte debe calcular balance Sin cuenta");
+      if (repSinCuenta.estado_conciliacion !== "pendiente") {
+        throw new Error(`Sin conciliacion debe quedar pendiente. Actual=${repSinCuenta.estado_conciliacion}`);
+      }
+
+      if (data[0].cuenta_nombre !== "Sin cuenta") {
+        throw new Error(`Reporte debe ordenar por balance DESC. Primero=${data[0].cuenta_nombre}`);
+      }
+
+      const filtrado = await requestJson(baseUrl, "GET", "/reportes/cuentas-cobro?desde=2010-01-01&hasta=2010-12-31", null, token);
+      if (!filtrado.response.ok) throw new Error(`GET /reportes/cuentas-cobro filtrado fallo: ${filtrado.data?.message || filtrado.response.status}`);
+      if (filtrado.data.length !== 0) {
+        throw new Error(`Reporte debe respetar filtros de fecha. Actual=${JSON.stringify(filtrado.data)}`);
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testVentasPorDiaDevuelveClaves() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -4517,6 +4672,7 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
   await testCuentasCobroEtapa2PagosYVentas();
   await testCajaResumenPorCuentaCobro();
   await testConciliacionManualPorCuentaCobro();
+  await testReporteCuentasCobro();
   await testVentasPorDiaDevuelveClaves();
   await testVentasPorDiaExcluyeAnuladas();
   await testVentasPorDiaAgrupaVentas();

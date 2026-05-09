@@ -137,4 +137,152 @@ async function getVentasPorDia({ desde = null, hasta = null } = {}) {
   );
 }
 
-module.exports = { getResumenReportes, getProductosMasVendidos, getResumenProveedoresPagos, getVentasPorDia };
+function round2(value) {
+  return Number(Number(value || 0).toFixed(2));
+}
+
+function cuentaKey(cuentaCobroId) {
+  return cuentaCobroId == null ? "sin_cuenta" : String(cuentaCobroId);
+}
+
+function upsertCuenta(map, row = {}) {
+  const key = cuentaKey(row.cuenta_cobro_id);
+  if (!map.has(key)) {
+    map.set(key, {
+      cuenta_cobro_id: row.cuenta_cobro_id == null ? null : Number(row.cuenta_cobro_id),
+      cuenta_nombre: row.cuenta_nombre || "Sin cuenta",
+      tipo_pago_codigo: row.tipo_pago_codigo || null,
+      ingresos: 0,
+      egresos: 0,
+      balance: 0,
+      ventas: 0,
+      pagos: 0,
+      conciliaciones: 0,
+      diferencias: 0,
+      estado_conciliacion: "pendiente",
+      _conciliaciones_con_diferencia: 0
+    });
+  }
+  const item = map.get(key);
+  if (!item.cuenta_nombre || item.cuenta_nombre === "Sin cuenta") item.cuenta_nombre = row.cuenta_nombre || item.cuenta_nombre || "Sin cuenta";
+  if (!item.tipo_pago_codigo && row.tipo_pago_codigo) item.tipo_pago_codigo = row.tipo_pago_codigo;
+  return item;
+}
+
+async function getResumenCuentasCobro({ desde = null, hasta = null } = {}) {
+  const ventasWhere = ["COALESCE(v.estado, '') != 'anulado'", "COALESCE(v.tipo, '') != 'test_modificadores'"];
+  const pagosWhere = ["COALESCE(p.estado, '') != 'pendiente'"];
+  const conciliacionesWhere = [];
+  const ventasParams = [];
+  const pagosParams = [];
+  const conciliacionesParams = [];
+
+  if (desde) {
+    ventasWhere.push("v.fecha >= ?");
+    pagosWhere.push("p.fecha >= ?");
+    conciliacionesWhere.push("c.fecha >= ?");
+    ventasParams.push(desde);
+    pagosParams.push(desde);
+    conciliacionesParams.push(desde);
+  }
+  if (hasta) {
+    ventasWhere.push("v.fecha <= ?");
+    pagosWhere.push("p.fecha <= ?");
+    conciliacionesWhere.push("c.fecha <= ?");
+    ventasParams.push(hasta);
+    pagosParams.push(hasta);
+    conciliacionesParams.push(hasta);
+  }
+
+  const conciliacionesClause = conciliacionesWhere.length ? `WHERE ${conciliacionesWhere.join(" AND ")}` : "";
+  const [ventas, pagos, conciliaciones] = await Promise.all([
+    allQuery(
+      `SELECT
+         v.cuenta_cobro_id,
+         COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+         COALESCE(cc.tipo_pago_codigo, v.tipo_cobro) AS tipo_pago_codigo,
+         COALESCE(SUM(v.total), 0) AS ingresos,
+         COUNT(*) AS ventas
+       FROM ventas v
+       LEFT JOIN cuentas_cobro cc ON cc.id = v.cuenta_cobro_id
+       WHERE ${ventasWhere.join(" AND ")}
+       GROUP BY v.cuenta_cobro_id, cuenta_nombre, tipo_pago_codigo`,
+      ventasParams
+    ),
+    allQuery(
+      `SELECT
+         p.cuenta_cobro_id,
+         COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+         COALESCE(cc.tipo_pago_codigo, p.tipo_pago) AS tipo_pago_codigo,
+         COALESCE(SUM(p.monto_total), 0) AS egresos,
+         COUNT(*) AS pagos
+       FROM pagos p
+       LEFT JOIN cuentas_cobro cc ON cc.id = p.cuenta_cobro_id
+       WHERE ${pagosWhere.join(" AND ")}
+       GROUP BY p.cuenta_cobro_id, cuenta_nombre, tipo_pago_codigo`,
+      pagosParams
+    ),
+    allQuery(
+      `SELECT
+         c.cuenta_cobro_id,
+         COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+         cc.tipo_pago_codigo,
+         COUNT(*) AS conciliaciones,
+         COALESCE(SUM(ABS(c.diferencia)), 0) AS diferencias,
+         COALESCE(SUM(CASE WHEN c.estado = 'diferencia' OR ABS(c.diferencia) >= 0.01 THEN 1 ELSE 0 END), 0) AS conciliaciones_con_diferencia
+       FROM conciliaciones_cuentas_cobro c
+       LEFT JOIN cuentas_cobro cc ON cc.id = c.cuenta_cobro_id
+       ${conciliacionesClause}
+       GROUP BY c.cuenta_cobro_id, cuenta_nombre, cc.tipo_pago_codigo`,
+      conciliacionesParams
+    )
+  ]);
+
+  const porCuenta = new Map();
+
+  for (const row of ventas) {
+    const item = upsertCuenta(porCuenta, row);
+    item.ingresos = round2(row.ingresos);
+    item.ventas = Number(row.ventas || 0);
+  }
+
+  for (const row of pagos) {
+    const item = upsertCuenta(porCuenta, row);
+    item.egresos = round2(row.egresos);
+    item.pagos = Number(row.pagos || 0);
+  }
+
+  for (const row of conciliaciones) {
+    const item = upsertCuenta(porCuenta, row);
+    item.conciliaciones = Number(row.conciliaciones || 0);
+    item.diferencias = round2(row.diferencias);
+    item._conciliaciones_con_diferencia = Number(row.conciliaciones_con_diferencia || 0);
+  }
+
+  return [...porCuenta.values()]
+    .map((item) => {
+      const estado = item.conciliaciones <= 0
+        ? "pendiente"
+        : item._conciliaciones_con_diferencia > 0
+          ? "diferencia"
+          : "conciliado";
+      const { _conciliaciones_con_diferencia, ...publicItem } = item;
+      return {
+        ...publicItem,
+        ingresos: round2(publicItem.ingresos),
+        egresos: round2(publicItem.egresos),
+        balance: round2(publicItem.ingresos - publicItem.egresos),
+        diferencias: round2(publicItem.diferencias),
+        estado_conciliacion: estado
+      };
+    })
+    .sort((a, b) => b.balance - a.balance);
+}
+
+module.exports = {
+  getResumenReportes,
+  getProductosMasVendidos,
+  getResumenProveedoresPagos,
+  getVentasPorDia,
+  getResumenCuentasCobro
+};
