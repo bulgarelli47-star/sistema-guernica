@@ -143,10 +143,11 @@ async function refreshCuentaCorrienteSaldo(ventaId) {
 async function replaceVentaDetalle(ventaId, items) {
   await runQuery("DELETE FROM detalle_ventas WHERE venta_id = ?", [ventaId]);
 
+  const detalles = [];
   for (const item of items) {
     const subtotal = item.cantidad * item.precio_unitario;
 
-    await runQuery(
+    const result = await runQuery(
       `INSERT INTO detalle_ventas
       (venta_id, producto_id, nombre_producto, cantidad, precio_unitario, subtotal)
       VALUES (?, ?, ?, ?, ?, ?)`,
@@ -159,7 +160,16 @@ async function replaceVentaDetalle(ventaId, items) {
         subtotal
       ]
     );
+
+    detalles.push({
+      ...item,
+      id: result.lastID,
+      detalle_venta_id: result.lastID,
+      subtotal
+    });
   }
+
+  return detalles;
 }
 
 async function getVentaDetalleRows(ventaId) {
@@ -180,6 +190,15 @@ async function getVentaConDetalle(ventaId) {
   }
 
   const items = await getVentaDetalleRows(ventaId);
+  for (const item of items) {
+    item.modificadores = await allQuery(
+      `SELECT modificador_id, nombre, tipo, precio_extra, cantidad, metadata_json
+       FROM detalle_venta_modificadores
+       WHERE detalle_venta_id = ?
+       ORDER BY id ASC`,
+      [item.id]
+    );
+  }
   return { venta, items };
 }
 

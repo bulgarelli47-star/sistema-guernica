@@ -220,6 +220,87 @@ async function initDatabase() {
       )
     `);
 
+    // Modificadores: no son productos vendidos. Deben quedar pegados al detalle
+    // de venta y guardar snapshot historico para anulaciones y reportes.
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS modificadores (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        codigo TEXT UNIQUE,
+        nombre TEXT NOT NULL,
+        tipo TEXT NOT NULL DEFAULT 'libre',
+        precio_extra REAL NOT NULL DEFAULT 0,
+        activo INTEGER NOT NULL DEFAULT 1,
+        orden INTEGER NOT NULL DEFAULT 0,
+        observacion_cocina TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      )
+    `);
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS producto_modificadores (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        producto_id INTEGER NOT NULL,
+        modificador_id INTEGER NOT NULL,
+        obligatorio INTEGER NOT NULL DEFAULT 0,
+        max_usos INTEGER NOT NULL DEFAULT 1,
+        orden INTEGER NOT NULL DEFAULT 0,
+        activo INTEGER NOT NULL DEFAULT 1,
+        UNIQUE(producto_id, modificador_id),
+        FOREIGN KEY (producto_id) REFERENCES productos(id),
+        FOREIGN KEY (modificador_id) REFERENCES modificadores(id)
+      )
+    `);
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS modificador_componentes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        modificador_id INTEGER NOT NULL,
+        producto_id INTEGER,
+        cantidad REAL NOT NULL DEFAULT 0,
+        operacion TEXT NOT NULL DEFAULT 'agregar',
+        metadata_json TEXT,
+        FOREIGN KEY (modificador_id) REFERENCES modificadores(id),
+        FOREIGN KEY (producto_id) REFERENCES productos(id)
+      )
+    `);
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS detalle_venta_modificadores (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        detalle_venta_id INTEGER NOT NULL,
+        modificador_id INTEGER,
+        nombre TEXT NOT NULL,
+        tipo TEXT NOT NULL,
+        precio_extra REAL NOT NULL DEFAULT 0,
+        cantidad REAL NOT NULL DEFAULT 1,
+        metadata_json TEXT,
+        FOREIGN KEY (detalle_venta_id) REFERENCES detalle_ventas(id),
+        FOREIGN KEY (modificador_id) REFERENCES modificadores(id)
+      )
+    `);
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS detalle_venta_componentes_snapshot (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        detalle_venta_id INTEGER NOT NULL,
+        producto_id INTEGER,
+        nombre_producto TEXT,
+        cantidad REAL NOT NULL DEFAULT 0,
+        operacion TEXT NOT NULL DEFAULT 'base',
+        origen TEXT NOT NULL DEFAULT 'producto',
+        modificador_id INTEGER,
+        metadata_json TEXT,
+        FOREIGN KEY (detalle_venta_id) REFERENCES detalle_ventas(id),
+        FOREIGN KEY (producto_id) REFERENCES productos(id),
+        FOREIGN KEY (modificador_id) REFERENCES modificadores(id)
+      )
+    `);
+
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_producto_modificadores_producto ON producto_modificadores(producto_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_detalle_venta_modificadores_detalle ON detalle_venta_modificadores(detalle_venta_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_detalle_venta_componentes_snapshot_detalle ON detalle_venta_componentes_snapshot(detalle_venta_id)");
+
     await runQuery(`
       CREATE TABLE IF NOT EXISTS pagos_cuenta_corriente (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

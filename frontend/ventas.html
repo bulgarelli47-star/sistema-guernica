@@ -827,6 +827,21 @@
       line-height: 1.1;
     }
 
+    .ticket-modifiers {
+      margin: 6px 0 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 3px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.25;
+    }
+
+    .ticket-modifiers li {
+      display: block;
+    }
+
     .qty-controls {
       display: flex;
       align-items: center;
@@ -1116,6 +1131,40 @@
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 18px;
+    }
+
+    .modifier-list {
+      display: grid;
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    .modifier-option {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 88px;
+      gap: 8px;
+      align-items: center;
+      background: #ffffff;
+    }
+
+    .modifier-option-main {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .modifier-option-main strong,
+    .modifier-option-main small {
+      display: block;
+    }
+
+    .modifier-option-main small {
+      color: var(--muted);
+      margin-top: 2px;
     }
 
     @media (max-width: 1280px) {
@@ -1606,6 +1655,29 @@
     </div>
   </div>
 
+  <div class="modal" id="modalModificadores">
+    <div class="modal-card compact">
+      <div class="modal-header">
+        <div>
+          <h3 id="modalModificadoresNombre">Modificadores</h3>
+          <p class="muted" id="modalModificadoresSubtitulo"></p>
+        </div>
+        <button type="button" class="button secondary" id="cerrarModalModificadores">Cerrar</button>
+      </div>
+      <div class="modifier-list" id="listaModificadoresVenta"></div>
+      <div class="summary-box">
+        <div class="summary-line">
+          <span>Precio unitario</span>
+          <strong>$<span id="modalModificadoresTotal">0.00</span></strong>
+        </div>
+      </div>
+      <div class="inline-actions">
+        <button type="button" class="button secondary" id="agregarSinModificadores">Sin modificadores</button>
+        <button type="button" class="button success" id="aplicarModificadores">Aplicar</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal" id="modalCombo">
     <div class="modal-card compact">
       <div class="modal-header">
@@ -1683,6 +1755,14 @@
     const modalProductos = document.getElementById("modalProductos");
     const modalProductosTitulo = document.getElementById("modalProductosTitulo");
     const modalProductosGrid = document.getElementById("modalProductosGrid");
+    const modalModificadores = document.getElementById("modalModificadores");
+    const modalModificadoresNombre = document.getElementById("modalModificadoresNombre");
+    const modalModificadoresSubtitulo = document.getElementById("modalModificadoresSubtitulo");
+    const listaModificadoresVenta = document.getElementById("listaModificadoresVenta");
+    const modalModificadoresTotal = document.getElementById("modalModificadoresTotal");
+    const cerrarModalModificadores = document.getElementById("cerrarModalModificadores");
+    const agregarSinModificadores = document.getElementById("agregarSinModificadores");
+    const aplicarModificadores = document.getElementById("aplicarModificadores");
     const modalCombo = document.getElementById("modalCombo");
     const modalComboNombre = document.getElementById("modalComboNombre");
     const modalComboSubtitulo = document.getElementById("modalComboSubtitulo");
@@ -1710,6 +1790,9 @@
     let ultimaTodosProductos = [];
     let autoSavingBeforeLeave = false;
     let configVentas = {};
+    let productoModificadoresActual = null;
+    let modificadoresDisponiblesActuales = [];
+    const modificadoresCache = new Map();
     const CONSUMIDOR_FINAL_ID = "1";
 
     function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[raw]||raw}
@@ -1790,6 +1873,131 @@
 
     function cerrarModal(elemento) {
       elemento.classList.remove("open");
+    }
+
+    function normalizarModificadoresTicket(modificadores = []) {
+      return (Array.isArray(modificadores) ? modificadores : [])
+        .map((modificador) => ({
+          modificador_id: Number(modificador.modificador_id ?? modificador.id ?? 0) || null,
+          nombre: String(modificador.nombre || "").trim(),
+          tipo: String(modificador.tipo || "libre").trim().toLowerCase(),
+          precio_extra: Number(modificador.precio_extra ?? modificador.precio ?? 0) || 0,
+          cantidad: Number(modificador.cantidad || 1) || 1
+        }))
+        .filter((modificador) => modificador.modificador_id || modificador.nombre);
+    }
+
+    function calcularExtrasModificadores(modificadores = []) {
+      return normalizarModificadoresTicket(modificadores).reduce((acc, modificador) => {
+        if (modificador.tipo === "observacion") return acc;
+        return acc + Number(modificador.precio_extra || 0) * Number(modificador.cantidad || 1);
+      }, 0);
+    }
+
+    function precioFinalItem(precioBase, modificadores = []) {
+      return Number((Number(precioBase || 0) + calcularExtrasModificadores(modificadores)).toFixed(2));
+    }
+
+    function tieneModificadoresItem(item) {
+      return normalizarModificadoresTicket(item?.modificadores).length > 0;
+    }
+
+    function buildTicketItem(producto, modificadores = []) {
+      const mods = normalizarModificadoresTicket(modificadores);
+      const precioBase = Number(producto.precio_base ?? producto.precio_venta ?? 0) || 0;
+      const conMods = mods.length > 0;
+      return {
+        id: conMods ? `${producto.id}-${Date.now()}-${Math.random().toString(16).slice(2)}` : producto.id,
+        producto_id: producto.id,
+        nombre: producto.nombre,
+        precio_base: precioBase,
+        precio_venta: precioFinalItem(precioBase, mods),
+        cantidad: 1,
+        imagen_url: producto.imagen_url || "",
+        modificadores: mods
+      };
+    }
+
+    async function cargarModificadoresProducto(productoId) {
+      if (!productoId) return [];
+      const key = String(productoId);
+      if (modificadoresCache.has(key)) return modificadoresCache.get(key);
+      try {
+        const res = await fetch(`/productos/${productoId}/modificadores`);
+        if (!res.ok) throw new Error("No se pudieron cargar modificadores");
+        const data = await res.json();
+        const mods = Array.isArray(data)
+          ? data.filter((modificador) => ["libre", "observacion", "agregar"].includes(String(modificador.tipo || "").toLowerCase()))
+          : [];
+        modificadoresCache.set(key, mods);
+        return mods;
+      } catch {
+        modificadoresCache.set(key, []);
+        return [];
+      }
+    }
+
+    function actualizarTotalModalModificadores() {
+      if (!productoModificadoresActual) return;
+      const seleccionados = obtenerModificadoresSeleccionados();
+      modalModificadoresTotal.innerText = formatearNumero(precioFinalItem(productoModificadoresActual.precio_venta, seleccionados));
+    }
+
+    function obtenerModificadoresSeleccionados() {
+      return [...listaModificadoresVenta.querySelectorAll("[data-modificador-id]")]
+        .filter((row) => row.querySelector("[data-mod-check]")?.checked)
+        .map((row) => {
+          const mod = modificadoresDisponiblesActuales.find((item) => Number(item.id) === Number(row.dataset.modificadorId));
+          return {
+            modificador_id: Number(row.dataset.modificadorId),
+            nombre: mod?.nombre || "",
+            tipo: mod?.tipo || "libre",
+            precio_extra: Number(mod?.precio_extra || 0),
+            cantidad: Math.max(1, Number(row.querySelector("[data-mod-cantidad]")?.value || 1) || 1)
+          };
+        });
+    }
+
+    function renderModalModificadores(producto, modificadores) {
+      productoModificadoresActual = producto;
+      modificadoresDisponiblesActuales = modificadores;
+      modalModificadoresNombre.innerText = producto.nombre;
+      modalModificadoresSubtitulo.innerText = `Base $${formatearNumero(producto.precio_venta)}`;
+      listaModificadoresVenta.innerHTML = modificadores.map((modificador) => `
+        <label class="modifier-option" data-modificador-id="${modificador.id}">
+          <span class="modifier-option-main">
+            <input type="checkbox" data-mod-check>
+            <span>
+              <strong>${escapeHtml(modificador.nombre)}</strong>
+              <small>${escapeHtml(modificador.tipo)}${Number(modificador.precio_extra || 0) ? ` · +$${formatearNumero(modificador.precio_extra)}` : ""}</small>
+            </span>
+          </span>
+          <input class="field" type="number" min="1" step="1" value="1" data-mod-cantidad>
+        </label>
+      `).join("");
+      listaModificadoresVenta.querySelectorAll("input").forEach((input) => {
+        input.addEventListener("input", actualizarTotalModalModificadores);
+        input.addEventListener("change", actualizarTotalModalModificadores);
+      });
+      actualizarTotalModalModificadores();
+    }
+
+    function agregarProductoConModificadores(producto, modificadores = []) {
+      const item = buildTicketItem(producto, modificadores);
+      if (!tieneModificadoresItem(item)) {
+        const existente = ticket.find((linea) => linea.id === producto.id && !tieneModificadoresItem(linea));
+        if (existente) {
+          existente.cantidad += 1;
+          if (!existente.imagen_url && producto.imagen_url) existente.imagen_url = producto.imagen_url;
+        } else {
+          ticket.push(item);
+        }
+      } else {
+        ticket.push(item);
+      }
+      marcarPendienteEditado();
+      renderizarTicket();
+      mostrarMensaje(`Producto agregado: ${producto.nombre}`);
     }
 
     async function abrirModalCombo(producto) {
@@ -1914,7 +2122,8 @@
           nombre: item.nombre,
           cantidad: Number(item.cantidad) || 0,
           precio: Number(item.precio_venta) || 0,
-          subtotal: Number(((Number(item.cantidad) || 0) * (Number(item.precio_venta) || 0)).toFixed(2))
+          subtotal: Number(((Number(item.cantidad) || 0) * (Number(item.precio_venta) || 0)).toFixed(2)),
+          modificadores: normalizarModificadoresTicket(item.modificadores)
         }))
       };
     }
@@ -1940,7 +2149,7 @@
       const itemsHtml = mostrarItems
         ? ticketData.items.map((item) => `
             <tr>
-              <td>${escapeHtml(item.nombre)}<br><small>${formatearNumero(item.cantidad)} x $${formatearNumero(item.precio)}</small></td>
+              <td>${escapeHtml(item.nombre)}<br><small>${formatearNumero(item.cantidad)} x $${formatearNumero(item.precio)}</small>${normalizarModificadoresTicket(item.modificadores).map((mod) => `<br><small>+ ${escapeHtml(mod.nombre)} x${formatearNumero(mod.cantidad)}</small>`).join("")}</td>
               <td class="right">$${formatearNumero(item.subtotal)}</td>
             </tr>
           `).join("")
@@ -2145,6 +2354,10 @@
         totalDescuento += descuentoLinea;
         total += subtotal;
         const nombreProducto = String(item.nombre || "Producto sin nombre").trim() || "Producto sin nombre";
+        const modificadores = normalizarModificadoresTicket(item.modificadores);
+        const modsHtml = modificadores.length
+          ? `<ul class="ticket-modifiers">${modificadores.map((mod) => mod.tipo === "observacion" ? `<li>Nota: ${escapeHtml(mod.nombre)}</li>` : `<li>+ ${escapeHtml(mod.nombre)} x${Number.isInteger(Number(mod.cantidad)) ? Number(mod.cantidad) : formatearNumero(mod.cantidad)}</li>`).join("")}</ul>`
+          : "";
         const infoDescuento = descuentoUnit > 0
           ? `<small>${item.cantidad} x $${formatearNumero(precioVenta)} <span style="color:var(--success,#2ea043);font-weight:700">· Ahorraste $${formatearNumero(descuentoUnit * item.cantidad)}</span></small>`
           : `<small>${item.cantidad} x $${formatearNumero(precioVenta)}</small>`;
@@ -2156,6 +2369,7 @@
             <div class="ticket-product-info">
               <strong>${nombreProducto}</strong>
               ${infoDescuento}
+              ${modsHtml}
             </div>
           </div>
           <div class="qty-controls">
@@ -2193,7 +2407,7 @@
       actualizarVuelto();
     }
 
-    function agregarAlTicket(producto) {
+    async function agregarAlTicket(producto) {
       const manejaStock = Number(producto.maneja_stock) === 1;
       const stockDisponible = Number(producto.stock_vendible_calculado ?? producto.stock_disponible ?? producto.stock ?? 0);
       const permitirNegativo = !!configVentas?.stock_permitir_negativo;
@@ -2202,27 +2416,14 @@
         return;
       }
 
-      const existente = ticket.find((item) => item.id === producto.id);
-
-      if (existente) {
-        existente.cantidad += 1;
-        if (!existente.imagen_url && producto.imagen_url) {
-          existente.imagen_url = producto.imagen_url;
-        }
-      } else {
-        ticket.push({
-          id: producto.id,
-          producto_id: producto.id,
-          nombre: producto.nombre,
-          precio_venta: Number(producto.precio_venta) || 0,
-          cantidad: 1,
-          imagen_url: producto.imagen_url || ""
-        });
+      const modificadores = await cargarModificadoresProducto(producto.id);
+      if (modificadores.length) {
+        renderModalModificadores(producto, modificadores);
+        abrirModal(modalModificadores);
+        return;
       }
 
-      marcarPendienteEditado();
-      renderizarTicket();
-      mostrarMensaje(`Producto agregado: ${producto.nombre}`);
+      agregarProductoConModificadores(producto, []);
     }
 
     function agregarProductoManual() {
@@ -2678,7 +2879,11 @@
           producto_id: item.producto_id || null,
           nombre_producto: item.nombre,
           cantidad: item.cantidad,
-          precio_unitario: item.precio_venta
+          precio_unitario: tieneModificadoresItem(item) ? Number(item.precio_base || 0) : Number(item.precio_venta || 0),
+          modificadores: normalizarModificadoresTicket(item.modificadores).map((modificador) => ({
+            modificador_id: modificador.modificador_id,
+            cantidad: modificador.cantidad
+          }))
         }))
       };
     }
@@ -2968,13 +3173,20 @@
         ticket.length = 0;
 
         data.items.forEach((item) => {
+          const modificadores = normalizarModificadoresTicket(item.modificadores);
+          // precio_unitario desde la API es SIEMPRE el precio base (sin extras)
+          const precioBase = Number(item.precio_unitario) || 0;
           ticket.push({
-            id: item.producto_id ? Number(item.producto_id) : siguienteManualId--,
+            id: modificadores.length
+              ? `${item.producto_id || "manual"}-${item.id || Date.now()}`
+              : item.producto_id ? Number(item.producto_id) : siguienteManualId--,
             producto_id: item.producto_id ? Number(item.producto_id) : null,
             nombre: item.nombre_producto,
-            precio_venta: Number(item.precio_unitario) || 0,
+            precio_base: precioBase,
+            precio_venta: precioFinalItem(precioBase, modificadores),
             cantidad: Number(item.cantidad) || 0,
-            imagen_url: item.imagen_url || ""
+            imagen_url: item.imagen_url || "",
+            modificadores
           });
         });
 
@@ -3378,6 +3590,28 @@
       cerrarModal(modalProductos);
     });
 
+    cerrarModalModificadores.addEventListener("click", function () {
+      productoModificadoresActual = null;
+      modificadoresDisponiblesActuales = [];
+      cerrarModal(modalModificadores);
+    });
+
+    agregarSinModificadores.addEventListener("click", function () {
+      if (!productoModificadoresActual) return;
+      agregarProductoConModificadores(productoModificadoresActual, []);
+      productoModificadoresActual = null;
+      modificadoresDisponiblesActuales = [];
+      cerrarModal(modalModificadores);
+    });
+
+    aplicarModificadores.addEventListener("click", function () {
+      if (!productoModificadoresActual) return;
+      agregarProductoConModificadores(productoModificadoresActual, obtenerModificadoresSeleccionados());
+      productoModificadoresActual = null;
+      modificadoresDisponiblesActuales = [];
+      cerrarModal(modalModificadores);
+    });
+
     toggleNotificaciones.addEventListener("click", function (event) {
       event.stopPropagation();
       notificacionesDropdown.classList.toggle("open");
@@ -3464,7 +3698,7 @@
       mostrarMensaje(`Combo agregado: ${producto.nombre}`);
     });
 
-    [modalGuardarPendiente, modalPendientes, modalCliente, modalProductos, modalCombo].forEach((modal) => {
+    [modalGuardarPendiente, modalPendientes, modalCliente, modalProductos, modalModificadores, modalCombo].forEach((modal) => {
       modal.addEventListener("click", function (event) {
         if (event.target === modal) {
           cerrarModal(modal);

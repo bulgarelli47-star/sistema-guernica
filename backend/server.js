@@ -82,6 +82,21 @@ const {
   toggleActivoCuentaCobro,
   validarCuentaCobroParaTipo
 } = require("./services/cuentaCobroService");
+const {
+  aplicarStockComponentesSnapshot,
+  aplicarStockDiffComponentesExtra,
+  borrarSnapshotsDetalles,
+  crearModificadorProducto,
+  ensureModificadoresSchema,
+  getComponentesItemsVenta,
+  getComponentesSnapshotVenta,
+  getStockDeltaVentaItem,
+  getModificadoresProducto,
+  guardarComponentesSnapshot,
+  guardarModificadoresDetalleVenta,
+  guardarSnapshotsModificadoresVenta,
+  resolverComposicionItemVenta
+} = require("./services/modificadorService");
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -481,7 +496,8 @@ function normalizeItems(items) {
     producto_id: item.producto_id ?? item.id ?? null,
     nombre_producto: String(item.nombre_producto ?? item.nombre ?? "").trim(),
     cantidad: Number(item.cantidad) || 0,
-    precio_unitario: Number(item.precio_unitario ?? item.precio_venta) || 0
+    precio_unitario: Number(item.precio_unitario ?? item.precio_venta) || 0,
+    modificadores: Array.isArray(item.modificadores) ? item.modificadores : []
   }));
 }
 
@@ -489,6 +505,21 @@ function calculateTotal(items) {
   return items.reduce((acc, item) => {
     return acc + item.cantidad * item.precio_unitario;
   }, 0);
+}
+
+function tieneModificadoresVenta(items = []) {
+  return items.some((item) => Array.isArray(item.modificadores) && item.modificadores.length > 0);
+}
+
+async function resolverItemsVentaNormalConModificadores(items) {
+  const resueltos = [];
+  for (const item of items) {
+    resueltos.push(await resolverComposicionItemVenta(item, {
+      validarAsociacion: true,
+      tiposPermitidos: ["libre", "observacion", "agregar"]
+    }));
+  }
+  return resueltos;
 }
 
 async function logHistorialProducto(productoId, campo, valorAnterior, valorNuevo, motivo = "", usuario = "admin") {
@@ -1943,6 +1974,37 @@ app.get("/productos/:id/costos-insumos", async (req, res) => {
   }
 });
 
+app.get("/productos/:id/modificadores", async (req, res) => {
+  try {
+    const producto = await getQuery("SELECT id FROM productos WHERE id = ? AND COALESCE(eliminado, 0) = 0", [req.params.id]);
+    if (!producto) {
+      return res.status(404).json({ message: "Producto no encontrado" });
+    }
+
+    return res.json(await getModificadoresProducto(req.params.id));
+  } catch (error) {
+    logError("Error al obtener modificadores del producto:", error);
+    return res.status(500).json({ message: "Error al obtener modificadores del producto" });
+  }
+});
+
+app.post("/productos/:id/modificadores", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar productos"))) return;
+
+  try {
+    const producto = await getQuery("SELECT id FROM productos WHERE id = ? AND COALESCE(eliminado, 0) = 0", [req.params.id]);
+    if (!producto) {
+      return res.status(404).json({ message: "Producto no encontrado" });
+    }
+
+    const modificador = await crearModificadorProducto(req.params.id, req.body);
+    return res.status(201).json({ message: "Modificador creado", modificador });
+  } catch (error) {
+    logError("Error al crear modificador del producto:", error);
+    return res.status(error.statusCode || 500).json({ message: error.message || "Error al crear modificador del producto" });
+  }
+});
+
 app.get("/productos/:id/proveedores", async (req, res) => {
   const productoId = Number(req.params.id);
 
@@ -2854,6 +2916,94 @@ app.delete("/pagos/:id", async (req, res) => {
   }
 });
 
+app.post("/ventas/test-modificadores", async (req, res) => {
+  const itemEntrada = Array.isArray(req.body.items) ? req.body.items[0] : req.body.item;
+  if (!itemEntrada) {
+    return res.status(400).json({ message: "Item de prueba requerido" });
+  }
+
+  try {
+    const producto = itemEntrada.producto_id
+      ? await getQuery("SELECT id, nombre, precio_venta FROM productos WHERE id = ?", [itemEntrada.producto_id])
+      : null;
+    if (!producto) {
+      return res.status(400).json({ message: "Producto invalido para prueba de modificadores" });
+    }
+
+    const itemResuelto = await resolverComposicionItemVenta({
+      producto_id: producto.id,
+      nombre_producto: itemEntrada.nombre_producto || producto.nombre,
+      cantidad: Number(itemEntrada.cantidad || 1),
+      precio_unitario: Number(itemEntrada.precio_unitario ?? producto.precio_venta ?? 0),
+      modificadores: Array.isArray(itemEntrada.modificadores) ? itemEntrada.modificadores : []
+    });
+
+    if (!itemResuelto.nombre_producto || Number(itemResuelto.cantidad || 0) <= 0) {
+      return res.status(400).json({ message: "Item de prueba invalido" });
+    }
+
+    const total = Number((Number(itemResuelto.cantidad || 0) * Number(itemResuelto.precio_unitario || 0)).toFixed(2));
+    const { fecha, hora } = getNowParts();
+
+    await runQuery("BEGIN TRANSACTION");
+    const venta = await runQuery(
+      `INSERT INTO ventas
+       (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro,
+        monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id, cuenta_cobro_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        fecha,
+        hora,
+        req.body.usuario || "test",
+        total,
+        "test_modificadores",
+        "anulado",
+        "TEST modificadores",
+        null,
+        null,
+        0,
+        0,
+        null,
+        0,
+        0,
+        null,
+        null
+      ]
+    );
+
+    const detalle = await runQuery(
+      `INSERT INTO detalle_ventas
+       (venta_id, producto_id, nombre_producto, cantidad, precio_unitario, subtotal)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        venta.lastID,
+        itemResuelto.producto_id,
+        itemResuelto.nombre_producto,
+        itemResuelto.cantidad,
+        itemResuelto.precio_unitario,
+        total
+      ]
+    );
+
+    await guardarModificadoresDetalleVenta(detalle.lastID, itemResuelto.modificadores);
+    await guardarComponentesSnapshot(detalle.lastID, itemResuelto.componentes);
+    await runQuery("COMMIT");
+
+    return res.json({
+      message: "Venta test de modificadores registrada",
+      venta_id: venta.lastID,
+      detalle_venta_id: detalle.lastID,
+      item: itemResuelto,
+      total,
+      stock_delta: getStockDeltaVentaItem(itemResuelto)
+    });
+  } catch (error) {
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("Error en venta test de modificadores:", error);
+    return res.status(500).json({ message: "Error en venta test de modificadores" });
+  }
+});
+
 // Registrar venta o pendiente
 app.post("/ventas", async (req, res) => {
   const {
@@ -2892,12 +3042,27 @@ app.post("/ventas", async (req, res) => {
   }
 
   const esCuentaCorriente = Boolean(es_cuenta_corriente);
+  let itemsVenta = itemsNormalizados;
+  const hayModificadores = tieneModificadoresVenta(itemsNormalizados);
+
+  if (hayModificadores && (!["normal", "pendiente"].includes(tipoVenta) || esCuentaCorriente)) {
+    return res.status(400).json({ message: "Los modificadores solo estan habilitados para ventas normales o pendientes nuevas" });
+  }
+
+  if (hayModificadores) {
+    try {
+      itemsVenta = await resolverItemsVentaNormalConModificadores(itemsNormalizados);
+    } catch (error) {
+      return res.status(error.statusCode || 400).json({ message: error.message || "Modificadores invalidos" });
+    }
+  }
+
   const estadoVenta = tipoVenta === "pendiente"
     ? "pendiente"
     : esCuentaCorriente
       ? "cuenta_corriente_pendiente"
       : "cobrada";
-  const total = calculateTotal(itemsNormalizados);
+  const total = calculateTotal(itemsVenta);
   const { fecha, hora } = getNowParts();
   const usuarioVenta = usuario || "admin";
   const clienteId = cliente_id ? Number(cliente_id) : null;
@@ -2977,8 +3142,14 @@ app.post("/ventas", async (req, res) => {
       ]
     );
 
-    await replaceVentaDetalle(venta.lastID, itemsNormalizados);
-    await applyStockForNewItems(itemsNormalizados);
+    const detalles = await replaceVentaDetalle(venta.lastID, itemsVenta);
+    if (hayModificadores) {
+      await guardarSnapshotsModificadoresVenta(detalles);
+    }
+    await applyStockForNewItems(itemsVenta);
+    if (hayModificadores) {
+      await aplicarStockComponentesSnapshot(detalles, 1);
+    }
 
     await runQuery("COMMIT");
 
@@ -4194,6 +4365,16 @@ app.put("/ventas/:id/pendiente", async (req, res) => {
     return res.status(400).json({ message: "Hay productos invalidos en el ticket" });
   }
 
+  let itemsVenta = itemsNormalizados;
+  const hayModificadores = tieneModificadoresVenta(itemsNormalizados);
+  if (hayModificadores) {
+    try {
+      itemsVenta = await resolverItemsVentaNormalConModificadores(itemsNormalizados);
+    } catch (error) {
+      return res.status(error.statusCode || 400).json({ message: error.message || "Modificadores invalidos" });
+    }
+  }
+
   try {
     const venta = await getQuery("SELECT * FROM ventas WHERE id = ?", [ventaId]);
 
@@ -4202,11 +4383,18 @@ app.put("/ventas/:id/pendiente", async (req, res) => {
     }
 
     const oldItems = await getVentaDetalleRows(ventaId);
-    const total = calculateTotal(itemsNormalizados);
+    const oldComponentesExtra = await getComponentesSnapshotVenta(ventaId);
+    const newComponentesExtra = getComponentesItemsVenta(itemsVenta);
+    const total = calculateTotal(itemsVenta);
 
     await runQuery("BEGIN TRANSACTION");
-    await applyStockDiff(oldItems, itemsNormalizados);
-    await replaceVentaDetalle(ventaId, itemsNormalizados);
+    await applyStockDiff(oldItems, itemsVenta);
+    await aplicarStockDiffComponentesExtra(oldComponentesExtra, newComponentesExtra);
+    await borrarSnapshotsDetalles(oldItems);
+    const detalles = await replaceVentaDetalle(ventaId, itemsVenta);
+    if (hayModificadores) {
+      await guardarSnapshotsModificadoresVenta(detalles);
+    }
     await runQuery(
       `UPDATE ventas
        SET total = ?, identificador_pendiente = ?
@@ -4320,6 +4508,7 @@ app.post("/ventas/:id/anular", async (req, res) => {
 
       await applyStockChange(item.producto_id, -Number(item.cantidad || 0));
     }
+    await aplicarStockComponentesSnapshot(items, -1);
 
     await runQuery(
       `UPDATE ventas
@@ -4425,6 +4614,7 @@ app.post("/ventas/:id/anular-cobrada", async (req, res) => {
         await applyStockChange(item.producto_id, -Number(item.cantidad || 0));
       }
     }
+    await aplicarStockComponentesSnapshot(items, -1);
 
     await runQuery(
       `UPDATE ventas
@@ -4478,6 +4668,7 @@ app.get("/ventas", async (req, res) => {
       `SELECT v.*, cc.nombre AS cuenta_cobro_nombre
        FROM ventas v
        LEFT JOIN cuentas_cobro cc ON cc.id = v.cuenta_cobro_id
+       WHERE COALESCE(v.tipo, '') != 'test_modificadores'
        ORDER BY v.id DESC LIMIT ? OFFSET ?`,
       [limite, offset]
     );
@@ -4492,7 +4683,11 @@ app.get("/ventas", async (req, res) => {
 app.get("/detalle-ventas", async (req, res) => {
   try {
     const detalleVentas = await allQuery(
-      "SELECT * FROM detalle_ventas ORDER BY id DESC"
+      `SELECT dv.*
+       FROM detalle_ventas dv
+       INNER JOIN ventas v ON v.id = dv.venta_id
+       WHERE COALESCE(v.tipo, '') != 'test_modificadores'
+       ORDER BY dv.id DESC`
     );
     return res.json(detalleVentas);
   } catch (error) {
@@ -4676,6 +4871,7 @@ Promise.all([
   ensureTiposPagoSchema(),
   ensureCuentasCobroSchema(),
   ensureConciliacionesCuentasCobroTable(),
+  ensureModificadoresSchema(),
   ensureProductosSchema(),
   ensureClientesSchema(),
   ensureConfiguracionSchema()
