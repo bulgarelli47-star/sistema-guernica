@@ -92,6 +92,9 @@ const {
   getComponentesSnapshotVenta,
   getStockDeltaVentaItem,
   getModificadoresProducto,
+  getModificadoresProductoTodos,
+  actualizarModificador,
+  setActivoModificador,
   guardarComponentesSnapshot,
   guardarModificadoresDetalleVenta,
   guardarSnapshotsModificadoresVenta,
@@ -1977,14 +1980,41 @@ app.get("/productos/:id/costos-insumos", async (req, res) => {
 app.get("/productos/:id/modificadores", async (req, res) => {
   try {
     const producto = await getQuery("SELECT id FROM productos WHERE id = ? AND COALESCE(eliminado, 0) = 0", [req.params.id]);
-    if (!producto) {
-      return res.status(404).json({ message: "Producto no encontrado" });
-    }
-
-    return res.json(await getModificadoresProducto(req.params.id));
+    if (!producto) return res.status(404).json({ message: "Producto no encontrado" });
+    const todos = req.query.todos === "1";
+    return res.json(todos
+      ? await getModificadoresProductoTodos(req.params.id)
+      : await getModificadoresProducto(req.params.id));
   } catch (error) {
     logError("Error al obtener modificadores del producto:", error);
     return res.status(500).json({ message: "Error al obtener modificadores del producto" });
+  }
+});
+
+app.put("/modificadores/:id", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar modificadores"))) return;
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "ID inválido" });
+  try {
+    const modificador = await actualizarModificador(id, req.body);
+    return res.json({ message: "Modificador actualizado", modificador });
+  } catch (error) {
+    logError("Error al actualizar modificador:", error);
+    return res.status(error.statusCode || 500).json({ message: error.message || "Error al actualizar modificador" });
+  }
+});
+
+app.patch("/modificadores/:id/activo", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar modificadores"))) return;
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "ID inválido" });
+  const activo = req.body.activo !== false && req.body.activo !== 0 && req.body.activo !== "0";
+  try {
+    await setActivoModificador(id, activo);
+    return res.json({ message: activo ? "Modificador reactivado" : "Modificador desactivado" });
+  } catch (error) {
+    logError("Error al cambiar estado de modificador:", error);
+    return res.status(500).json({ message: "Error al cambiar estado del modificador" });
   }
 });
 

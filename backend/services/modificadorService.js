@@ -457,6 +457,67 @@ async function borrarSnapshotsDetalles(detalles = []) {
   await runQuery(`DELETE FROM detalle_venta_componentes_snapshot WHERE detalle_venta_id IN (${placeholders})`, ids);
 }
 
+async function getModificadoresProductoTodos(productoId) {
+  if (!productoId) return [];
+  await ensureModificadoresSchema();
+  const modificadores = await allQuery(
+    `SELECT m.*, pm.obligatorio, pm.max_usos, pm.orden AS producto_orden
+     FROM producto_modificadores pm
+     INNER JOIN modificadores m ON m.id = pm.modificador_id
+     WHERE pm.producto_id = ?
+     ORDER BY pm.orden ASC, m.orden ASC, m.nombre ASC`,
+    [productoId]
+  );
+  for (const mod of modificadores) {
+    mod.componentes = await getComponentesModificador(mod.id);
+  }
+  return modificadores;
+}
+
+async function actualizarModificador(id, payload = {}) {
+  const nombre = String(payload.nombre || "").trim();
+  if (!nombre) throw crearErrorValidacion("El nombre es obligatorio");
+
+  const tipo = normalizarTipoModificador(payload.tipo);
+  const tiposPermitidos = ["libre", "observacion", "agregar"];
+  if (!tiposPermitidos.includes(tipo)) throw crearErrorValidacion("Tipo no permitido");
+
+  const precioExtra = tipo === "observacion" ? 0 : Math.max(0, Number(payload.precio_extra ?? 0) || 0);
+  const activo = payload.activo === false || payload.activo === 0 || payload.activo === "0" ? 0 : 1;
+  const now = new Date().toISOString();
+
+  await runQuery(
+    `UPDATE modificadores SET nombre = ?, tipo = ?, precio_extra = ?, activo = ?, updated_at = ? WHERE id = ?`,
+    [nombre, tipo, precioExtra, activo, now, id]
+  );
+
+  // Resetea y recrea componentes (solo afecta ventas futuras, snapshots históricos intactos)
+  await runQuery(`DELETE FROM modificador_componentes WHERE modificador_id = ?`, [id]);
+  if (tipo === "agregar") {
+    const componentes = Array.isArray(payload.componentes) ? payload.componentes : [];
+    for (const comp of componentes) {
+      const compId = Number(comp.producto_id || 0);
+      const cantidad = Number(comp.cantidad || 0);
+      if (!compId || cantidad <= 0) continue;
+      await runQuery(
+        `INSERT INTO modificador_componentes (modificador_id, producto_id, cantidad, operacion, metadata_json) VALUES (?, ?, ?, ?, ?)`,
+        [id, compId, cantidad, tipo, comp.metadata_json || null]
+      );
+    }
+  }
+
+  const modificador = await getQuery("SELECT * FROM modificadores WHERE id = ?", [id]);
+  if (modificador) modificador.componentes = await getComponentesModificador(id);
+  return modificador;
+}
+
+async function setActivoModificador(id, activo) {
+  const val = activo ? 1 : 0;
+  const now = new Date().toISOString();
+  await runQuery(`UPDATE modificadores SET activo = ?, updated_at = ? WHERE id = ?`, [val, now, id]);
+  await runQuery(`UPDATE producto_modificadores SET activo = ? WHERE modificador_id = ?`, [val, id]);
+}
+
 function getStockDeltaVentaItem(item = {}) {
   return {
     producto_id: item.producto_id,
@@ -481,5 +542,8 @@ module.exports = {
   getComponentesSnapshotVenta,
   aplicarStockDiffComponentesExtra,
   borrarSnapshotsDetalles,
-  getStockDeltaVentaItem
+  getStockDeltaVentaItem,
+  getModificadoresProductoTodos,
+  actualizarModificador,
+  setActivoModificador
 };
