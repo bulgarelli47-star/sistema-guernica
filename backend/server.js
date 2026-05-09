@@ -519,7 +519,7 @@ async function resolverItemsVentaNormalConModificadores(items) {
   for (const item of items) {
     resueltos.push(await resolverComposicionItemVenta(item, {
       validarAsociacion: true,
-      tiposPermitidos: ["libre", "observacion", "agregar"]
+      tiposPermitidos: ["libre", "observacion", "agregar", "quitar"]
     }));
   }
   return resueltos;

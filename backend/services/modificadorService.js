@@ -309,18 +309,58 @@ async function resolverComposicionItemVenta(item = {}, options = {}) {
   const cantidadItem = Number(item.cantidad || 0) || 0;
   const componentes = [];
 
+  // Para "quitar" necesitamos la receta base del producto para validar y capear
+  const tieneQuitar = seleccionados.some((m) => m.tipo === "quitar");
+  const componentesBase = tieneQuitar && item.producto_id
+    ? await getComponentesBaseProducto(item.producto_id)
+    : [];
+
   for (const modificador of seleccionados) {
-    if (modificador.tipo !== "agregar") continue;
-    for (const componente of modificador.componentes) {
-      componentes.push({
-        producto_id: componente.producto_id ?? null,
-        nombre_producto: componente.nombre_producto || null,
-        cantidad: Number((Number(componente.cantidad || 0) * Number(modificador.cantidad || 1) * cantidadItem).toFixed(4)),
-        operacion: "agregar",
-        origen: "modificador",
-        modificador_id: modificador.modificador_id,
-        metadata_json: componente.metadata_json || null
-      });
+    if (modificador.tipo === "agregar") {
+      for (const componente of modificador.componentes) {
+        const cantidadTotal = Number((Number(componente.cantidad || 0) * Number(modificador.cantidad || 1) * cantidadItem).toFixed(4));
+        if (cantidadTotal <= 0) continue;
+        componentes.push({
+          producto_id: componente.producto_id ?? null,
+          nombre_producto: componente.nombre_producto || null,
+          cantidad: cantidadTotal,
+          operacion: "agregar",
+          origen: "modificador",
+          modificador_id: modificador.modificador_id,
+          metadata_json: componente.metadata_json || null
+        });
+      }
+    } else if (modificador.tipo === "quitar") {
+      for (const componenteQuitar of modificador.componentes) {
+        const compId = Number(componenteQuitar.producto_id || 0);
+        if (!compId) continue;
+
+        // Validar que el componente forma parte de la receta base
+        const baseComp = componentesBase.find((b) => Number(b.componente_id) === compId);
+        if (!baseComp) {
+          throw crearErrorValidacion(
+            "El componente a quitar no forma parte de la receta base del producto"
+          );
+        }
+
+        const cantidadQuitarTotal = Number((Number(componenteQuitar.cantidad || 0) * Number(modificador.cantidad || 1) * cantidadItem).toFixed(4));
+        if (cantidadQuitarTotal <= 0) continue;
+
+        // Criterio: capear a la cantidad base — nunca quitar más de lo que la receta descuenta
+        const cantidadBaseTotal = Number((Number(baseComp.cantidad || 0) * cantidadItem).toFixed(4));
+        const cantidadEfectiva = Math.min(cantidadQuitarTotal, cantidadBaseTotal);
+        if (cantidadEfectiva <= 0) continue;
+
+        componentes.push({
+          producto_id: compId,
+          nombre_producto: baseComp.nombre_producto || componenteQuitar.nombre_producto || null,
+          cantidad: cantidadEfectiva,
+          operacion: "quitar",
+          origen: "modificador",
+          modificador_id: modificador.modificador_id,
+          metadata_json: componenteQuitar.metadata_json || null
+        });
+      }
     }
   }
 
@@ -404,7 +444,9 @@ async function aplicarStockComponentesSnapshot(detalles = [], signo = 1) {
       const productoId = Number(componente.producto_id || 0);
       const cantidad = Number(componente.cantidad || 0);
       if (!productoId || cantidad <= 0) continue;
-      await applyStockChange(productoId, signo * cantidad, { comoComponente: true });
+      // "quitar" invierte el efecto: al vender restaura stock, al anular lo descuenta de vuelta
+      const efectividad = componente.operacion === "quitar" ? -1 : 1;
+      await applyStockChange(productoId, signo * efectividad * cantidad, { comoComponente: true });
     }
   }
 }
@@ -426,19 +468,21 @@ async function getComponentesSnapshotVenta(ventaId) {
 
 async function aplicarStockDiffComponentesExtra(oldComponentes = [], newComponentes = []) {
   const deltaByProduct = new Map();
+  // "quitar" tiene efecto negativo sobre el stock (restaura en lugar de consumir)
+  const efectivoCantidad = (c) => c.operacion === "quitar" ? -Number(c.cantidad || 0) : Number(c.cantidad || 0);
 
   for (const componente of oldComponentes) {
     const productoId = Number(componente.producto_id || 0);
     if (!productoId) continue;
     const current = deltaByProduct.get(productoId) || 0;
-    deltaByProduct.set(productoId, current - Number(componente.cantidad || 0));
+    deltaByProduct.set(productoId, current - efectivoCantidad(componente));
   }
 
   for (const componente of newComponentes) {
     const productoId = Number(componente.producto_id || 0);
     if (!productoId) continue;
     const current = deltaByProduct.get(productoId) || 0;
-    deltaByProduct.set(productoId, current + Number(componente.cantidad || 0));
+    deltaByProduct.set(productoId, current + efectivoCantidad(componente));
   }
 
   for (const [productoId, delta] of deltaByProduct.entries()) {
@@ -455,6 +499,17 @@ async function borrarSnapshotsDetalles(detalles = []) {
   const placeholders = ids.map(() => "?").join(",");
   await runQuery(`DELETE FROM detalle_venta_modificadores WHERE detalle_venta_id IN (${placeholders})`, ids);
   await runQuery(`DELETE FROM detalle_venta_componentes_snapshot WHERE detalle_venta_id IN (${placeholders})`, ids);
+}
+
+async function getComponentesBaseProducto(productoId) {
+  if (!productoId) return [];
+  return allQuery(
+    `SELECT pc.producto_id AS componente_id, pc.cantidad, p.nombre AS nombre_producto
+     FROM producto_componentes pc
+     JOIN productos p ON p.id = pc.producto_id
+     WHERE pc.producto_compuesto_id = ?`,
+    [productoId]
+  );
 }
 
 async function getModificadoresProductoTodos(productoId) {
@@ -479,7 +534,7 @@ async function actualizarModificador(id, payload = {}) {
   if (!nombre) throw crearErrorValidacion("El nombre es obligatorio");
 
   const tipo = normalizarTipoModificador(payload.tipo);
-  const tiposPermitidos = ["libre", "observacion", "agregar"];
+  const tiposPermitidos = ["libre", "observacion", "agregar", "quitar"];
   if (!tiposPermitidos.includes(tipo)) throw crearErrorValidacion("Tipo no permitido");
 
   const precioExtra = tipo === "observacion" ? 0 : Math.max(0, Number(payload.precio_extra ?? 0) || 0);
@@ -545,5 +600,6 @@ module.exports = {
   getStockDeltaVentaItem,
   getModificadoresProductoTodos,
   actualizarModificador,
-  setActivoModificador
+  setActivoModificador,
+  getComponentesBaseProducto
 };

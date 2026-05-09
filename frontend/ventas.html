@@ -1927,7 +1927,7 @@
         if (!res.ok) throw new Error("No se pudieron cargar modificadores");
         const data = await res.json();
         const mods = Array.isArray(data)
-          ? data.filter((modificador) => ["libre", "observacion", "agregar"].includes(String(modificador.tipo || "").toLowerCase()))
+          ? data.filter((modificador) => ["libre", "observacion", "agregar", "quitar"].includes(String(modificador.tipo || "").toLowerCase()))
           : [];
         modificadoresCache.set(key, mods);
         return mods;
@@ -2356,7 +2356,7 @@
         const nombreProducto = String(item.nombre || "Producto sin nombre").trim() || "Producto sin nombre";
         const modificadores = normalizarModificadoresTicket(item.modificadores);
         const modsHtml = modificadores.length
-          ? `<ul class="ticket-modifiers">${modificadores.map((mod) => mod.tipo === "observacion" ? `<li>Nota: ${escapeHtml(mod.nombre)}</li>` : `<li>+ ${escapeHtml(mod.nombre)} x${Number.isInteger(Number(mod.cantidad)) ? Number(mod.cantidad) : formatearNumero(mod.cantidad)}</li>`).join("")}</ul>`
+          ? `<ul class="ticket-modifiers">${modificadores.map((mod) => mod.tipo === "observacion" ? `<li>Nota: ${escapeHtml(mod.nombre)}</li>` : mod.tipo === "quitar" ? `<li>Sin: ${escapeHtml(mod.nombre)}</li>` : `<li>+ ${escapeHtml(mod.nombre)} x${Number.isInteger(Number(mod.cantidad)) ? Number(mod.cantidad) : formatearNumero(mod.cantidad)}</li>`).join("")}</ul>`
           : "";
         const infoDescuento = descuentoUnit > 0
           ? `<small>${item.cantidad} x $${formatearNumero(precioVenta)} <span style="color:var(--success,#2ea043);font-weight:700">· Ahorraste $${formatearNumero(descuentoUnit * item.cantidad)}</span></small>`
