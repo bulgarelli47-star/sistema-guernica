@@ -2851,6 +2851,222 @@ async function testModificadoresEtapa2CEdicionPendientes() {
   }
 }
 
+async function testModificadoresApiEdicionActivacionYSnapshots() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const suffix = Date.now().toString().slice(-8);
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST Mods API ${suffix}`);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Producto Mods API ${suffix}`,
+        categoria: `TEST Mods API ${suffix}`,
+        categoria_id: categoriaId,
+        stock: 20,
+        precio_venta: 8000
+      });
+      const componenteId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Queso Mods API ${suffix}`,
+        categoria: `TEST Mods API ${suffix}`,
+        categoria_id: categoriaId,
+        stock: 50,
+        precio_venta: 100
+      });
+
+      const extraQueso = await requestJson(baseUrl, "POST", `/productos/${productoId}/modificadores`, {
+        codigo: `api_extra_${suffix}`,
+        nombre: "Extra queso",
+        tipo: "libre",
+        precio_extra: 1000,
+        activo: true
+      }, token);
+      if (!extraQueso.response.ok) throw new Error(`Crear modificador API fallo: ${extraQueso.data?.message || extraQueso.response.status}`);
+      const modId = extraQueso.data.modificador.id;
+
+      const editar = await requestJson(baseUrl, "PUT", `/modificadores/${modId}`, {
+        nombre: "Extra muzzarella",
+        tipo: "agregar",
+        precio_extra: 1200,
+        activo: false,
+        componentes: [{ producto_id: componenteId, cantidad: 2 }]
+      }, token);
+      if (!editar.response.ok) throw new Error(`PUT /modificadores/:id fallo: ${editar.data?.message || editar.response.status}`);
+
+      const todosPostPut = await requestJson(baseUrl, "GET", `/productos/${productoId}/modificadores?todos=1`, null, token);
+      if (!todosPostPut.response.ok) throw new Error(`GET modificadores todos post PUT fallo: ${todosPostPut.data?.message || todosPostPut.response.status}`);
+      const editado = todosPostPut.data.find((m) => Number(m.id) === Number(modId));
+      if (!editado) throw new Error(`GET todos debe devolver modificador editado. Data=${JSON.stringify(todosPostPut.data)}`);
+      if (String(editado.nombre) !== "Extra muzzarella") {
+        throw new Error(`PUT debe actualizar nombre de modificador. Actual=${JSON.stringify(editado)}`);
+      }
+      if (String(editado.tipo) !== "agregar") {
+        throw new Error(`PUT debe actualizar tipo de modificador. Actual=${JSON.stringify(editado)}`);
+      }
+      assertApprox(editado.precio_extra, 1200, "PUT debe actualizar precio_extra");
+      assertEqual(Number(editado.activo), 0, "PUT debe permitir dejar modificador inactivo");
+      assertEqual(editado.componentes.length, 1, "PUT tipo agregar debe guardar componente");
+      assertEqual(Number(editado.componentes[0].producto_id), Number(componenteId), "PUT debe guardar componente correcto");
+      assertApprox(editado.componentes[0].cantidad, 2, "PUT debe guardar cantidad de componente");
+
+      const normalPostPut = await requestJson(baseUrl, "GET", `/productos/${productoId}/modificadores`, null, token);
+      if (!normalPostPut.response.ok) throw new Error(`GET modificadores activos post PUT fallo: ${normalPostPut.data?.message || normalPostPut.response.status}`);
+      if (normalPostPut.data.some((m) => Number(m.id) === Number(modId))) {
+        throw new Error("GET normal debe ocultar modificador desactivado por PUT");
+      }
+
+      const toggle = await requestJson(baseUrl, "POST", `/productos/${productoId}/modificadores`, {
+        codigo: `api_toggle_${suffix}`,
+        nombre: "TEST Toggle Mod",
+        tipo: "libre",
+        precio_extra: 300,
+        activo: true
+      }, token);
+      if (!toggle.response.ok) throw new Error(`Crear modificador toggle fallo: ${toggle.data?.message || toggle.response.status}`);
+      const toggleId = toggle.data.modificador.id;
+
+      const desactivar = await requestJson(baseUrl, "PATCH", `/modificadores/${toggleId}/activo`, { activo: false }, token);
+      if (!desactivar.response.ok) throw new Error(`PATCH desactivar modificador fallo: ${desactivar.data?.message || desactivar.response.status}`);
+      const activosSinToggle = await requestJson(baseUrl, "GET", `/productos/${productoId}/modificadores`, null, token);
+      if (activosSinToggle.data.some((m) => Number(m.id) === Number(toggleId))) {
+        throw new Error("GET normal no debe devolver modificador desactivado por PATCH");
+      }
+      const todosConToggleInactivo = await requestJson(baseUrl, "GET", `/productos/${productoId}/modificadores?todos=1`, null, token);
+      const toggleInactivo = todosConToggleInactivo.data.find((m) => Number(m.id) === Number(toggleId));
+      if (!toggleInactivo || Number(toggleInactivo.activo) !== 0) {
+        throw new Error(`GET todos debe incluir modificador inactivo con activo=0. Data=${JSON.stringify(todosConToggleInactivo.data)}`);
+      }
+
+      const reactivar = await requestJson(baseUrl, "PATCH", `/modificadores/${toggleId}/activo`, { activo: true }, token);
+      if (!reactivar.response.ok) throw new Error(`PATCH reactivar modificador fallo: ${reactivar.data?.message || reactivar.response.status}`);
+      const activosConToggle = await requestJson(baseUrl, "GET", `/productos/${productoId}/modificadores`, null, token);
+      if (!activosConToggle.data.some((m) => Number(m.id) === Number(toggleId))) {
+        throw new Error("GET normal debe volver a devolver modificador reactivado");
+      }
+
+      const activo = await requestJson(baseUrl, "POST", `/productos/${productoId}/modificadores`, {
+        codigo: `api_activo_${suffix}`,
+        nombre: "TEST Activo Mod",
+        tipo: "libre",
+        precio_extra: 100,
+        activo: true
+      }, token);
+      const inactivo = await requestJson(baseUrl, "POST", `/productos/${productoId}/modificadores`, {
+        codigo: `api_inactivo_${suffix}`,
+        nombre: "TEST Inactivo Mod",
+        tipo: "libre",
+        precio_extra: 100,
+        activo: true
+      }, token);
+      if (!activo.response.ok || !inactivo.response.ok) {
+        throw new Error(`Crear modificadores activo/inactivo fallo: ${activo.data?.message || inactivo.data?.message}`);
+      }
+      await requestJson(baseUrl, "PATCH", `/modificadores/${inactivo.data.modificador.id}/activo`, { activo: false }, token);
+      const getNormal = await requestJson(baseUrl, "GET", `/productos/${productoId}/modificadores`, null, token);
+      const getTodos = await requestJson(baseUrl, "GET", `/productos/${productoId}/modificadores?todos=1`, null, token);
+      if (getNormal.data.some((m) => Number(m.id) === Number(inactivo.data.modificador.id))) {
+        throw new Error("GET normal debe ocultar inactivos");
+      }
+      if (!getNormal.data.some((m) => Number(m.id) === Number(activo.data.modificador.id))) {
+        throw new Error("GET normal debe incluir activos");
+      }
+      if (!getTodos.data.some((m) => Number(m.id) === Number(inactivo.data.modificador.id)) ||
+          !getTodos.data.some((m) => Number(m.id) === Number(activo.data.modificador.id))) {
+        throw new Error("GET todos debe incluir activos e inactivos");
+      }
+
+      for (const tipoNoPermitido of ["multiplicar", "reemplazar"]) {
+        const updateNoPermitido = await requestJson(baseUrl, "PUT", `/modificadores/${activo.data.modificador.id}`, {
+          nombre: `TEST ${tipoNoPermitido}`,
+          tipo: tipoNoPermitido,
+          precio_extra: 999,
+          activo: true
+        }, token);
+        assertEqual(updateNoPermitido.response.status, 400, `PUT con tipo ${tipoNoPermitido} debe fallar controlado`);
+        const todosLuegoError = await requestJson(baseUrl, "GET", `/productos/${productoId}/modificadores?todos=1`, null, token);
+        const modLuegoError = todosLuegoError.data.find((m) => Number(m.id) === Number(activo.data.modificador.id));
+        if (!modLuegoError || ["multiplicar", "reemplazar"].includes(String(modLuegoError.tipo))) {
+          throw new Error(`Tipo no permitido no debe quedar persistido. Mod=${JSON.stringify(modLuegoError)}`);
+        }
+      }
+
+      const historico = await requestJson(baseUrl, "POST", `/productos/${productoId}/modificadores`, {
+        codigo: `api_hist_${suffix}`,
+        nombre: "Extra historico viejo",
+        tipo: "agregar",
+        precio_extra: 500,
+        activo: true,
+        componentes: [{ producto_id: componenteId, cantidad: 3 }]
+      }, token);
+      if (!historico.response.ok) throw new Error(`Crear modificador historico fallo: ${historico.data?.message || historico.response.status}`);
+      const historicoId = historico.data.modificador.id;
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [{
+          producto_id: productoId,
+          nombre_producto: `TEST Producto Mods API ${suffix}`,
+          cantidad: 1,
+          precio_unitario: 8000,
+          modificadores: [{ modificador_id: historicoId, cantidad: 1 }]
+        }]
+      }, token);
+      if (!venta.response.ok) throw new Error(`Venta con modificador historico fallo: ${venta.data?.message || venta.response.status}`);
+      assertApprox(venta.data.total, 8500, "Venta historica debe usar precio_extra original");
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 47, "Venta historica debe descontar componente original");
+
+      const detalle = await getVentaDetalle(baseUrl, token, venta.data.venta_id);
+      const detalleId = detalle.items[0].id;
+      const snapshotModAntes = await allSql(
+        dbPath,
+        "SELECT * FROM detalle_venta_modificadores WHERE detalle_venta_id = ?",
+        [detalleId]
+      );
+      assertEqual(snapshotModAntes.length, 1, "Venta historica debe guardar snapshot de modificador");
+
+      const editarHistorico = await requestJson(baseUrl, "PUT", `/modificadores/${historicoId}`, {
+        nombre: "Extra historico nuevo",
+        tipo: "agregar",
+        precio_extra: 2500,
+        activo: true,
+        componentes: [{ producto_id: componenteId, cantidad: 9 }]
+      }, token);
+      if (!editarHistorico.response.ok) throw new Error(`Editar modificador historico fallo: ${editarHistorico.data?.message || editarHistorico.response.status}`);
+
+      const snapshotModDespues = await allSql(
+        dbPath,
+        "SELECT * FROM detalle_venta_modificadores WHERE detalle_venta_id = ?",
+        [detalleId]
+      );
+      if (String(snapshotModDespues[0].nombre) !== "Extra historico viejo") {
+        throw new Error(`Snapshot debe conservar nombre viejo tras editar modificador. Actual=${JSON.stringify(snapshotModDespues[0])}`);
+      }
+      assertApprox(snapshotModDespues[0].precio_extra, 500, "Snapshot debe conservar precio viejo tras editar modificador");
+
+      const snapshotCompDespues = await allSql(
+        dbPath,
+        "SELECT * FROM detalle_venta_componentes_snapshot WHERE detalle_venta_id = ?",
+        [detalleId]
+      );
+      assertEqual(snapshotCompDespues.length, 1, "Venta historica debe conservar snapshot de componente");
+      assertApprox(snapshotCompDespues[0].cantidad, 3, "Snapshot de componente debe conservar cantidad vieja tras editar modificador");
+
+      const anular = await requestJson(baseUrl, "POST", `/ventas/${venta.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anular.response.ok) throw new Error(`Anular venta historica fallo: ${anular.data?.message || anular.response.status}`);
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 50, "Anular debe reponer componente usando snapshot viejo, no configuracion editada");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testProveedoresPagosDevuelveClaves() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -4284,6 +4500,7 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
   await testModificadoresEtapa2AProteccionesAuditoria();
   await testModificadoresEtapa2BPendientesNuevas();
   await testModificadoresEtapa2CEdicionPendientes();
+  await testModificadoresApiEdicionActivacionYSnapshots();
   await testProveedoresPagosDevuelveClaves();
   await testProveedoresPagosSumaTotalPagado();
   await testProveedoresPagosSumaTotalPendiente();
