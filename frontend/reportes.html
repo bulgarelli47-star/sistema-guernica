@@ -283,7 +283,7 @@
     .delta.up { color: var(--success); background: #eaf8f0; }
     .delta.down { color: var(--danger); background: #fdecec; }
     .kpis.lineal { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; overflow:visible; padding-bottom:0; }
-    .kpis.lineal .kpi { flex:unset; min-height:120px; padding:22px 20px 18px; gap:12px; cursor:pointer; border-radius:18px; transition:box-shadow .15s,border-color .15s; }
+    .kpis.lineal .kpi { flex:unset; min-height:120px; padding:22px 20px 18px; gap:12px; cursor:default; border-radius:18px; transition:box-shadow .15s,border-color .15s; }
     .kpis.lineal .kpi:hover { box-shadow:0 4px 16px rgba(0,0,0,.1); }
     .kpis.lineal .kpi-icon { width:52px; height:52px; font-size:22px; border-radius:14px; }
     .kpis.lineal .kpi strong { font-size:clamp(20px,2vw,28px); }
@@ -298,7 +298,7 @@
     .kpis.lineal .kpi:nth-child(2) strong { color:#6d28d9; }
     .kpis.lineal .kpi:nth-child(3) strong { color:#f97316; }
     .kpis.lineal .kpi:nth-child(4) strong { color:#3b82f6; }
-    .module-kpis { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+    .report-block-title{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:12px}.report-block-title h2{font-size:18px}.report-block-title p{margin:4px 0 0;color:var(--muted);font-size:13px}.report-nav-panel,.report-detail-panel,.report-insights-panel,.report-table-panel{padding:16px}.module-kpis { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
     .module-kpi { border:1px solid var(--border); background:#fff; border-radius:18px; padding:24px 20px; display:flex; align-items:center; gap:18px; cursor:pointer; box-shadow:var(--shadow); min-height:112px; transition:border-color .15s,box-shadow .15s; }
     .module-kpi:hover { box-shadow:0 4px 16px rgba(0,0,0,.1); }
     .module-kpi.active { border-color:var(--mi-color,var(--primary)); background:rgba(var(--mi-rgb,109,40,217),.08); }
@@ -318,7 +318,7 @@
     .module-kpi[data-modulo="proveedores-pagos"] { --mi-rgb:14,165,233;   --mi-color:#0ea5e9; }
     .module-kpi strong,.module-kpi small { display:block; }
     .module-kpi small { color:var(--muted); margin-top:2px; }
-    .export-only-panel { display: none; }
+    .export-only-panel { display: block; }
     .kpi-charts-row { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin-top:6px; }
     .kpi-chart-card { background:#fff; border:1px solid var(--border); border-radius:18px; padding:24px 22px 20px; display:flex; flex-direction:column; gap:16px; box-shadow:var(--shadow); }
     .kpi-chart-top { display:flex; flex-direction:column; gap:4px; }
@@ -328,7 +328,7 @@
     .kpi-chart-body { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
 
     .report-tabs {
-      display: flex;
+      display: none;
       flex-wrap: wrap;
       gap: 8px;
       margin-bottom: 14px;
@@ -349,6 +349,20 @@
       gap: 18px;
       align-items: start;
     }
+    .module-report-header {
+      border: 1px solid rgba(109, 40, 217, 0.14);
+      background: linear-gradient(180deg, #ffffff 0%, #fbfaff 100%);
+    }
+    .module-eyebrow {
+      margin: 0 0 5px;
+      color: var(--primary);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .visual-panel[hidden],
+    #cuentasCobroPanel[hidden] { display: none !important; }
     .panel {
       border: 1px solid var(--border);
       border-radius: 16px;
@@ -418,6 +432,15 @@
     table { width: 100%; border-collapse: collapse; min-width: 720px; }
     th, td { padding: 12px 10px; border-bottom: 1px solid var(--border); text-align: left; }
     th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .report-export-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
     .empty {
       padding: 18px;
       border: 1px dashed var(--border);
@@ -548,7 +571,7 @@
       <section class="card report-main-panel">
         <div class="section-head">
           <div>
-            <h2>Panel principal</h2>
+            <h2>Filtros y exportación</h2>
             <p class="message" id="mensaje">Cargando datos del periodo...</p>
           </div>
           <div class="toolbar">
@@ -583,11 +606,22 @@
         </div>
       </section>
 
+      <section class="report-block-title" aria-label="Resumen ejecutivo">
+        <div><h2>Resumen ejecutivo</h2><p>Indicadores principales del periodo seleccionado.</p></div>
+      </section>
       <section class="kpis lineal" id="kpis"></section>
-      <section class="module-kpis" id="moduleKpis"></section>
+      <section class="card report-nav-panel">
+        <div class="report-block-title">
+          <div><h2>Navegación por módulo</h2><p>Elegí un módulo para actualizar el reporte seleccionado.</p></div>
+        </div>
+        <div class="module-kpis" id="moduleKpis"></div>
+      </section>
       <div class="kpi-charts-row" id="kpiChartsRow"></div>
 
-      <section class="card export-only-panel">
+      <section class="card export-only-panel report-insights-panel">
+        <div class="report-block-title">
+          <div><h2 id="tituloReporteSeleccionado">Reporte seleccionado</h2><p id="descripcionReporteSeleccionado">Lecturas visuales del módulo y del rango actual.</p></div>
+        </div>
         <div class="report-tabs" id="tabs"></div>
         <div class="content-grid">
           <div class="panel">
@@ -633,7 +667,7 @@
         </div>
       </section>
 
-      <section class="card export-only-panel">
+      <section class="card export-only-panel report-detail-panel">
         <div class="section-head">
           <div>
             <h2 id="tituloModulo">Reporte general</h2>
@@ -647,6 +681,10 @@
             <tbody id="detalleBody"></tbody>
           </table>
         </div>
+        <div class="report-export-actions">
+          <button class="button success" id="exportarRapidoFinal" type="button">Excel rápido</button>
+          <button class="button" id="abrirExportacionFinal" type="button">Exportar</button>
+        </div>
       </section>
     </main>
   </div>
@@ -656,7 +694,7 @@
       <div class="modal-head">
         <div>
           <h2>Exportar reporte</h2>
-          <p class="message" id="mensajeExportacion">Configura formato, contenido y rango.</p>
+          <p class="message" id="mensajeExportacion">Elegí módulo, formato y rango. PDF abre una vista imprimible del navegador.</p>
         </div>
         <button class="close" id="cerrarExportacion" type="button" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
@@ -705,6 +743,33 @@
       ["cuentas-corrientes", "Cuentas corrientes"],
       ["proveedores-pagos", "Proveedores y pagos"]
     ];
+    const moduloMeta = {
+      generales: {
+        titulo: "Resumen general del período",
+        descripcion: "Consolida ventas, egresos, balance, deuda de clientes y stock valorizado del rango seleccionado."
+      },
+      ventas: {
+        titulo: "Análisis de ventas",
+        descripcion: "Muestra operaciones, importes vendidos, ticket promedio, productos y métodos de cobro del período."
+      },
+      caja: {
+        titulo: "Movimiento de caja",
+        descripcion: "Resume ingresos, egresos, balance operativo, pagos registrados e IVA a favor del rango."
+      },
+      stock: {
+        titulo: "Estado de stock",
+        descripcion: "Revisa productos activos, bajo stock, valorización, categorías e items vendidos."
+      },
+      "cuentas-corrientes": {
+        titulo: "Seguimiento de cuentas corrientes",
+        descripcion: "Analiza clientes con deuda, límites, cobros, vencimientos y estado general de cuentas."
+      },
+      "proveedores-pagos": {
+        titulo: "Control de proveedores y pagos",
+        descripcion: "Ordena pagos, saldos pendientes, impacto fiscal, proveedores activos y compras del período."
+      }
+    };
+    const modulosConCuentasCobro = new Set(["generales", "caja", "cuentas-corrientes"]);
     const moduloIconos = {
       generales: '<span class="app-icon icon-store" aria-hidden="true"></span>',
       ventas: '<span class="nav-icon sales" aria-hidden="true"></span>',
@@ -1051,7 +1116,6 @@
         const sign = delta > 0 ? "+" : "";
         return `<article class="kpi" data-export="${state.modulo}"><div class="kpi-icon">${icon}</div><span>${label}</span><strong>${value}</strong><div class="delta ${cls}">${sign}${delta.toFixed(1)}% vs filtro</div></article>`;
       }).join("");
-      document.querySelectorAll("#kpis .kpi").forEach((kpi) => kpi.onclick = () => abrirExportacion());
     }
 
     function renderTabs() {
@@ -1081,7 +1145,6 @@
           state.modulo = button.dataset.modulo;
           $("moduloFiltro").value = state.modulo;
           render();
-          abrirExportacion("excel", state.modulo);
         };
       });
     }
@@ -1191,7 +1254,9 @@
       const panel = $("cuentasCobroPanel");
       const body = $("cuentasCobroBody");
       if (!panel || !body) return;
-      panel.style.display = datos.length ? "" : "none";
+      const visible = modulosConCuentasCobro.has(state.modulo) && datos.length > 0;
+      panel.style.display = visible ? "" : "none";
+      panel.hidden = !visible;
       body.innerHTML = datos.length
         ? datos.map((cuenta) => `
           <tr>
@@ -1272,8 +1337,11 @@
 
     function renderModulo() {
       const label = modulos.find(([id]) => id === state.modulo)?.[1] || "Generales";
-      $("tituloModulo").textContent = `Reporte ${label.toLowerCase()}`;
-      $("subtituloModulo").textContent = `Periodo ${$("desde").value} al ${$("hasta").value}.`;
+      const meta = moduloMeta[state.modulo] || moduloMeta.generales;
+      $("tituloReporteSeleccionado").textContent = meta.titulo;
+      $("descripcionReporteSeleccionado").textContent = meta.descripcion;
+      $("tituloModulo").textContent = `${meta.titulo} - detalle`;
+      $("subtituloModulo").textContent = `${label}. Periodo ${$("desde").value} al ${$("hasta").value}.`;
       $("resumenModulo").innerHTML = resumenModulo().map(([label, value]) => `<div class="summary-box"><span>${label}</span><strong>${value}</strong></div>`).join("");
       const detail = detalleModulo();
       $("detalleHead").innerHTML = detail.head.map((label) => `<th>${label}</th>`).join("");
@@ -1317,24 +1385,25 @@
       $("exportHasta").value = $("hasta").value;
       renderContenidoExportacion(saved.contenido);
       actualizarNombreArchivo();
-      setExportMessage("Configura formato, contenido y rango.");
+      setExportMessage("Elegí módulo, formato y rango. PDF usa impresión del navegador.");
       $("modalExportacion").classList.add("open");
     }
 
     function renderContenidoExportacion(selected = []) {
       const modulo = $("exportModulo").value;
-      const checked = selected.length ? selected : contenidos[modulo].slice(0, 2);
-      $("exportContenido").innerHTML = contenidos[modulo].map((item) => `
-        <label class="check"><input type="checkbox" value="${item}" ${checked.includes(item) ? "checked" : ""}>${item}</label>
-      `).join("");
+      $("exportContenido").innerHTML = `<div class="empty" style="grid-column:1/-1">Se exporta el detalle completo del módulo seleccionado. La selección fina de contenido queda reservada para una etapa posterior.</div>`;
     }
 
     function extensionFormato() {
       return $("exportFormato").value === "pdf" ? "pdf" : "xls";
     }
 
+    function nombreArchivoPara(modulo, desde, hasta, formato) {
+      return `${modulo}_${desde}_${hasta}.${formato === "pdf" ? "pdf" : "xls"}`;
+    }
+
     function nombreArchivo() {
-      return `${$("exportModulo").value}_${$("exportDesde").value}_${$("exportHasta").value}.${extensionFormato()}`;
+      return nombreArchivoPara($("exportModulo").value, $("exportDesde").value, $("exportHasta").value, $("exportFormato").value);
     }
 
     function actualizarNombreArchivo() {
@@ -1342,17 +1411,15 @@
     }
 
     async function confirmarExportacion() {
-      const contenido = [...$("exportContenido").querySelectorAll("input:checked")].map((input) => input.value);
       if (!$("exportDesde").value || !$("exportHasta").value) return setExportMessage("Debe indicar rango de fechas.", "error");
       if ($("exportDesde").value > $("exportHasta").value) return setExportMessage("La fecha desde no puede superar la fecha hasta.", "error");
-      if (!contenido.length) return setExportMessage("Seleccione al menos un contenido.", "error");
       const moduloActual = state.modulo;
       state.modulo = $("exportModulo").value;
       const detalle = detalleModulo();
       state.modulo = moduloActual;
       if (!detalle.rows.length) return setExportMessage("No hay datos para exportar en el módulo actual.", "error");
 
-      const payload = { modulo: $("exportModulo").value, formato: $("exportFormato").value, desde: $("exportDesde").value, hasta: $("exportHasta").value, contenido };
+      const payload = { modulo: $("exportModulo").value, formato: $("exportFormato").value, desde: $("exportDesde").value, hasta: $("exportHasta").value };
       localStorage.setItem("reportesExportacion", JSON.stringify(payload));
       $("confirmarExportacion").disabled = true;
       $("confirmarExportacion").textContent = "Exportando...";
@@ -1367,6 +1434,15 @@
         $("confirmarExportacion").disabled = false;
         $("confirmarExportacion").textContent = "Generar reporte";
       }
+    }
+
+    function exportarRapidoExcel() {
+      if (!$("desde").value || !$("hasta").value) return setMessage("Debe indicar rango de fechas para exportar.", "error");
+      if ($("desde").value > $("hasta").value) return setMessage("La fecha desde no puede superar la fecha hasta.", "error");
+      const detalle = detalleModulo();
+      if (!detalle.rows.length) return setMessage("No hay datos para exportar en el módulo actual.", "error");
+      descargarReporte(detalle.head, detalle.rows, nombreArchivoPara(state.modulo, $("desde").value, $("hasta").value, "excel"), "excel");
+      setMessage(`Excel generado: ${nombreArchivoPara(state.modulo, $("desde").value, $("hasta").value, "excel")}`, "ok");
     }
 
     function descargarReporte(headers, rows, filename, formato) {
@@ -1416,7 +1492,9 @@
 
     $("actualizar").onclick = cargarDatos;
     $("abrirExportacion").onclick = () => abrirExportacion();
-    $("exportarRapido").onclick = () => abrirExportacion("excel");
+    $("exportarRapido").onclick = exportarRapidoExcel;
+    $("abrirExportacionFinal").onclick = () => abrirExportacion();
+    $("exportarRapidoFinal").onclick = exportarRapidoExcel;
     $("cerrarExportacion").onclick = () => $("modalExportacion").classList.remove("open");
     $("cancelarExportacion").onclick = () => $("modalExportacion").classList.remove("open");
     $("modalExportacion").onclick = (event) => { if (event.target.id === "modalExportacion") $("modalExportacion").classList.remove("open"); };
