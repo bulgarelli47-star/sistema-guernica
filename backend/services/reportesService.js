@@ -772,6 +772,291 @@ async function getVentasPorDia({ desde = null, hasta = null } = {}) {
   );
 }
 
+function normalizarBooleanFiltro(value) {
+  const normalizado = String(value ?? "").trim().toLowerCase();
+  return ["1", "true", "si", "sí", "yes"].includes(normalizado);
+}
+
+function normalizarFiltroTexto(value) {
+  const normalizado = String(value ?? "").trim();
+  return normalizado || null;
+}
+
+function estadoStockProducto(producto) {
+  if (Number(producto.maneja_stock || 0) !== 1) return "sin_control";
+  const stock = Number(producto.stock_fisico || 0);
+  const minimo = Number(producto.stock_minimo || 0);
+  if (stock < 0) return "stock_negativo";
+  if (stock <= 0) return "sin_stock";
+  if (stock <= minimo) return "bajo_stock";
+  return "ok";
+}
+
+function mapReporteStockProducto(row) {
+  const tipo = String(row.tipo || "simple").toLowerCase();
+  const manejaStock = Number(row.maneja_stock || 0) === 1 ? 1 : 0;
+  const stockFisico = round2(row.stock);
+  const consumoUnidad = Number(row.consumo_unidad || 0);
+  const esFraccionado = Number(row.usa_costos_varios || 0) === 1 && manejaStock === 1;
+  const esCompuestoSinStock = tipo === "compuesto" && manejaStock !== 1;
+  const esCombo = Number(row.es_combo || 0) === 1;
+  let stockVendible = stockFisico;
+
+  if (esCompuestoSinStock || esCombo) {
+    // Reporte minimo: no recalcula recetas/combos para no prometer precision de stock disponible.
+    stockVendible = null;
+  } else if (esFraccionado && consumoUnidad > 0) {
+    stockVendible = Math.max(0, Math.floor(stockFisico / consumoUnidad));
+  }
+
+  const costoBase = Number(row.costo_final || row.precio_compra || 0);
+  const stockValorizado = manejaStock === 1 && costoBase > 0
+    ? round2(stockFisico * costoBase)
+    : 0;
+  const producto = {
+    producto_id: Number(row.id),
+    codigo: row.codigo || null,
+    nombre: row.nombre,
+    categoria: row.categoria_nombre || row.categoria || "Sin categoria",
+    categoria_id: row.categoria_id == null ? null : Number(row.categoria_id),
+    tipo,
+    es_combo: Number(row.es_combo || 0),
+    maneja_stock: manejaStock,
+    activo: Number(row.activo || 0),
+    unidad_medida: row.unidad_medida || "unidad",
+    stock_fisico: stockFisico,
+    stock_vendible: stockVendible,
+    stock_minimo: round2(row.stock_minimo),
+    costo_base_estimado: round2(costoBase),
+    costo_fuente: Number(row.costo_final || 0) > 0 ? "costo_final" : Number(row.precio_compra || 0) > 0 ? "precio_compra" : "sin_costo",
+    stock_valorizado_estimado: stockValorizado,
+    items_vendidos: round2(row.items_vendidos),
+    movimientos: Number(row.movimientos || 0)
+  };
+  producto.estado_stock = estadoStockProducto(producto);
+  return producto;
+}
+
+async function getReporteStock({
+  categoria = null,
+  bajoStock = null,
+  sinStock = null,
+  activo = null,
+  tipo = null,
+  manejaStock = null,
+  desde = null,
+  hasta = null
+} = {}) {
+  const productoWhere = ["COALESCE(p.eliminado, 0) = 0"];
+  const productoParams = [];
+  const categoriaFiltro = normalizarFiltroTexto(categoria);
+  const tipoFiltro = normalizarFiltroTexto(tipo)?.toLowerCase();
+  const activoFiltro = normalizarFiltroTexto(activo)?.toLowerCase();
+  const manejaStockFiltro = normalizarFiltroTexto(manejaStock)?.toLowerCase();
+  const soloBajoStock = normalizarBooleanFiltro(bajoStock);
+  const soloSinStock = normalizarBooleanFiltro(sinStock);
+
+  if (categoriaFiltro) {
+    if (/^\d+$/.test(categoriaFiltro)) {
+      productoWhere.push("p.categoria_id = ?");
+      productoParams.push(Number(categoriaFiltro));
+    } else {
+      productoWhere.push("(LOWER(COALESCE(c.nombre, '')) = LOWER(?) OR LOWER(COALESCE(p.categoria, '')) = LOWER(?))");
+      productoParams.push(categoriaFiltro, categoriaFiltro);
+    }
+  }
+
+  if (tipoFiltro && tipoFiltro !== "todos") {
+    productoWhere.push("LOWER(COALESCE(p.tipo, 'simple')) = ?");
+    productoParams.push(tipoFiltro);
+  }
+
+  if (activoFiltro && activoFiltro !== "todos") {
+    const activoValor = ["0", "false", "inactivo", "inactivos"].includes(activoFiltro) ? 0 : 1;
+    productoWhere.push("COALESCE(p.activo, 0) = ?");
+    productoParams.push(activoValor);
+  }
+
+  if (manejaStockFiltro && manejaStockFiltro !== "todos") {
+    const manejaValor = ["0", "false", "no"].includes(manejaStockFiltro) ? 0 : 1;
+    productoWhere.push("COALESCE(p.maneja_stock, 0) = ?");
+    productoParams.push(manejaValor);
+  }
+
+  const vendidosWhere = ["COALESCE(v.estado, '') != 'anulado'", "COALESCE(v.tipo, '') != 'test_modificadores'"];
+  const vendidosParams = [];
+  if (desde) {
+    vendidosWhere.push("v.fecha >= ?");
+    vendidosParams.push(desde);
+  }
+  if (hasta) {
+    vendidosWhere.push("v.fecha <= ?");
+    vendidosParams.push(hasta);
+  }
+
+  const movimientosWhere = ["1 = 1"];
+  const movimientosParams = [];
+  if (desde) {
+    movimientosWhere.push("ms.fecha >= ?");
+    movimientosParams.push(desde);
+  }
+  if (hasta) {
+    movimientosWhere.push("ms.fecha <= ?");
+    movimientosParams.push(hasta);
+  }
+
+  const productosRows = await allQuery(
+    `SELECT
+       p.id,
+       p.codigo,
+       p.nombre,
+       p.categoria,
+       p.categoria_id,
+       c.nombre AS categoria_nombre,
+       p.tipo,
+       p.es_combo,
+       p.maneja_stock,
+       p.activo,
+       p.unidad_medida,
+       p.stock,
+       p.stock_minimo,
+       p.usa_costos_varios,
+       p.precio_compra,
+       p.costo_final,
+       COALESCE(ci.consumo_unidad, 0) AS consumo_unidad,
+       COALESCE(vendidos.items_vendidos, 0) AS items_vendidos,
+       COALESCE(movs.movimientos, 0) AS movimientos
+     FROM productos p
+     LEFT JOIN categorias c ON c.id = p.categoria_id
+     LEFT JOIN (
+       SELECT producto_id, COALESCE(SUM(cantidad_usada), 0) AS consumo_unidad
+       FROM producto_costos_insumos
+       GROUP BY producto_id
+     ) ci ON ci.producto_id = p.id
+     LEFT JOIN (
+       SELECT dv.producto_id, COALESCE(SUM(dv.cantidad), 0) AS items_vendidos
+       FROM detalle_ventas dv
+       INNER JOIN ventas v ON v.id = dv.venta_id
+       WHERE ${vendidosWhere.join(" AND ")}
+       GROUP BY dv.producto_id
+     ) vendidos ON vendidos.producto_id = p.id
+     LEFT JOIN (
+       SELECT producto_id, COUNT(*) AS movimientos
+       FROM movimientos_stock ms
+       WHERE ${movimientosWhere.join(" AND ")}
+       GROUP BY producto_id
+     ) movs ON movs.producto_id = p.id
+     WHERE ${productoWhere.join(" AND ")}
+     ORDER BY p.nombre ASC`,
+    [...vendidosParams, ...movimientosParams, ...productoParams]
+  );
+
+  let productos = productosRows.map(mapReporteStockProducto);
+  if (soloBajoStock) {
+    productos = productos.filter((producto) => producto.estado_stock === "bajo_stock" || producto.estado_stock === "stock_negativo");
+  }
+  if (soloSinStock) {
+    productos = productos.filter((producto) => producto.estado_stock === "sin_stock" || producto.estado_stock === "stock_negativo");
+  }
+
+  const alertas = productos
+    .filter((producto) => ["bajo_stock", "sin_stock", "stock_negativo"].includes(producto.estado_stock))
+    .sort((a, b) => {
+      const prioridad = { stock_negativo: 0, sin_stock: 1, bajo_stock: 2 };
+      return prioridad[a.estado_stock] - prioridad[b.estado_stock] || a.nombre.localeCompare(b.nombre);
+    });
+
+  const porCategoriaMap = new Map();
+  for (const producto of productos) {
+    const categoriaNombre = producto.categoria || "Sin categoria";
+    if (!porCategoriaMap.has(categoriaNombre)) {
+      porCategoriaMap.set(categoriaNombre, {
+        categoria: categoriaNombre,
+        productos: 0,
+        bajo_stock: 0,
+        sin_stock: 0,
+        stock_negativo: 0,
+        stock_valorizado_estimado: 0,
+        items_vendidos: 0
+      });
+    }
+    const categoriaItem = porCategoriaMap.get(categoriaNombre);
+    categoriaItem.productos += 1;
+    if (producto.estado_stock === "bajo_stock") categoriaItem.bajo_stock += 1;
+    if (producto.estado_stock === "sin_stock") categoriaItem.sin_stock += 1;
+    if (producto.estado_stock === "stock_negativo") categoriaItem.stock_negativo += 1;
+    categoriaItem.stock_valorizado_estimado = round2(categoriaItem.stock_valorizado_estimado + producto.stock_valorizado_estimado);
+    categoriaItem.items_vendidos = round2(categoriaItem.items_vendidos + producto.items_vendidos);
+  }
+
+  const movimientos = await allQuery(
+    `SELECT
+       ms.id,
+       ms.fecha,
+       ms.hora,
+       ms.producto_id,
+       p.nombre AS producto_nombre,
+       ms.tipo_movimiento,
+       ms.cantidad,
+       ms.stock_anterior,
+       ms.stock_nuevo,
+       ms.motivo,
+       ms.usuario
+     FROM movimientos_stock ms
+     LEFT JOIN productos p ON p.id = ms.producto_id
+     WHERE ${movimientosWhere.join(" AND ")}
+     ORDER BY ms.fecha DESC, ms.hora DESC, ms.id DESC
+     LIMIT 150`,
+    movimientosParams
+  );
+
+  return {
+    filtros: {
+      categoria: categoriaFiltro,
+      bajo_stock: soloBajoStock,
+      sin_stock: soloSinStock,
+      activo: activoFiltro || "todos",
+      tipo: tipoFiltro || "todos",
+      maneja_stock: manejaStockFiltro || "todos",
+      desde,
+      hasta
+    },
+    resumen: {
+      productos_total: productos.length,
+      productos_activos: productos.filter((producto) => producto.activo !== 0).length,
+      productos_inactivos: productos.filter((producto) => producto.activo === 0).length,
+      bajo_stock: productos.filter((producto) => producto.estado_stock === "bajo_stock").length,
+      sin_stock: productos.filter((producto) => producto.estado_stock === "sin_stock").length,
+      stock_negativo: productos.filter((producto) => producto.estado_stock === "stock_negativo").length,
+      categorias: porCategoriaMap.size,
+      stock_valorizado_estimado: round2(productos.reduce((acc, producto) => acc + producto.stock_valorizado_estimado, 0)),
+      items_vendidos: round2(productos.reduce((acc, producto) => acc + producto.items_vendidos, 0))
+    },
+    alertas,
+    por_categoria: [...porCategoriaMap.values()]
+      .map((item) => ({
+        ...item,
+        stock_valorizado_estimado: round2(item.stock_valorizado_estimado),
+        items_vendidos: round2(item.items_vendidos)
+      }))
+      .sort((a, b) => b.stock_valorizado_estimado - a.stock_valorizado_estimado),
+    productos,
+    movimientos: movimientos.map((row) => ({
+      id: Number(row.id),
+      fecha: row.fecha,
+      hora: row.hora,
+      producto_id: row.producto_id == null ? null : Number(row.producto_id),
+      producto_nombre: row.producto_nombre || null,
+      tipo_movimiento: row.tipo_movimiento,
+      cantidad: round2(row.cantidad),
+      stock_anterior: round2(row.stock_anterior),
+      stock_nuevo: round2(row.stock_nuevo),
+      motivo: row.motivo || null,
+      usuario: row.usuario || null
+    }))
+  };
+}
+
 function round2(value) {
   return Number(Number(value || 0).toFixed(2));
 }
@@ -918,6 +1203,7 @@ module.exports = {
   getResumenReportes,
   getReporteVentas,
   getReporteCaja,
+  getReporteStock,
   getProductosMasVendidos,
   getResumenProveedoresPagos,
   getVentasPorDia,

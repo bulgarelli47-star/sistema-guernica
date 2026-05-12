@@ -848,7 +848,7 @@
         ["Catálogo activo", "Productos activos", { texto: "Productos disponibles para operar." }],
         ["Alerta de reposición", "Bajo stock", { texto: "Productos en mínimo o por debajo." }],
         ["Sin existencia", "Sin stock", { ocultarSiCero: true, texto: "Productos con stock físico agotado." }],
-        ["Valor inventario", "Stock valorizado", { texto: "Estimación monetaria del stock actual." }]
+        ["Valor inventario", "Stock valorizado estimado", { texto: "Estimación monetaria del stock actual." }]
       ],
       "cuentas-corrientes": [
         ["Clientes con saldo", "Con deuda", { texto: "Clientes que mantienen deuda abierta." }],
@@ -879,7 +879,7 @@
       "cuentas-corrientes": ["Clientes con deuda", "Detalle de movimientos", "Cobros recibidos", "Clientes excedidos"],
       "proveedores-pagos": ["Pagos realizados", "Saldos pendientes", "Compras del periodo", "Detalle por proveedor"]
     };
-    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null, reporteVentasBackend: null, reporteCajaBackend: null, proveedoresPagosBackend: null, cuentasCobroBackend: null, ventasPorDiaBackend: null, productosMasVendidos: null };
+    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null, reporteVentasBackend: null, reporteCajaBackend: null, reporteStockBackend: null, proveedoresPagosBackend: null, cuentasCobroBackend: null, ventasPorDiaBackend: null, productosMasVendidos: null };
 
     function setMessage(text, type = "") {
       $("mensaje").className = `message ${type}`;
@@ -953,6 +953,26 @@
       renderModuleKpis();
       renderVisualesModulo();
       renderCuentasCobro();
+      renderModulo();
+    }
+
+    async function cargarReporteStockBackend() {
+      const desde = $("desde").value;
+      const hasta = $("hasta").value;
+      if (!desde || !hasta) { state.reporteStockBackend = null; return; }
+      try {
+        const res = await fetch(`/reportes/stock?desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}`);
+        if (!res.ok) throw new Error("fallo");
+        const datos = await res.json();
+        if (!datos || typeof datos !== "object" || !datos.resumen || !Array.isArray(datos.alertas) || !Array.isArray(datos.productos) || !Array.isArray(datos.por_categoria) || !Array.isArray(datos.movimientos)) {
+          throw new Error("formato inesperado");
+        }
+        state.reporteStockBackend = datos;
+      } catch {
+        state.reporteStockBackend = null;
+      }
+      renderModuleKpis();
+      renderVisualesModulo();
       renderModulo();
     }
 
@@ -1470,6 +1490,8 @@
       const cobrosVentas = reporteVentas?.cobros || {};
       const reporteCaja = state.reporteCajaBackend;
       const resumenCaja = reporteCaja?.resumen || {};
+      const reporteStock = state.reporteStockBackend;
+      const resumenStock = reporteStock?.resumen || {};
       const ventasResumen = reporteVentas
         ? [
             ["Total vendido", money(resumenVentas.total_vendido)],
@@ -1493,11 +1515,22 @@
             ["Egresos manuales", money(resumenCaja.egresos_manuales)]
           ]
         : [["Ingresos periodo", money(totalVentas)], ["Egresos periodo", money(totalPagos)], ["IVA a favor", money(ivaFavor)], ["Balance caja", money(base.balance)], ["Operaciones", base.cantidadVentas + base.cantidadPagos], ["Pagos registrados", base.cantidadPagos], ["Pagos efectivo", money(base.pagosEfectivo)], ["Pagos débito", money(base.pagosDebito)]];
+      const stockResumen = reporteStock
+        ? [
+            ["Productos activos", Number(resumenStock.productos_activos || 0)],
+            ["Bajo stock", Number(resumenStock.bajo_stock || 0)],
+            ["Stock valorizado estimado", money(resumenStock.stock_valorizado_estimado)],
+            ["Items vendidos", Number(resumenStock.items_vendidos || 0)],
+            ["Categorias", Number(resumenStock.categorias || 0)],
+            ["Sin stock", Number(resumenStock.sin_stock || 0)],
+            ["Stock negativo", Number(resumenStock.stock_negativo || 0)]
+          ]
+        : [["Productos activos", state.productos.filter((p) => Number(p.activo) !== 0).length], ["Bajo stock", bajoStock], ["Stock valorizado estimado", money(stockValorizado)], ["Items vendidos", detalle.reduce((acc, d) => acc + n(d.cantidad), 0)], ["Categorias", new Set(state.productos.map((p) => p.categoria || p.categoria_nombre).filter(Boolean)).size], ["Sin stock", state.productos.filter((p) => n(p.maneja_stock) && n(p.stock) <= 0).length]];
       const map = {
         generales: [["Ventas", money(totalVentas)], ["Egresos", money(totalPagos)], ["Balance", money(base.balance)], ["Stock valorizado", money(stockValorizado)], ["Deuda clientes", money(deudaTotal)], ["Operaciones", base.cantidadVentas + base.cantidadPagos]],
         ventas: ventasResumen,
         caja: cajaResumen,
-        stock: [["Productos activos", state.productos.filter((p) => Number(p.activo) !== 0).length], ["Bajo stock", bajoStock], ["Stock valorizado", money(stockValorizado)], ["Items vendidos", detalle.reduce((acc, d) => acc + n(d.cantidad), 0)], ["Categorias", new Set(state.productos.map((p) => p.categoria || p.categoria_nombre).filter(Boolean)).size], ["Sin stock", state.productos.filter((p) => n(p.maneja_stock) && n(p.stock) <= 0).length]],
+        stock: stockResumen,
         "cuentas-corrientes": [["Clientes", state.clientes.length], ["Con deuda", state.clientes.filter((c) => n(c.deuda_actual) > 0).length], ["Deuda total", money(deudaTotal)], ["Excedidos", state.clientes.filter((c) => n(c.limite_credito) > 0 && n(c.deuda_actual) > n(c.limite_credito)).length], ["Cobrado hoy", money(state.clientes.reduce((acc, c) => acc + n(c.cobrado_hoy), 0))], ["Inactivos", state.clientes.filter((c) => Number(c.activo) === 0).length]],
         "proveedores-pagos": (() => {
           const _ppb = state.proveedoresPagosBackend;
@@ -1516,6 +1549,9 @@
       const pagos = pagosPeriodo();
       const movimientosCaja = Array.isArray(state.reporteCajaBackend?.movimientos)
         ? state.reporteCajaBackend.movimientos
+        : null;
+      const productosStock = Array.isArray(state.reporteStockBackend?.productos)
+        ? state.reporteStockBackend.productos
         : null;
       const map = {
         generales: {
@@ -1540,7 +1576,13 @@
         },
         stock: {
           head: ["Codigo", "Producto", "Stock", "Minimo", "Valorizado"],
-          rows: state.productos.slice(0, 40).map((p) => [p.codigo || `#${p.id}`, p.nombre, n(p.stock), n(p.stock_minimo), money(n(p.stock) * n(p.precio_compra || p.precio_venta))])
+          rows: productosStock ? productosStock.slice(0, 40).map((p) => [
+            p.codigo || `#${p.producto_id}`,
+            p.nombre,
+            p.stock_vendible == null ? n(p.stock_fisico) : n(p.stock_vendible),
+            n(p.stock_minimo),
+            money(p.stock_valorizado_estimado)
+          ]) : state.productos.slice(0, 40).map((p) => [p.codigo || `#${p.id}`, p.nombre, n(p.stock), n(p.stock_minimo), money(n(p.stock) * n(p.precio_compra || p.precio_venta))])
         },
         "cuentas-corrientes": {
           head: ["Cliente", "DNI/CUIT", "Deuda", "Limite", "Estado"],
@@ -1683,6 +1725,7 @@
       const stockValorizado = state.productos.reduce((acc, p) => acc + n(p.stock) * n(p.precio_compra || p.precio_venta), 0);
       const bajoStock = state.productos.filter((p) => n(p.maneja_stock) && n(p.stock) <= n(p.stock_minimo));
       const sinStock = state.productos.filter((p) => n(p.maneja_stock) && n(p.stock) <= 0);
+      const stockBackend = state.reporteStockBackend?.resumen;
       const deudaTotal = state.clientes.reduce((acc, c) => acc + n(c.deuda_actual), 0);
       const clientesConDeuda = state.clientes.filter((c) => n(c.deuda_actual) > 0);
       const clientesExcedidos = state.clientes.filter((c) => n(c.limite_credito) > 0 && n(c.deuda_actual) > n(c.limite_credito));
@@ -1737,13 +1780,26 @@
       }
 
       if (state.modulo === "stock") {
+        if (stockBackend) {
+          setVisualPanel(1, "Alertas de reposición", barRows(
+            [["Bajo stock", Number(stockBackend.bajo_stock || 0)], ["Sin stock", Number(stockBackend.sin_stock || 0)], ["Stock negativo", Number(stockBackend.stock_negativo || 0)]],
+            "No hay alertas de stock en el período.",
+            (value) => String(value)
+          ), "chart-bars");
+          setVisualPanel(2, "Inventario valorizado", visualSummary([
+            { label: "Stock valorizado estimado", value: money(stockBackend.stock_valorizado_estimado), hideZero: true },
+            { label: "Items vendidos", value: Number(stockBackend.items_vendidos || 0), hideZero: true },
+            { label: "Categorías", value: Number(stockBackend.categorias || 0), hideZero: true }
+          ]), "summary-grid");
+          return;
+        }
         setVisualPanel(1, "Alertas de reposición", barRows(
           [["Bajo stock", bajoStock.length], ["Sin stock", sinStock.length]],
           "No hay alertas de stock en el período.",
           (value) => String(value)
         ), "chart-bars");
         setVisualPanel(2, "Inventario valorizado", visualSummary([
-          { label: "Stock valorizado", value: money(stockValorizado), hideZero: true },
+          { label: "Stock valorizado estimado", value: money(stockValorizado), hideZero: true },
           { label: "Items vendidos", value: detalle.reduce((acc, d) => acc + n(d.cantidad), 0), hideZero: true }
         ]), "summary-grid");
         return;
@@ -1929,6 +1985,7 @@
       cargarResumenBackend();
       cargarReporteVentasBackend();
       cargarReporteCajaBackend();
+      cargarReporteStockBackend();
       cargarProductosMasVendidos();
       cargarProveedoresPagosBackend();
       cargarVentasPorDiaBackend();
@@ -1947,9 +2004,9 @@
     $("exportModulo").onchange = () => { renderContenidoExportacion(); actualizarNombreArchivo(); };
     ["exportFormato", "exportDesde", "exportHasta"].forEach((id) => $(id).addEventListener("input", actualizarNombreArchivo));
     ["desde", "hasta", "comparacion"].forEach((id) => $(id).addEventListener("input", () => {
-      if (id !== "comparacion") { state.resumenBackend = null; state.reporteVentasBackend = null; state.reporteCajaBackend = null; state.proveedoresPagosBackend = null; state.cuentasCobroBackend = null; state.ventasPorDiaBackend = null; state.productosMasVendidos = null; }
+      if (id !== "comparacion") { state.resumenBackend = null; state.reporteVentasBackend = null; state.reporteCajaBackend = null; state.reporteStockBackend = null; state.proveedoresPagosBackend = null; state.cuentasCobroBackend = null; state.ventasPorDiaBackend = null; state.productosMasVendidos = null; }
       render();
-      if (id !== "comparacion") { cargarResumenBackend(); cargarReporteVentasBackend(); cargarReporteCajaBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); cargarVentasPorDiaBackend(); cargarCuentasCobroBackend(); }
+      if (id !== "comparacion") { cargarResumenBackend(); cargarReporteVentasBackend(); cargarReporteCajaBackend(); cargarReporteStockBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); cargarVentasPorDiaBackend(); cargarCuentasCobroBackend(); }
     }));
     $("moduloFiltro").onchange = () => { state.modulo = $("moduloFiltro").value; render(); };
     setRange("30");
