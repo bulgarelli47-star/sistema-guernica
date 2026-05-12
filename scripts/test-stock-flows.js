@@ -666,6 +666,116 @@ async function testClientesHistorialProductosComprados() {
   }
 }
 
+async function testClientesDeudaActualizadaComparacionSegura() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const sufijo = Date.now().toString().slice(-8);
+
+      const cliente = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "Cliente Deuda Actualizada",
+        dni_cuit: `CDA-${sufijo}`,
+        tipo_persona: "fisica",
+        habilita_cuenta_corriente: true,
+        activo: true
+      }, token);
+      if (!cliente.response.ok) throw new Error(`Crear cliente deuda actualizada fallo: ${cliente.data?.message || cliente.response.status}`);
+      const clienteId = cliente.data.cliente.id;
+
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST Deuda Actualizada ${sufijo}`);
+      const productoInactivoId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Producto Inactivo Deuda ${sufijo}`,
+        codigo: `PIDA-${sufijo}`,
+        categoria: `TEST Deuda Actualizada ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_venta: 200,
+        stock: 10,
+        maneja_stock: true,
+        activo: false
+      });
+      await runSql(dbPath, "UPDATE productos SET precio_venta = 150, activo = 1 WHERE id = 11");
+      await runSql(dbPath, "UPDATE productos SET precio_venta = 200, activo = 0 WHERE id = ?", [productoInactivoId]);
+
+      const insertarVentaCuenta = async ({ fecha, estado = "cuenta_corriente_pendiente", total, saldo, productoId, nombre, cantidad, precio, subtotal }) => {
+        const venta = await runSql(
+          dbPath,
+          `INSERT INTO ventas
+           (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id, cuenta_cobro_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [fecha, "12:00", "test", total, "normal", estado, null, null, null, 0, 0, clienteId, 1, saldo, null, null]
+        );
+        await runSql(
+          dbPath,
+          `INSERT INTO detalle_ventas (venta_id, producto_id, nombre_producto, cantidad, precio_unitario, subtotal)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [venta.lastID, productoId, nombre, cantidad, precio, subtotal]
+        );
+        return venta.lastID;
+      };
+
+      await insertarVentaCuenta({
+        fecha: "2026-02-01",
+        total: 200,
+        saldo: 200,
+        productoId: 11,
+        nombre: "Coca Cola 1250",
+        cantidad: 2,
+        precio: 100,
+        subtotal: 200
+      });
+      await insertarVentaCuenta({
+        fecha: "2026-02-02",
+        total: 80,
+        saldo: 80,
+        productoId: productoInactivoId,
+        nombre: `TEST Producto Inactivo Deuda ${sufijo}`,
+        cantidad: 1,
+        precio: 80,
+        subtotal: 80
+      });
+      await insertarVentaCuenta({
+        fecha: "2026-02-03",
+        estado: "anulado",
+        total: 100,
+        saldo: 100,
+        productoId: 11,
+        nombre: "Coca Cola 1250",
+        cantidad: 1,
+        precio: 100,
+        subtotal: 100
+      });
+      await insertarVentaCuenta({
+        fecha: "2026-02-04",
+        estado: "cobrada",
+        total: 100,
+        saldo: 0,
+        productoId: 11,
+        nombre: "Coca Cola 1250",
+        cantidad: 1,
+        precio: 100,
+        subtotal: 100
+      });
+
+      const comparacion = await requestJson(baseUrl, "GET", `/clientes/${clienteId}/deuda-actualizada`, null, token);
+      if (!comparacion.response.ok) throw new Error(`GET deuda actualizada fallo: ${comparacion.data?.message || comparacion.response.status}`);
+      assertEqual(comparacion.data.cliente_id, clienteId, "La comparacion debe devolver cliente_id");
+      assertApprox(comparacion.data.deuda_historica, 280, "La deuda historica debe sumar solo saldos pendientes no anulados");
+      assertApprox(comparacion.data.deuda_actualizada, 380, "La deuda actualizada debe usar precio actual solo de productos activos");
+      assertApprox(comparacion.data.diferencia, 100, "La diferencia debe ser actualizada menos historica");
+      assertEqual(comparacion.data.productos_afectados.length, 1, "Solo el producto activo con precio cambiado debe figurar como afectado");
+      assertEqual(comparacion.data.productos_afectados[0].producto_id, 11, "El producto afectado debe ser el activo actualizado");
+
+      const inexistente = await requestJson(baseUrl, "GET", "/clientes/999999/deuda-actualizada", null, token);
+      assertEqual(inexistente.response.status, 404, "Cliente inexistente debe devolver 404 en deuda actualizada");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testVentaContadoImpactaStockYCaja() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -4776,6 +4886,7 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
   await testPermisosColaborador();
   await testClientesTipoClienteClasificacion();
   await testClientesHistorialProductosComprados();
+  await testClientesDeudaActualizadaComparacionSegura();
   await testVentaContadoImpactaStockYCaja();
   await testPendienteNoImpactaCajaHastaCobro();
   await testAnularPendienteReponeStock();

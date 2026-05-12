@@ -85,4 +85,88 @@ async function getHistorialProductosCliente(clienteId, { limite } = {}) {
   );
 }
 
-module.exports = { parseClientePayload, buildClienteCuentaResumen, getClienteConMetricas, getHistorialProductosCliente };
+async function getDeudaActualizadaCliente(clienteId) {
+  const rows = await allQuery(
+    `SELECT v.id AS venta_id,
+            v.total AS venta_total,
+            v.saldo_pendiente,
+            dv.producto_id,
+            COALESCE(dv.nombre_producto, p.nombre, 'Producto sin nombre') AS nombre_producto,
+            dv.cantidad,
+            dv.precio_unitario,
+            dv.subtotal,
+            p.precio_venta AS precio_actual,
+            p.activo AS producto_activo
+     FROM ventas v
+     INNER JOIN detalle_ventas dv ON dv.venta_id = v.id
+     LEFT JOIN productos p ON p.id = dv.producto_id
+     WHERE v.cliente_id = ?
+       AND v.es_cuenta_corriente = 1
+       AND COALESCE(v.saldo_pendiente, 0) > 0
+       AND COALESCE(v.estado, '') != 'anulado'
+       AND COALESCE(v.tipo, '') != 'test_modificadores'`,
+    [clienteId]
+  );
+
+  const productosMap = new Map();
+  let deudaHistorica = 0;
+  let deudaActualizada = 0;
+
+  rows.forEach((row) => {
+    const ventaTotal = Number(row.venta_total) || 0;
+    const saldoPendiente = Number(row.saldo_pendiente) || 0;
+    const proporcionPendiente = ventaTotal > 0 ? Math.min(1, Math.max(0, saldoPendiente / ventaTotal)) : 1;
+    const cantidad = Number(row.cantidad) || 0;
+    const subtotalHistorico = Number(row.subtotal) || (cantidad * (Number(row.precio_unitario) || 0));
+    const precioParaRecalculo = Number(row.producto_activo) === 1
+      ? Number(row.precio_actual) || Number(row.precio_unitario) || 0
+      : Number(row.precio_unitario) || 0;
+    const historicoPendiente = subtotalHistorico * proporcionPendiente;
+    const actualizadoPendiente = cantidad * precioParaRecalculo * proporcionPendiente;
+    const key = row.producto_id == null ? `sin_producto:${row.nombre_producto}` : String(row.producto_id);
+
+    deudaHistorica += historicoPendiente;
+    deudaActualizada += actualizadoPendiente;
+
+    if (!productosMap.has(key)) {
+      productosMap.set(key, {
+        producto_id: row.producto_id,
+        nombre_producto: row.nombre_producto,
+        deuda_historica: 0,
+        deuda_actualizada: 0,
+        diferencia: 0,
+        producto_activo: Number(row.producto_activo) === 1
+      });
+    }
+    const producto = productosMap.get(key);
+    producto.deuda_historica += historicoPendiente;
+    producto.deuda_actualizada += actualizadoPendiente;
+    producto.diferencia = producto.deuda_actualizada - producto.deuda_historica;
+  });
+
+  const roundMoney = (value) => Number((Number(value) || 0).toFixed(2));
+  const productosAfectados = [...productosMap.values()]
+    .map((producto) => ({
+      ...producto,
+      deuda_historica: roundMoney(producto.deuda_historica),
+      deuda_actualizada: roundMoney(producto.deuda_actualizada),
+      diferencia: roundMoney(producto.diferencia)
+    }))
+    .filter((producto) => Math.abs(producto.diferencia) > 0.009)
+    .sort((a, b) => Math.abs(b.diferencia) - Math.abs(a.diferencia));
+
+  return {
+    deuda_historica: roundMoney(deudaHistorica),
+    deuda_actualizada: roundMoney(deudaActualizada),
+    diferencia: roundMoney(deudaActualizada - deudaHistorica),
+    productos_afectados: productosAfectados
+  };
+}
+
+module.exports = {
+  parseClientePayload,
+  buildClienteCuentaResumen,
+  getClienteConMetricas,
+  getHistorialProductosCliente,
+  getDeudaActualizadaCliente
+};

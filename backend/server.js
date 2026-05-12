@@ -79,7 +79,8 @@ const {
   parseClientePayload,
   buildClienteCuentaResumen,
   getClienteConMetricas,
-  getHistorialProductosCliente
+  getHistorialProductosCliente,
+  getDeudaActualizadaCliente
 } = require("./services/clienteService");
 const {
   actualizarCuentaCobro,
@@ -4187,6 +4188,21 @@ app.get("/clientes/:id/productos", async (req, res) => {
   } catch (error) {
     logError("Error al obtener productos del cliente:", error);
     return res.status(500).json({ message: "Error al obtener productos del cliente" });
+  }
+});
+
+app.get("/clientes/:id/deuda-actualizada", async (req, res) => {
+  const clienteId = Number(req.params.id);
+  try {
+    const cliente = await getQuery("SELECT id FROM clientes WHERE id = ?", [clienteId]);
+    if (!cliente) {
+      return res.status(404).json({ message: "Cliente no encontrado" });
+    }
+    const comparacion = await getDeudaActualizadaCliente(clienteId);
+    return res.json({ cliente_id: clienteId, ...comparacion });
+  } catch (error) {
+    logError("Error al calcular deuda actualizada del cliente:", error);
+    return res.status(500).json({ message: "Error al calcular deuda actualizada" });
   }
 });
 

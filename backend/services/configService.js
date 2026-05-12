@@ -106,6 +106,7 @@ const CONFIGURACION_DEFAULTS = {
   imp_iva_aumentado_27_activo: { seccion: "stock", valor: true },
   redondeo_tipo: { seccion: "stock", valor: "0" },
   cuentas_habilitar_default: { seccion: "cuentas_corrientes", valor: true },
+  cuenta_corriente_actualizar_fiado_por_precio_actual: { seccion: "cuentas_corrientes", valor: false },
   cuentas_dias_vencimiento: { seccion: "cuentas_corrientes", valor: 30 },
   cuentas_permitir_exceder: { seccion: "cuentas_corrientes", valor: false },
   cuentas_interes_mora: { seccion: "cuentas_corrientes", valor: 0 },

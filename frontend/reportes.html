@@ -412,6 +412,37 @@
     }
     .summary-box span { color: var(--muted); font-size: 13px; font-weight: 700; }
     .summary-box strong { font-size: 20px; }
+    .insight-panel {
+      margin-bottom: 14px;
+      background: #fbfbfe;
+    }
+    .insight-panel h3 {
+      margin: 0 0 10px;
+      font-size: 15px;
+    }
+    .insight-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .insight-card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 11px 12px;
+      background: #fff;
+      display: grid;
+      gap: 4px;
+      min-height: 74px;
+    }
+    .insight-card span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .insight-card strong {
+      font-size: 18px;
+      line-height: 1.15;
+    }
     .status-pill {
       display: inline-flex;
       align-items: center;
@@ -507,6 +538,7 @@
       .kpis { grid-template-columns: repeat(3, 1fr); }
       .content-grid { grid-template-columns: 1fr; }
       .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .insight-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 820px) {
       .site-header { position: static; }
@@ -515,7 +547,7 @@
       .topbar-divider { display: none; }
       .app-shell { grid-template-columns: 1fr; padding: 18px; }
       .sidebar { position: static; min-height: auto; }
-      .kpis, .summary-grid, .filters, .check-grid { grid-template-columns: 1fr; }
+      .kpis, .summary-grid, .filters, .check-grid, .insight-grid { grid-template-columns: 1fr; }
       .bar-row { grid-template-columns: 74px 1fr; }
       .bar-row strong { grid-column: 2; }
     }
@@ -621,6 +653,10 @@
       <section class="card export-only-panel report-insights-panel">
         <div class="report-block-title">
           <div><h2 id="tituloReporteSeleccionado">Reporte seleccionado</h2><p id="descripcionReporteSeleccionado">Lecturas visuales del módulo y del rango actual.</p></div>
+        </div>
+        <div class="panel insight-panel">
+          <h3>Lectura rápida</h3>
+          <div class="insight-grid" id="insightsModulo"></div>
         </div>
         <div class="report-tabs" id="tabs"></div>
         <div class="content-grid">
@@ -770,6 +806,43 @@
       }
     };
     const modulosConCuentasCobro = new Set(["generales", "caja", "cuentas-corrientes"]);
+    const insightsPorModulo = {
+      generales: [
+        ["Balance del período", "Balance"],
+        ["Stock valorizado", "Stock valorizado"],
+        ["Deuda de clientes", "Deuda clientes"]
+      ],
+      ventas: [
+        ["Total vendido", "Total vendido"],
+        ["Ticket promedio", "Ticket promedio"],
+        ["Productos vendidos", "Productos vendidos"],
+        ["Ventas anuladas", "Ventas anuladas", { ocultarSiCero: true }]
+      ],
+      caja: [
+        ["Ingresos del período", "Ingresos periodo"],
+        ["Egresos del período", "Egresos periodo"],
+        ["Balance de caja", "Balance caja"],
+        ["IVA a favor", "IVA a favor", { ocultarSiCero: true }]
+      ],
+      stock: [
+        ["Productos activos", "Productos activos"],
+        ["Productos bajo stock", "Bajo stock"],
+        ["Sin stock", "Sin stock", { ocultarSiCero: true }],
+        ["Stock valorizado", "Stock valorizado"]
+      ],
+      "cuentas-corrientes": [
+        ["Clientes con deuda", "Con deuda"],
+        ["Deuda total", "Deuda total"],
+        ["Clientes excedidos", "Excedidos", { ocultarSiCero: true }],
+        ["Cobrado hoy", "Cobrado hoy"]
+      ],
+      "proveedores-pagos": [
+        ["Total pagado", "Total pagado"],
+        ["Saldo pendiente", "Saldo pendiente"],
+        ["IVA crédito fiscal", "IVA a favor", { ocultarSiCero: true }],
+        ["Compras del mes", "Compras mes"]
+      ]
+    };
     const moduloIconos = {
       generales: '<span class="app-icon icon-store" aria-hidden="true"></span>',
       ventas: '<span class="nav-icon sales" aria-hidden="true"></span>',
@@ -1335,11 +1408,31 @@
       return map[state.modulo] || map.generales;
     }
 
+    function valorCero(value) {
+      if (typeof value === "number") return value === 0;
+      const normalized = String(value ?? "")
+        .replace(/\./g, "")
+        .replace(",", ".")
+        .replace(/[^\d.-]/g, "");
+      return !Number(normalized || 0);
+    }
+
+    function renderInsightsModulo() {
+      const resumen = new Map(resumenModulo());
+      const items = (insightsPorModulo[state.modulo] || insightsPorModulo.generales)
+        .map(([label, key, opts = {}]) => ({ label, value: resumen.get(key), opts }))
+        .filter((item) => item.value !== undefined && !(item.opts.ocultarSiCero && valorCero(item.value)));
+      $("insightsModulo").innerHTML = items.length
+        ? items.map((item) => `<div class="insight-card"><span>${item.label}</span><strong>${item.value}</strong></div>`).join("")
+        : `<div class="empty" style="grid-column:1/-1">Sin datos destacados para el módulo seleccionado.</div>`;
+    }
+
     function renderModulo() {
       const label = modulos.find(([id]) => id === state.modulo)?.[1] || "Generales";
       const meta = moduloMeta[state.modulo] || moduloMeta.generales;
       $("tituloReporteSeleccionado").textContent = meta.titulo;
       $("descripcionReporteSeleccionado").textContent = meta.descripcion;
+      renderInsightsModulo();
       $("tituloModulo").textContent = `${meta.titulo} - detalle`;
       $("subtituloModulo").textContent = `${label}. Periodo ${$("desde").value} al ${$("hasta").value}.`;
       $("resumenModulo").innerHTML = resumenModulo().map(([label, value]) => `<div class="summary-box"><span>${label}</span><strong>${value}</strong></div>`).join("");
