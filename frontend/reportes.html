@@ -879,7 +879,7 @@
       "cuentas-corrientes": ["Clientes con deuda", "Detalle de movimientos", "Cobros recibidos", "Clientes excedidos"],
       "proveedores-pagos": ["Pagos realizados", "Saldos pendientes", "Compras del periodo", "Detalle por proveedor"]
     };
-    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null, reporteVentasBackend: null, proveedoresPagosBackend: null, cuentasCobroBackend: null, ventasPorDiaBackend: null, productosMasVendidos: null };
+    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null, reporteVentasBackend: null, reporteCajaBackend: null, proveedoresPagosBackend: null, cuentasCobroBackend: null, ventasPorDiaBackend: null, productosMasVendidos: null };
 
     function setMessage(text, type = "") {
       $("mensaje").className = `message ${type}`;
@@ -932,6 +932,27 @@
       }
       renderModuleKpis();
       renderVisualesModulo();
+      renderModulo();
+    }
+
+    async function cargarReporteCajaBackend() {
+      const desde = $("desde").value;
+      const hasta = $("hasta").value;
+      if (!desde || !hasta) { state.reporteCajaBackend = null; return; }
+      try {
+        const res = await fetch(`/reportes/caja?desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}`);
+        if (!res.ok) throw new Error("fallo");
+        const datos = await res.json();
+        if (!datos || typeof datos !== "object" || !datos.resumen || !Array.isArray(datos.ingresos_por_metodo) || !Array.isArray(datos.egresos_por_metodo) || !Array.isArray(datos.movimientos)) {
+          throw new Error("formato inesperado");
+        }
+        state.reporteCajaBackend = datos;
+      } catch {
+        state.reporteCajaBackend = null;
+      }
+      renderModuleKpis();
+      renderVisualesModulo();
+      renderCuentasCobro();
       renderModulo();
     }
 
@@ -1409,7 +1430,9 @@
     }
 
     function renderCuentasCobro() {
-      const datos = state.cuentasCobroBackend || cuentasCobroFallbackLocal();
+      const datos = state.modulo === "caja" && Array.isArray(state.reporteCajaBackend?.cuentas_cobro)
+        ? state.reporteCajaBackend.cuentas_cobro
+        : state.cuentasCobroBackend || cuentasCobroFallbackLocal();
       const panel = $("cuentasCobroPanel");
       const body = $("cuentasCobroBody");
       if (!panel || !body) return;
@@ -1445,6 +1468,8 @@
       const reporteVentas = state.reporteVentasBackend;
       const resumenVentas = reporteVentas?.resumen || {};
       const cobrosVentas = reporteVentas?.cobros || {};
+      const reporteCaja = state.reporteCajaBackend;
+      const resumenCaja = reporteCaja?.resumen || {};
       const ventasResumen = reporteVentas
         ? [
             ["Total vendido", money(resumenVentas.total_vendido)],
@@ -1456,10 +1481,22 @@
             ["Ventas anuladas", Number(resumenVentas.ventas_anuladas || 0)]
           ]
         : [["Total vendido", money(totalVentas)], ["Operaciones", base.cantidadVentas], ["Productos vendidos", detalle.reduce((acc, d) => acc + n(d.cantidad), 0)], ["Ticket promedio", money(base.ticketPromedio)], ["Ventas efectivo", money(base.ventasEfectivo)], ["Ventas débito", money(base.ventasDebito)], ["Ventas anuladas", state.ventas.filter((v) => v.estado === "anulado").length]];
+      const cajaResumen = reporteCaja
+        ? [
+            ["Ingresos periodo", money(resumenCaja.ingresos)],
+            ["Egresos periodo", money(resumenCaja.egresos)],
+            ["IVA a favor", money(resumenCaja.iva_credito_fiscal)],
+            ["Balance caja", money(resumenCaja.balance)],
+            ["Operaciones", Number(resumenCaja.operaciones || 0)],
+            ["Pagos registrados", Number(resumenCaja.pagos_registrados || 0)],
+            ["Ingresos manuales", money(resumenCaja.ingresos_manuales)],
+            ["Egresos manuales", money(resumenCaja.egresos_manuales)]
+          ]
+        : [["Ingresos periodo", money(totalVentas)], ["Egresos periodo", money(totalPagos)], ["IVA a favor", money(ivaFavor)], ["Balance caja", money(base.balance)], ["Operaciones", base.cantidadVentas + base.cantidadPagos], ["Pagos registrados", base.cantidadPagos], ["Pagos efectivo", money(base.pagosEfectivo)], ["Pagos débito", money(base.pagosDebito)]];
       const map = {
         generales: [["Ventas", money(totalVentas)], ["Egresos", money(totalPagos)], ["Balance", money(base.balance)], ["Stock valorizado", money(stockValorizado)], ["Deuda clientes", money(deudaTotal)], ["Operaciones", base.cantidadVentas + base.cantidadPagos]],
         ventas: ventasResumen,
-        caja: [["Ingresos periodo", money(totalVentas)], ["Egresos periodo", money(totalPagos)], ["IVA a favor", money(ivaFavor)], ["Balance caja", money(base.balance)], ["Operaciones", base.cantidadVentas + base.cantidadPagos], ["Pagos registrados", base.cantidadPagos], ["Pagos efectivo", money(base.pagosEfectivo)], ["Pagos débito", money(base.pagosDebito)]],
+        caja: cajaResumen,
         stock: [["Productos activos", state.productos.filter((p) => Number(p.activo) !== 0).length], ["Bajo stock", bajoStock], ["Stock valorizado", money(stockValorizado)], ["Items vendidos", detalle.reduce((acc, d) => acc + n(d.cantidad), 0)], ["Categorias", new Set(state.productos.map((p) => p.categoria || p.categoria_nombre).filter(Boolean)).size], ["Sin stock", state.productos.filter((p) => n(p.maneja_stock) && n(p.stock) <= 0).length]],
         "cuentas-corrientes": [["Clientes", state.clientes.length], ["Con deuda", state.clientes.filter((c) => n(c.deuda_actual) > 0).length], ["Deuda total", money(deudaTotal)], ["Excedidos", state.clientes.filter((c) => n(c.limite_credito) > 0 && n(c.deuda_actual) > n(c.limite_credito)).length], ["Cobrado hoy", money(state.clientes.reduce((acc, c) => acc + n(c.cobrado_hoy), 0))], ["Inactivos", state.clientes.filter((c) => Number(c.activo) === 0).length]],
         "proveedores-pagos": (() => {
@@ -1477,6 +1514,9 @@
     function detalleModulo() {
       const ventas = ventasPeriodo();
       const pagos = pagosPeriodo();
+      const movimientosCaja = Array.isArray(state.reporteCajaBackend?.movimientos)
+        ? state.reporteCajaBackend.movimientos
+        : null;
       const map = {
         generales: {
           head: ["Modulo", "Indicador", "Valor"],
@@ -1488,7 +1528,12 @@
         },
         caja: {
           head: ["Fecha", "Concepto", "Tipo", "Monto", "Origen"],
-          rows: [
+          rows: movimientosCaja ? movimientosCaja.slice(0, 40).map((movimiento) => {
+            const esIngreso = Number(movimiento.ingreso || 0) > 0;
+            const monto = esIngreso ? movimiento.ingreso : movimiento.egreso;
+            const origen = [movimiento.metodo || "-", movimiento.cuenta_nombre].filter(Boolean).join(" | ");
+            return [(movimiento.fecha || "").slice(0, 10), movimiento.concepto || movimiento.tipo_operacion || "-", esIngreso ? "Ingreso" : "Egreso", money(monto), origen || "-"];
+          }) : [
             ...ventas.map((v) => [(v.fecha || "").slice(0, 10), `Venta #${v.id}`, "Ingreso", money(v.total), v.metodo_pago || v.tipo_cobro || "-"]),
             ...pagos.map((p) => [(p.fecha || "").slice(0, 10), p.concepto || p.descripcion || `Pago #${p.id}`, "Egreso", money(p.monto_total || p.monto), `${impactoLabel(p.categoria_pago || p.proveedor_tipo_impacto || p.categoria)} | IVA favor ${money(ivaFavorPago(p))}`])
           ].slice(0, 40)
@@ -1596,6 +1641,19 @@
       }));
     }
 
+    function metodosCajaRows(tipo) {
+      const rows = tipo === "egreso"
+        ? state.reporteCajaBackend?.egresos_por_metodo
+        : state.reporteCajaBackend?.ingresos_por_metodo;
+      if (!Array.isArray(rows)) return [];
+      return rows.map((row) => ({
+        label: row.metodo || "Sin método",
+        detail: `${Number(row.cantidad || 0)} operaciones`,
+        value: money(row.total),
+        hideZero: true
+      }));
+    }
+
     function setVisualPanel(index, title, html, className = "list") {
       const ids = [
         ["visualPanel1", "visualTitulo1", "ventasPorDia"],
@@ -1652,6 +1710,21 @@
       }
 
       if (state.modulo === "caja") {
+        const cajaBackend = state.reporteCajaBackend?.resumen;
+        if (cajaBackend) {
+          setVisualPanel(1, "Ingresos vs egresos", barRows(
+            [["Ingresos", Number(cajaBackend.ingresos || 0)], ["Egresos", Number(cajaBackend.egresos || 0)]],
+            "No hay movimientos de caja suficientes para comparar."
+          ), "chart-bars");
+          setVisualPanel(2, "Resultado de caja", visualSummary([
+            { label: "Balance caja", value: money(cajaBackend.balance) },
+            { label: "IVA a favor", value: money(cajaBackend.iva_credito_fiscal), hideZero: true },
+            { label: "Pagos registrados", value: Number(cajaBackend.pagos_registrados || 0), hideZero: true }
+          ]), "summary-grid");
+          setVisualPanel(3, "Ingresos por método", visualList(metodosCajaRows("ingreso"), "No hay ingresos por método para mostrar."), "list");
+          setVisualPanel(4, "Egresos por método", visualList(metodosCajaRows("egreso"), "No hay egresos por método para mostrar."), "list");
+          return;
+        }
         setVisualPanel(1, "Ingresos vs egresos", barRows(
           [["Ingresos", totalVentas], ["Egresos", totalPagos]],
           "No hay movimientos de caja suficientes para comparar."
@@ -1855,6 +1928,7 @@
       render();
       cargarResumenBackend();
       cargarReporteVentasBackend();
+      cargarReporteCajaBackend();
       cargarProductosMasVendidos();
       cargarProveedoresPagosBackend();
       cargarVentasPorDiaBackend();
@@ -1873,9 +1947,9 @@
     $("exportModulo").onchange = () => { renderContenidoExportacion(); actualizarNombreArchivo(); };
     ["exportFormato", "exportDesde", "exportHasta"].forEach((id) => $(id).addEventListener("input", actualizarNombreArchivo));
     ["desde", "hasta", "comparacion"].forEach((id) => $(id).addEventListener("input", () => {
-      if (id !== "comparacion") { state.resumenBackend = null; state.reporteVentasBackend = null; state.proveedoresPagosBackend = null; state.cuentasCobroBackend = null; state.ventasPorDiaBackend = null; state.productosMasVendidos = null; }
+      if (id !== "comparacion") { state.resumenBackend = null; state.reporteVentasBackend = null; state.reporteCajaBackend = null; state.proveedoresPagosBackend = null; state.cuentasCobroBackend = null; state.ventasPorDiaBackend = null; state.productosMasVendidos = null; }
       render();
-      if (id !== "comparacion") { cargarResumenBackend(); cargarReporteVentasBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); cargarVentasPorDiaBackend(); cargarCuentasCobroBackend(); }
+      if (id !== "comparacion") { cargarResumenBackend(); cargarReporteVentasBackend(); cargarReporteCajaBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); cargarVentasPorDiaBackend(); cargarCuentasCobroBackend(); }
     }));
     $("moduloFiltro").onchange = () => { state.modulo = $("moduloFiltro").value; render(); };
     setRange("30");

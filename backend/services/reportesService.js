@@ -288,6 +288,443 @@ async function getReporteVentas({ desde = null, hasta = null, estado = null } = 
   };
 }
 
+function normalizarIdOpcional(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function addFiltroFecha(where, params, alias, desde, hasta) {
+  if (desde) {
+    where.push(`${alias}.fecha >= ?`);
+    params.push(desde);
+  }
+  if (hasta) {
+    where.push(`${alias}.fecha <= ?`);
+    params.push(hasta);
+  }
+}
+
+function addFiltroCajaReporte(where, params, alias, cajaId) {
+  if (cajaId) {
+    where.push(`${alias}.caja_id = ?`);
+    params.push(cajaId);
+  }
+}
+
+function addFiltroEstadoCaja(where, params, estado) {
+  const estadoNormalizado = String(estado || "").trim().toLowerCase();
+  if (estadoNormalizado && estadoNormalizado !== "todas") {
+    where.push("ca.estado = ?");
+    params.push(estadoNormalizado);
+  }
+}
+
+function addMetodoResumen(map, metodo, total) {
+  const amount = round2(total);
+  if (!amount) return;
+  const key = String(metodo || "Sin metodo").trim() || "Sin metodo";
+  if (!map.has(key)) {
+    map.set(key, { metodo: key, total: 0, cantidad: 0 });
+  }
+  const item = map.get(key);
+  item.total = round2(item.total + amount);
+  item.cantidad += 1;
+}
+
+function sumarMetodoMovimiento(map, movimiento, tipo) {
+  const total = tipo === "ingreso" ? Number(movimiento.ingreso || 0) : Number(movimiento.egreso || 0);
+  if (!total) return;
+
+  const metodo = String(movimiento.metodo || "Sin metodo").toLowerCase();
+  if (metodo === "mixto") {
+    addMetodoResumen(map, "efectivo", movimiento.monto_efectivo);
+    addMetodoResumen(map, "debito", movimiento.monto_debito);
+    return;
+  }
+
+  addMetodoResumen(map, movimiento.metodo || "Sin metodo", total);
+}
+
+function mapMovimientoCaja(row) {
+  return {
+    id: Number(row.id),
+    fecha: row.fecha,
+    hora: row.hora,
+    caja_id: row.caja_id == null ? null : Number(row.caja_id),
+    tipo_operacion: row.tipo_operacion,
+    concepto: row.concepto,
+    metodo: row.metodo || "Sin metodo",
+    ingreso: round2(row.ingreso),
+    egreso: round2(row.egreso),
+    monto_efectivo: round2(row.monto_efectivo),
+    monto_debito: round2(row.monto_debito),
+    iva_credito_fiscal: round2(row.iva_credito_fiscal),
+    cuenta_cobro_id: row.cuenta_cobro_id == null ? null : Number(row.cuenta_cobro_id),
+    cuenta_nombre: row.cuenta_nombre || null
+  };
+}
+
+async function getReporteCaja({ desde = null, hasta = null, cajaId = null, cuentaCobroId = null, estado = null } = {}) {
+  const caja = normalizarIdOpcional(cajaId);
+  const cuenta = normalizarIdOpcional(cuentaCobroId);
+  const estadoNormalizado = String(estado || "todas").trim().toLowerCase() || "todas";
+
+  const ventasWhere = [
+    "v.caja_id IS NOT NULL",
+    "COALESCE(v.estado, '') = 'cobrada'",
+    "COALESCE(v.tipo, '') != 'test_modificadores'",
+    "COALESCE(v.es_cuenta_corriente, 0) != 1"
+  ];
+  const ventasParams = [];
+  addFiltroFecha(ventasWhere, ventasParams, "v", desde, hasta);
+  addFiltroCajaReporte(ventasWhere, ventasParams, "v", caja);
+  addFiltroEstadoCaja(ventasWhere, ventasParams, estadoNormalizado);
+  if (cuenta) {
+    ventasWhere.push("v.cuenta_cobro_id = ?");
+    ventasParams.push(cuenta);
+  }
+
+  const cobrosCuentaWhere = ["pcc.caja_id IS NOT NULL"];
+  const cobrosCuentaParams = [];
+  addFiltroFecha(cobrosCuentaWhere, cobrosCuentaParams, "pcc", desde, hasta);
+  addFiltroCajaReporte(cobrosCuentaWhere, cobrosCuentaParams, "pcc", caja);
+  addFiltroEstadoCaja(cobrosCuentaWhere, cobrosCuentaParams, estadoNormalizado);
+  if (cuenta) cobrosCuentaWhere.push("1 = 0");
+
+  const pagosWhere = [
+    "p.caja_id IS NOT NULL",
+    "COALESCE(p.estado, '') != 'pendiente'"
+  ];
+  const pagosParams = [];
+  addFiltroFecha(pagosWhere, pagosParams, "p", desde, hasta);
+  addFiltroCajaReporte(pagosWhere, pagosParams, "p", caja);
+  addFiltroEstadoCaja(pagosWhere, pagosParams, estadoNormalizado);
+  if (cuenta) {
+    pagosWhere.push("p.cuenta_cobro_id = ?");
+    pagosParams.push(cuenta);
+  }
+
+  const manualWhere = ["cm.caja_id IS NOT NULL"];
+  const manualParams = [];
+  addFiltroFecha(manualWhere, manualParams, "cm", desde, hasta);
+  addFiltroCajaReporte(manualWhere, manualParams, "cm", caja);
+  addFiltroEstadoCaja(manualWhere, manualParams, estadoNormalizado);
+  if (cuenta) manualWhere.push("1 = 0");
+
+  const cajasWhere = ["1 = 1"];
+  const cajasParams = [];
+  if (desde) { cajasWhere.push("fecha >= ?"); cajasParams.push(desde); }
+  if (hasta) { cajasWhere.push("fecha <= ?"); cajasParams.push(hasta); }
+  if (caja) { cajasWhere.push("id = ?"); cajasParams.push(caja); }
+  if (estadoNormalizado && estadoNormalizado !== "todas") {
+    cajasWhere.push("estado = ?");
+    cajasParams.push(estadoNormalizado);
+  }
+
+  const conciliacionesWhere = ["1 = 1"];
+  const conciliacionesParams = [];
+  if (desde) { conciliacionesWhere.push("c.fecha >= ?"); conciliacionesParams.push(desde); }
+  if (hasta) { conciliacionesWhere.push("c.fecha <= ?"); conciliacionesParams.push(hasta); }
+  if (caja) { conciliacionesWhere.push("c.caja_id = ?"); conciliacionesParams.push(caja); }
+  if (cuenta) { conciliacionesWhere.push("c.cuenta_cobro_id = ?"); conciliacionesParams.push(cuenta); }
+  if (estadoNormalizado && estadoNormalizado !== "todas") {
+    conciliacionesWhere.push("ca.estado = ?");
+    conciliacionesParams.push(estadoNormalizado);
+  }
+
+  const [ventas, cobrosCuenta, pagos, manuales, cajas, conciliaciones] = await Promise.all([
+    allQuery(
+      `SELECT
+         v.id,
+         v.fecha,
+         v.hora,
+         v.caja_id,
+         v.cuenta_cobro_id,
+         COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+         'venta_cobrada' AS tipo_operacion,
+         'Venta #' || v.id AS concepto,
+         COALESCE(v.tipo_cobro, v.metodo_pago, 'Sin metodo') AS metodo,
+         COALESCE(v.total, 0) AS ingreso,
+         0 AS egreso,
+         COALESCE(v.monto_efectivo, 0) AS monto_efectivo,
+         COALESCE(v.monto_debito, 0) AS monto_debito,
+         0 AS iva_credito_fiscal
+       FROM ventas v
+       INNER JOIN caja_aperturas ca ON ca.id = v.caja_id
+       LEFT JOIN cuentas_cobro cc ON cc.id = v.cuenta_cobro_id
+       WHERE ${ventasWhere.join(" AND ")}`,
+      ventasParams
+    ),
+    allQuery(
+      `SELECT
+         pcc.id,
+         pcc.fecha,
+         pcc.hora,
+         pcc.caja_id,
+         NULL AS cuenta_cobro_id,
+         NULL AS cuenta_nombre,
+         'cobro_cuenta_corriente' AS tipo_operacion,
+         'Cobro cuenta corriente #' || pcc.id AS concepto,
+         COALESCE(pcc.tipo_cobro, 'Sin metodo') AS metodo,
+         COALESCE(pcc.monto_pagado, 0) AS ingreso,
+         0 AS egreso,
+         COALESCE(pcc.monto_efectivo, 0) AS monto_efectivo,
+         COALESCE(pcc.monto_debito, 0) AS monto_debito,
+         0 AS iva_credito_fiscal
+       FROM pagos_cuenta_corriente pcc
+       INNER JOIN caja_aperturas ca ON ca.id = pcc.caja_id
+       WHERE ${cobrosCuentaWhere.join(" AND ")}`,
+      cobrosCuentaParams
+    ),
+    allQuery(
+      `SELECT
+         p.id,
+         p.fecha,
+         p.hora,
+         p.caja_id,
+         p.cuenta_cobro_id,
+         COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+         'pago_proveedor' AS tipo_operacion,
+         COALESCE(p.concepto, 'Pago #' || p.id) AS concepto,
+         COALESCE(p.tipo_pago, 'Sin metodo') AS metodo,
+         0 AS ingreso,
+         COALESCE(p.monto_total, 0) AS egreso,
+         COALESCE(p.monto_efectivo, 0) AS monto_efectivo,
+         COALESCE(p.monto_debito, 0) AS monto_debito,
+         COALESCE(p.iva_credito_fiscal, 0) AS iva_credito_fiscal
+       FROM pagos p
+       INNER JOIN caja_aperturas ca ON ca.id = p.caja_id
+       LEFT JOIN cuentas_cobro cc ON cc.id = p.cuenta_cobro_id
+       WHERE ${pagosWhere.join(" AND ")}`,
+      pagosParams
+    ),
+    allQuery(
+      `SELECT
+         cm.id,
+         cm.fecha,
+         cm.hora,
+         cm.caja_id,
+         NULL AS cuenta_cobro_id,
+         NULL AS cuenta_nombre,
+         CASE WHEN cm.tipo = 'ingreso' THEN 'caja_movimiento_ingreso' ELSE 'caja_movimiento_egreso' END AS tipo_operacion,
+         cm.concepto,
+         'efectivo' AS metodo,
+         CASE WHEN cm.tipo = 'ingreso' THEN COALESCE(cm.monto, 0) ELSE 0 END AS ingreso,
+         CASE WHEN cm.tipo = 'egreso' THEN COALESCE(cm.monto, 0) ELSE 0 END AS egreso,
+         COALESCE(cm.monto, 0) AS monto_efectivo,
+         0 AS monto_debito,
+         0 AS iva_credito_fiscal
+       FROM caja_movimientos cm
+       INNER JOIN caja_aperturas ca ON ca.id = cm.caja_id
+       WHERE ${manualWhere.join(" AND ")}`,
+      manualParams
+    ),
+    allQuery(
+      `SELECT id, fecha, hora, hora_cierre, monto_apertura, usuario, estado,
+              efectivo_esperado, efectivo_contado, diferencia, monto_caja_apertura, monto_caja_fondo
+       FROM caja_aperturas
+       WHERE ${cajasWhere.join(" AND ")}
+       ORDER BY fecha DESC, COALESCE(hora_cierre, hora) DESC, id DESC`,
+      cajasParams
+    ),
+    allQuery(
+      `SELECT c.*, COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre
+       FROM conciliaciones_cuentas_cobro c
+       LEFT JOIN cuentas_cobro cc ON cc.id = c.cuenta_cobro_id
+       LEFT JOIN caja_aperturas ca ON ca.id = c.caja_id
+       WHERE ${conciliacionesWhere.join(" AND ")}
+       ORDER BY c.fecha DESC, c.hora DESC, c.id DESC`,
+      conciliacionesParams
+    )
+  ]);
+
+  const movimientos = [...ventas, ...cobrosCuenta, ...pagos, ...manuales]
+    .map(mapMovimientoCaja)
+    .sort((a, b) => `${b.fecha || ""} ${b.hora || ""} ${String(b.id).padStart(8, "0")}`.localeCompare(`${a.fecha || ""} ${a.hora || ""} ${String(a.id).padStart(8, "0")}`));
+
+  const ingresosPorMetodo = new Map();
+  const egresosPorMetodo = new Map();
+  const cuentas = new Map();
+
+  const resumen = movimientos.reduce((acc, movimiento) => {
+    const ingreso = Number(movimiento.ingreso || 0);
+    const egreso = Number(movimiento.egreso || 0);
+    acc.ingresos += ingreso;
+    acc.egresos += egreso;
+    acc.iva_credito_fiscal += Number(movimiento.iva_credito_fiscal || 0);
+
+    if (ingreso > 0) sumarMetodoMovimiento(ingresosPorMetodo, movimiento, "ingreso");
+    if (egreso > 0) sumarMetodoMovimiento(egresosPorMetodo, movimiento, "egreso");
+
+    if (movimiento.tipo_operacion === "venta_cobrada") acc.ventas_cobradas += ingreso;
+    if (movimiento.tipo_operacion === "cobro_cuenta_corriente") acc.cobros_cuenta_corriente += ingreso;
+    if (movimiento.tipo_operacion === "caja_movimiento_ingreso") acc.ingresos_manuales += ingreso;
+    if (movimiento.tipo_operacion === "pago_proveedor") {
+      acc.pagos_proveedores += egreso;
+      acc.pagos_registrados += 1;
+    }
+    if (movimiento.tipo_operacion === "caja_movimiento_egreso") acc.egresos_manuales += egreso;
+    if (movimiento.tipo_operacion === "caja_movimiento_ingreso" || movimiento.tipo_operacion === "caja_movimiento_egreso") {
+      acc.movimientos_manuales += 1;
+    }
+
+    if (movimiento.cuenta_cobro_id != null || movimiento.cuenta_nombre) {
+      const key = cuentaKey(movimiento.cuenta_cobro_id);
+      if (!cuentas.has(key)) {
+        cuentas.set(key, {
+          cuenta_cobro_id: movimiento.cuenta_cobro_id,
+          cuenta_nombre: movimiento.cuenta_nombre || "Sin cuenta",
+          ingresos: 0,
+          egresos: 0,
+          balance: 0,
+          ventas: 0,
+          pagos: 0,
+          conciliaciones: 0,
+          diferencias: 0,
+          estado_conciliacion: "pendiente",
+          _conciliaciones_con_diferencia: 0
+        });
+      }
+      const cuentaItem = cuentas.get(key);
+      cuentaItem.ingresos += ingreso;
+      cuentaItem.egresos += egreso;
+      if (movimiento.tipo_operacion === "venta_cobrada") cuentaItem.ventas += 1;
+      if (movimiento.tipo_operacion === "pago_proveedor") cuentaItem.pagos += 1;
+    }
+
+    return acc;
+  }, {
+    ingresos: 0,
+    egresos: 0,
+    balance: 0,
+    ventas_cobradas: 0,
+    cobros_cuenta_corriente: 0,
+    ingresos_manuales: 0,
+    pagos_proveedores: 0,
+    egresos_manuales: 0,
+    iva_credito_fiscal: 0,
+    operaciones: movimientos.length,
+    pagos_registrados: 0,
+    movimientos_manuales: 0,
+    arqueos: 0,
+    cierres: 0
+  });
+
+  for (const conciliacion of conciliaciones) {
+    const key = cuentaKey(conciliacion.cuenta_cobro_id);
+    if (!cuentas.has(key)) {
+      cuentas.set(key, {
+        cuenta_cobro_id: conciliacion.cuenta_cobro_id == null ? null : Number(conciliacion.cuenta_cobro_id),
+        cuenta_nombre: conciliacion.cuenta_nombre || "Sin cuenta",
+        ingresos: 0,
+        egresos: 0,
+        balance: 0,
+        ventas: 0,
+        pagos: 0,
+        conciliaciones: 0,
+        diferencias: 0,
+        estado_conciliacion: "pendiente",
+        _conciliaciones_con_diferencia: 0
+      });
+    }
+    const item = cuentas.get(key);
+    item.conciliaciones += 1;
+    item.diferencias += Math.abs(Number(conciliacion.diferencia || 0));
+    if (String(conciliacion.estado || "").toLowerCase() === "diferencia" || Math.abs(Number(conciliacion.diferencia || 0)) >= 0.01) {
+      item._conciliaciones_con_diferencia += 1;
+    }
+  }
+
+  const conciliacionesResumen = conciliaciones.reduce((acc, item) => {
+    const diferencia = Math.abs(Number(item.diferencia || 0));
+    acc.total += 1;
+    acc.diferencia_total += diferencia;
+    if (String(item.estado || "").toLowerCase() === "conciliado" && diferencia < 0.01) acc.conciliadas += 1;
+    if (String(item.estado || "").toLowerCase() === "diferencia" || diferencia >= 0.01) acc.con_diferencia += 1;
+    return acc;
+  }, { total: 0, conciliadas: 0, con_diferencia: 0, diferencia_total: 0 });
+
+  resumen.ingresos = round2(resumen.ingresos);
+  resumen.egresos = round2(resumen.egresos);
+  resumen.balance = round2(resumen.ingresos - resumen.egresos);
+  resumen.ventas_cobradas = round2(resumen.ventas_cobradas);
+  resumen.cobros_cuenta_corriente = round2(resumen.cobros_cuenta_corriente);
+  resumen.ingresos_manuales = round2(resumen.ingresos_manuales);
+  resumen.pagos_proveedores = round2(resumen.pagos_proveedores);
+  resumen.egresos_manuales = round2(resumen.egresos_manuales);
+  resumen.iva_credito_fiscal = round2(resumen.iva_credito_fiscal);
+  resumen.arqueos = 0;
+  resumen.cierres = cajas.filter((item) => item.estado === "cerrada").length;
+
+  const cajaIds = cajas.map((item) => Number(item.id)).filter(Boolean);
+  if (cajaIds.length) {
+    const arqueosWhere = [`caja_id IN (${cajaIds.map(() => "?").join(",")})`];
+    const arqueosRows = await allQuery(
+      `SELECT COUNT(*) AS total FROM caja_arqueos WHERE ${arqueosWhere.join(" AND ")}`,
+      cajaIds
+    );
+    resumen.arqueos = Number(arqueosRows[0]?.total || 0);
+  }
+
+  return {
+    filtros: {
+      desde,
+      hasta,
+      caja_id: caja,
+      cuenta_cobro_id: cuenta,
+      estado: estadoNormalizado
+    },
+    resumen,
+    ingresos_por_metodo: [...ingresosPorMetodo.values()].map((item) => ({
+      metodo: item.metodo,
+      total: round2(item.total),
+      cantidad: item.cantidad
+    })).sort((a, b) => b.total - a.total),
+    egresos_por_metodo: [...egresosPorMetodo.values()].map((item) => ({
+      metodo: item.metodo,
+      total: round2(item.total),
+      cantidad: item.cantidad
+    })).sort((a, b) => b.total - a.total),
+    cuentas_cobro: [...cuentas.values()].map((item) => {
+      const estadoConciliacion = item.conciliaciones <= 0
+        ? "pendiente"
+        : item._conciliaciones_con_diferencia > 0
+          ? "diferencia"
+          : "conciliado";
+      const { _conciliaciones_con_diferencia, ...publicItem } = item;
+      return {
+        ...publicItem,
+        ingresos: round2(publicItem.ingresos),
+        egresos: round2(publicItem.egresos),
+        balance: round2(publicItem.ingresos - publicItem.egresos),
+        diferencias: round2(publicItem.diferencias),
+        estado_conciliacion: estadoConciliacion
+      };
+    }).sort((a, b) => b.balance - a.balance),
+    conciliaciones: {
+      total: conciliacionesResumen.total,
+      conciliadas: conciliacionesResumen.conciliadas,
+      con_diferencia: conciliacionesResumen.con_diferencia,
+      diferencia_total: round2(conciliacionesResumen.diferencia_total)
+    },
+    movimientos: movimientos.slice(0, 200),
+    cajas: cajas.map((item) => ({
+      id: Number(item.id),
+      fecha: item.fecha,
+      hora: item.hora,
+      hora_cierre: item.hora_cierre,
+      estado: item.estado,
+      usuario: item.usuario,
+      monto_apertura: round2(item.monto_apertura),
+      efectivo_esperado: round2(item.efectivo_esperado),
+      efectivo_contado: round2(item.efectivo_contado),
+      diferencia: round2(item.diferencia),
+      monto_caja_apertura: round2(item.monto_caja_apertura),
+      monto_caja_fondo: round2(item.monto_caja_fondo)
+    }))
+  };
+}
+
 async function getResumenProveedoresPagos({ desde = null, hasta = null } = {}) {
   const where = [];
   const params = [];
@@ -480,6 +917,7 @@ async function getResumenCuentasCobro({ desde = null, hasta = null } = {}) {
 module.exports = {
   getResumenReportes,
   getReporteVentas,
+  getReporteCaja,
   getProductosMasVendidos,
   getResumenProveedoresPagos,
   getVentasPorDia,

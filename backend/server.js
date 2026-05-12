@@ -55,6 +55,7 @@ const {
 const {
   getResumenReportes,
   getReporteVentas,
+  getReporteCaja,
   getProductosMasVendidos,
   getResumenProveedoresPagos,
   getVentasPorDia,
@@ -4892,6 +4893,29 @@ app.get("/reportes/ventas", async (req, res) => {
   } catch (error) {
     logError("Error al obtener reporte de ventas:", error);
     return res.status(500).json({ message: "Error al obtener reporte de ventas" });
+  }
+});
+
+app.get("/reportes/caja", async (req, res) => {
+  const {
+    desde = null,
+    hasta = null,
+    caja_id = null,
+    cuenta_cobro_id = null,
+    estado = null
+  } = req.query;
+
+  try {
+    return res.json(await getReporteCaja({
+      desde,
+      hasta,
+      cajaId: caja_id,
+      cuentaCobroId: cuenta_cobro_id,
+      estado
+    }));
+  } catch (error) {
+    logError("Error al obtener reporte de caja:", error);
+    return res.status(500).json({ message: "Error al obtener reporte de caja" });
   }
 });
 
