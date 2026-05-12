@@ -660,20 +660,20 @@
         </div>
         <div class="report-tabs" id="tabs"></div>
         <div class="content-grid">
-          <div class="panel">
-            <h3>Ventas por dia</h3>
+          <div class="panel visual-panel" id="visualPanel1">
+            <h3 id="visualTitulo1">Ventas por dia</h3>
             <div class="chart-bars" id="ventasPorDia"></div>
           </div>
-          <div class="panel">
-            <h3>Distribución por método de pago</h3>
+          <div class="panel visual-panel" id="visualPanel2">
+            <h3 id="visualTitulo2">Distribución por método de pago</h3>
             <div class="list" id="metodosPago"></div>
           </div>
-          <div class="panel">
-            <h3>Top productos vendidos</h3>
+          <div class="panel visual-panel" id="visualPanel3">
+            <h3 id="visualTitulo3">Top productos vendidos</h3>
             <div class="list" id="topProductos"></div>
           </div>
-          <div class="panel">
-            <h3>Estado de cuentas corrientes</h3>
+          <div class="panel visual-panel" id="visualPanel4">
+            <h3 id="visualTitulo4">Estado de cuentas corrientes</h3>
             <div class="summary-grid" id="estadoCuentas"></div>
           </div>
         </div>
@@ -859,7 +859,7 @@
       "cuentas-corrientes": ["Clientes con deuda", "Detalle de movimientos", "Cobros recibidos", "Clientes excedidos"],
       "proveedores-pagos": ["Pagos realizados", "Saldos pendientes", "Compras del periodo", "Detalle por proveedor"]
     };
-    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null, proveedoresPagosBackend: null, cuentasCobroBackend: null };
+    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null, proveedoresPagosBackend: null, cuentasCobroBackend: null, ventasPorDiaBackend: null, productosMasVendidos: null };
 
     function setMessage(text, type = "") {
       $("mensaje").className = `message ${type}`;
@@ -921,13 +921,12 @@
         if (!res.ok) throw new Error("fallo");
         const datos = await res.json();
         if (!Array.isArray(datos)) throw new Error("formato inesperado");
-        const max = Math.max(1, ...datos.map(d => Number(d.total)));
-        $("ventasPorDia").innerHTML = datos.length
-          ? datos.map(d => `<div class="bar-row"><span>${String(d.fecha).slice(5)}</span><div class="bar-track"><div class="bar-fill" style="width:${Math.max(5, Number(d.total) / max * 100)}%"></div></div><strong>${money(Number(d.total))}</strong></div>`).join("")
-          : `<div class="empty">Sin ventas para el rango seleccionado.</div>`;
+        state.ventasPorDiaBackend = datos;
       } catch {
+        state.ventasPorDiaBackend = null;
         // fallback: renderVentasPorDia() ya renderizó el cálculo local
       }
+      renderVisualesModulo();
     }
 
     async function cargarCuentasCobroBackend() {
@@ -955,12 +954,12 @@
         if (!res.ok) throw new Error("fallo");
         const datos = await res.json();
         if (!Array.isArray(datos)) throw new Error("formato inesperado");
-        $("topProductos").innerHTML = datos.length
-          ? datos.map(d => `<div class="item"><div><strong>${d.nombre}</strong><small>${d.cantidad_total} unidades vendidas</small></div><strong>${money(Number(d.total_vendido))}</strong></div>`).join("")
-          : `<div class="empty">Sin detalle de productos para el periodo.</div>`;
+        state.productosMasVendidos = datos;
       } catch {
+        state.productosMasVendidos = null;
         // fallback: renderProductos() ya renderizó el cálculo local
       }
+      renderVisualesModulo();
     }
 
     function setRange(range) {
@@ -1067,7 +1066,36 @@
       return `<div style="display:flex;align-items:center;gap:6px;font-size:12px"><span style="width:10px;height:10px;border-radius:3px;background:${color};flex-shrink:0"></span><span style="color:var(--muted);flex:1">${label}</span><strong>${value}</strong></div>`;
     }
 
+    function barRows(rows, emptyText = "No hay datos suficientes para este gráfico") {
+      const validRows = rows.filter(([, value]) => Number(value) > 0);
+      if (!validRows.length) return `<div class="empty">${emptyText}</div>`;
+      const max = Math.max(1, ...validRows.map(([, value]) => Number(value)));
+      return validRows.map(([label, value]) => `
+        <div class="bar-row"><span>${label}</span><div class="bar-track"><div class="bar-fill" style="width:${Math.max(5, Number(value) / max * 100)}%"></div></div><strong>${money(value)}</strong></div>
+      `).join("");
+    }
+
+    function visualList(rows, emptyText = "No hay datos suficientes para este gráfico") {
+      const validRows = rows.filter((row) => row && row.value !== undefined && !(row.hideZero && valorCero(row.value)));
+      if (!validRows.length) return `<div class="empty">${emptyText}</div>`;
+      return validRows.map((row) => `
+        <div class="item"><div><strong>${row.label}</strong>${row.detail ? `<small>${row.detail}</small>` : ""}</div><strong>${row.value}</strong></div>
+      `).join("");
+    }
+
+    function visualSummary(rows, emptyText = "No hay datos suficientes para este gráfico") {
+      const validRows = rows.filter((row) => row && row.value !== undefined && !(row.hideZero && valorCero(row.value)));
+      if (!validRows.length) return `<div class="empty">${emptyText}</div>`;
+      return validRows.map((row) => `<div class="summary-box"><span>${row.label}</span><strong>${row.value}</strong></div>`).join("");
+    }
+
     function renderKpiCharts() {
+      if (state.modulo !== "generales") {
+        $("kpiChartsRow").hidden = true;
+        $("kpiChartsRow").innerHTML = "";
+        return;
+      }
+      $("kpiChartsRow").hidden = false;
       const ventas = ventasPeriodo();
       const pagos = pagosPeriodo();
       const rb = state.resumenBackend;
@@ -1427,6 +1455,152 @@
         : `<div class="empty" style="grid-column:1/-1">Sin datos destacados para el módulo seleccionado.</div>`;
     }
 
+    function ventasPorDiaRows() {
+      if (Array.isArray(state.ventasPorDiaBackend)) {
+        return state.ventasPorDiaBackend.map((d) => [String(d.fecha || "").slice(5), Number(d.total) || 0]);
+      }
+      const grouped = new Map();
+      ventasPeriodo().forEach((venta) => grouped.set((venta.fecha || "").slice(0, 10), (grouped.get((venta.fecha || "").slice(0, 10)) || 0) + n(venta.total)));
+      return [...grouped.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([fecha, total]) => [fecha.slice(5), total]);
+    }
+
+    function productosMasVendidosRows() {
+      if (Array.isArray(state.productosMasVendidos)) {
+        return state.productosMasVendidos.map((d) => ({
+          label: d.nombre,
+          detail: `${d.cantidad_total || d.cantidad || 0} unidades vendidas`,
+          value: money(Number(d.total_vendido || d.total || 0)),
+          hideZero: true
+        }));
+      }
+      const grouped = new Map();
+      detallePeriodo().forEach((item) => {
+        const name = item.producto_nombre || item.nombre || `Producto #${item.producto_id}`;
+        const actual = grouped.get(name) || { cantidad: 0, total: 0 };
+        actual.cantidad += n(item.cantidad);
+        actual.total += n(item.subtotal || item.total || item.precio_unitario * item.cantidad);
+        grouped.set(name, actual);
+      });
+      return [...grouped.entries()].sort((a, b) => b[1].cantidad - a[1].cantidad).slice(0, 6).map(([label, data]) => ({
+        label,
+        detail: `${data.cantidad} unidades vendidas`,
+        value: money(data.total),
+        hideZero: true
+      }));
+    }
+
+    function metodosPagoRows() {
+      const grouped = new Map();
+      ventasPeriodo().forEach((venta) => {
+        const metodo = venta.metodo_pago || venta.tipo_cobro || "Sin método";
+        grouped.set(metodo, (grouped.get(metodo) || 0) + n(venta.total));
+      });
+      const total = [...grouped.values()].reduce((acc, value) => acc + value, 0);
+      return [...grouped.entries()].sort((a, b) => b[1] - a[1]).map(([label, value]) => ({
+        label,
+        detail: `${total ? (value / total * 100).toFixed(1) : 0}% del total`,
+        value: money(value),
+        hideZero: true
+      }));
+    }
+
+    function setVisualPanel(index, title, html, className = "list") {
+      const ids = [
+        ["visualPanel1", "visualTitulo1", "ventasPorDia"],
+        ["visualPanel2", "visualTitulo2", "metodosPago"],
+        ["visualPanel3", "visualTitulo3", "topProductos"],
+        ["visualPanel4", "visualTitulo4", "estadoCuentas"]
+      ];
+      const [panelId, titleId, bodyId] = ids[index - 1];
+      const panel = $(panelId);
+      const body = $(bodyId);
+      if (!panel || !body) return;
+      panel.hidden = !html;
+      if (!html) return;
+      $(titleId).textContent = title;
+      body.className = className;
+      body.innerHTML = html;
+    }
+
+    function renderVisualesModulo() {
+      const ventas = ventasPeriodo();
+      const pagos = pagosPeriodo();
+      const detalle = detallePeriodo();
+      const resumen = new Map(resumenModulo());
+      const totalVentas = ventas.reduce((acc, venta) => acc + n(venta.total), 0);
+      const totalPagos = pagos.reduce((acc, pago) => acc + n(pago.monto_total || pago.monto), 0);
+      const ivaFavor = pagos.reduce((acc, pago) => acc + ivaFavorPago(pago), 0);
+      const stockValorizado = state.productos.reduce((acc, p) => acc + n(p.stock) * n(p.precio_compra || p.precio_venta), 0);
+      const bajoStock = state.productos.filter((p) => n(p.maneja_stock) && n(p.stock) <= n(p.stock_minimo));
+      const sinStock = state.productos.filter((p) => n(p.maneja_stock) && n(p.stock) <= 0);
+      const deudaTotal = state.clientes.reduce((acc, c) => acc + n(c.deuda_actual), 0);
+      const clientesConDeuda = state.clientes.filter((c) => n(c.deuda_actual) > 0);
+      const clientesExcedidos = state.clientes.filter((c) => n(c.limite_credito) > 0 && n(c.deuda_actual) > n(c.limite_credito));
+
+      [1, 2, 3, 4].forEach((index) => setVisualPanel(index, "", "", "list"));
+
+      if (state.modulo === "generales") {
+        setVisualPanel(1, "Ventas, pagos y balance", visualSummary([
+          { label: "Ventas", value: money(totalVentas), hideZero: true },
+          { label: "Pagos", value: money(totalPagos), hideZero: true },
+          { label: "Balance", value: money(totalVentas - totalPagos) }
+        ]), "summary-grid");
+        setVisualPanel(2, "Stock y deuda", visualSummary([
+          { label: "Stock valorizado", value: money(stockValorizado), hideZero: true },
+          { label: "Deuda clientes", value: money(deudaTotal), hideZero: true }
+        ]), "summary-grid");
+        return;
+      }
+
+      if (state.modulo === "ventas") {
+        setVisualPanel(1, "Ventas por día", barRows(ventasPorDiaRows()), "chart-bars");
+        setVisualPanel(2, "Productos más vendidos", visualList(productosMasVendidosRows()), "list");
+        setVisualPanel(3, "Métodos de pago", visualList(metodosPagoRows()), "list");
+        return;
+      }
+
+      if (state.modulo === "caja") {
+        setVisualPanel(1, "Ingresos vs egresos", barRows([["Ingresos", totalVentas], ["Egresos", totalPagos]]), "chart-bars");
+        setVisualPanel(2, "Balance del período", visualSummary([
+          { label: "Balance caja", value: money(totalVentas - totalPagos) },
+          { label: "IVA a favor", value: money(ivaFavor), hideZero: true }
+        ]), "summary-grid");
+        return;
+      }
+
+      if (state.modulo === "stock") {
+        setVisualPanel(1, "Alertas de stock", visualSummary([
+          { label: "Productos bajo stock", value: bajoStock.length, hideZero: true },
+          { label: "Sin stock", value: sinStock.length, hideZero: true }
+        ]), "summary-grid");
+        setVisualPanel(2, "Stock valorizado", visualSummary([
+          { label: "Stock valorizado", value: money(stockValorizado), hideZero: true },
+          { label: "Items vendidos", value: detalle.reduce((acc, d) => acc + n(d.cantidad), 0), hideZero: true }
+        ]), "summary-grid");
+        return;
+      }
+
+      if (state.modulo === "cuentas-corrientes") {
+        setVisualPanel(1, "Deuda de clientes", visualSummary([
+          { label: "Deuda total", value: money(deudaTotal), hideZero: true },
+          { label: "Clientes con deuda", value: clientesConDeuda.length, hideZero: true },
+          { label: "Clientes excedidos", value: clientesExcedidos.length, hideZero: true }
+        ]), "summary-grid");
+        return;
+      }
+
+      if (state.modulo === "proveedores-pagos") {
+        setVisualPanel(1, "Pagos y saldos", visualSummary([
+          { label: "Total pagado", value: resumen.get("Total pagado"), hideZero: true },
+          { label: "Saldo pendiente", value: resumen.get("Saldo pendiente"), hideZero: true }
+        ]), "summary-grid");
+        setVisualPanel(2, "Impacto fiscal y compras", visualSummary([
+          { label: "IVA crédito fiscal", value: resumen.get("IVA a favor"), hideZero: true },
+          { label: "Compras del mes", value: resumen.get("Compras mes"), hideZero: true }
+        ]), "summary-grid");
+      }
+    }
+
     function renderModulo() {
       const label = modulos.find(([id]) => id === state.modulo)?.[1] || "Generales";
       const meta = moduloMeta[state.modulo] || moduloMeta.generales;
@@ -1458,6 +1632,7 @@
       renderMetodos();
       renderProductos();
       renderCuentas();
+      renderVisualesModulo();
       renderCuentasCobro();
       renderModulo();
       window.initKpiVisibility?.({
@@ -1595,7 +1770,7 @@
     $("exportModulo").onchange = () => { renderContenidoExportacion(); actualizarNombreArchivo(); };
     ["exportFormato", "exportDesde", "exportHasta"].forEach((id) => $(id).addEventListener("input", actualizarNombreArchivo));
     ["desde", "hasta", "comparacion"].forEach((id) => $(id).addEventListener("input", () => {
-      if (id !== "comparacion") { state.resumenBackend = null; state.proveedoresPagosBackend = null; state.cuentasCobroBackend = null; }
+      if (id !== "comparacion") { state.resumenBackend = null; state.proveedoresPagosBackend = null; state.cuentasCobroBackend = null; state.ventasPorDiaBackend = null; state.productosMasVendidos = null; }
       render();
       if (id !== "comparacion") { cargarResumenBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); cargarVentasPorDiaBackend(); cargarCuentasCobroBackend(); }
     }));
