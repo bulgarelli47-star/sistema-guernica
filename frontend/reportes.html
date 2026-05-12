@@ -443,6 +443,17 @@
       font-size: 18px;
       line-height: 1.15;
     }
+    .insight-card small {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .visual-panel .summary-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .visual-panel .empty {
+      margin: 0;
+    }
     .status-pill {
       display: inline-flex;
       align-items: center;
@@ -471,6 +482,10 @@
       margin-top: 14px;
       padding-top: 14px;
       border-top: 1px solid var(--border);
+    }
+    .report-export-actions .button,
+    .toolbar .button {
+      white-space: nowrap;
     }
     .empty {
       padding: 18px;
@@ -548,8 +563,13 @@
       .app-shell { grid-template-columns: 1fr; padding: 18px; }
       .sidebar { position: static; min-height: auto; }
       .kpis, .summary-grid, .filters, .check-grid, .insight-grid { grid-template-columns: 1fr; }
+      .visual-panel .summary-grid { grid-template-columns: 1fr; }
       .bar-row { grid-template-columns: 74px 1fr; }
       .bar-row strong { grid-column: 2; }
+      .report-export-actions,
+      .report-main-panel .toolbar { justify-content: stretch; }
+      .report-export-actions .button,
+      .report-main-panel .toolbar .button { flex: 1 1 140px; }
     }
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=6" />
@@ -808,39 +828,39 @@
     const modulosConCuentasCobro = new Set(["generales", "caja", "cuentas-corrientes"]);
     const insightsPorModulo = {
       generales: [
-        ["Balance del período", "Balance"],
-        ["Stock valorizado", "Stock valorizado"],
-        ["Deuda de clientes", "Deuda clientes"]
+        ["Resultado neto", "Balance", { texto: "Diferencia entre ventas y egresos del período." }],
+        ["Capital en stock", "Stock valorizado", { texto: "Valorización estimada del inventario actual." }],
+        ["Exposición clientes", "Deuda clientes", { texto: "Saldo pendiente registrado en cuentas corrientes." }]
       ],
       ventas: [
-        ["Total vendido", "Total vendido"],
-        ["Ticket promedio", "Ticket promedio"],
-        ["Productos vendidos", "Productos vendidos"],
-        ["Ventas anuladas", "Ventas anuladas", { ocultarSiCero: true }]
+        ["Volumen vendido", "Total vendido", { texto: "Importe facturado dentro del rango." }],
+        ["Ticket promedio", "Ticket promedio", { texto: "Valor medio por operación registrada." }],
+        ["Unidades vendidas", "Productos vendidos", { texto: "Cantidad total de productos en los tickets." }],
+        ["Tickets anulados", "Ventas anuladas", { ocultarSiCero: true, texto: "Operaciones anuladas dentro del período." }]
       ],
       caja: [
-        ["Ingresos del período", "Ingresos periodo"],
-        ["Egresos del período", "Egresos periodo"],
-        ["Balance de caja", "Balance caja"],
-        ["IVA a favor", "IVA a favor", { ocultarSiCero: true }]
+        ["Ingresos", "Ingresos periodo", { texto: "Entradas registradas para el período." }],
+        ["Egresos", "Egresos periodo", { texto: "Salidas y pagos registrados." }],
+        ["Balance operativo", "Balance caja", { texto: "Diferencia entre ingresos y egresos." }],
+        ["Crédito fiscal", "IVA a favor", { ocultarSiCero: true, texto: "IVA a favor informado por pagos." }]
       ],
       stock: [
-        ["Productos activos", "Productos activos"],
-        ["Productos bajo stock", "Bajo stock"],
-        ["Sin stock", "Sin stock", { ocultarSiCero: true }],
-        ["Stock valorizado", "Stock valorizado"]
+        ["Catálogo activo", "Productos activos", { texto: "Productos disponibles para operar." }],
+        ["Alerta de reposición", "Bajo stock", { texto: "Productos en mínimo o por debajo." }],
+        ["Sin existencia", "Sin stock", { ocultarSiCero: true, texto: "Productos con stock físico agotado." }],
+        ["Valor inventario", "Stock valorizado", { texto: "Estimación monetaria del stock actual." }]
       ],
       "cuentas-corrientes": [
-        ["Clientes con deuda", "Con deuda"],
-        ["Deuda total", "Deuda total"],
-        ["Clientes excedidos", "Excedidos", { ocultarSiCero: true }],
-        ["Cobrado hoy", "Cobrado hoy"]
+        ["Clientes con saldo", "Con deuda", { texto: "Clientes que mantienen deuda abierta." }],
+        ["Deuda acumulada", "Deuda total", { texto: "Total pendiente de cobro." }],
+        ["Límite excedido", "Excedidos", { ocultarSiCero: true, texto: "Clientes por encima del límite definido." }],
+        ["Cobranza del día", "Cobrado hoy", { texto: "Importe cobrado en la fecha actual." }]
       ],
       "proveedores-pagos": [
-        ["Total pagado", "Total pagado"],
-        ["Saldo pendiente", "Saldo pendiente"],
-        ["IVA crédito fiscal", "IVA a favor", { ocultarSiCero: true }],
-        ["Compras del mes", "Compras mes"]
+        ["Pagos registrados", "Total pagado", { texto: "Egresos a proveedores del período." }],
+        ["Compromisos abiertos", "Saldo pendiente", { texto: "Saldo pendiente informado por proveedores." }],
+        ["Crédito fiscal", "IVA a favor", { ocultarSiCero: true, texto: "IVA crédito fiscal acumulado." }],
+        ["Compras del mes", "Compras mes", { texto: "Compras registradas en el mes." }]
       ]
     };
     const moduloIconos = {
@@ -1066,12 +1086,12 @@
       return `<div style="display:flex;align-items:center;gap:6px;font-size:12px"><span style="width:10px;height:10px;border-radius:3px;background:${color};flex-shrink:0"></span><span style="color:var(--muted);flex:1">${label}</span><strong>${value}</strong></div>`;
     }
 
-    function barRows(rows, emptyText = "No hay datos suficientes para este gráfico") {
+    function barRows(rows, emptyText = "No hay datos suficientes para este gráfico", formatter = money) {
       const validRows = rows.filter(([, value]) => Number(value) > 0);
       if (!validRows.length) return `<div class="empty">${emptyText}</div>`;
       const max = Math.max(1, ...validRows.map(([, value]) => Number(value)));
       return validRows.map(([label, value]) => `
-        <div class="bar-row"><span>${label}</span><div class="bar-track"><div class="bar-fill" style="width:${Math.max(5, Number(value) / max * 100)}%"></div></div><strong>${money(value)}</strong></div>
+        <div class="bar-row"><span>${label}</span><div class="bar-track"><div class="bar-fill" style="width:${Math.max(5, Number(value) / max * 100)}%"></div></div><strong>${formatter(value)}</strong></div>
       `).join("");
     }
 
@@ -1451,7 +1471,7 @@
         .map(([label, key, opts = {}]) => ({ label, value: resumen.get(key), opts }))
         .filter((item) => item.value !== undefined && !(item.opts.ocultarSiCero && valorCero(item.value)));
       $("insightsModulo").innerHTML = items.length
-        ? items.map((item) => `<div class="insight-card"><span>${item.label}</span><strong>${item.value}</strong></div>`).join("")
+        ? items.map((item) => `<div class="insight-card"><span>${item.label}</span><strong>${item.value}</strong>${item.opts.texto ? `<small>${item.opts.texto}</small>` : ""}</div>`).join("")
         : `<div class="empty" style="grid-column:1/-1">Sin datos destacados para el módulo seleccionado.</div>`;
     }
 
@@ -1540,12 +1560,12 @@
       [1, 2, 3, 4].forEach((index) => setVisualPanel(index, "", "", "list"));
 
       if (state.modulo === "generales") {
-        setVisualPanel(1, "Ventas, pagos y balance", visualSummary([
-          { label: "Ventas", value: money(totalVentas), hideZero: true },
-          { label: "Pagos", value: money(totalPagos), hideZero: true },
-          { label: "Balance", value: money(totalVentas - totalPagos) }
-        ]), "summary-grid");
-        setVisualPanel(2, "Stock y deuda", visualSummary([
+        setVisualPanel(1, "Ingresos vs egresos", barRows(
+          [["Ventas", totalVentas], ["Pagos", totalPagos]],
+          "No hay ventas ni pagos para comparar en este período."
+        ), "chart-bars");
+        setVisualPanel(2, "Exposición operativa", visualSummary([
+          { label: "Balance", value: money(totalVentas - totalPagos) },
           { label: "Stock valorizado", value: money(stockValorizado), hideZero: true },
           { label: "Deuda clientes", value: money(deudaTotal), hideZero: true }
         ]), "summary-grid");
@@ -1553,15 +1573,18 @@
       }
 
       if (state.modulo === "ventas") {
-        setVisualPanel(1, "Ventas por día", barRows(ventasPorDiaRows()), "chart-bars");
-        setVisualPanel(2, "Productos más vendidos", visualList(productosMasVendidosRows()), "list");
-        setVisualPanel(3, "Métodos de pago", visualList(metodosPagoRows()), "list");
+        setVisualPanel(1, "Evolución diaria", barRows(ventasPorDiaRows(), "No hay ventas por día para graficar."), "chart-bars");
+        setVisualPanel(2, "Ranking de productos", visualList(productosMasVendidosRows(), "No hay productos vendidos para rankear."), "list");
+        setVisualPanel(3, "Distribución por método", visualList(metodosPagoRows(), "No hay métodos de pago registrados."), "list");
         return;
       }
 
       if (state.modulo === "caja") {
-        setVisualPanel(1, "Ingresos vs egresos", barRows([["Ingresos", totalVentas], ["Egresos", totalPagos]]), "chart-bars");
-        setVisualPanel(2, "Balance del período", visualSummary([
+        setVisualPanel(1, "Ingresos vs egresos", barRows(
+          [["Ingresos", totalVentas], ["Egresos", totalPagos]],
+          "No hay movimientos de caja suficientes para comparar."
+        ), "chart-bars");
+        setVisualPanel(2, "Resultado de caja", visualSummary([
           { label: "Balance caja", value: money(totalVentas - totalPagos) },
           { label: "IVA a favor", value: money(ivaFavor), hideZero: true }
         ]), "summary-grid");
@@ -1569,11 +1592,12 @@
       }
 
       if (state.modulo === "stock") {
-        setVisualPanel(1, "Alertas de stock", visualSummary([
-          { label: "Productos bajo stock", value: bajoStock.length, hideZero: true },
-          { label: "Sin stock", value: sinStock.length, hideZero: true }
-        ]), "summary-grid");
-        setVisualPanel(2, "Stock valorizado", visualSummary([
+        setVisualPanel(1, "Alertas de reposición", barRows(
+          [["Bajo stock", bajoStock.length], ["Sin stock", sinStock.length]],
+          "No hay alertas de stock en el período.",
+          (value) => String(value)
+        ), "chart-bars");
+        setVisualPanel(2, "Inventario valorizado", visualSummary([
           { label: "Stock valorizado", value: money(stockValorizado), hideZero: true },
           { label: "Items vendidos", value: detalle.reduce((acc, d) => acc + n(d.cantidad), 0), hideZero: true }
         ]), "summary-grid");
@@ -1581,20 +1605,26 @@
       }
 
       if (state.modulo === "cuentas-corrientes") {
-        setVisualPanel(1, "Deuda de clientes", visualSummary([
+        setVisualPanel(1, "Clientes con seguimiento", barRows(
+          [["Con deuda", clientesConDeuda.length], ["Excedidos", clientesExcedidos.length]],
+          "No hay clientes con deuda o límite excedido para comparar.",
+          (value) => String(value)
+        ), "chart-bars");
+        setVisualPanel(2, "Situación de deuda", visualSummary([
           { label: "Deuda total", value: money(deudaTotal), hideZero: true },
-          { label: "Clientes con deuda", value: clientesConDeuda.length, hideZero: true },
-          { label: "Clientes excedidos", value: clientesExcedidos.length, hideZero: true }
+          { label: "Cobrado hoy", value: resumen.get("Cobrado hoy"), hideZero: true }
         ]), "summary-grid");
         return;
       }
 
       if (state.modulo === "proveedores-pagos") {
-        setVisualPanel(1, "Pagos y saldos", visualSummary([
-          { label: "Total pagado", value: resumen.get("Total pagado"), hideZero: true },
-          { label: "Saldo pendiente", value: resumen.get("Saldo pendiente"), hideZero: true }
-        ]), "summary-grid");
-        setVisualPanel(2, "Impacto fiscal y compras", visualSummary([
+        const totalPagado = pagos.reduce((acc, pago) => acc + n(pago.monto_total || pago.monto), 0);
+        const saldoPendiente = state.proveedores.reduce((acc, proveedor) => acc + n(proveedor.saldo_pendiente), 0);
+        setVisualPanel(1, "Pagado vs pendiente", barRows(
+          [["Pagado", totalPagado], ["Pendiente", saldoPendiente]],
+          "No hay pagos o saldos pendientes para comparar."
+        ), "chart-bars");
+        setVisualPanel(2, "Fiscal y compras", visualSummary([
           { label: "IVA crédito fiscal", value: resumen.get("IVA a favor"), hideZero: true },
           { label: "Compras del mes", value: resumen.get("Compras mes"), hideZero: true }
         ]), "summary-grid");
@@ -1607,8 +1637,8 @@
       $("tituloReporteSeleccionado").textContent = meta.titulo;
       $("descripcionReporteSeleccionado").textContent = meta.descripcion;
       renderInsightsModulo();
-      $("tituloModulo").textContent = `${meta.titulo} - detalle`;
-      $("subtituloModulo").textContent = `${label}. Periodo ${$("desde").value} al ${$("hasta").value}.`;
+      $("tituloModulo").textContent = `${meta.titulo}: detalle exportable`;
+      $("subtituloModulo").textContent = `${label}. Periodo ${$("desde").value} al ${$("hasta").value}. Esta tabla es la base para Excel rápido y Exportar.`;
       $("resumenModulo").innerHTML = resumenModulo().map(([label, value]) => `<div class="summary-box"><span>${label}</span><strong>${value}</strong></div>`).join("");
       const detail = detalleModulo();
       $("detalleHead").innerHTML = detail.head.map((label) => `<th>${label}</th>`).join("");
