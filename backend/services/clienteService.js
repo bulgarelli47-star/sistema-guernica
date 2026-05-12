@@ -1,10 +1,18 @@
-const { getQuery } = require("../db");
+const { allQuery, getQuery } = require("../db");
+
+const TIPOS_CLIENTE_PERMITIDOS = new Set(["cliente", "colaborador", "dueño", "negocio"]);
+
+function normalizarTipoCliente(valor) {
+  const tipo = String(valor || "").trim().toLowerCase();
+  return TIPOS_CLIENTE_PERMITIDOS.has(tipo) ? tipo : "cliente";
+}
 
 function parseClientePayload(body) {
   return {
     nombre: String(body.nombre || "").trim(),
     dni_cuit: String(body.dni_cuit || body.cuit || "").trim(),
     tipo_persona: String(body.tipo_persona || "fisica").trim().toLowerCase(),
+    tipo_cliente: normalizarTipoCliente(body.tipo_cliente),
     telefono: String(body.telefono || "").trim(),
     email: String(body.email || "").trim(),
     contacto: String(body.contacto || "").trim(),
@@ -55,4 +63,26 @@ async function getClienteConMetricas(clienteId) {
   return { ...cliente, ...(await buildClienteCuentaResumen(clienteId)) };
 }
 
-module.exports = { parseClientePayload, buildClienteCuentaResumen, getClienteConMetricas };
+async function getHistorialProductosCliente(clienteId, { limite } = {}) {
+  const limit = Math.min(Math.max(Number(limite) || 20, 1), 200);
+  return allQuery(
+    `SELECT dv.producto_id,
+            COALESCE(dv.nombre_producto, p.nombre, 'Producto sin nombre') AS nombre_producto,
+            COALESCE(SUM(dv.cantidad), 0) AS cantidad_total,
+            COALESCE(SUM(dv.subtotal), 0) AS total_comprado,
+            MAX(v.fecha) AS ultima_compra,
+            COUNT(DISTINCT v.id) AS veces_comprado
+     FROM detalle_ventas dv
+     INNER JOIN ventas v ON v.id = dv.venta_id
+     LEFT JOIN productos p ON p.id = dv.producto_id
+     WHERE v.cliente_id = ?
+       AND COALESCE(v.estado, '') != 'anulado'
+       AND COALESCE(v.tipo, '') != 'test_modificadores'
+     GROUP BY dv.producto_id, COALESCE(dv.nombre_producto, p.nombre, 'Producto sin nombre')
+     ORDER BY ultima_compra DESC, veces_comprado DESC
+     LIMIT ?`,
+    [clienteId, limit]
+  );
+}
+
+module.exports = { parseClientePayload, buildClienteCuentaResumen, getClienteConMetricas, getHistorialProductosCliente };

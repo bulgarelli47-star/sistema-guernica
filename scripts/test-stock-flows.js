@@ -501,6 +501,171 @@ async function testPermisosColaborador() {
   }
 }
 
+async function testClientesTipoClienteClasificacion() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const sufijo = Date.now().toString().slice(-8);
+
+      const negocio = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "Cliente Tipo Negocio",
+        dni_cuit: `TCN-${sufijo}`,
+        tipo_cliente: "negocio",
+        tipo_persona: "fisica",
+        habilita_cuenta_corriente: true,
+        activo: true
+      }, token);
+      if (!negocio.response.ok) throw new Error(`Crear cliente negocio fallo: ${negocio.data?.message || negocio.response.status}`);
+      if (negocio.data.cliente.tipo_cliente !== "negocio") throw new Error(`El alta debe guardar tipo_cliente negocio. Actual=${negocio.data.cliente.tipo_cliente}`);
+
+      const detalleNegocio = await requestJson(baseUrl, "GET", `/clientes/${negocio.data.cliente.id}`, null, token);
+      if (!detalleNegocio.response.ok) throw new Error(`GET /clientes/:id fallo: ${detalleNegocio.data?.message || detalleNegocio.response.status}`);
+      if (detalleNegocio.data.tipo_cliente !== "negocio") throw new Error(`GET /clientes/:id debe devolver tipo_cliente. Actual=${detalleNegocio.data.tipo_cliente}`);
+
+      const actualizado = await requestJson(baseUrl, "PUT", `/clientes/${negocio.data.cliente.id}`, {
+        ...detalleNegocio.data,
+        tipo_cliente: "colaborador"
+      }, token);
+      if (!actualizado.response.ok) throw new Error(`Editar cliente tipo colaborador fallo: ${actualizado.data?.message || actualizado.response.status}`);
+      if (actualizado.data.cliente.tipo_cliente !== "colaborador") throw new Error(`La edicion debe guardar tipo_cliente colaborador. Actual=${actualizado.data.cliente.tipo_cliente}`);
+
+      const sinTipo = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "Cliente Sin Tipo",
+        dni_cuit: `TCS-${sufijo}`,
+        tipo_persona: "fisica",
+        habilita_cuenta_corriente: true,
+        activo: true
+      }, token);
+      if (!sinTipo.response.ok) throw new Error(`Crear cliente sin tipo_cliente fallo: ${sinTipo.data?.message || sinTipo.response.status}`);
+      if (sinTipo.data.cliente.tipo_cliente !== "cliente") throw new Error(`Cliente sin tipo_cliente debe quedar como cliente. Actual=${sinTipo.data.cliente.tipo_cliente}`);
+
+      const invalido = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "Cliente Tipo Invalido",
+        dni_cuit: `TCI-${sufijo}`,
+        tipo_cliente: "vip",
+        tipo_persona: "fisica",
+        habilita_cuenta_corriente: true,
+        activo: true
+      }, token);
+      if (!invalido.response.ok) throw new Error(`Crear cliente con tipo invalido fallo: ${invalido.data?.message || invalido.response.status}`);
+      if (invalido.data.cliente.tipo_cliente !== "cliente") throw new Error(`Tipo_cliente invalido debe normalizarse a cliente. Actual=${invalido.data.cliente.tipo_cliente}`);
+
+      const listado = await requestJson(baseUrl, "GET", "/clientes?include_inactive=1", null, token);
+      if (!listado.response.ok) throw new Error(`GET /clientes fallo: ${listado.data?.message || listado.response.status}`);
+      const listadoActualizado = listado.data.find((cliente) => Number(cliente.id) === Number(negocio.data.cliente.id));
+      if (listadoActualizado.tipo_cliente !== "colaborador") throw new Error(`GET /clientes debe devolver tipo_cliente actualizado. Actual=${listadoActualizado.tipo_cliente}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testClientesHistorialProductosComprados() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const sufijo = Date.now().toString().slice(-8);
+
+      const cliente = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "Cliente Historial Productos",
+        dni_cuit: `HPC-${sufijo}`,
+        tipo_persona: "fisica",
+        habilita_cuenta_corriente: true,
+        activo: true
+      }, token);
+      if (!cliente.response.ok) throw new Error(`Crear cliente historial fallo: ${cliente.data?.message || cliente.response.status}`);
+      const clienteId = cliente.data.cliente.id;
+
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST Cliente Historial ${sufijo}`);
+      const productoBId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Producto Cliente ${sufijo}`,
+        codigo: `CLI-${sufijo}`,
+        categoria: `TEST Cliente Historial ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_venta: 50,
+        stock: 20,
+        maneja_stock: true
+      });
+
+      const venta1 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({ cliente_id: clienteId }), token);
+      const venta2 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({ cliente_id: clienteId }), token);
+      const ventaProductoB = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        cliente_id: clienteId,
+        items: [{ producto_id: productoBId, nombre_producto: `TEST Producto Cliente ${sufijo}`, cantidad: 1, precio_unitario: 50 }]
+      }, token);
+      if (!venta1.response.ok || !venta2.response.ok || !ventaProductoB.response.ok) {
+        throw new Error("No se pudieron crear ventas para historial de productos del cliente");
+      }
+
+      await runSql(dbPath, "UPDATE ventas SET fecha = ? WHERE id = ?", ["2026-01-01", venta1.data.venta_id]);
+      await runSql(dbPath, "UPDATE ventas SET fecha = ? WHERE id = ?", ["2026-01-03", venta2.data.venta_id]);
+      await runSql(dbPath, "UPDATE ventas SET fecha = ? WHERE id = ?", ["2026-01-05", ventaProductoB.data.venta_id]);
+
+      const ventaAnulada = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        cliente_id: clienteId,
+        items: [{ producto_id: productoBId, nombre_producto: `TEST Producto Cliente ${sufijo}`, cantidad: 3, precio_unitario: 50 }]
+      }, token);
+      if (!ventaAnulada.response.ok) throw new Error(`Crear venta a anular fallo: ${ventaAnulada.data?.message || ventaAnulada.response.status}`);
+      await runSql(dbPath, "UPDATE ventas SET fecha = ?, estado = 'anulado' WHERE id = ?", ["2026-01-06", ventaAnulada.data.venta_id]);
+
+      const ventaTecnica = await runSql(
+        dbPath,
+        `INSERT INTO ventas
+         (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id, cuenta_cobro_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ["2026-01-07", "12:00", "test", 999, "test_modificadores", "anulado", null, "efectivo", "efectivo", 999, 0, clienteId, 0, 0, null, null]
+      );
+      await runSql(
+        dbPath,
+        `INSERT INTO detalle_ventas (venta_id, producto_id, nombre_producto, cantidad, precio_unitario, subtotal)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [ventaTecnica.lastID, 11, "Coca Cola 1250", 9, 111, 999]
+      );
+
+      const historial = await requestJson(baseUrl, "GET", `/clientes/${clienteId}/productos?limite=50`, null, token);
+      if (!historial.response.ok) throw new Error(`GET productos cliente fallo: ${historial.data?.message || historial.response.status}`);
+      assertEqual(historial.data.cliente_id, clienteId, "El historial debe devolver cliente_id");
+      assertEqual(historial.data.productos.length, 2, "El historial debe agrupar solo productos reales no anulados ni test");
+
+      const [primero, segundo] = historial.data.productos;
+      assertEqual(primero.producto_id, productoBId, "El historial debe ordenar por ultima_compra DESC");
+      if (primero.nombre_producto !== `TEST Producto Cliente ${sufijo}`) throw new Error("El historial debe incluir el nombre del producto distinto comprado");
+      assertApprox(primero.cantidad_total, 1, "Producto distinto debe sumar cantidad real");
+      assertApprox(primero.total_comprado, 50, "Producto distinto debe sumar total real");
+      assertEqual(primero.veces_comprado, 1, "Producto distinto debe contar una venta");
+      if (primero.ultima_compra !== "2026-01-05") throw new Error(`Ultima compra producto distinto incorrecta: ${primero.ultima_compra}`);
+
+      assertEqual(segundo.producto_id, 11, "El historial debe incluir Coca como segundo producto");
+      assertApprox(segundo.cantidad_total, 4, "Varias compras del mismo producto deben sumar cantidades");
+      assertApprox(segundo.total_comprado, 400, "Varias compras del mismo producto deben sumar subtotales");
+      assertEqual(segundo.veces_comprado, 2, "Varias compras del mismo producto deben contar ventas distintas");
+      if (segundo.ultima_compra !== "2026-01-03") throw new Error(`Ultima compra Coca incorrecta: ${segundo.ultima_compra}`);
+
+      const limitado = await requestJson(baseUrl, "GET", `/clientes/${clienteId}/productos?limite=1`, null, token);
+      if (!limitado.response.ok) throw new Error(`GET productos cliente limitado fallo: ${limitado.data?.message || limitado.response.status}`);
+      assertEqual(limitado.data.productos.length, 1, "El limite debe restringir la cantidad de productos");
+      assertEqual(limitado.data.productos[0].producto_id, productoBId, "El limite debe conservar el orden por ultima_compra");
+
+      const inexistente = await requestJson(baseUrl, "GET", "/clientes/999999/productos", null, token);
+      assertEqual(inexistente.response.status, 404, "Cliente inexistente debe devolver 404");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testVentaContadoImpactaStockYCaja() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -4609,6 +4774,8 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
   await testBatchManual();
   await testBatchComoComponente();
   await testPermisosColaborador();
+  await testClientesTipoClienteClasificacion();
+  await testClientesHistorialProductosComprados();
   await testVentaContadoImpactaStockYCaja();
   await testPendienteNoImpactaCajaHastaCobro();
   await testAnularPendienteReponeStock();

@@ -78,7 +78,8 @@ const {
 const {
   parseClientePayload,
   buildClienteCuentaResumen,
-  getClienteConMetricas
+  getClienteConMetricas,
+  getHistorialProductosCliente
 } = require("./services/clienteService");
 const {
   actualizarCuentaCobro,
@@ -394,6 +395,7 @@ async function ensureProductosSchema() {
 async function ensureClientesSchema() {
   await ensureColumn("clientes", "dni_cuit", "TEXT");
   await ensureColumn("clientes", "tipo_persona", "TEXT NOT NULL DEFAULT 'fisica'");
+  await ensureColumn("clientes", "tipo_cliente", "TEXT NOT NULL DEFAULT 'cliente'");
   await ensureColumn("clientes", "email", "TEXT");
   await ensureColumn("clientes", "contacto", "TEXT");
   await ensureColumn("clientes", "localidad", "TEXT");
@@ -1857,8 +1859,14 @@ app.delete("/productos/:id", async (req, res) => {
   if (!(await requirePermiso(req, res, "stock_eliminar_producto", "No tenes permisos para eliminar productos"))) return;
 
   const productoId = Number(req.params.id);
+  const clave = String(req.body?.clave || req.body?.authorization_code || "").trim();
 
   try {
+    const claveActual = await getClaveAutorizacion();
+    if (!clave || clave !== claveActual) {
+      return res.status(403).json({ message: "Clave maestra incorrecta" });
+    }
+
     const producto = await getQuery(
       "SELECT id, nombre FROM productos WHERE id = ?",
       [productoId]
@@ -3687,6 +3695,77 @@ app.post("/caja/movimientos", async (req, res) => {
   }
 });
 
+app.put("/caja/movimientos/:id", async (req, res) => {
+  if (!(await requirePermiso(req, res, "caja_movimientos", "No tenes permisos para movimientos de caja"))) return;
+
+  const movimientoId = Number(req.params.id);
+  const tipo = String(req.body.tipo || "").trim().toLowerCase();
+  const concepto = String(req.body.concepto || "").trim();
+  const monto = Number(req.body.monto) || 0;
+  const usuario = String(req.body.usuario || "admin").trim() || "admin";
+  const clave = String(req.body.clave || req.body.authorization_code || "").trim();
+
+  if (!Number.isInteger(movimientoId) || movimientoId <= 0) {
+    return res.status(400).json({ message: "Movimiento invalido" });
+  }
+
+  const claveActual = await getClaveAutorizacion();
+  if (!clave || clave !== claveActual) {
+    return res.status(403).json({ message: "Clave maestra incorrecta" });
+  }
+
+  if (!["ingreso", "egreso"].includes(tipo)) {
+    return res.status(400).json({ message: "Tipo de movimiento invalido" });
+  }
+
+  if (monto <= 0) {
+    return res.status(400).json({ message: "El monto debe ser mayor a cero" });
+  }
+
+  if (!concepto) {
+    return res.status(400).json({ message: "El concepto es obligatorio" });
+  }
+
+  try {
+    await ensureCajaMovimientosTable();
+    const movimiento = await getQuery(
+      `SELECT cm.*, ca.estado AS caja_estado
+       FROM caja_movimientos cm
+       LEFT JOIN caja_aperturas ca ON ca.id = cm.caja_id
+       WHERE cm.id = ?`,
+      [movimientoId]
+    );
+
+    if (!movimiento) {
+      return res.status(404).json({ message: "Movimiento no encontrado" });
+    }
+
+    if (movimiento.caja_estado !== "abierta") {
+      return res.status(400).json({ message: "Solo se pueden editar movimientos de una caja abierta" });
+    }
+
+    await runQuery(
+      `UPDATE caja_movimientos
+       SET tipo = ?, concepto = ?, monto = ?, usuario = ?
+       WHERE id = ?`,
+      [tipo, concepto, Number(monto.toFixed(2)), usuario, movimientoId]
+    );
+
+    const actualizado = await getQuery(
+      "SELECT * FROM caja_movimientos WHERE id = ?",
+      [movimientoId]
+    );
+
+    return res.json({
+      message: "Movimiento de caja actualizado",
+      movimiento: actualizado
+    });
+  } catch (error) {
+    logError("Error al editar movimiento de caja:", error);
+    return res.status(500).json({ message: "Error al editar movimiento de caja" });
+  }
+});
+
 // Cerrar caja
 app.post("/caja/cierre", async (req, res) => {
   if (!(await requirePermiso(req, res, "caja_cerrar", "No tenes permisos para cerrar caja"))) return;
@@ -4096,6 +4175,34 @@ app.get("/clientes", async (req, res) => {
   }
 });
 
+app.get("/clientes/:id/productos", async (req, res) => {
+  const clienteId = Number(req.params.id);
+  try {
+    const cliente = await getQuery("SELECT id FROM clientes WHERE id = ?", [clienteId]);
+    if (!cliente) {
+      return res.status(404).json({ message: "Cliente no encontrado" });
+    }
+    const productos = await getHistorialProductosCliente(clienteId, { limite: req.query.limite });
+    return res.json({ cliente_id: clienteId, productos });
+  } catch (error) {
+    logError("Error al obtener productos del cliente:", error);
+    return res.status(500).json({ message: "Error al obtener productos del cliente" });
+  }
+});
+
+app.get("/clientes/:id", async (req, res) => {
+  try {
+    const cliente = await getClienteConMetricas(Number(req.params.id));
+    if (!cliente) {
+      return res.status(404).json({ message: "Cliente no encontrado" });
+    }
+    return res.json(cliente);
+  } catch (error) {
+    logError("Error al obtener cliente:", error);
+    return res.status(500).json({ message: "Error al obtener cliente" });
+  }
+});
+
 app.post("/clientes/imagen", async (req, res) => {
   try {
     const { nombre, data_url } = req.body || {};
@@ -4180,14 +4287,15 @@ app.post("/clientes", async (req, res) => {
 
     const result = await runQuery(
       `INSERT INTO clientes
-       (nombre, dni_cuit, tipo_persona, telefono, email, contacto, direccion, localidad, codigo_postal,
+       (nombre, dni_cuit, tipo_persona, tipo_cliente, telefono, email, contacto, direccion, localidad, codigo_postal,
         alias, observaciones, notas, foto_url, limite_fiado, dias_vencimiento, dia_vencimiento_fijo, moneda,
         habilita_cuenta_corriente, activo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         clienteData.nombre,
         clienteData.dni_cuit,
         clienteData.tipo_persona,
+        clienteData.tipo_cliente,
         clienteData.telefono,
         clienteData.email,
         clienteData.contacto,
@@ -4236,7 +4344,7 @@ app.put("/clientes/:id", async (req, res) => {
     }
     await runQuery(
       `UPDATE clientes
-       SET nombre = ?, dni_cuit = ?, tipo_persona = ?, telefono = ?, email = ?, contacto = ?,
+       SET nombre = ?, dni_cuit = ?, tipo_persona = ?, tipo_cliente = ?, telefono = ?, email = ?, contacto = ?,
            direccion = ?, localidad = ?, codigo_postal = ?, alias = ?, observaciones = ?, notas = ?, foto_url = ?,
            limite_fiado = ?, dias_vencimiento = ?, dia_vencimiento_fijo = ?, moneda = ?,
            habilita_cuenta_corriente = ?, activo = ?
@@ -4245,6 +4353,7 @@ app.put("/clientes/:id", async (req, res) => {
         clienteData.nombre,
         clienteData.dni_cuit,
         clienteData.tipo_persona,
+        clienteData.tipo_cliente,
         clienteData.telefono,
         clienteData.email,
         clienteData.contacto,
