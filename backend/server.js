@@ -54,6 +54,7 @@ const {
 } = require("./services/ventaService");
 const {
   getResumenReportes,
+  getReporteVentas,
   getProductosMasVendidos,
   getResumenProveedoresPagos,
   getVentasPorDia,
@@ -4881,6 +4882,16 @@ app.get("/reportes/resumen", async (req, res) => {
   } catch (error) {
     logError("Error al obtener resumen de reportes:", error);
     return res.status(500).json({ message: "Error al obtener resumen" });
+  }
+});
+
+app.get("/reportes/ventas", async (req, res) => {
+  const { desde = null, hasta = null, estado = null } = req.query;
+  try {
+    return res.json(await getReporteVentas({ desde, hasta, estado }));
+  } catch (error) {
+    logError("Error al obtener reporte de ventas:", error);
+    return res.status(500).json({ message: "Error al obtener reporte de ventas" });
   }
 });
 

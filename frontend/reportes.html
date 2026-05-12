@@ -879,7 +879,7 @@
       "cuentas-corrientes": ["Clientes con deuda", "Detalle de movimientos", "Cobros recibidos", "Clientes excedidos"],
       "proveedores-pagos": ["Pagos realizados", "Saldos pendientes", "Compras del periodo", "Detalle por proveedor"]
     };
-    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null, proveedoresPagosBackend: null, cuentasCobroBackend: null, ventasPorDiaBackend: null, productosMasVendidos: null };
+    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null, reporteVentasBackend: null, proveedoresPagosBackend: null, cuentasCobroBackend: null, ventasPorDiaBackend: null, productosMasVendidos: null };
 
     function setMessage(text, type = "") {
       $("mensaje").className = `message ${type}`;
@@ -913,6 +913,26 @@
       }
       renderKpis();
       renderKpiCharts();
+    }
+
+    async function cargarReporteVentasBackend() {
+      const desde = $("desde").value;
+      const hasta = $("hasta").value;
+      if (!desde || !hasta) { state.reporteVentasBackend = null; return; }
+      try {
+        const res = await fetch(`/reportes/ventas?desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}`);
+        if (!res.ok) throw new Error("fallo");
+        const datos = await res.json();
+        if (!datos || typeof datos !== "object" || !datos.resumen || !Array.isArray(datos.por_dia) || !Array.isArray(datos.productos_mas_vendidos) || !Array.isArray(datos.por_tipo_cobro)) {
+          throw new Error("formato inesperado");
+        }
+        state.reporteVentasBackend = datos;
+      } catch {
+        state.reporteVentasBackend = null;
+      }
+      renderModuleKpis();
+      renderVisualesModulo();
+      renderModulo();
     }
 
     async function cargarProveedoresPagosBackend() {
@@ -1215,22 +1235,40 @@
       $('kpiChartsRow').innerHTML = html;
     }
 
-    function renderKpis() {
+    function resumenPeriodoBase() {
       const ventas = ventasPeriodo();
       const pagos = pagosPeriodo();
-      const anterior = periodoAnteriorVentas();
       const rb = state.resumenBackend;
-      const total      = rb ? rb.ventas_totales    : ventas.reduce((acc, venta) => acc + n(venta.total), 0);
+      const ventasTotalesLocal = ventas.reduce((acc, venta) => acc + n(venta.total), 0);
+      const pagosTotalesLocal = pagos.reduce((acc, pago) => acc + n(pago.monto_total || pago.monto), 0);
+      const ivaFavorLocal = pagos.reduce((acc, pago) => acc + ivaFavorPago(pago), 0);
+      return {
+        ventasTotales: rb ? n(rb.ventas_totales) : ventasTotalesLocal,
+        pagosTotales: rb ? n(rb.pagos_totales) : pagosTotalesLocal,
+        balance: rb ? n(rb.balance_general) : ventasTotalesLocal - pagosTotalesLocal,
+        ivaFavor: rb ? n(rb.iva_credito_fiscal) : ivaFavorLocal,
+        ticketPromedio: rb ? n(rb.ticket_promedio) : (ventas.length ? ventasTotalesLocal / ventas.length : 0),
+        cantidadVentas: rb ? n(rb.total_ventas) : ventas.length,
+        cantidadPagos: rb ? n(rb.total_pagos) : pagos.length,
+        ventasEfectivo: rb ? n(rb.ventas_efectivo) : ventas.reduce((acc, venta) => acc + n(venta.monto_efectivo), 0),
+        ventasDebito: rb ? n(rb.ventas_debito) : ventas.reduce((acc, venta) => acc + n(venta.monto_debito), 0),
+        pagosEfectivo: rb ? n(rb.pagos_efectivo) : pagos.reduce((acc, pago) => acc + n(pago.monto_efectivo), 0),
+        pagosDebito: rb ? n(rb.pagos_debito) : pagos.reduce((acc, pago) => acc + n(pago.monto_debito), 0)
+      };
+    }
+
+    function renderKpis() {
+      const anterior = periodoAnteriorVentas();
+      const base = resumenPeriodoBase();
+      const total = base.ventasTotales;
       const totalAnterior = anterior.reduce((acc, venta) => acc + n(venta.total), 0);
-      const totalPagos = rb ? rb.pagos_totales      : pagos.reduce((acc, pago) => acc + n(pago.monto_total || pago.monto), 0);
-      const ivaFavor   = rb ? rb.iva_credito_fiscal : pagos.reduce((acc, pago) => acc + ivaFavorPago(pago), 0);
-      const utilidad = total * 0.34;
-      const ticket     = rb ? rb.ticket_promedio    : (ventas.length ? total / ventas.length : 0);
+      const estimacionBruta = total * 0.34;
+      const ticket = base.ticketPromedio;
       const datos = [
         ["V", "Ventas totales", money(total), pct(total, totalAnterior)],
-        ["U", "Utilidad bruta", money(utilidad), pct(utilidad, totalAnterior * 0.34)],
+        ["E", "Estimación bruta", money(estimacionBruta), pct(estimacionBruta, totalAnterior * 0.34)],
         ["T", "Ticket promedio", money(ticket), pct(ticket, anterior.length ? totalAnterior / anterior.length : 0)],
-        ["#", "Operaciones", ventas.length + pagos.length, pct(ventas.length, anterior.length)],
+        ["#", "Operaciones", base.cantidadVentas + base.cantidadPagos, pct(base.cantidadVentas, anterior.length)],
       ];
       $("kpis").innerHTML = datos.map(([icon, label, value, delta]) => {
         const cls = delta > 0 ? "up" : delta < 0 ? "down" : "";
@@ -1397,16 +1435,31 @@
       const ventas = ventasPeriodo();
       const pagos = pagosPeriodo();
       const detalle = detallePeriodo();
-      const totalVentas = ventas.reduce((acc, venta) => acc + n(venta.total), 0);
-      const totalPagos = pagos.reduce((acc, pago) => acc + n(pago.monto_total || pago.monto), 0);
-      const ivaFavor = pagos.reduce((acc, pago) => acc + ivaFavorPago(pago), 0);
+      const base = resumenPeriodoBase();
+      const totalVentas = base.ventasTotales;
+      const totalPagos = base.pagosTotales;
+      const ivaFavor = base.ivaFavor;
       const stockValorizado = state.productos.reduce((acc, p) => acc + n(p.stock) * n(p.precio_compra || p.precio_venta), 0);
       const bajoStock = state.productos.filter((p) => n(p.maneja_stock) && n(p.stock) <= n(p.stock_minimo)).length;
       const deudaTotal = state.clientes.reduce((acc, c) => acc + n(c.deuda_actual), 0);
+      const reporteVentas = state.reporteVentasBackend;
+      const resumenVentas = reporteVentas?.resumen || {};
+      const cobrosVentas = reporteVentas?.cobros || {};
+      const ventasResumen = reporteVentas
+        ? [
+            ["Total vendido", money(resumenVentas.total_vendido)],
+            ["Operaciones", Number(resumenVentas.operaciones || 0)],
+            ["Productos vendidos", Number(resumenVentas.productos_vendidos || 0)],
+            ["Ticket promedio", money(resumenVentas.ticket_promedio)],
+            ["Ventas efectivo", money(cobrosVentas.ventas_efectivo)],
+            ["Ventas débito", money(cobrosVentas.ventas_debito)],
+            ["Ventas anuladas", Number(resumenVentas.ventas_anuladas || 0)]
+          ]
+        : [["Total vendido", money(totalVentas)], ["Operaciones", base.cantidadVentas], ["Productos vendidos", detalle.reduce((acc, d) => acc + n(d.cantidad), 0)], ["Ticket promedio", money(base.ticketPromedio)], ["Ventas efectivo", money(base.ventasEfectivo)], ["Ventas débito", money(base.ventasDebito)], ["Ventas anuladas", state.ventas.filter((v) => v.estado === "anulado").length]];
       const map = {
-        generales: [["Ventas", money(totalVentas)], ["Egresos", money(totalPagos)], ["Balance", money(totalVentas - totalPagos)], ["Stock valorizado", money(stockValorizado)], ["Deuda clientes", money(deudaTotal)], ["Operaciones", ventas.length]],
-        ventas: [["Total vendido", money(totalVentas)], ["Operaciones", ventas.length], ["Productos vendidos", detalle.reduce((acc, d) => acc + n(d.cantidad), 0)], ["Ticket promedio", money(ventas.length ? totalVentas / ventas.length : 0)], ["Ventas cuenta", ventas.filter((v) => v.tipo_cobro === "cuenta_corriente").length], ["Ventas anuladas", state.ventas.filter((v) => v.estado === "anulado").length]],
-        caja: [["Ingresos periodo", money(totalVentas)], ["Egresos periodo", money(totalPagos)], ["IVA a favor", money(ivaFavor)], ["Balance caja", money(totalVentas - totalPagos)], ["Operaciones", ventas.length + pagos.length], ["Pagos registrados", pagos.length]],
+        generales: [["Ventas", money(totalVentas)], ["Egresos", money(totalPagos)], ["Balance", money(base.balance)], ["Stock valorizado", money(stockValorizado)], ["Deuda clientes", money(deudaTotal)], ["Operaciones", base.cantidadVentas + base.cantidadPagos]],
+        ventas: ventasResumen,
+        caja: [["Ingresos periodo", money(totalVentas)], ["Egresos periodo", money(totalPagos)], ["IVA a favor", money(ivaFavor)], ["Balance caja", money(base.balance)], ["Operaciones", base.cantidadVentas + base.cantidadPagos], ["Pagos registrados", base.cantidadPagos], ["Pagos efectivo", money(base.pagosEfectivo)], ["Pagos débito", money(base.pagosDebito)]],
         stock: [["Productos activos", state.productos.filter((p) => Number(p.activo) !== 0).length], ["Bajo stock", bajoStock], ["Stock valorizado", money(stockValorizado)], ["Items vendidos", detalle.reduce((acc, d) => acc + n(d.cantidad), 0)], ["Categorias", new Set(state.productos.map((p) => p.categoria || p.categoria_nombre).filter(Boolean)).size], ["Sin stock", state.productos.filter((p) => n(p.maneja_stock) && n(p.stock) <= 0).length]],
         "cuentas-corrientes": [["Clientes", state.clientes.length], ["Con deuda", state.clientes.filter((c) => n(c.deuda_actual) > 0).length], ["Deuda total", money(deudaTotal)], ["Excedidos", state.clientes.filter((c) => n(c.limite_credito) > 0 && n(c.deuda_actual) > n(c.limite_credito)).length], ["Cobrado hoy", money(state.clientes.reduce((acc, c) => acc + n(c.cobrado_hoy), 0))], ["Inactivos", state.clientes.filter((c) => Number(c.activo) === 0).length]],
         "proveedores-pagos": (() => {
@@ -1476,6 +1529,9 @@
     }
 
     function ventasPorDiaRows() {
+      if (Array.isArray(state.reporteVentasBackend?.por_dia)) {
+        return state.reporteVentasBackend.por_dia.map((d) => [String(d.fecha || "").slice(5), Number(d.total) || 0]);
+      }
       if (Array.isArray(state.ventasPorDiaBackend)) {
         return state.ventasPorDiaBackend.map((d) => [String(d.fecha || "").slice(5), Number(d.total) || 0]);
       }
@@ -1485,6 +1541,14 @@
     }
 
     function productosMasVendidosRows() {
+      if (Array.isArray(state.reporteVentasBackend?.productos_mas_vendidos)) {
+        return state.reporteVentasBackend.productos_mas_vendidos.map((d) => ({
+          label: d.nombre,
+          detail: `${d.cantidad_total || d.cantidad || 0} unidades vendidas`,
+          value: money(Number(d.total_vendido || d.total || 0)),
+          hideZero: true
+        }));
+      }
       if (Array.isArray(state.productosMasVendidos)) {
         return state.productosMasVendidos.map((d) => ({
           label: d.nombre,
@@ -1510,6 +1574,14 @@
     }
 
     function metodosPagoRows() {
+      if (Array.isArray(state.reporteVentasBackend?.por_tipo_cobro)) {
+        return state.reporteVentasBackend.por_tipo_cobro.map((row) => ({
+          label: row.tipo_cobro || "Sin método",
+          detail: `${Number(row.porcentaje || 0).toFixed(1)}% del total`,
+          value: money(row.total),
+          hideZero: true
+        }));
+      }
       const grouped = new Map();
       ventasPeriodo().forEach((venta) => {
         const metodo = venta.metodo_pago || venta.tipo_cobro || "Sin método";
@@ -1782,6 +1854,7 @@
       Object.assign(state, { ventas, detalle, productos, clientes, pagos, proveedores, config: configData.config || {} });
       render();
       cargarResumenBackend();
+      cargarReporteVentasBackend();
       cargarProductosMasVendidos();
       cargarProveedoresPagosBackend();
       cargarVentasPorDiaBackend();
@@ -1800,9 +1873,9 @@
     $("exportModulo").onchange = () => { renderContenidoExportacion(); actualizarNombreArchivo(); };
     ["exportFormato", "exportDesde", "exportHasta"].forEach((id) => $(id).addEventListener("input", actualizarNombreArchivo));
     ["desde", "hasta", "comparacion"].forEach((id) => $(id).addEventListener("input", () => {
-      if (id !== "comparacion") { state.resumenBackend = null; state.proveedoresPagosBackend = null; state.cuentasCobroBackend = null; state.ventasPorDiaBackend = null; state.productosMasVendidos = null; }
+      if (id !== "comparacion") { state.resumenBackend = null; state.reporteVentasBackend = null; state.proveedoresPagosBackend = null; state.cuentasCobroBackend = null; state.ventasPorDiaBackend = null; state.productosMasVendidos = null; }
       render();
-      if (id !== "comparacion") { cargarResumenBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); cargarVentasPorDiaBackend(); cargarCuentasCobroBackend(); }
+      if (id !== "comparacion") { cargarResumenBackend(); cargarReporteVentasBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); cargarVentasPorDiaBackend(); cargarCuentasCobroBackend(); }
     }));
     $("moduloFiltro").onchange = () => { state.modulo = $("moduloFiltro").value; render(); };
     setRange("30");
