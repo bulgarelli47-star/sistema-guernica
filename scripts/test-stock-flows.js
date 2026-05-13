@@ -3363,13 +3363,21 @@ async function testProveedoresPagosDevuelveClaves() {
 
       const { response, data } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, token);
       if (!response.ok) throw new Error(`GET /reportes/proveedores-pagos fallo: ${data?.message || response.status}`);
-      if (!Array.isArray(data)) throw new Error("GET /reportes/proveedores-pagos debe devolver un array");
-      if (!data.length) throw new Error("GET /reportes/proveedores-pagos debe devolver al menos un item");
+      // Nuevo contrato: objeto consolidado { filtros, resumen, proveedores, pagos, por_impacto }
+      if (Array.isArray(data) || typeof data !== "object" || data === null) throw new Error("GET /reportes/proveedores-pagos debe devolver un objeto consolidado, no un array");
+      for (const clave of ["filtros", "resumen", "proveedores", "pagos", "por_impacto"]) {
+        if (!(clave in data)) throw new Error(`Respuesta debe tener clave '${clave}'. Keys=${JSON.stringify(Object.keys(data))}`);
+      }
+      for (const clave of ["proveedores_total", "pagos_periodo", "total_pagado", "total_pendiente", "iva_credito_fiscal", "compras_periodo"]) {
+        if (!(clave in data.resumen)) throw new Error(`resumen debe tener clave '${clave}'. Keys=${JSON.stringify(Object.keys(data.resumen))}`);
+      }
+      if (!Array.isArray(data.proveedores)) throw new Error("data.proveedores debe ser un array");
+      if (!data.proveedores.length) throw new Error("GET /reportes/proveedores-pagos debe devolver al menos un proveedor en data.proveedores");
 
-      const item = data[0];
+      const item = data.proveedores[0];
       for (const clave of ["proveedor_id", "proveedor_nombre", "tipo_impacto", "total_pagado", "total_pendiente", "iva_credito_fiscal", "cantidad_pagos"]) {
         if (!(clave in item)) {
-          throw new Error(`Cada item debe tener clave '${clave}'. Item=${JSON.stringify(item)}`);
+          throw new Error(`Cada proveedor debe tener clave '${clave}'. Item=${JSON.stringify(item)}`);
         }
       }
     });
@@ -3395,7 +3403,7 @@ async function testProveedoresPagosSumaTotalPagado() {
       const { response, data } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, token);
       if (!response.ok) throw new Error(`GET /reportes/proveedores-pagos fallo: ${data?.message || response.status}`);
 
-      const item = data.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
+      const item = data.proveedores.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
       if (!item) throw new Error("El proveedor debe aparecer en el reporte de proveedores");
       assertApprox(item.total_pagado, 500, "total_pagado debe sumar solo pagos registrados (300 + 200 = 500)");
       assertEqual(item.cantidad_pagos, 3, "cantidad_pagos debe contar todos los pagos del proveedor (registrados + pendientes)");
@@ -3422,7 +3430,7 @@ async function testProveedoresPagosSumaTotalPendiente() {
       const { response, data } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, token);
       if (!response.ok) throw new Error(`GET /reportes/proveedores-pagos fallo: ${data?.message || response.status}`);
 
-      const item = data.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
+      const item = data.proveedores.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
       if (!item) throw new Error("El proveedor debe aparecer en el reporte de proveedores");
       assertApprox(item.total_pendiente, 400, "total_pendiente debe sumar solo pagos pendientes (150 + 250 = 400)");
       assertApprox(item.total_pagado, 300, "total_pagado no debe incluir pagos pendientes");
@@ -3454,7 +3462,7 @@ async function testProveedoresPagosCalculaIvaSoloRegistrados() {
       const { response, data } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, token);
       if (!response.ok) throw new Error(`GET /reportes/proveedores-pagos fallo: ${data?.message || response.status}`);
 
-      const item = data.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
+      const item = data.proveedores.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
       if (!item) throw new Error("El proveedor debe aparecer en el reporte");
       assertApprox(item.iva_credito_fiscal, 210, "iva_credito_fiscal debe calcularse solo sobre pagos registrados", 1);
     });
@@ -3478,15 +3486,15 @@ async function testProveedoresPagosRespetaFiltroFechas() {
       // Rango amplio: incluye el pago de hoy
       const { response: r1, data: d1 } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos?desde=2000-01-01&hasta=2099-12-31", null, token);
       if (!r1.ok) throw new Error(`GET rango amplio fallo: ${d1?.message || r1.status}`);
-      const itemAmplio = d1.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
+      const itemAmplio = d1.proveedores.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
       if (!itemAmplio) throw new Error("Rango amplio debe incluir el proveedor con pagos de hoy");
       assertApprox(itemAmplio.total_pagado, 300, "Rango amplio debe incluir el pago registrado");
 
-      // Rango histórico sin datos: el proveedor no debe aparecer
+      // Rango histórico sin datos: el proveedor aparece (LEFT JOIN desde proveedores) pero con total_pagado=0
       const { response: r2, data: d2 } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos?desde=2010-01-01&hasta=2010-12-31", null, token);
       if (!r2.ok) throw new Error(`GET rango historico fallo: ${d2?.message || r2.status}`);
-      const itemHistorico = d2.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
-      if (itemHistorico) throw new Error(`Rango historico no debe incluir el proveedor. Encontrado=${JSON.stringify(itemHistorico)}`);
+      const itemHistorico = d2.proveedores.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
+      if (itemHistorico && Number(itemHistorico.total_pagado) !== 0) throw new Error(`Rango historico debe tener total_pagado=0 para el proveedor. Actual=${itemHistorico.total_pagado}`);
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -3512,10 +3520,10 @@ async function testProveedoresPagosSinProveedor() {
       const { response, data } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, token);
       if (!response.ok) throw new Error(`GET /reportes/proveedores-pagos fallo: ${data?.message || response.status}`);
 
-      const sinProveedor = data.find((d) => d.proveedor_nombre === "Sin proveedor");
-      if (!sinProveedor) throw new Error(`Pagos sin proveedor deben agruparse como 'Sin proveedor'. Nombres=${JSON.stringify(data.map((d) => d.proveedor_nombre))}`);
-      assertApprox(sinProveedor.total_pagado, 150, "Sin proveedor debe sumar el monto del pago registrado");
-      assertEqual(sinProveedor.cantidad_pagos, 1, "Sin proveedor debe contar el pago correctamente");
+      // Pagos sin proveedor_id aparecen en data.pagos (no en data.proveedores, que es FROM proveedores)
+      const sinProveedorPago = data.pagos.find((p) => p.proveedor_nombre === "Sin proveedor");
+      if (!sinProveedorPago) throw new Error(`Pagos sin proveedor deben aparecer en data.pagos. Nombres=${JSON.stringify(data.pagos.map((p) => p.proveedor_nombre))}`);
+      assertApprox(sinProveedorPago.monto_total, 150, "El pago sin proveedor debe tener el monto correcto en data.pagos");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });

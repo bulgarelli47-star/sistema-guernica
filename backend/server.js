@@ -4878,6 +4878,133 @@ function nombreArchivoReporte(modulo, desde, hasta, formato) {
   return `${modulo}_${desde}_${hasta}.${normalizarFormatoReporte(formato)}`;
 }
 
+function sanitizarCsvCelda(value) {
+  const str = String(value == null ? "" : value);
+  if (/[",\n\r]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+  return str;
+}
+
+function escaparHtmlExport(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function generarCSV(headers, rows) {
+  const lineas = [
+    headers.map(sanitizarCsvCelda).join(","),
+    ...rows.map((row) => row.map(sanitizarCsvCelda).join(","))
+  ];
+  return "﻿" + lineas.join("\r\n");
+}
+
+function generarXLS(headers, rows) {
+  const ths = headers.map((h) => `<th>${escaparHtmlExport(h)}</th>`).join("");
+  const trs = rows.map((row) =>
+    `<tr>${row.map((cell) => `<td>${escaparHtmlExport(cell)}</td>`).join("")}</tr>`
+  ).join("");
+  return `<html><head><meta charset="utf-8"></head><body>` +
+    `<table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>` +
+    `</body></html>`;
+}
+
+function responderArchivoExport(res, contenido, filename, formato) {
+  const safe = filename.replace(/[^\w._-]/g, "_");
+  if (formato === "csv") {
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${safe}"`);
+    return res.send(contenido);
+  }
+  res.setHeader("Content-Type", "application/vnd.ms-excel; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${safe}"`);
+  return res.send(contenido);
+}
+
+function mapearFilasExport(modulo, datos) {
+  switch (modulo) {
+    case "generales": {
+      const headers = ["Indicador", "Valor"];
+      const rows = [
+        ["Ventas totales", datos.ventas_totales ?? ""],
+        ["Pagos totales", datos.pagos_totales ?? ""],
+        ["Balance general", datos.balance_general ?? ""],
+        ["IVA crédito fiscal", datos.iva_credito_fiscal ?? ""],
+        ["Operaciones (ventas)", datos.total_ventas ?? ""],
+        ["Ticket promedio", datos.ticket_promedio ?? ""]
+      ];
+      return { headers, rows };
+    }
+    case "ventas": {
+      const headers = ["Fecha", "Cantidad ventas", "Total", "Ticket promedio"];
+      const rows = (datos.por_dia || []).map((row) => [
+        row.fecha || "",
+        row.cantidad_ventas ?? 0,
+        row.total ?? 0,
+        row.ticket_promedio ?? 0
+      ]);
+      return { headers, rows };
+    }
+    case "caja": {
+      const headers = ["Fecha", "Concepto", "Tipo", "Ingreso", "Egreso", "Método", "Cuenta"];
+      const rows = (datos.movimientos || []).map((row) => [
+        (row.fecha || "").slice(0, 10),
+        row.concepto || row.tipo_operacion || "",
+        Number(row.ingreso || 0) > 0 ? "Ingreso" : "Egreso",
+        row.ingreso ?? 0,
+        row.egreso ?? 0,
+        row.metodo || "",
+        row.cuenta_nombre || ""
+      ]);
+      return { headers, rows };
+    }
+    case "stock": {
+      const headers = ["Código", "Producto", "Categoría", "Tipo", "Stock físico", "Stock mínimo", "Estado stock", "Valorizado est."];
+      const rows = (datos.productos || []).map((row) => [
+        row.codigo || `#${row.producto_id}`,
+        row.nombre || "",
+        row.categoria || "",
+        row.tipo || "",
+        row.stock_fisico ?? 0,
+        row.stock_minimo ?? 0,
+        row.estado_stock || "",
+        row.stock_valorizado_estimado ?? 0
+      ]);
+      return { headers, rows };
+    }
+    case "cuentas-corrientes": {
+      const headers = ["Cliente", "DNI/CUIT", "Deuda actual", "Límite crédito", "Cobrado período", "Excedido", "Estado"];
+      const rows = (datos.clientes || []).map((row) => [
+        row.nombre || "",
+        row.dni_cuit || "",
+        row.deuda_actual ?? 0,
+        row.limite_credito ?? 0,
+        row.cobrado_periodo ?? 0,
+        row.excedido ? "Sí" : "No",
+        row.excedido ? "Excedido" : (row.deuda_actual > 0 ? "Con deuda" : "Sin deuda")
+      ]);
+      return { headers, rows };
+    }
+    case "proveedores-pagos": {
+      const headers = ["Proveedor", "CUIT", "Tipo impacto", "Pagado período", "Pendiente", "IVA crédito fiscal", "Cantidad pagos", "Última compra"];
+      const rows = (datos.proveedores || []).map((row) => [
+        row.proveedor_nombre || "",
+        row.cuit || "",
+        row.tipo_impacto || "",
+        row.total_pagado ?? 0,
+        row.total_pendiente ?? 0,
+        row.iva_credito_fiscal ?? 0,
+        row.cantidad_pagos ?? 0,
+        row.ultima_compra || ""
+      ]);
+      return { headers, rows };
+    }
+    default:
+      return { headers: ["Sin datos"], rows: [] };
+  }
+}
+
 app.get("/reportes/resumen", async (req, res) => {
   const { desde = null, hasta = null } = req.query;
   try {
@@ -5010,6 +5137,53 @@ app.get("/reportes/cuentas-cobro", async (req, res) => {
   } catch (error) {
     logError("Error al obtener reporte de cuentas de cobro:", error);
     return res.status(500).json({ message: "Error al obtener reporte de cuentas de cobro" });
+  }
+});
+
+app.get("/reportes/exportar", async (req, res) => {
+  const { modulo, desde = null, hasta = null, formato = "excel" } = req.query;
+
+  if (!REPORTES_MODULOS.has(modulo)) {
+    return res.status(400).json({ message: "Modulo de reporte invalido" });
+  }
+
+  const formatoNorm = formato === "csv" ? "csv" : "excel";
+  const ext = formatoNorm === "csv" ? "csv" : "xls";
+  const desdeStr = desde || "sin-fecha";
+  const hastaStr = hasta || "sin-fecha";
+  const filename = `reporte_${modulo}_${desdeStr}_${hastaStr}.${ext}`;
+
+  try {
+    let datos;
+    switch (modulo) {
+      case "generales":
+        datos = await getResumenReportes({ desde, hasta });
+        break;
+      case "ventas":
+        datos = await getReporteVentas({ desde, hasta });
+        break;
+      case "caja":
+        datos = await getReporteCaja({ desde, hasta });
+        break;
+      case "stock":
+        datos = await getReporteStock({ desde, hasta });
+        break;
+      case "cuentas-corrientes":
+        datos = await getReporteCuentasCorrientes({ desde, hasta });
+        break;
+      case "proveedores-pagos":
+        datos = await getResumenProveedoresPagos({ desde, hasta });
+        break;
+      default:
+        return res.status(400).json({ message: "Modulo no soportado" });
+    }
+
+    const { headers, rows } = mapearFilasExport(modulo, datos);
+    const contenido = formatoNorm === "csv" ? generarCSV(headers, rows) : generarXLS(headers, rows);
+    return responderArchivoExport(res, contenido, filename, formatoNorm);
+  } catch (error) {
+    logError("Error al exportar reporte:", error);
+    return res.status(500).json({ message: "Error al generar exportacion" });
   }
 });
 

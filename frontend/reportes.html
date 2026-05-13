@@ -1973,7 +1973,7 @@
       $("exportHasta").value = $("hasta").value;
       renderContenidoExportacion(saved.contenido);
       actualizarNombreArchivo();
-      setExportMessage("Elegí módulo, formato y rango. PDF usa impresión del navegador.");
+      setExportMessage("Elegí módulo, formato y rango. Excel descarga desde servidor. PDF usa impresión del navegador.");
       $("modalExportacion").classList.add("open");
     }
 
@@ -2001,20 +2001,59 @@
     async function confirmarExportacion() {
       if (!$("exportDesde").value || !$("exportHasta").value) return setExportMessage("Debe indicar rango de fechas.", "error");
       if ($("exportDesde").value > $("exportHasta").value) return setExportMessage("La fecha desde no puede superar la fecha hasta.", "error");
-      const moduloActual = state.modulo;
-      state.modulo = $("exportModulo").value;
-      const detalle = detalleModulo();
-      state.modulo = moduloActual;
-      if (!detalle.rows.length) return setExportMessage("No hay datos para exportar en el módulo actual.", "error");
 
-      const payload = { modulo: $("exportModulo").value, formato: $("exportFormato").value, desde: $("exportDesde").value, hasta: $("exportHasta").value };
-      localStorage.setItem("reportesExportacion", JSON.stringify(payload));
+      const modulo  = $("exportModulo").value;
+      const formato = $("exportFormato").value;
+      const desde   = $("exportDesde").value;
+      const hasta   = $("exportHasta").value;
+      const archivo = nombreArchivo();
+
+      localStorage.setItem("reportesExportacion", JSON.stringify({ modulo, formato, desde, hasta }));
       $("confirmarExportacion").disabled = true;
       $("confirmarExportacion").textContent = "Exportando...";
       setExportMessage("Generando reporte...");
+
       try {
-        descargarReporte(detalle.head, detalle.rows, nombreArchivo(), $("exportFormato").value);
-        setExportMessage(`Reporte generado correctamente: ${nombreArchivo()}`, "ok");
+        // PDF: siempre local con window.print()
+        if (formato === "pdf") {
+          const moduloActual = state.modulo;
+          state.modulo = modulo;
+          const detalle = detalleModulo();
+          state.modulo = moduloActual;
+          if (!detalle.rows.length) { setExportMessage("No hay datos para exportar en el módulo actual.", "error"); return; }
+          descargarReporte(detalle.head, detalle.rows, archivo, "pdf");
+          setExportMessage(`Reporte generado correctamente: ${archivo}`, "ok");
+          return;
+        }
+
+        // Excel: backend con fallback local
+        let backendOk = false;
+        try {
+          const url = `/reportes/exportar?modulo=${encodeURIComponent(modulo)}&desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}&formato=excel`;
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`backend ${res.status}`);
+          const blob = await res.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = blobUrl;
+          link.download = `reporte_${modulo}_${desde}_${hasta}.xls`;
+          link.click();
+          URL.revokeObjectURL(blobUrl);
+          setExportMessage(`Excel generado: reporte_${modulo}_${desde}_${hasta}.xls`, "ok");
+          backendOk = true;
+        } catch (backendErr) {
+          console.warn("Export backend falló, usando local:", backendErr);
+        }
+
+        if (!backendOk) {
+          const moduloActual = state.modulo;
+          state.modulo = modulo;
+          const detalle = detalleModulo();
+          state.modulo = moduloActual;
+          if (!detalle.rows.length) { setExportMessage("No hay datos para exportar en el módulo actual.", "error"); return; }
+          descargarReporte(detalle.head, detalle.rows, archivo, "excel");
+          setExportMessage(`Excel generado (local): ${archivo}`, "ok");
+        }
       } catch (error) {
         console.error(error);
         setExportMessage("No se pudo generar el archivo.", "error");
