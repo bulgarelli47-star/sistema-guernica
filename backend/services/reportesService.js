@@ -725,31 +725,132 @@ async function getReporteCaja({ desde = null, hasta = null, cajaId = null, cuent
   };
 }
 
-async function getResumenProveedoresPagos({ desde = null, hasta = null } = {}) {
-  const where = [];
-  const params = [];
+async function getResumenProveedoresPagos({
+  desde = null,
+  hasta = null,
+  proveedor_id = null,
+  estado = null,
+  activo = null,
+} = {}) {
+  const activoStr = normalizarFiltroTexto(activo);
+  const activoVal = activoStr !== null ? (normalizarBooleanFiltro(activoStr) ? 1 : 0) : null;
 
-  if (desde) { where.push("p.fecha >= ?"); params.push(desde); }
-  if (hasta) { where.push("p.fecha <= ?"); params.push(hasta); }
+  // Condiciones JOIN para la query de proveedores (filtran pagos sin excluir proveedores sin pagos)
+  const joinConds = ["p.proveedor_id = pr.id"];
+  const joinParams = [];
+  if (desde) { joinConds.push("p.fecha >= ?"); joinParams.push(desde); }
+  if (hasta) { joinConds.push("p.fecha <= ?"); joinParams.push(hasta); }
+  if (estado) { joinConds.push("p.estado = ?"); joinParams.push(estado); }
 
-  const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  // WHERE para proveedores
+  const prvWhere = [];
+  const prvParams = [];
+  if (activoVal !== null) { prvWhere.push("pr.activo = ?"); prvParams.push(activoVal); }
+  if (proveedor_id) { prvWhere.push("pr.id = ?"); prvParams.push(Number(proveedor_id)); }
+  const prvWhereSQL = prvWhere.length ? `WHERE ${prvWhere.join(" AND ")}` : "";
 
-  return allQuery(
-    `SELECT
-       p.proveedor_id,
-       COALESCE(pr.nombre, 'Sin proveedor')                                                    AS proveedor_nombre,
-       COALESCE(pr.tipo_impacto, p.categoria_pago, 'otro_no_computable')                       AS tipo_impacto,
-       COALESCE(SUM(CASE WHEN p.estado != 'pendiente' THEN p.monto_total       ELSE 0 END), 0) AS total_pagado,
-       COALESCE(SUM(CASE WHEN p.estado  = 'pendiente' THEN p.monto_total       ELSE 0 END), 0) AS total_pendiente,
-       COALESCE(SUM(CASE WHEN p.estado != 'pendiente' THEN p.iva_credito_fiscal ELSE 0 END), 0) AS iva_credito_fiscal,
-       COUNT(*) AS cantidad_pagos
-     FROM pagos p
-     LEFT JOIN proveedores pr ON pr.id = p.proveedor_id
-     ${whereClause}
-     GROUP BY p.proveedor_id, proveedor_nombre, tipo_impacto
-     ORDER BY total_pagado DESC`,
-    params
-  );
+  // WHERE para pagos
+  const pagosWhere = [];
+  const pagosParams = [];
+  if (desde) { pagosWhere.push("p.fecha >= ?"); pagosParams.push(desde); }
+  if (hasta) { pagosWhere.push("p.fecha <= ?"); pagosParams.push(hasta); }
+  if (estado) { pagosWhere.push("p.estado = ?"); pagosParams.push(estado); }
+  if (proveedor_id) { pagosWhere.push("p.proveedor_id = ?"); pagosParams.push(Number(proveedor_id)); }
+  const pagosWhereSQL = pagosWhere.length ? `WHERE ${pagosWhere.join(" AND ")}` : "";
+
+  const [proveedores, pagos, prvCountRows, porImpacto] = await Promise.all([
+    // Proveedores con agregados del período
+    allQuery(
+      `SELECT
+         pr.id                                                                     AS proveedor_id,
+         COALESCE(pr.nombre, 'Sin proveedor')                                     AS proveedor_nombre,
+         pr.cuit,
+         pr.activo,
+         COALESCE(pr.tipo_impacto, 'otro_no_computable')                          AS tipo_impacto,
+         COALESCE(SUM(CASE WHEN p.estado != 'pendiente' THEN p.monto_total        ELSE 0 END), 0) AS total_pagado,
+         COALESCE(SUM(CASE WHEN p.estado  = 'pendiente' THEN p.monto_total        ELSE 0 END), 0) AS total_pendiente,
+         COALESCE(SUM(CASE WHEN p.estado != 'pendiente' THEN p.iva_credito_fiscal  ELSE 0 END), 0) AS iva_credito_fiscal,
+         COUNT(p.id)                                                               AS cantidad_pagos,
+         MAX(p.fecha)                                                              AS ultima_compra
+       FROM proveedores pr
+       LEFT JOIN pagos p ON ${joinConds.join(" AND ")}
+       ${prvWhereSQL}
+       GROUP BY pr.id, pr.nombre, pr.cuit, pr.activo, pr.tipo_impacto
+       ORDER BY total_pagado DESC`,
+      [...joinParams, ...prvParams]
+    ),
+
+    // Listado individual de pagos del período
+    allQuery(
+      `SELECT
+         p.id,
+         p.fecha,
+         p.proveedor_id,
+         COALESCE(pr.nombre, 'Sin proveedor') AS proveedor_nombre,
+         p.estado,
+         p.tipo_pago,
+         p.monto_total,
+         p.iva_credito_fiscal
+       FROM pagos p
+       LEFT JOIN proveedores pr ON pr.id = p.proveedor_id
+       ${pagosWhereSQL}
+       ORDER BY p.fecha DESC, p.id DESC`,
+      pagosParams
+    ),
+
+    // Totales globales de proveedores (sin filtro de período)
+    allQuery(
+      `SELECT
+         COUNT(*) AS total,
+         COALESCE(SUM(CASE WHEN activo = 1  THEN 1 ELSE 0 END), 0) AS activos,
+         COALESCE(SUM(CASE WHEN activo != 1 THEN 1 ELSE 0 END), 0) AS inactivos
+       FROM proveedores`,
+      []
+    ),
+
+    // Agrupación por tipo de impacto
+    allQuery(
+      `SELECT
+         COALESCE(pr.tipo_impacto, p.categoria_pago, 'otro_no_computable')        AS tipo_impacto,
+         COALESCE(SUM(CASE WHEN p.estado != 'pendiente' THEN p.monto_total        ELSE 0 END), 0) AS total_pagado,
+         COALESCE(SUM(CASE WHEN p.estado  = 'pendiente' THEN p.monto_total        ELSE 0 END), 0) AS total_pendiente,
+         COALESCE(SUM(CASE WHEN p.estado != 'pendiente' THEN p.iva_credito_fiscal  ELSE 0 END), 0) AS iva_credito_fiscal
+       FROM pagos p
+       LEFT JOIN proveedores pr ON pr.id = p.proveedor_id
+       ${pagosWhereSQL}
+       GROUP BY tipo_impacto
+       ORDER BY total_pagado DESC`,
+      pagosParams
+    ),
+  ]);
+
+  const prvTotales     = prvCountRows[0] || { total: 0, activos: 0, inactivos: 0 };
+  const totalPagado    = round2(proveedores.reduce((a, x) => a + Number(x.total_pagado       || 0), 0));
+  const totalPendiente = round2(proveedores.reduce((a, x) => a + Number(x.total_pendiente    || 0), 0));
+  const ivaCredFiscal  = round2(proveedores.reduce((a, x) => a + Number(x.iva_credito_fiscal || 0), 0));
+
+  return {
+    filtros: {
+      desde,
+      hasta,
+      proveedor_id: proveedor_id ? Number(proveedor_id) : null,
+      estado,
+      activo: activoVal,
+    },
+    resumen: {
+      proveedores_total:     Number(prvTotales.total     || 0),
+      proveedores_activos:   Number(prvTotales.activos   || 0),
+      proveedores_inactivos: Number(prvTotales.inactivos || 0),
+      pagos_periodo:         pagos.length,
+      total_pagado:          totalPagado,
+      total_pendiente:       totalPendiente,
+      iva_credito_fiscal:    ivaCredFiscal,
+      compras_periodo:       round2(totalPagado + totalPendiente),
+    },
+    proveedores,
+    pagos,
+    por_impacto: porImpacto,
+  };
 }
 
 async function getVentasPorDia({ desde = null, hasta = null } = {}) {
@@ -1057,6 +1158,254 @@ async function getReporteStock({
   };
 }
 
+function normalizarEstadoCuentaCorriente(value) {
+  const estado = String(value || "todos").trim().toLowerCase();
+  return ["con_deuda", "sin_deuda", "excedidos"].includes(estado) ? estado : "todos";
+}
+
+function mapReporteCuentaCorrienteCliente(row) {
+  const deudaActual = round2(row.deuda_actual);
+  const limiteCredito = round2(row.limite_fiado);
+  return {
+    cliente_id: Number(row.id),
+    nombre: row.nombre,
+    dni_cuit: row.dni_cuit || null,
+    tipo_cliente: row.tipo_cliente || "cliente",
+    activo: Number(row.activo || 0),
+    deuda_actual: deudaActual,
+    limite_credito: limiteCredito,
+    excedido: limiteCredito > 0 && deudaActual > limiteCredito,
+    primera_deuda: row.primera_deuda || null,
+    ultima_venta: row.ultima_venta || null,
+    ultimo_pago: row.ultimo_pago || null,
+    cobrado_periodo: round2(row.cobrado_periodo),
+    ventas_periodo: Number(row.ventas_periodo || 0),
+    monto_ventas_periodo: round2(row.monto_ventas_periodo)
+  };
+}
+
+async function getReporteCuentasCorrientes({
+  desde = null,
+  hasta = null,
+  clienteId = null,
+  estado = null,
+  activo = null
+} = {}) {
+  const cliente = normalizarIdOpcional(clienteId);
+  const estadoFiltro = normalizarEstadoCuentaCorriente(estado);
+  const activoFiltro = normalizarFiltroTexto(activo)?.toLowerCase() || "todos";
+  const clientesWhere = ["1 = 1"];
+  const clientesParams = [];
+
+  if (cliente) {
+    clientesWhere.push("c.id = ?");
+    clientesParams.push(cliente);
+  }
+
+  if (activoFiltro !== "todos") {
+    const activoValor = ["0", "false", "inactivo", "inactivos"].includes(activoFiltro) ? 0 : 1;
+    clientesWhere.push("COALESCE(c.activo, 0) = ?");
+    clientesParams.push(activoValor);
+  }
+
+  const ventasBaseWhere = [
+    "COALESCE(v.es_cuenta_corriente, 0) = 1",
+    "v.cliente_id IS NOT NULL",
+    "COALESCE(v.estado, '') != 'anulado'",
+    "COALESCE(v.tipo, '') != 'test_modificadores'"
+  ];
+
+  const ventasPeriodoWhere = [...ventasBaseWhere];
+  const ventasPeriodoParams = [];
+  if (desde) {
+    ventasPeriodoWhere.push("v.fecha >= ?");
+    ventasPeriodoParams.push(desde);
+  }
+  if (hasta) {
+    ventasPeriodoWhere.push("v.fecha <= ?");
+    ventasPeriodoParams.push(hasta);
+  }
+
+  const cobrosPeriodoWhere = [
+    "pcc.cliente_id IS NOT NULL",
+    "(v.id IS NULL OR (COALESCE(v.estado, '') != 'anulado' AND COALESCE(v.tipo, '') != 'test_modificadores'))"
+  ];
+  const cobrosPeriodoParams = [];
+  if (desde) {
+    cobrosPeriodoWhere.push("pcc.fecha >= ?");
+    cobrosPeriodoParams.push(desde);
+  }
+  if (hasta) {
+    cobrosPeriodoWhere.push("pcc.fecha <= ?");
+    cobrosPeriodoParams.push(hasta);
+  }
+
+  const clientesRows = await allQuery(
+    `SELECT
+       c.id,
+       c.nombre,
+       c.dni_cuit,
+       c.tipo_cliente,
+       c.activo,
+       c.limite_fiado,
+       COALESCE(deuda.deuda_actual, 0) AS deuda_actual,
+       deuda.primera_deuda,
+       deuda.ultima_venta,
+       cobros.ultimo_pago,
+       COALESCE(cobros.cobrado_periodo, 0) AS cobrado_periodo,
+       COALESCE(ventas_periodo.ventas_periodo, 0) AS ventas_periodo,
+       COALESCE(ventas_periodo.monto_ventas_periodo, 0) AS monto_ventas_periodo
+     FROM clientes c
+     LEFT JOIN (
+       SELECT
+         v.cliente_id,
+         COALESCE(SUM(v.saldo_pendiente), 0) AS deuda_actual,
+         MIN(CASE WHEN COALESCE(v.saldo_pendiente, 0) > 0 THEN v.fecha ELSE NULL END) AS primera_deuda,
+         MAX(v.fecha) AS ultima_venta
+       FROM ventas v
+       WHERE ${ventasBaseWhere.join(" AND ")}
+       GROUP BY v.cliente_id
+     ) deuda ON deuda.cliente_id = c.id
+     LEFT JOIN (
+       SELECT
+         v.cliente_id,
+         COUNT(*) AS ventas_periodo,
+         COALESCE(SUM(v.total), 0) AS monto_ventas_periodo
+       FROM ventas v
+       WHERE ${ventasPeriodoWhere.join(" AND ")}
+       GROUP BY v.cliente_id
+     ) ventas_periodo ON ventas_periodo.cliente_id = c.id
+     LEFT JOIN (
+       SELECT
+         pcc.cliente_id,
+         COALESCE(SUM(pcc.monto_pagado), 0) AS cobrado_periodo,
+         MAX(pcc.fecha) AS ultimo_pago
+       FROM pagos_cuenta_corriente pcc
+       LEFT JOIN ventas v ON v.id = pcc.venta_id
+       WHERE ${cobrosPeriodoWhere.join(" AND ")}
+       GROUP BY pcc.cliente_id
+     ) cobros ON cobros.cliente_id = c.id
+     WHERE ${clientesWhere.join(" AND ")}
+     ORDER BY c.nombre ASC`,
+    [...ventasPeriodoParams, ...cobrosPeriodoParams, ...clientesParams]
+  );
+
+  let clientes = clientesRows.map(mapReporteCuentaCorrienteCliente);
+  if (estadoFiltro === "con_deuda") {
+    clientes = clientes.filter((item) => item.deuda_actual > 0);
+  } else if (estadoFiltro === "sin_deuda") {
+    clientes = clientes.filter((item) => item.deuda_actual <= 0);
+  } else if (estadoFiltro === "excedidos") {
+    clientes = clientes.filter((item) => item.excedido);
+  }
+
+  const clienteIds = clientes.map((item) => item.cliente_id);
+  let movimientos = [];
+  if (clienteIds.length) {
+    const placeholders = clienteIds.map(() => "?").join(",");
+    const movimientosVentasWhere = [
+      ...ventasBaseWhere,
+      `v.cliente_id IN (${placeholders})`
+    ];
+    const movimientosVentasParams = [...clienteIds];
+    if (desde) {
+      movimientosVentasWhere.push("v.fecha >= ?");
+      movimientosVentasParams.push(desde);
+    }
+    if (hasta) {
+      movimientosVentasWhere.push("v.fecha <= ?");
+      movimientosVentasParams.push(hasta);
+    }
+
+    const movimientosCobrosWhere = [
+      "pcc.cliente_id IN (" + placeholders + ")",
+      "(v.id IS NULL OR (COALESCE(v.estado, '') != 'anulado' AND COALESCE(v.tipo, '') != 'test_modificadores'))"
+    ];
+    const movimientosCobrosParams = [...clienteIds];
+    if (desde) {
+      movimientosCobrosWhere.push("pcc.fecha >= ?");
+      movimientosCobrosParams.push(desde);
+    }
+    if (hasta) {
+      movimientosCobrosWhere.push("pcc.fecha <= ?");
+      movimientosCobrosParams.push(hasta);
+    }
+
+    movimientos = await allQuery(
+      `SELECT *
+       FROM (
+         SELECT
+           v.id AS id,
+           v.fecha,
+           v.hora,
+           v.cliente_id,
+           c.nombre AS cliente_nombre,
+           'venta' AS tipo_movimiento,
+           v.total AS importe,
+           v.saldo_pendiente,
+           v.tipo_cobro,
+           v.id AS venta_id
+         FROM ventas v
+         LEFT JOIN clientes c ON c.id = v.cliente_id
+         WHERE ${movimientosVentasWhere.join(" AND ")}
+         UNION ALL
+         SELECT
+           pcc.id AS id,
+           pcc.fecha,
+           pcc.hora,
+           pcc.cliente_id,
+           c.nombre AS cliente_nombre,
+           'pago' AS tipo_movimiento,
+           pcc.monto_pagado AS importe,
+           NULL AS saldo_pendiente,
+           pcc.tipo_cobro,
+           pcc.venta_id
+         FROM pagos_cuenta_corriente pcc
+         LEFT JOIN ventas v ON v.id = pcc.venta_id
+         LEFT JOIN clientes c ON c.id = pcc.cliente_id
+         WHERE ${movimientosCobrosWhere.join(" AND ")}
+       )
+       ORDER BY fecha DESC, hora DESC, id DESC
+       LIMIT 200`,
+      [...movimientosVentasParams, ...movimientosCobrosParams]
+    );
+  }
+
+  return {
+    filtros: {
+      desde,
+      hasta,
+      cliente_id: cliente,
+      estado: estadoFiltro,
+      activo: activoFiltro
+    },
+    resumen: {
+      clientes_total: clientes.length,
+      clientes_activos: clientes.filter((item) => item.activo !== 0).length,
+      clientes_inactivos: clientes.filter((item) => item.activo === 0).length,
+      clientes_con_deuda: clientes.filter((item) => item.deuda_actual > 0).length,
+      deuda_total: round2(clientes.reduce((acc, item) => acc + item.deuda_actual, 0)),
+      clientes_excedidos: clientes.filter((item) => item.excedido).length,
+      cobrado_periodo: round2(clientes.reduce((acc, item) => acc + item.cobrado_periodo, 0)),
+      ventas_cuenta_corriente: clientes.reduce((acc, item) => acc + item.ventas_periodo, 0),
+      monto_ventas_cuenta_corriente: round2(clientes.reduce((acc, item) => acc + item.monto_ventas_periodo, 0))
+    },
+    clientes,
+    movimientos: movimientos.map((row) => ({
+      id: Number(row.id),
+      fecha: row.fecha,
+      hora: row.hora,
+      cliente_id: row.cliente_id == null ? null : Number(row.cliente_id),
+      cliente_nombre: row.cliente_nombre || null,
+      tipo_movimiento: row.tipo_movimiento,
+      importe: round2(row.importe),
+      saldo_pendiente: row.saldo_pendiente == null ? null : round2(row.saldo_pendiente),
+      tipo_cobro: row.tipo_cobro || null,
+      venta_id: row.venta_id == null ? null : Number(row.venta_id)
+    }))
+  };
+}
+
 function round2(value) {
   return Number(Number(value || 0).toFixed(2));
 }
@@ -1204,6 +1553,7 @@ module.exports = {
   getReporteVentas,
   getReporteCaja,
   getReporteStock,
+  getReporteCuentasCorrientes,
   getProductosMasVendidos,
   getResumenProveedoresPagos,
   getVentasPorDia,

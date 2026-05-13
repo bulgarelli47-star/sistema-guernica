@@ -57,6 +57,7 @@ const {
   getReporteVentas,
   getReporteCaja,
   getReporteStock,
+  getReporteCuentasCorrientes,
   getProductosMasVendidos,
   getResumenProveedoresPagos,
   getVentasPorDia,
@@ -4949,6 +4950,29 @@ app.get("/reportes/stock", async (req, res) => {
   }
 });
 
+app.get("/reportes/cuentas-corrientes", async (req, res) => {
+  const {
+    desde = null,
+    hasta = null,
+    cliente_id = null,
+    estado = null,
+    activo = "todos"
+  } = req.query;
+
+  try {
+    return res.json(await getReporteCuentasCorrientes({
+      desde,
+      hasta,
+      clienteId: cliente_id,
+      estado,
+      activo
+    }));
+  } catch (error) {
+    logError("Error al obtener reporte de cuentas corrientes:", error);
+    return res.status(500).json({ message: "Error al obtener reporte de cuentas corrientes" });
+  }
+});
+
 app.get("/reportes/productos-mas-vendidos", async (req, res) => {
   const { desde = null, hasta = null, limite = 20 } = req.query;
   try {
@@ -4960,9 +4984,9 @@ app.get("/reportes/productos-mas-vendidos", async (req, res) => {
 });
 
 app.get("/reportes/proveedores-pagos", async (req, res) => {
-  const { desde = null, hasta = null } = req.query;
+  const { desde = null, hasta = null, proveedor_id = null, estado = null, activo = null } = req.query;
   try {
-    return res.json(await getResumenProveedoresPagos({ desde, hasta }));
+    return res.json(await getResumenProveedoresPagos({ desde, hasta, proveedor_id, estado, activo }));
   } catch (error) {
     logError("Error al obtener resumen de proveedores y pagos:", error);
     return res.status(500).json({ message: "Error al obtener resumen de proveedores y pagos" });

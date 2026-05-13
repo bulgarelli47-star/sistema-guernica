@@ -854,7 +854,7 @@
         ["Clientes con saldo", "Con deuda", { texto: "Clientes que mantienen deuda abierta." }],
         ["Deuda acumulada", "Deuda total", { texto: "Total pendiente de cobro." }],
         ["Límite excedido", "Excedidos", { ocultarSiCero: true, texto: "Clientes por encima del límite definido." }],
-        ["Cobranza del día", "Cobrado hoy", { texto: "Importe cobrado en la fecha actual." }]
+        ["Cobranza del período", "Cobrado período", { texto: "Importe cobrado dentro del rango seleccionado." }]
       ],
       "proveedores-pagos": [
         ["Pagos registrados", "Total pagado", { texto: "Egresos a proveedores del período." }],
@@ -879,7 +879,7 @@
       "cuentas-corrientes": ["Clientes con deuda", "Detalle de movimientos", "Cobros recibidos", "Clientes excedidos"],
       "proveedores-pagos": ["Pagos realizados", "Saldos pendientes", "Compras del periodo", "Detalle por proveedor"]
     };
-    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null, reporteVentasBackend: null, reporteCajaBackend: null, reporteStockBackend: null, proveedoresPagosBackend: null, cuentasCobroBackend: null, ventasPorDiaBackend: null, productosMasVendidos: null };
+    const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null, reporteVentasBackend: null, reporteCajaBackend: null, reporteStockBackend: null, reporteCuentasCorrientesBackend: null, proveedoresPagosBackend: null, cuentasCobroBackend: null, ventasPorDiaBackend: null, productosMasVendidos: null };
 
     function setMessage(text, type = "") {
       $("mensaje").className = `message ${type}`;
@@ -976,6 +976,27 @@
       renderModulo();
     }
 
+    async function cargarReporteCuentasCorrientesBackend() {
+      const desde = $("desde").value;
+      const hasta = $("hasta").value;
+      if (!desde || !hasta) { state.reporteCuentasCorrientesBackend = null; return; }
+      try {
+        const res = await fetch(`/reportes/cuentas-corrientes?desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}`);
+        if (!res.ok) throw new Error("fallo");
+        const datos = await res.json();
+        if (!datos || typeof datos !== "object" || !datos.resumen || !Array.isArray(datos.clientes) || !Array.isArray(datos.movimientos)) {
+          throw new Error("formato inesperado");
+        }
+        state.reporteCuentasCorrientesBackend = datos;
+      } catch {
+        state.reporteCuentasCorrientesBackend = null;
+      }
+      renderModuleKpis();
+      renderCuentas();
+      renderVisualesModulo();
+      renderModulo();
+    }
+
     async function cargarProveedoresPagosBackend() {
       const desde = $("desde").value;
       const hasta = $("hasta").value;
@@ -984,8 +1005,15 @@
         const res = await fetch(`/reportes/proveedores-pagos?desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}`);
         if (!res.ok) throw new Error("fallo");
         const datos = await res.json();
-        if (!Array.isArray(datos)) throw new Error("formato inesperado");
-        state.proveedoresPagosBackend = datos;
+        if (datos && typeof datos === "object" && !Array.isArray(datos) && datos.resumen) {
+          // Nuevo formato consolidado: { filtros, resumen, proveedores, pagos, por_impacto }
+          state.proveedoresPagosBackend = datos;
+        } else if (Array.isArray(datos)) {
+          // Compat legado: envuelve array en estructura mínima
+          state.proveedoresPagosBackend = { resumen: null, proveedores: datos, pagos: [], por_impacto: [] };
+        } else {
+          throw new Error("formato inesperado");
+        }
       } catch {
         state.proveedoresPagosBackend = null;
       }
@@ -1192,9 +1220,10 @@
       // Top proveedor por pagos del período
       let topProvNombre, topProvMonto;
       const ppb = state.proveedoresPagosBackend;
-      if (ppb && ppb.length) {
-        topProvNombre = ppb[0].proveedor_nombre;
-        topProvMonto  = Number(ppb[0].total_pagado);
+      const ppbProvs = ppb?.proveedores;
+      if (ppbProvs && ppbProvs.length) {
+        topProvNombre = ppbProvs[0].proveedor_nombre;
+        topProvMonto  = Number(ppbProvs[0].total_pagado);
       } else {
         const porProv = new Map();
         pagos.forEach(p => {
@@ -1388,6 +1417,18 @@
     }
 
     function renderCuentas() {
+      const ccBackend = state.reporteCuentasCorrientesBackend?.resumen;
+      if (ccBackend) {
+        $("estadoCuentas").innerHTML = [
+          ["Clientes con deuda", Number(ccBackend.clientes_con_deuda || 0)],
+          ["Clientes sin deuda", Math.max(0, Number(ccBackend.clientes_total || 0) - Number(ccBackend.clientes_con_deuda || 0))],
+          ["Excedidos", Number(ccBackend.clientes_excedidos || 0)],
+          ["Deuda total", money(ccBackend.deuda_total)],
+          ["Cobrado período", money(ccBackend.cobrado_periodo)],
+          ["Ventas a cuenta", Number(ccBackend.ventas_cuenta_corriente || 0)]
+        ].map(([label, value]) => `<div class="summary-box"><span>${label}</span><strong>${value}</strong></div>`).join("");
+        return;
+      }
       const deuda = state.clientes.filter((cliente) => n(cliente.deuda_actual) > 0);
       const excedidos = state.clientes.filter((cliente) => n(cliente.limite_credito) > 0 && n(cliente.deuda_actual) > n(cliente.limite_credito));
       const totalDeuda = state.clientes.reduce((acc, cliente) => acc + n(cliente.deuda_actual), 0);
@@ -1492,6 +1533,8 @@
       const resumenCaja = reporteCaja?.resumen || {};
       const reporteStock = state.reporteStockBackend;
       const resumenStock = reporteStock?.resumen || {};
+      const reporteCuentas = state.reporteCuentasCorrientesBackend;
+      const resumenCuentas = reporteCuentas?.resumen || {};
       const ventasResumen = reporteVentas
         ? [
             ["Total vendido", money(resumenVentas.total_vendido)],
@@ -1526,19 +1569,33 @@
             ["Stock negativo", Number(resumenStock.stock_negativo || 0)]
           ]
         : [["Productos activos", state.productos.filter((p) => Number(p.activo) !== 0).length], ["Bajo stock", bajoStock], ["Stock valorizado estimado", money(stockValorizado)], ["Items vendidos", detalle.reduce((acc, d) => acc + n(d.cantidad), 0)], ["Categorias", new Set(state.productos.map((p) => p.categoria || p.categoria_nombre).filter(Boolean)).size], ["Sin stock", state.productos.filter((p) => n(p.maneja_stock) && n(p.stock) <= 0).length]];
+      const cuentasResumen = reporteCuentas
+        ? [
+            ["Clientes", Number(resumenCuentas.clientes_total || 0)],
+            ["Con deuda", Number(resumenCuentas.clientes_con_deuda || 0)],
+            ["Deuda total", money(resumenCuentas.deuda_total)],
+            ["Excedidos", Number(resumenCuentas.clientes_excedidos || 0)],
+            ["Cobrado período", money(resumenCuentas.cobrado_periodo)],
+            ["Inactivos", Number(resumenCuentas.clientes_inactivos || 0)]
+          ]
+        : [["Clientes", state.clientes.length], ["Con deuda", state.clientes.filter((c) => n(c.deuda_actual) > 0).length], ["Deuda total", money(deudaTotal)], ["Excedidos", state.clientes.filter((c) => n(c.limite_credito) > 0 && n(c.deuda_actual) > n(c.limite_credito)).length], ["Cobrado período", money(state.clientes.reduce((acc, c) => acc + n(c.cobrado_hoy), 0))], ["Inactivos", state.clientes.filter((c) => Number(c.activo) === 0).length]];
       const map = {
         generales: [["Ventas", money(totalVentas)], ["Egresos", money(totalPagos)], ["Balance", money(base.balance)], ["Stock valorizado", money(stockValorizado)], ["Deuda clientes", money(deudaTotal)], ["Operaciones", base.cantidadVentas + base.cantidadPagos]],
         ventas: ventasResumen,
         caja: cajaResumen,
         stock: stockResumen,
-        "cuentas-corrientes": [["Clientes", state.clientes.length], ["Con deuda", state.clientes.filter((c) => n(c.deuda_actual) > 0).length], ["Deuda total", money(deudaTotal)], ["Excedidos", state.clientes.filter((c) => n(c.limite_credito) > 0 && n(c.deuda_actual) > n(c.limite_credito)).length], ["Cobrado hoy", money(state.clientes.reduce((acc, c) => acc + n(c.cobrado_hoy), 0))], ["Inactivos", state.clientes.filter((c) => Number(c.activo) === 0).length]],
+        "cuentas-corrientes": cuentasResumen,
         "proveedores-pagos": (() => {
           const _ppb = state.proveedoresPagosBackend;
-          const _tp   = _ppb ? _ppb.reduce((a, x) => a + Number(x.total_pagado     || 0), 0) : totalPagos;
-          const _iva  = _ppb ? _ppb.reduce((a, x) => a + Number(x.iva_credito_fiscal|| 0), 0) : ivaFavor;
-          const _np   = _ppb ? _ppb.reduce((a, x) => a + Number(x.cantidad_pagos   || 0), 0) : pagos.length;
-          const _pend = _ppb ? _ppb.reduce((a, x) => a + Number(x.total_pendiente  || 0), 0) : state.proveedores.reduce((acc, p) => acc + n(p.saldo_pendiente), 0);
-          return [["Proveedores", state.proveedores.length], ["Pagos periodo", _np], ["Total pagado", money(_tp)], ["IVA a favor", money(_iva)], ["Saldo pendiente", money(_pend)], ["Compras mes", money(state.proveedores.reduce((acc, p) => acc + n(p.compras_mes), 0))], ["Activos", state.proveedores.filter((p) => Number(p.activo) !== 0).length]];
+          const _rsm = _ppb?.resumen;
+          const _tp   = _rsm ? Number(_rsm.total_pagado       || 0) : totalPagos;
+          const _iva  = _rsm ? Number(_rsm.iva_credito_fiscal  || 0) : ivaFavor;
+          const _np   = _rsm ? Number(_rsm.pagos_periodo       || 0) : pagos.length;
+          const _pend = _rsm ? Number(_rsm.total_pendiente     || 0) : state.proveedores.reduce((acc, p) => acc + n(p.saldo_pendiente), 0);
+          const _comp = _rsm ? Number(_rsm.compras_periodo     || 0) : state.proveedores.reduce((acc, p) => acc + n(p.compras_mes), 0);
+          const _tot  = _rsm ? Number(_rsm.proveedores_total   || 0) : state.proveedores.length;
+          const _act  = _rsm ? Number(_rsm.proveedores_activos || 0) : state.proveedores.filter((p) => Number(p.activo) !== 0).length;
+          return [["Proveedores", _tot], ["Pagos periodo", _np], ["Total pagado", money(_tp)], ["IVA a favor", money(_iva)], ["Saldo pendiente", money(_pend)], ["Compras mes", money(_comp)], ["Activos", _act]];
         })()
       };
       return map[state.modulo] || map.generales;
@@ -1552,6 +1609,9 @@
         : null;
       const productosStock = Array.isArray(state.reporteStockBackend?.productos)
         ? state.reporteStockBackend.productos
+        : null;
+      const clientesCuentas = Array.isArray(state.reporteCuentasCorrientesBackend?.clientes)
+        ? state.reporteCuentasCorrientesBackend.clientes
         : null;
       const map = {
         generales: {
@@ -1586,12 +1646,27 @@
         },
         "cuentas-corrientes": {
           head: ["Cliente", "DNI/CUIT", "Deuda", "Limite", "Estado"],
-          rows: state.clientes.slice(0, 40).map((c) => [c.nombre, c.dni_cuit || "-", money(c.deuda_actual), money(c.limite_credito), n(c.deuda_actual) > 0 ? "Con deuda" : "Sin deuda"])
+          rows: clientesCuentas ? clientesCuentas.slice(0, 40).map((c) => [
+            c.nombre,
+            c.dni_cuit || "-",
+            money(c.deuda_actual),
+            money(c.limite_credito),
+            c.excedido ? "Excedido" : n(c.deuda_actual) > 0 ? "Con deuda" : "Sin deuda"
+          ]) : state.clientes.slice(0, 40).map((c) => [c.nombre, c.dni_cuit || "-", money(c.deuda_actual), money(c.limite_credito), n(c.deuda_actual) > 0 ? "Con deuda" : "Sin deuda"])
         },
-        "proveedores-pagos": {
-          head: ["Proveedor", "CUIT", "Impacto", "Saldo", "Compras mes", "Pagos mes"],
-          rows: state.proveedores.slice(0, 40).map((p) => [p.nombre, p.cuit || "-", impactoLabel(p.tipo_impacto), money(p.saldo_pendiente), money(p.compras_mes), money(p.pagos_mes)])
-        }
+        "proveedores-pagos": (() => {
+          const _ppbPrvs = state.proveedoresPagosBackend?.proveedores;
+          if (_ppbPrvs && _ppbPrvs.length) {
+            return {
+              head: ["Proveedor", "CUIT", "Impacto", "Saldo", "Compras período", "Pagado período"],
+              rows: _ppbPrvs.slice(0, 40).map((p) => [p.proveedor_nombre, p.cuit || "-", impactoLabel(p.tipo_impacto), money(p.total_pendiente), money(Number(p.total_pagado || 0) + Number(p.total_pendiente || 0)), money(p.total_pagado)])
+            };
+          }
+          return {
+            head: ["Proveedor", "CUIT", "Impacto", "Saldo", "Compras mes", "Pagos mes"],
+            rows: state.proveedores.slice(0, 40).map((p) => [p.nombre, p.cuit || "-", impactoLabel(p.tipo_impacto), money(p.saldo_pendiente), money(p.compras_mes), money(p.pagos_mes)])
+          };
+        })()
       };
       return map[state.modulo] || map.generales;
     }
@@ -1729,6 +1804,7 @@
       const deudaTotal = state.clientes.reduce((acc, c) => acc + n(c.deuda_actual), 0);
       const clientesConDeuda = state.clientes.filter((c) => n(c.deuda_actual) > 0);
       const clientesExcedidos = state.clientes.filter((c) => n(c.limite_credito) > 0 && n(c.deuda_actual) > n(c.limite_credito));
+      const cuentasBackend = state.reporteCuentasCorrientesBackend?.resumen;
 
       [1, 2, 3, 4].forEach((index) => setVisualPanel(index, "", "", "list"));
 
@@ -1806,6 +1882,18 @@
       }
 
       if (state.modulo === "cuentas-corrientes") {
+        if (cuentasBackend) {
+          setVisualPanel(1, "Clientes con seguimiento", barRows(
+            [["Con deuda", Number(cuentasBackend.clientes_con_deuda || 0)], ["Excedidos", Number(cuentasBackend.clientes_excedidos || 0)]],
+            "No hay clientes con deuda o límite excedido para comparar.",
+            (value) => String(value)
+          ), "chart-bars");
+          setVisualPanel(2, "Situación de deuda", visualSummary([
+            { label: "Deuda total", value: money(cuentasBackend.deuda_total), hideZero: true },
+            { label: "Cobrado período", value: money(cuentasBackend.cobrado_periodo), hideZero: true }
+          ]), "summary-grid");
+          return;
+        }
         setVisualPanel(1, "Clientes con seguimiento", barRows(
           [["Con deuda", clientesConDeuda.length], ["Excedidos", clientesExcedidos.length]],
           "No hay clientes con deuda o límite excedido para comparar.",
@@ -1813,14 +1901,15 @@
         ), "chart-bars");
         setVisualPanel(2, "Situación de deuda", visualSummary([
           { label: "Deuda total", value: money(deudaTotal), hideZero: true },
-          { label: "Cobrado hoy", value: resumen.get("Cobrado hoy"), hideZero: true }
+          { label: "Cobrado período", value: resumen.get("Cobrado período"), hideZero: true }
         ]), "summary-grid");
         return;
       }
 
       if (state.modulo === "proveedores-pagos") {
-        const totalPagado = pagos.reduce((acc, pago) => acc + n(pago.monto_total || pago.monto), 0);
-        const saldoPendiente = state.proveedores.reduce((acc, proveedor) => acc + n(proveedor.saldo_pendiente), 0);
+        const _ppbRsm = state.proveedoresPagosBackend?.resumen;
+        const totalPagado = _ppbRsm ? Number(_ppbRsm.total_pagado || 0) : pagos.reduce((acc, pago) => acc + n(pago.monto_total || pago.monto), 0);
+        const saldoPendiente = _ppbRsm ? Number(_ppbRsm.total_pendiente || 0) : state.proveedores.reduce((acc, proveedor) => acc + n(proveedor.saldo_pendiente), 0);
         setVisualPanel(1, "Pagado vs pendiente", barRows(
           [["Pagado", totalPagado], ["Pendiente", saldoPendiente]],
           "No hay pagos o saldos pendientes para comparar."
@@ -1986,6 +2075,7 @@
       cargarReporteVentasBackend();
       cargarReporteCajaBackend();
       cargarReporteStockBackend();
+      cargarReporteCuentasCorrientesBackend();
       cargarProductosMasVendidos();
       cargarProveedoresPagosBackend();
       cargarVentasPorDiaBackend();
@@ -2004,9 +2094,9 @@
     $("exportModulo").onchange = () => { renderContenidoExportacion(); actualizarNombreArchivo(); };
     ["exportFormato", "exportDesde", "exportHasta"].forEach((id) => $(id).addEventListener("input", actualizarNombreArchivo));
     ["desde", "hasta", "comparacion"].forEach((id) => $(id).addEventListener("input", () => {
-      if (id !== "comparacion") { state.resumenBackend = null; state.reporteVentasBackend = null; state.reporteCajaBackend = null; state.reporteStockBackend = null; state.proveedoresPagosBackend = null; state.cuentasCobroBackend = null; state.ventasPorDiaBackend = null; state.productosMasVendidos = null; }
+      if (id !== "comparacion") { state.resumenBackend = null; state.reporteVentasBackend = null; state.reporteCajaBackend = null; state.reporteStockBackend = null; state.reporteCuentasCorrientesBackend = null; state.proveedoresPagosBackend = null; state.cuentasCobroBackend = null; state.ventasPorDiaBackend = null; state.productosMasVendidos = null; }
       render();
-      if (id !== "comparacion") { cargarResumenBackend(); cargarReporteVentasBackend(); cargarReporteCajaBackend(); cargarReporteStockBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); cargarVentasPorDiaBackend(); cargarCuentasCobroBackend(); }
+      if (id !== "comparacion") { cargarResumenBackend(); cargarReporteVentasBackend(); cargarReporteCajaBackend(); cargarReporteStockBackend(); cargarReporteCuentasCorrientesBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); cargarVentasPorDiaBackend(); cargarCuentasCobroBackend(); }
     }));
     $("moduloFiltro").onchange = () => { state.modulo = $("moduloFiltro").value; render(); };
     setRange("30");
