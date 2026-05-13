@@ -1809,14 +1809,16 @@
       [1, 2, 3, 4].forEach((index) => setVisualPanel(index, "", "", "list"));
 
       if (state.modulo === "generales") {
+        const stockValorizadoGenerales = stockBackend ? n(stockBackend.stock_valorizado_estimado) : stockValorizado;
+        const deudaTotalGenerales = cuentasBackend ? n(cuentasBackend.deuda_total) : deudaTotal;
         setVisualPanel(1, "Ingresos vs egresos", barRows(
           [["Ventas", totalVentas], ["Pagos", totalPagos]],
           "No hay ventas ni pagos para comparar en este período."
         ), "chart-bars");
         setVisualPanel(2, "Exposición operativa", visualSummary([
           { label: "Balance", value: money(totalVentas - totalPagos) },
-          { label: "Stock valorizado", value: money(stockValorizado), hideZero: true },
-          { label: "Deuda clientes", value: money(deudaTotal), hideZero: true }
+          { label: "Stock valorizado", value: money(stockValorizadoGenerales), hideZero: true },
+          { label: "Deuda clientes", value: money(deudaTotalGenerales), hideZero: true }
         ]), "summary-grid");
         return;
       }
@@ -2099,16 +2101,15 @@
 
     async function cargarDatos() {
       setMessage("Cargando datos operativos...");
-      const [ventas, detalle, productos, clientes, pagos, proveedores, configData] = await Promise.all([
+      const [ventas, detalle, productos, clientes, pagos, configData] = await Promise.all([
         fetchJson("/ventas"),
         fetchJson("/detalle-ventas"),
         fetchJson("/productos?include_inactive=1"),
         fetchJson("/clientes?include_inactive=1"),
         fetchJson("/pagos"),
-        fetchJson("/proveedores?include_inactive=1"),
         fetchJson("/configuracion", { config: {} })
       ]);
-      Object.assign(state, { ventas, detalle, productos, clientes, pagos, proveedores, config: configData.config || {} });
+      Object.assign(state, { ventas, detalle, productos, clientes, pagos, config: configData.config || {} });
       render();
       cargarResumenBackend();
       cargarReporteVentasBackend();
