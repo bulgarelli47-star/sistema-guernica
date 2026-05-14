@@ -318,7 +318,10 @@
     .module-kpi[data-modulo="proveedores-pagos"] { --mi-rgb:14,165,233;   --mi-color:#0ea5e9; }
     .module-kpi strong,.module-kpi small { display:block; }
     .module-kpi small { color:var(--muted); margin-top:2px; }
-    .export-only-panel { display: block; }
+    .export-only-panel { display: none; }
+    #kpiChartsRow { display: none; }
+    section.report-block-title { display: none; }
+    .report-guidance-text { padding: 14px 18px 4px; color: var(--muted); font-size: 14px; text-align: center; }
     .kpi-charts-row { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin-top:6px; }
     .kpi-chart-card { background:#fff; border:1px solid var(--border); border-radius:18px; padding:24px 22px 20px; display:flex; flex-direction:column; gap:16px; box-shadow:var(--shadow); }
     .kpi-chart-top { display:flex; flex-direction:column; gap:4px; }
@@ -494,6 +497,38 @@
       color: var(--muted);
       background: #fafafa;
     }
+    .export-option {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px;
+      background: #fff;
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      font-weight: 800;
+    }
+    .export-option input { margin-top: 2px; }
+    .export-option small {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-weight: 600;
+      line-height: 1.3;
+    }
+    .export-notes {
+      grid-column: 1 / -1;
+      display: grid;
+      gap: 7px;
+    }
+    .export-notes textarea {
+      width: 100%;
+      min-height: 82px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      resize: vertical;
+      font: inherit;
+    }
 
     .modal {
       position: fixed;
@@ -570,6 +605,13 @@
       .report-main-panel .toolbar { justify-content: stretch; }
       .report-export-actions .button,
       .report-main-panel .toolbar .button { flex: 1 1 140px; }
+    }
+    @media print {
+      .export-only-panel { display: block; }
+      #kpiChartsRow:not([hidden]) { display: block; }
+      section.report-block-title { display: block; }
+      .report-guidance-text { display: none; }
+      .sidebar, .site-header, .report-main-panel .toolbar { display: none; }
     }
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=6" />
@@ -668,6 +710,7 @@
         </div>
         <div class="module-kpis" id="moduleKpis"></div>
       </section>
+      <p class="report-guidance-text">Seleccioná un módulo y un período. Para ver el reporte completo, usá <strong>Exportar</strong>.</p>
       <div class="kpi-charts-row" id="kpiChartsRow"></div>
 
       <section class="card export-only-panel report-insights-panel">
@@ -1973,15 +2016,68 @@
       $("exportFormato").value = formato || saved.formato || state.config.reporte_formato_default || "excel";
       $("exportDesde").value = $("desde").value;
       $("exportHasta").value = $("hasta").value;
-      renderContenidoExportacion(saved.contenido);
+      renderContenidoExportacion(saved.contenido, saved.observaciones || "");
       actualizarNombreArchivo();
-      setExportMessage("Elegí módulo, formato y rango. Excel descarga desde servidor. PDF usa impresión del navegador.");
+      setExportMessage("Elegí módulo, formato, rango y contenido. PDF usa impresión del navegador.");
       $("modalExportacion").classList.add("open");
     }
 
-    function renderContenidoExportacion(selected = []) {
+    function opcionesExportacion(modulo) {
+      const opciones = [
+        ["resumen", "Resumen ejecutivo", "Indicadores principales del módulo seleccionado."],
+        ["graficos", "Gráficos / visuales", "Lectura rápida y paneles visuales disponibles."],
+        ["detalle", "Tabla de detalle", "Tabla exportable del módulo seleccionado."]
+      ];
+      if (modulosConCuentasCobro.has(modulo)) {
+        opciones.push(["cuentas", "Cuentas / terminales", "Resumen financiero por cuenta de cobro."]);
+      }
+      opciones.push(["observaciones", "Observaciones", "Incluye una nota escrita al final del reporte."]);
+      return opciones;
+    }
+
+    function renderContenidoExportacion(selected = null, observaciones = null) {
       const modulo = $("exportModulo").value;
-      $("exportContenido").innerHTML = `<div class="empty" style="grid-column:1/-1">Se exporta el detalle completo del módulo seleccionado. La selección fina de contenido queda reservada para una etapa posterior.</div>`;
+      const saved = JSON.parse(localStorage.getItem("reportesExportacion") || "{}");
+      const seleccion = Array.isArray(selected) ? selected : Array.isArray(saved.contenido) ? saved.contenido : ["detalle"];
+      const nota = observaciones != null ? observaciones : saved.observaciones || "";
+      $("exportContenido").innerHTML = opcionesExportacion(modulo).map(([value, label, help]) => {
+        const checked = seleccion.includes(value) ? "checked" : "";
+        if (value === "observaciones") {
+          return `<label class="export-option"><input class="export-content-check" type="checkbox" value="${value}" ${checked}><span>${label}<small>${help}</small></span></label>
+            <label class="export-notes"><span>Texto de observaciones</span><textarea id="exportObservaciones" placeholder="Escribí una nota opcional para incluir en el reporte.">${escaparTextarea(nota)}</textarea></label>`;
+        }
+        return `<label class="export-option"><input class="export-content-check" type="checkbox" value="${value}" ${checked}><span>${label}<small>${help}</small></span></label>`;
+      }).join("");
+      document.querySelectorAll(".export-content-check").forEach((check) => {
+        check.addEventListener("change", guardarPreferenciasExportacion);
+      });
+      $("exportObservaciones")?.addEventListener("input", guardarPreferenciasExportacion);
+      guardarPreferenciasExportacion();
+    }
+
+    function escaparTextarea(value) {
+      return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function seleccionExportacion() {
+      return [...document.querySelectorAll(".export-content-check:checked")].map((input) => input.value);
+    }
+
+    function observacionesExportacion() {
+      return $("exportObservaciones")?.value.trim() || "";
+    }
+
+    function guardarPreferenciasExportacion() {
+      const saved = JSON.parse(localStorage.getItem("reportesExportacion") || "{}");
+      localStorage.setItem("reportesExportacion", JSON.stringify({
+        ...saved,
+        modulo: $("exportModulo").value,
+        formato: $("exportFormato").value,
+        desde: $("exportDesde").value,
+        hasta: $("exportHasta").value,
+        contenido: seleccionExportacion(),
+        observaciones: observacionesExportacion()
+      }));
     }
 
     function extensionFormato() {
@@ -2000,6 +2096,119 @@
       $("nombreArchivo").textContent = $("exportDesde").value && $("exportHasta").value ? `Archivo: ${nombreArchivo()}` : "Nombre automático pendiente.";
     }
 
+    function escaparExport(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function tablaHtml(headers, rows) {
+      return `<table><thead><tr>${headers.map((h) => `<th>${escaparExport(h)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${escaparExport(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+    }
+
+    function conModuloTemporal(modulo, callback) {
+      const moduloActual = state.modulo;
+      state.modulo = modulo;
+      try {
+        renderInsightsModulo();
+        renderVisualesModulo();
+        renderCuentasCobro();
+        return callback();
+      } finally {
+        state.modulo = moduloActual;
+        renderInsightsModulo();
+        renderVisualesModulo();
+        renderCuentasCobro();
+        renderModulo();
+      }
+    }
+
+    function seccionesReporteSeleccionadas(modulo, seleccion, observaciones) {
+      return conModuloTemporal(modulo, () => {
+        const meta = moduloMeta[modulo] || moduloMeta.generales;
+        const secciones = [];
+        if (seleccion.includes("resumen")) {
+          secciones.push({
+            titulo: "Resumen ejecutivo",
+            html: tablaHtml(["Indicador", "Valor"], resumenModulo())
+          });
+        }
+        if (seleccion.includes("graficos")) {
+          const insights = $("insightsModulo")?.innerHTML || "";
+          const paneles = [1, 2, 3, 4].map((index) => {
+            const panel = $(`visualPanel${index}`);
+            if (!panel || panel.hidden) return "";
+            const titulo = $(`visualTitulo${index}`)?.textContent || `Visual ${index}`;
+            const bodyId = index === 1 ? "ventasPorDia" : index === 2 ? "metodosPago" : index === 3 ? "topProductos" : "estadoCuentas";
+            const body = $(bodyId)?.innerHTML || "";
+            return `<div class="export-visual"><h3>${escaparExport(titulo)}</h3>${body}</div>`;
+          }).filter(Boolean).join("");
+          secciones.push({
+            titulo: "Gráficos / visuales",
+            html: `<h3>Lectura rápida</h3><div class="export-insights">${insights}</div>${paneles || `<p class="empty-print">No hay visuales disponibles para este módulo.</p>`}`
+          });
+        }
+        if (seleccion.includes("detalle")) {
+          const detalle = detalleModulo();
+          secciones.push({
+            titulo: `${meta.titulo}: detalle`,
+            html: detalle.rows.length ? tablaHtml(detalle.head, detalle.rows) : `<p class="empty-print">Sin datos de detalle.</p>`
+          });
+        }
+        if (seleccion.includes("cuentas") && modulosConCuentasCobro.has(modulo)) {
+          const tabla = $("cuentasCobroPanel")?.querySelector("table");
+          secciones.push({
+            titulo: "Cuentas / terminales",
+            html: tabla ? tabla.outerHTML : `<p class="empty-print">Sin cuentas o terminales para mostrar.</p>`
+          });
+        }
+        if (seleccion.includes("observaciones") && observaciones) {
+          secciones.push({
+            titulo: "Observaciones",
+            html: `<p>${escaparExport(observaciones).replace(/\n/g, "<br>")}</p>`
+          });
+        }
+        return secciones;
+      });
+    }
+
+    function htmlReporteSecciones(filename, modulo, desde, hasta, secciones, formato) {
+      const meta = moduloMeta[modulo] || moduloMeta.generales;
+      const estilos = formato === "pdf"
+        ? `body{font-family:Arial,sans-serif;padding:24px;color:#111827}h1{margin:0 0 4px}h2{margin:24px 0 10px;border-bottom:1px solid #e5e7eb;padding-bottom:6px}h3{margin:12px 0 8px}.meta{color:#6b7280;margin-bottom:18px}.report-section{break-inside:avoid;margin-bottom:22px}table{width:100%;border-collapse:collapse;margin-top:8px}th,td{border:1px solid #ddd;padding:8px;font-size:12px;text-align:left}th{background:#f3f4f6}.summary-grid,.insight-grid,.export-insights{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.summary-box,.insight-card,.item,.bar-row{border:1px solid #e5e7eb;border-radius:10px;padding:8px;margin-bottom:6px}.empty-print{color:#6b7280;border:1px dashed #d1d5db;padding:10px;border-radius:10px}`
+        : `table{border-collapse:collapse}th,td{border:1px solid #ddd;padding:6px;text-align:left}th{background:#f3f4f6}h1,h2,h3{font-family:Arial,sans-serif}.summary-box,.insight-card,.item,.bar-row{border:1px solid #ddd;padding:6px;margin:4px}`;
+      return `<html><head><meta charset="utf-8"><title>${escaparExport(filename)}</title><style>${estilos}</style></head><body>
+        <h1>${escaparExport(meta.titulo)}</h1>
+        <div class="meta">${escaparExport(meta.descripcion)}<br>Período ${escaparExport(desde)} al ${escaparExport(hasta)}</div>
+        ${secciones.map((seccion) => `<section class="report-section"><h2>${escaparExport(seccion.titulo)}</h2>${seccion.html}</section>`).join("")}
+      </body></html>`;
+    }
+
+    function descargarReporteSecciones(secciones, filename, modulo, desde, hasta, formato) {
+      const html = htmlReporteSecciones(filename, modulo, desde, hasta, secciones, formato);
+      if (formato === "pdf") {
+        const win = window.open("", "_blank");
+        if (!win) throw new Error("Ventana bloqueada");
+        win.document.write(html);
+        win.document.close();
+        win.focus();
+        win.print();
+        return;
+      }
+      const blob = new Blob([`\ufeff${html}`], { type: "application/vnd.ms-excel;charset=utf-8" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = filename.replace(/\.(xlsx|xls)$/i, ".xls");
+      link.click();
+      URL.revokeObjectURL(link.href);
+    }
+
+    function esExportacionBackendSimple(seleccion, observaciones) {
+      return seleccion.length === 1 && seleccion[0] === "detalle" && !observaciones;
+    }
+
     async function confirmarExportacion() {
       if (!$("exportDesde").value || !$("exportHasta").value) return setExportMessage("Debe indicar rango de fechas.", "error");
       if ($("exportDesde").value > $("exportHasta").value) return setExportMessage("La fecha desde no puede superar la fecha hasta.", "error");
@@ -2009,51 +2218,49 @@
       const desde   = $("exportDesde").value;
       const hasta   = $("exportHasta").value;
       const archivo = nombreArchivo();
+      const seleccion = seleccionExportacion();
+      const observaciones = seleccion.includes("observaciones") ? observacionesExportacion() : "";
 
-      localStorage.setItem("reportesExportacion", JSON.stringify({ modulo, formato, desde, hasta }));
+      if (!seleccion.length) return setExportMessage("Seleccioná al menos un contenido para exportar.", "error");
+
+      localStorage.setItem("reportesExportacion", JSON.stringify({ modulo, formato, desde, hasta, contenido: seleccion, observaciones }));
       $("confirmarExportacion").disabled = true;
       $("confirmarExportacion").textContent = "Exportando...";
       setExportMessage("Generando reporte...");
 
       try {
-        // PDF: siempre local con window.print()
         if (formato === "pdf") {
-          const moduloActual = state.modulo;
-          state.modulo = modulo;
-          const detalle = detalleModulo();
-          state.modulo = moduloActual;
-          if (!detalle.rows.length) { setExportMessage("No hay datos para exportar en el módulo actual.", "error"); return; }
-          descargarReporte(detalle.head, detalle.rows, archivo, "pdf");
+          const secciones = seccionesReporteSeleccionadas(modulo, seleccion, observaciones);
+          if (!secciones.length) { setExportMessage("No hay contenido para exportar.", "error"); return; }
+          descargarReporteSecciones(secciones, archivo, modulo, desde, hasta, "pdf");
           setExportMessage(`Reporte generado correctamente: ${archivo}`, "ok");
           return;
         }
 
-        // Excel: backend con fallback local
         let backendOk = false;
-        try {
-          const url = `/reportes/exportar?modulo=${encodeURIComponent(modulo)}&desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}&formato=excel`;
-          const res = await fetch(url);
-          if (!res.ok) throw new Error(`backend ${res.status}`);
-          const blob = await res.blob();
-          const blobUrl = URL.createObjectURL(blob);
-          const link = document.createElement("a");
-          link.href = blobUrl;
-          link.download = `reporte_${modulo}_${desde}_${hasta}.xls`;
-          link.click();
-          URL.revokeObjectURL(blobUrl);
-          setExportMessage(`Excel generado: reporte_${modulo}_${desde}_${hasta}.xls`, "ok");
-          backendOk = true;
-        } catch (backendErr) {
-          console.warn("Export backend falló, usando local:", backendErr);
+        if (esExportacionBackendSimple(seleccion, observaciones)) {
+          try {
+            const url = `/reportes/exportar?modulo=${encodeURIComponent(modulo)}&desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}&formato=excel`;
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`backend ${res.status}`);
+            const blob = await res.blob();
+            const blobUrl = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = blobUrl;
+            link.download = `reporte_${modulo}_${desde}_${hasta}.xls`;
+            link.click();
+            URL.revokeObjectURL(blobUrl);
+            setExportMessage(`Excel generado: reporte_${modulo}_${desde}_${hasta}.xls`, "ok");
+            backendOk = true;
+          } catch (backendErr) {
+            console.warn("Export backend falló, usando local:", backendErr);
+          }
         }
 
         if (!backendOk) {
-          const moduloActual = state.modulo;
-          state.modulo = modulo;
-          const detalle = detalleModulo();
-          state.modulo = moduloActual;
-          if (!detalle.rows.length) { setExportMessage("No hay datos para exportar en el módulo actual.", "error"); return; }
-          descargarReporte(detalle.head, detalle.rows, archivo, "excel");
+          const secciones = seccionesReporteSeleccionadas(modulo, seleccion, observaciones);
+          if (!secciones.length) { setExportMessage("No hay contenido para exportar.", "error"); return; }
+          descargarReporteSecciones(secciones, archivo, modulo, desde, hasta, "excel");
           setExportMessage(`Excel generado (local): ${archivo}`, "ok");
         }
       } catch (error) {
