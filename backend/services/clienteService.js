@@ -1,4 +1,4 @@
-const { allQuery, getQuery } = require("../db");
+const { allQuery, getQuery, runQuery } = require("../db");
 
 const TIPOS_CLIENTE_PERMITIDOS = new Set(["cliente", "colaborador", "dueño", "negocio"]);
 
@@ -85,11 +85,34 @@ async function getHistorialProductosCliente(clienteId, { limite } = {}) {
   );
 }
 
-async function getDeudaActualizadaCliente(clienteId) {
+async function ensureRecalculosCuentaCorrienteTable() {
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS recalculos_cuenta_corriente (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cliente_id INTEGER NOT NULL,
+      deuda_historica REAL NOT NULL DEFAULT 0,
+      deuda_actualizada REAL NOT NULL DEFAULT 0,
+      diferencia REAL NOT NULL DEFAULT 0,
+      usuario TEXT,
+      motivo TEXT,
+      fecha TEXT NOT NULL,
+      hora TEXT NOT NULL,
+      detalle_json TEXT,
+      FOREIGN KEY (cliente_id) REFERENCES clientes(id)
+    )
+  `);
+}
+
+function roundMoney(value) {
+  return Number((Number(value) || 0).toFixed(2));
+}
+
+async function calcularDeudaActualizadaCliente(clienteId) {
   const rows = await allQuery(
     `SELECT v.id AS venta_id,
             v.total AS venta_total,
             v.saldo_pendiente,
+            v.estado AS venta_estado,
             dv.producto_id,
             COALESCE(dv.nombre_producto, p.nombre, 'Producto sin nombre') AS nombre_producto,
             dv.cantidad,
@@ -109,6 +132,7 @@ async function getDeudaActualizadaCliente(clienteId) {
   );
 
   const productosMap = new Map();
+  const ventasMap = new Map();
   let deudaHistorica = 0;
   let deudaActualizada = 0;
 
@@ -128,6 +152,32 @@ async function getDeudaActualizadaCliente(clienteId) {
     deudaHistorica += historicoPendiente;
     deudaActualizada += actualizadoPendiente;
 
+    if (!ventasMap.has(row.venta_id)) {
+      ventasMap.set(row.venta_id, {
+        venta_id: row.venta_id,
+        total_historico: ventaTotal,
+        saldo_anterior: saldoPendiente,
+        saldo_actualizado: 0,
+        diferencia: 0,
+        estado_anterior: row.venta_estado,
+        items: []
+      });
+    }
+    const venta = ventasMap.get(row.venta_id);
+    venta.saldo_actualizado += actualizadoPendiente;
+    venta.items.push({
+      producto_id: row.producto_id,
+      nombre_producto: row.nombre_producto,
+      cantidad,
+      precio_historico: Number(row.precio_unitario) || 0,
+      precio_actual: Number(row.precio_actual) || 0,
+      producto_activo: Number(row.producto_activo) === 1,
+      subtotal_historico: roundMoney(subtotalHistorico),
+      subtotal_actualizado: roundMoney(cantidad * precioParaRecalculo),
+      saldo_historico_proporcional: roundMoney(historicoPendiente),
+      saldo_actualizado_proporcional: roundMoney(actualizadoPendiente)
+    });
+
     if (!productosMap.has(key)) {
       productosMap.set(key, {
         producto_id: row.producto_id,
@@ -144,7 +194,6 @@ async function getDeudaActualizadaCliente(clienteId) {
     producto.diferencia = producto.deuda_actualizada - producto.deuda_historica;
   });
 
-  const roundMoney = (value) => Number((Number(value) || 0).toFixed(2));
   const productosAfectados = [...productosMap.values()]
     .map((producto) => ({
       ...producto,
@@ -155,12 +204,108 @@ async function getDeudaActualizadaCliente(clienteId) {
     .filter((producto) => Math.abs(producto.diferencia) > 0.009)
     .sort((a, b) => Math.abs(b.diferencia) - Math.abs(a.diferencia));
 
+  const ventas = [...ventasMap.values()].map((venta) => ({
+    ...venta,
+    total_historico: roundMoney(venta.total_historico),
+    saldo_anterior: roundMoney(venta.saldo_anterior),
+    saldo_actualizado: roundMoney(Math.max(0, venta.saldo_actualizado)),
+    diferencia: roundMoney(Math.max(0, venta.saldo_actualizado) - venta.saldo_anterior),
+    items: venta.items
+  }));
+
   return {
     deuda_historica: roundMoney(deudaHistorica),
     deuda_actualizada: roundMoney(deudaActualizada),
     diferencia: roundMoney(deudaActualizada - deudaHistorica),
-    productos_afectados: productosAfectados
+    productos_afectados: productosAfectados,
+    ventas
   };
+}
+
+async function getDeudaActualizadaCliente(clienteId) {
+  const calculo = await calcularDeudaActualizadaCliente(clienteId);
+  const { ventas, ...publico } = calculo;
+  return publico;
+}
+
+async function aplicarRecalculoDeudaCliente(clienteId, { usuario, motivo } = {}) {
+  await ensureRecalculosCuentaCorrienteTable();
+  const calculo = await calcularDeudaActualizadaCliente(clienteId);
+
+  if (Math.abs(Number(calculo.diferencia || 0)) <= 0.009) {
+    return {
+      aplicado: false,
+      message: "La deuda no tiene diferencias para recalcular",
+      deuda_historica: calculo.deuda_historica,
+      deuda_actualizada: calculo.deuda_actualizada,
+      diferencia: calculo.diferencia,
+      ventas_actualizadas: 0,
+      productos_afectados: calculo.productos_afectados
+    };
+  }
+
+  const ventasActualizar = calculo.ventas.filter((venta) => Math.abs(Number(venta.diferencia || 0)) > 0.009);
+  const fechaHora = await getQuery("SELECT date('now', 'localtime') AS fecha, time('now', 'localtime') AS hora");
+  const detalle = {
+    productos_afectados: calculo.productos_afectados,
+    ventas: ventasActualizar
+  };
+
+  await runQuery("BEGIN TRANSACTION");
+  try {
+    for (const venta of ventasActualizar) {
+      await runQuery(
+        `UPDATE ventas
+         SET saldo_pendiente = ?,
+             estado = ?
+         WHERE id = ?
+           AND es_cuenta_corriente = 1
+           AND COALESCE(saldo_pendiente, 0) > 0
+           AND COALESCE(estado, '') != 'anulado'
+           AND COALESCE(tipo, '') != 'test_modificadores'`,
+        [
+          venta.saldo_actualizado,
+          venta.saldo_actualizado === 0 ? "cobrada" : "cuenta_corriente_pendiente",
+          venta.venta_id
+        ]
+      );
+    }
+
+    const auditoria = await runQuery(
+      `INSERT INTO recalculos_cuenta_corriente
+       (cliente_id, deuda_historica, deuda_actualizada, diferencia, usuario, motivo, fecha, hora, detalle_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        clienteId,
+        calculo.deuda_historica,
+        calculo.deuda_actualizada,
+        calculo.diferencia,
+        String(usuario || "admin").trim() || "admin",
+        String(motivo || "Actualizacion por precio vigente").trim() || "Actualizacion por precio vigente",
+        fechaHora?.fecha,
+        fechaHora?.hora,
+        JSON.stringify(detalle)
+      ]
+    );
+
+    await runQuery("COMMIT");
+
+    return {
+      aplicado: true,
+      message: "Deuda recalculada correctamente",
+      auditoria_id: auditoria.lastID,
+      deuda_historica: calculo.deuda_historica,
+      deuda_actualizada: calculo.deuda_actualizada,
+      diferencia: calculo.diferencia,
+      ventas_actualizadas: ventasActualizar.length,
+      productos_afectados: calculo.productos_afectados
+    };
+  } catch (error) {
+    try {
+      await runQuery("ROLLBACK");
+    } catch {}
+    throw error;
+  }
 }
 
 module.exports = {
@@ -168,5 +313,7 @@ module.exports = {
   buildClienteCuentaResumen,
   getClienteConMetricas,
   getHistorialProductosCliente,
-  getDeudaActualizadaCliente
+  getDeudaActualizadaCliente,
+  aplicarRecalculoDeudaCliente,
+  ensureRecalculosCuentaCorrienteTable
 };

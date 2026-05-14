@@ -152,6 +152,7 @@ async function initDatabase() {
       CREATE TABLE IF NOT EXISTS clientes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         nombre TEXT NOT NULL,
+        tipo_cliente TEXT NOT NULL DEFAULT 'cliente',
         telefono TEXT,
         direccion TEXT,
         alias TEXT,
@@ -197,6 +198,7 @@ async function initDatabase() {
     await ensureColumn("clientes", "limite_fiado", "REAL NOT NULL DEFAULT 0");
     await ensureColumn("clientes", "dni_cuit", "TEXT");
     await ensureColumn("clientes", "tipo_persona", "TEXT NOT NULL DEFAULT 'fisica'");
+    await ensureColumn("clientes", "tipo_cliente", "TEXT NOT NULL DEFAULT 'cliente'");
     await ensureColumn("clientes", "email", "TEXT");
     await ensureColumn("clientes", "contacto", "TEXT");
     await ensureColumn("clientes", "localidad", "TEXT");
@@ -318,6 +320,22 @@ async function initDatabase() {
     `);
 
     await ensureColumn("pagos_cuenta_corriente", "caja_id", "INTEGER");
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS recalculos_cuenta_corriente (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cliente_id INTEGER NOT NULL,
+        deuda_historica REAL NOT NULL DEFAULT 0,
+        deuda_actualizada REAL NOT NULL DEFAULT 0,
+        diferencia REAL NOT NULL DEFAULT 0,
+        usuario TEXT,
+        motivo TEXT,
+        fecha TEXT NOT NULL,
+        hora TEXT NOT NULL,
+        detalle_json TEXT,
+        FOREIGN KEY (cliente_id) REFERENCES clientes(id)
+      )
+    `);
 
     await runQuery(`
       CREATE TABLE IF NOT EXISTS proveedores (

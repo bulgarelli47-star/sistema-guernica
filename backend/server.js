@@ -84,7 +84,9 @@ const {
   buildClienteCuentaResumen,
   getClienteConMetricas,
   getHistorialProductosCliente,
-  getDeudaActualizadaCliente
+  getDeudaActualizadaCliente,
+  aplicarRecalculoDeudaCliente,
+  ensureRecalculosCuentaCorrienteTable
 } = require("./services/clienteService");
 const {
   actualizarCuentaCobro,
@@ -4210,6 +4212,42 @@ app.get("/clientes/:id/deuda-actualizada", async (req, res) => {
   }
 });
 
+app.post("/clientes/:id/recalcular-deuda", async (req, res) => {
+  const clienteId = Number(req.params.id);
+  try {
+    const cliente = await getQuery("SELECT id FROM clientes WHERE id = ?", [clienteId]);
+    if (!cliente) {
+      return res.status(404).json({ message: "Cliente no encontrado" });
+    }
+
+    const config = await getConfiguracionGlobal();
+    const flagActivo = config.cuenta_corriente_actualizar_fiado_por_precio_actual === true
+      || config.cuenta_corriente_actualizar_fiado_por_precio_actual === 1
+      || config.cuenta_corriente_actualizar_fiado_por_precio_actual === "true"
+      || config.cuenta_corriente_actualizar_fiado_por_precio_actual === "1";
+
+    if (!flagActivo) {
+      return res.status(403).json({ message: "El recalculo de deuda por precio actual no esta habilitado" });
+    }
+
+    const claveIngresada = String(req.body?.clave_autorizacion || "").trim();
+    const claveMaestra = await getClaveAutorizacion();
+    if (!claveIngresada || claveIngresada !== claveMaestra) {
+      return res.status(403).json({ message: "Clave maestra incorrecta" });
+    }
+
+    const resultado = await aplicarRecalculoDeudaCliente(clienteId, {
+      usuario: req.usuario?.nombre || req.usuario?.usuario || "admin",
+      motivo: req.body?.motivo || "Actualizacion por precio vigente"
+    });
+
+    return res.json({ cliente_id: clienteId, ...resultado });
+  } catch (error) {
+    logError("Error al recalcular deuda del cliente:", error);
+    return res.status(500).json({ message: "Error al recalcular deuda" });
+  }
+});
+
 app.get("/clientes/:id", async (req, res) => {
   try {
     const cliente = await getClienteConMetricas(Number(req.params.id));
@@ -5306,6 +5344,7 @@ Promise.all([
   ensureCuentasCobroSchema(),
   ensureConciliacionesCuentasCobroTable(),
   ensureModificadoresSchema(),
+  ensureRecalculosCuentaCorrienteTable(),
   ensureProductosSchema(),
   ensureClientesSchema(),
   ensureConfiguracionSchema()

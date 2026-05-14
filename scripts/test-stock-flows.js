@@ -776,6 +776,194 @@ async function testClientesDeudaActualizadaComparacionSegura() {
   }
 }
 
+async function testClientesAplicarRecalculoDeudaControlado() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const sufijo = Date.now().toString().slice(-8);
+
+      const crearClienteRecalculo = async (nombre) => {
+        const cliente = await requestJson(baseUrl, "POST", "/clientes", {
+          nombre,
+          dni_cuit: `${nombre.replace(/\s+/g, "-")}-${sufijo}-${Math.random().toString(16).slice(2, 6)}`,
+          tipo_persona: "fisica",
+          habilita_cuenta_corriente: true,
+          activo: true
+        }, token);
+        if (!cliente.response.ok) throw new Error(`Crear cliente recalculo fallo: ${cliente.data?.message || cliente.response.status}`);
+        return cliente.data.cliente.id;
+      };
+
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST Recalculo Deuda ${sufijo}`);
+      const productoActivoId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Producto Activo Recalculo ${sufijo}`,
+        codigo: `PAR-${sufijo}`,
+        categoria: `TEST Recalculo Deuda ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        stock: 10,
+        maneja_stock: false,
+        activo: true
+      });
+      const productoInactivoId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Producto Inactivo Recalculo ${sufijo}`,
+        codigo: `PIR-${sufijo}`,
+        categoria: `TEST Recalculo Deuda ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_venta: 80,
+        stock: 10,
+        maneja_stock: false,
+        activo: false
+      });
+      await runSql(dbPath, "UPDATE productos SET precio_venta = 150, activo = 1 WHERE id = ?", [productoActivoId]);
+      await runSql(dbPath, "UPDATE productos SET precio_venta = 200, activo = 0 WHERE id = ?", [productoInactivoId]);
+
+      const insertarVentaCuenta = async ({ clienteId, fecha, estado = "cuenta_corriente_pendiente", tipo = "normal", total, saldo, productoId, nombre, cantidad, precio, subtotal }) => {
+        const venta = await runSql(
+          dbPath,
+          `INSERT INTO ventas
+           (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id, cuenta_cobro_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [fecha, "12:00", "test", total, tipo, estado, null, "cuenta_corriente", "cuenta_corriente", 0, 0, clienteId, 1, saldo, null, null]
+        );
+        await runSql(
+          dbPath,
+          `INSERT INTO detalle_ventas (venta_id, producto_id, nombre_producto, cantidad, precio_unitario, subtotal)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [venta.lastID, productoId, nombre, cantidad, precio, subtotal]
+        );
+        return venta.lastID;
+      };
+
+      const clienteId = await crearClienteRecalculo("Cliente Recalculo Aplicar");
+      const ventaActivaId = await insertarVentaCuenta({
+        clienteId,
+        fecha: "2026-03-01",
+        total: 200,
+        saldo: 200,
+        productoId: productoActivoId,
+        nombre: `TEST Producto Activo Recalculo ${sufijo}`,
+        cantidad: 2,
+        precio: 100,
+        subtotal: 200
+      });
+      const ventaInactivaId = await insertarVentaCuenta({
+        clienteId,
+        fecha: "2026-03-02",
+        total: 80,
+        saldo: 80,
+        productoId: productoInactivoId,
+        nombre: `TEST Producto Inactivo Recalculo ${sufijo}`,
+        cantidad: 1,
+        precio: 80,
+        subtotal: 80
+      });
+      const ventaAnuladaId = await insertarVentaCuenta({
+        clienteId,
+        fecha: "2026-03-03",
+        estado: "anulado",
+        total: 100,
+        saldo: 100,
+        productoId: productoActivoId,
+        nombre: `TEST Producto Activo Recalculo ${sufijo}`,
+        cantidad: 1,
+        precio: 100,
+        subtotal: 100
+      });
+      const ventaPagadaId = await insertarVentaCuenta({
+        clienteId,
+        fecha: "2026-03-04",
+        estado: "cobrada",
+        total: 100,
+        saldo: 0,
+        productoId: productoActivoId,
+        nombre: `TEST Producto Activo Recalculo ${sufijo}`,
+        cantidad: 1,
+        precio: 100,
+        subtotal: 100
+      });
+
+      const flagOff = await requestJson(baseUrl, "POST", `/clientes/${clienteId}/recalcular-deuda`, {
+        clave_autorizacion: "1234",
+        motivo: "Test flag off"
+      }, token);
+      assertEqual(flagOff.response.status, 403, "Debe rechazar recalculo si el flag esta desactivado");
+
+      await runSql(
+        dbPath,
+        `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)
+         VALUES ('cuenta_corriente_actualizar_fiado_por_precio_actual', 'true', 'cuentas_corrientes', datetime('now'))
+         ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, seccion = excluded.seccion, actualizado_en = excluded.actualizado_en`
+      );
+
+      const claveMal = await requestJson(baseUrl, "POST", `/clientes/${clienteId}/recalcular-deuda`, {
+        clave_autorizacion: "0000",
+        motivo: "Test clave mal"
+      }, token);
+      assertEqual(claveMal.response.status, 403, "Debe rechazar clave maestra incorrecta");
+
+      const inexistente = await requestJson(baseUrl, "POST", "/clientes/999999/recalcular-deuda", {
+        clave_autorizacion: "1234",
+        motivo: "Test inexistente"
+      }, token);
+      assertEqual(inexistente.response.status, 404, "Cliente inexistente debe devolver 404 al recalcular");
+
+      const clienteSinDiferenciaId = await crearClienteRecalculo("Cliente Recalculo Sin Diferencia");
+      const ventaSinDiferenciaId = await insertarVentaCuenta({
+        clienteId: clienteSinDiferenciaId,
+        fecha: "2026-03-05",
+        total: 150,
+        saldo: 150,
+        productoId: productoActivoId,
+        nombre: `TEST Producto Activo Recalculo ${sufijo}`,
+        cantidad: 1,
+        precio: 150,
+        subtotal: 150
+      });
+      const sinDiferencia = await requestJson(baseUrl, "POST", `/clientes/${clienteSinDiferenciaId}/recalcular-deuda`, {
+        clave_autorizacion: "1234",
+        motivo: "Sin diferencia"
+      }, token);
+      if (!sinDiferencia.response.ok) throw new Error(`Recalculo sin diferencia fallo: ${sinDiferencia.data?.message || sinDiferencia.response.status}`);
+      assertEqual(sinDiferencia.data.aplicado, false, "Si diferencia = 0 no debe aplicar cambios");
+      const ventaSinDifRow = (await allSql(dbPath, "SELECT saldo_pendiente FROM ventas WHERE id = ?", [ventaSinDiferenciaId]))[0];
+      assertApprox(ventaSinDifRow.saldo_pendiente, 150, "Si diferencia = 0 no modifica saldo");
+
+      const detalleAntes = (await allSql(dbPath, "SELECT precio_unitario, subtotal FROM detalle_ventas WHERE venta_id = ?", [ventaActivaId]))[0];
+      const aplicado = await requestJson(baseUrl, "POST", `/clientes/${clienteId}/recalcular-deuda`, {
+        clave_autorizacion: "1234",
+        motivo: "Actualizacion por precio vigente"
+      }, token);
+      if (!aplicado.response.ok) throw new Error(`Aplicar recalculo fallo: ${aplicado.data?.message || aplicado.response.status}`);
+      assertEqual(aplicado.data.aplicado, true, "Debe aplicar recalculo con flag y clave correcta");
+      assertApprox(aplicado.data.deuda_historica, 280, "Auditoria debe guardar deuda historica");
+      assertApprox(aplicado.data.deuda_actualizada, 380, "Auditoria debe guardar deuda actualizada");
+      assertApprox(aplicado.data.diferencia, 100, "Auditoria debe guardar diferencia");
+
+      const ventas = await allSql(dbPath, "SELECT id, saldo_pendiente FROM ventas WHERE id IN (?, ?, ?, ?) ORDER BY id", [ventaActivaId, ventaInactivaId, ventaAnuladaId, ventaPagadaId]);
+      const porId = Object.fromEntries(ventas.map((venta) => [Number(venta.id), Number(venta.saldo_pendiente)]));
+      assertApprox(porId[ventaActivaId], 300, "Producto activo con precio actualizado debe recalcular saldo");
+      assertApprox(porId[ventaInactivaId], 80, "Producto inactivo conserva precio historico");
+      assertApprox(porId[ventaAnuladaId], 100, "Venta anulada no se modifica");
+      assertApprox(porId[ventaPagadaId], 0, "Venta pagada completamente no se modifica");
+
+      const auditorias = await allSql(dbPath, "SELECT * FROM recalculos_cuenta_corriente WHERE cliente_id = ?", [clienteId]);
+      assertEqual(auditorias.length, 1, "Debe registrar auditoria del recalculo");
+      const detalleAuditoria = JSON.parse(auditorias[0].detalle_json);
+      assertEqual(Array.isArray(detalleAuditoria.ventas), true, "Auditoria debe guardar detalle de ventas");
+
+      const detalleDespues = (await allSql(dbPath, "SELECT precio_unitario, subtotal FROM detalle_ventas WHERE venta_id = ?", [ventaActivaId]))[0];
+      assertApprox(detalleDespues.precio_unitario, detalleAntes.precio_unitario, "No debe modificar precio_unitario historico");
+      assertApprox(detalleDespues.subtotal, detalleAntes.subtotal, "No debe modificar subtotal historico");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testVentaContadoImpactaStockYCaja() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -4895,6 +5083,7 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
   await testClientesTipoClienteClasificacion();
   await testClientesHistorialProductosComprados();
   await testClientesDeudaActualizadaComparacionSegura();
+  await testClientesAplicarRecalculoDeudaControlado();
   await testVentaContadoImpactaStockYCaja();
   await testPendienteNoImpactaCajaHastaCobro();
   await testAnularPendienteReponeStock();
