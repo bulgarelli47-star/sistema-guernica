@@ -2309,6 +2309,202 @@
         justify-content: flex-start;
       }
     }
+
+    /* Sprint UX: cuenta/terminal como eje visual, sin cambiar calculos */
+    .card,
+    .metric-card,
+    .mini-card,
+    .cuenta-cobro-item,
+    .metodo-card,
+    .movement-card,
+    .status-card,
+    .modal-card {
+      min-width: 0;
+    }
+
+    .cuenta-cobro-item strong,
+    .metodo-card strong,
+    .movement-card strong {
+      overflow-wrap: anywhere;
+    }
+
+    .cuentas-cobro-grid {
+      scrollbar-width: thin;
+    }
+
+    .cuenta-cobro-item.sin-cuenta {
+      opacity: .78;
+      border-style: dashed;
+      background: #fbfbfe;
+    }
+
+    .status-conciliacion.conciliado,
+    .estado-conciliacion.conciliado {
+      background: rgba(34, 163, 90, .12);
+      color: #166534;
+    }
+
+    .status-conciliacion.diferencia,
+    .estado-conciliacion.diferencia {
+      background: rgba(217, 154, 33, .14);
+      color: #92400e;
+    }
+
+    .status-conciliacion.pendiente,
+    .estado-conciliacion.pendiente {
+      background: #eef2f7;
+      color: #64748b;
+    }
+
+    .modal-card {
+      overscroll-behavior: contain;
+    }
+
+    .modal-header,
+    .modal-footer {
+      z-index: 4;
+    }
+
+    .closure-real-panel {
+      margin-top: 16px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: #fbfbfe;
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .closure-real-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 10px;
+    }
+
+    .closure-real-head strong {
+      font-size: 14px;
+      color: var(--text);
+    }
+
+    .closure-real-head span {
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+    }
+
+    .closure-real-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .closure-real-card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fff;
+      padding: 10px;
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .closure-real-card span {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .03em;
+    }
+
+    .closure-real-card strong {
+      font-size: 17px;
+      overflow-wrap: anywhere;
+    }
+
+    .closure-real-card.total {
+      background: #f8fafc;
+      border-color: #d8e0ed;
+    }
+
+    .closure-real-status {
+      width: fit-content;
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 12px;
+      font-weight: 900;
+      background: #eef2f7;
+      color: #64748b;
+    }
+
+    .closure-real-status.ok {
+      background: rgba(34, 163, 90, .12);
+      color: #166534;
+    }
+
+    .closure-real-status.sobra {
+      background: rgba(34, 163, 90, .12);
+      color: #166534;
+    }
+
+    .closure-real-status.falta {
+      background: rgba(224, 82, 82, .12);
+      color: #991b1b;
+    }
+
+    @media (max-width: 720px) {
+      .main {
+        padding: 14px;
+      }
+
+      .card {
+        padding: 18px;
+        border-radius: 16px;
+      }
+
+      .cuentas-cobro-grid,
+      .metodos-grid,
+      .metrics-grid,
+      .summary-grid,
+      .closure-real-grid {
+        grid-template-columns: 1fr !important;
+      }
+
+      .closure-real-head {
+        display: grid;
+      }
+
+      .closure-real-head span {
+        text-align: left;
+      }
+
+      .cuentas-cobro-grid {
+        max-height: 340px;
+        overflow: auto;
+      }
+
+      .modal {
+        padding: 12px;
+      }
+
+      .modal-card {
+        max-height: calc(100vh - 24px);
+        border-radius: 16px;
+      }
+
+      .modal-actions,
+      .toolbar-actions {
+        width: 100%;
+        justify-content: flex-start;
+      }
+
+      .modal-actions .btn,
+      .modal-actions button {
+        flex: 1 1 150px;
+      }
+    }
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=7" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -2819,6 +3015,51 @@
                     <div class="close-help">Se cerrara la caja y se generara el cierre de turno.</div>
                   </div>
                 </div>
+                <div class="closure-real-panel">
+                  <div class="closure-real-head">
+                    <strong>Dinero esperado vs dinero real</strong>
+                    <span>Control operativo: no corrige ventas, pagos ni conciliaciones.</span>
+                  </div>
+                  <div class="closure-real-grid">
+                    <div class="closure-real-card">
+                      <span>Efectivo esperado</span>
+                      <strong id="cierreEfectivoEsperadoReal">$0.00</strong>
+                    </div>
+                    <div class="closure-real-card">
+                      <span>Efectivo real</span>
+                      <strong id="cierreEfectivoRealContado">$0.00</strong>
+                    </div>
+                    <div class="closure-real-card">
+                      <span>Diferencia efectivo</span>
+                      <strong id="cierreDiferenciaEfectivoReal">$0.00</strong>
+                    </div>
+                    <div class="closure-real-card">
+                      <span>Cuentas esperadas</span>
+                      <strong id="cierreDigitalEsperadoReal">$0.00</strong>
+                    </div>
+                    <div class="closure-real-card">
+                      <span>Cuentas reales</span>
+                      <strong id="cierreDigitalRealContado">$0.00</strong>
+                    </div>
+                    <div class="closure-real-card">
+                      <span>Diferencia cuentas</span>
+                      <strong id="cierreDiferenciaDigitalReal">$0.00</strong>
+                    </div>
+                    <div class="closure-real-card total">
+                      <span>Total esperado</span>
+                      <strong id="cierreTotalEsperadoReal">$0.00</strong>
+                    </div>
+                    <div class="closure-real-card total">
+                      <span>Total real</span>
+                      <strong id="cierreTotalRealContado">$0.00</strong>
+                    </div>
+                    <div class="closure-real-card total">
+                      <span>Resultado final</span>
+                      <strong id="cierreDiferenciaFinalReal">$0.00</strong>
+                    </div>
+                  </div>
+                  <div class="closure-real-status" id="cierreEstadoFinalReal">Pendiente de romaneo / conciliacion</div>
+                </div>
               </div>
             </div>
           </article>
@@ -3277,6 +3518,16 @@
     const cierreResumenPagos = document.getElementById("cierreResumenPagos");
     const cierreDiferenciaVisual = document.getElementById("cierreDiferenciaVisual");
     const romaneoEstado = document.getElementById("romaneoEstado");
+    const cierreEfectivoEsperadoReal = document.getElementById("cierreEfectivoEsperadoReal");
+    const cierreEfectivoRealContado = document.getElementById("cierreEfectivoRealContado");
+    const cierreDiferenciaEfectivoReal = document.getElementById("cierreDiferenciaEfectivoReal");
+    const cierreDigitalEsperadoReal = document.getElementById("cierreDigitalEsperadoReal");
+    const cierreDigitalRealContado = document.getElementById("cierreDigitalRealContado");
+    const cierreDiferenciaDigitalReal = document.getElementById("cierreDiferenciaDigitalReal");
+    const cierreTotalEsperadoReal = document.getElementById("cierreTotalEsperadoReal");
+    const cierreTotalRealContado = document.getElementById("cierreTotalRealContado");
+    const cierreDiferenciaFinalReal = document.getElementById("cierreDiferenciaFinalReal");
+    const cierreEstadoFinalReal = document.getElementById("cierreEstadoFinalReal");
     const botonIngresarDineroVisual = document.getElementById("ingresarDineroVisual");
     const botonRetirarDineroVisual = document.getElementById("retirarDineroVisual");
     const cierresHistoricosBody = document.getElementById("cierresHistoricosBody");
@@ -3739,6 +3990,84 @@
       ).toFixed(2));
     }
 
+    function calcularCuentasEsperadas() {
+      if (Array.isArray(resumenCuentasCobroActual) && resumenCuentasCobroActual.length) {
+        return Number(resumenCuentasCobroActual
+          .reduce((acc, cuenta) => acc + Number(cuenta.balance || 0), 0)
+          .toFixed(2));
+      }
+
+      return calcularDigitalEsperado();
+    }
+
+    function calcularCuentasReales() {
+      if (Array.isArray(resumenCuentasCobroActual) && resumenCuentasCobroActual.length) {
+        return Number(resumenCuentasCobroActual
+          .reduce((acc, cuenta) => {
+            const conciliacion = getConciliacionPorCuenta(cuenta);
+            const esperado = Number(cuenta.balance || 0);
+            const real = conciliacion ? Number(conciliacion.monto_real || 0) : esperado;
+            return acc + real;
+          }, 0)
+          .toFixed(2));
+      }
+
+      return calcularDigitalReal();
+    }
+
+    function hayCuentasSinConciliar() {
+      return Array.isArray(resumenCuentasCobroActual) &&
+        resumenCuentasCobroActual.some((cuenta) => !getConciliacionPorCuenta(cuenta));
+    }
+
+    function setEstadoFinalCierre(diferenciaFinal) {
+      if (!cierreEstadoFinalReal) return;
+      cierreEstadoFinalReal.classList.remove("ok", "sobra", "falta");
+
+      if (hayCuentasSinConciliar()) {
+        cierreEstadoFinalReal.textContent = "Pendiente de conciliacion de cuentas";
+        return;
+      }
+
+      if (Math.abs(Number(diferenciaFinal || 0)) < 0.01) {
+        cierreEstadoFinalReal.textContent = "OK: dinero real coincide con esperado";
+        cierreEstadoFinalReal.classList.add("ok");
+        return;
+      }
+
+      if (Number(diferenciaFinal || 0) > 0) {
+        cierreEstadoFinalReal.textContent = `Sobra ${money(diferenciaFinal)}`;
+        cierreEstadoFinalReal.classList.add("sobra");
+        return;
+      }
+
+      cierreEstadoFinalReal.textContent = `Falta ${money(Math.abs(diferenciaFinal))}`;
+      cierreEstadoFinalReal.classList.add("falta");
+    }
+
+    function actualizarCierreRealOperativo({ efectivoEsperado, efectivoReal } = {}) {
+      const esperadoEfectivo = Number(efectivoEsperado ?? calcularEfectivoEsperado());
+      const realEfectivo = Number(efectivoReal ?? calcularConteoTotal());
+      const diferenciaEfectivo = Number((realEfectivo - esperadoEfectivo).toFixed(2));
+      const esperadoCuentas = calcularCuentasEsperadas();
+      const realCuentas = calcularCuentasReales();
+      const diferenciaCuentas = Number((realCuentas - esperadoCuentas).toFixed(2));
+      const totalEsperado = Number((esperadoEfectivo + esperadoCuentas).toFixed(2));
+      const totalReal = Number((realEfectivo + realCuentas).toFixed(2));
+      const diferenciaFinal = Number((totalReal - totalEsperado).toFixed(2));
+
+      setSignedValue(cierreEfectivoEsperadoReal, esperadoEfectivo);
+      setSignedValue(cierreEfectivoRealContado, realEfectivo);
+      setSignedValue(cierreDiferenciaEfectivoReal, diferenciaEfectivo);
+      setSignedValue(cierreDigitalEsperadoReal, esperadoCuentas);
+      setSignedValue(cierreDigitalRealContado, realCuentas);
+      setSignedValue(cierreDiferenciaDigitalReal, diferenciaCuentas);
+      setSignedValue(cierreTotalEsperadoReal, totalEsperado);
+      setSignedValue(cierreTotalRealContado, totalReal);
+      setSignedValue(cierreDiferenciaFinalReal, diferenciaFinal);
+      setEstadoFinalCierre(diferenciaFinal);
+    }
+
     function renderizarCuentasDigitales() {
       cuentasDigitalesBody.innerHTML = "";
       cuentaInputs.length = 0;
@@ -3817,6 +4146,7 @@
       arqueoDiferenciaDigitalEstado.innerHTML = diferenciaDigital >= 0
         ? '<span aria-hidden="true">&#10003;</span><span>Sobra</span>'
         : '<span aria-hidden="true">&#10005;</span><span>Falta</span>';
+      actualizarCierreRealOperativo({ efectivoEsperado: esperado, efectivoReal: contado });
       actualizarEstadoCierre();
     }
 
@@ -4866,6 +5196,8 @@
         const claseBalance = balance < 0 ? "negativo" : "positivo";
         const conciliacion = getConciliacionPorCuenta(cuenta);
         const estado = getConciliacionEstado(conciliacion);
+        const realCuenta = conciliacion ? Number(conciliacion.monto_real || 0) : balance;
+        const diferenciaCuenta = Number((realCuenta - balance).toFixed(2));
         const key = getCuentaCobroKey(cuenta);
         const esSinCuenta = key === "sin-cuenta";
         const subtipo = etiquetasSubtipoCuenta(cuenta).map((etiqueta) => `<span>${etiqueta}</span>`).join("");
@@ -4883,8 +5215,8 @@
             <div class="cuenta-cobro-values">
               <div class="cuenta-cobro-metric"><span>Ingresos</span><strong class="positive-text">${signoIngresos}${money(cuenta.ingresos)}</strong></div>
               <div class="cuenta-cobro-metric"><span>Egresos</span><strong class="negative-text">${signoEgresos}${money(cuenta.egresos)}</strong></div>
-              <div class="cuenta-cobro-metric"><span>Ventas</span><strong>${Number(cuenta.ventas || 0)}</strong></div>
-              <div class="cuenta-cobro-metric"><span>Pagos</span><strong>${Number(cuenta.pagos || 0)}</strong></div>
+              <div class="cuenta-cobro-metric"><span>Real</span><strong>${money(realCuenta)}</strong></div>
+              <div class="cuenta-cobro-metric"><span>Diferencia</span><strong class="${diferenciaCuenta < 0 ? "negative-text" : "positive-text"}">${money(diferenciaCuenta)}</strong></div>
             </div>
             <div class="cuenta-cobro-footer">
               <span class="cuenta-cobro-movimientos">${Number(cuenta.ventas || 0)} ventas · ${Number(cuenta.pagos || 0)} pagos</span>
@@ -4932,9 +5264,11 @@
           conciliacionesCuentasActuales = [];
         }
         renderizarResumenCuentasCobro(resumenCuentasCobroActual);
+        actualizarResumenCierre();
       } catch (error) {
         console.error("Error al cargar resumen por cuenta:", error);
         card?.classList.remove("visible");
+        actualizarResumenCierre();
       }
     }
 
