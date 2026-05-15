@@ -55,6 +55,11 @@ function resetOperationalDataStatements() {
       `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)
        VALUES ('autorizacion_clave_maestra', '"1234"', 'usuarios_permisos', datetime('now'))
        ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, seccion = excluded.seccion, actualizado_en = excluded.actualizado_en`
+    ],
+    [
+      `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)
+       VALUES ('cuenta_corriente_actualizar_fiado_por_precio_actual', 'false', 'cuentas_corrientes', datetime('now'))
+       ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, seccion = excluded.seccion, actualizado_en = excluded.actualizado_en`
     ]
   ];
 }

@@ -668,57 +668,149 @@
 
     .cuentas-cobro-card {
       display: none;
-      gap: 12px;
+      gap: 10px;
+      padding: 16px;
+      border-color: rgba(109, 40, 217, 0.18);
+      background: linear-gradient(180deg, #fff 0%, #fbfaff 100%);
     }
 
     .cuentas-cobro-card.visible {
       display: grid;
     }
 
+    .cuentas-cobro-card .section-header {
+      margin-bottom: 0;
+    }
+
+    .cuentas-cobro-card .section-header h3 {
+      font-size: 20px;
+      margin: 0;
+      color: var(--text);
+    }
+
+    .cuentas-cobro-card .section-header small {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
     .cuentas-cobro-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 10px;
+      grid-template-columns: repeat(auto-fill, minmax(255px, 1fr));
+      gap: 9px;
+      max-height: 232px;
+      overflow-y: auto;
+      padding: 2px 5px 2px 1px;
+      overscroll-behavior: contain;
     }
 
     .cuenta-cobro-item {
       border: 1px solid var(--border);
-      border-radius: 14px;
+      border-radius: 12px;
       background: #fff;
-      padding: 12px;
+      padding: 10px 11px;
       display: grid;
       gap: 8px;
+      min-height: 116px;
+      box-shadow: 0 8px 18px rgba(31, 11, 63, 0.05);
     }
 
-    .cuenta-cobro-top,
-    .cuenta-cobro-row {
+    .cuenta-cobro-item.sin-cuenta {
+      background: #fbfbfd;
+      border-style: dashed;
+      opacity: 0.78;
+    }
+
+    .cuenta-cobro-top {
       display: flex;
       justify-content: space-between;
-      align-items: center;
+      align-items: flex-start;
       gap: 10px;
     }
 
+    .cuenta-cobro-title {
+      min-width: 0;
+    }
+
     .cuenta-cobro-top strong {
+      display: block;
+      font-size: 14px;
+      line-height: 1.15;
       overflow-wrap: anywhere;
     }
 
-    .cuenta-cobro-row {
+    .cuenta-cobro-subtipo {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
       color: var(--muted);
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 700;
+      margin-top: 5px;
+    }
+
+    .cuenta-cobro-subtipo span {
+      border: 1px solid #edf0f5;
+      border-radius: 999px;
+      padding: 2px 6px;
+      background: #f7f8fc;
+      white-space: nowrap;
+    }
+
+    .cuenta-cobro-values {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 5px 8px;
+    }
+
+    .cuenta-cobro-metric {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8px;
+      border: 0;
+      border-radius: 0;
+      padding: 0;
+      background: transparent;
+      min-width: 0;
+    }
+
+    .cuenta-cobro-metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .cuenta-cobro-metric strong {
+      display: block;
+      margin-top: 2px;
+      font-size: 12px;
+      font-weight: 900;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .cuenta-cobro-balance {
-      font-size: 18px;
+      align-self: flex-start;
+      border-radius: 999px;
+      padding: 5px 8px;
+      font-size: 15px;
       font-weight: 900;
+      line-height: 1.15;
+      white-space: nowrap;
     }
 
     .cuenta-cobro-balance.negativo {
       color: var(--danger);
+      background: rgba(224, 82, 82, 0.10);
     }
 
     .cuenta-cobro-balance.positivo {
       color: var(--success);
+      background: rgba(34, 163, 90, 0.10);
     }
 
     .cuenta-cobro-status {
@@ -742,6 +834,11 @@
       color: var(--warning);
     }
 
+    .cuenta-cobro-status.diferencia.fuerte {
+      background: rgba(224, 82, 82, 0.12);
+      color: var(--danger);
+    }
+
     .cuenta-cobro-status.pendiente {
       background: #eef1f7;
       color: var(--muted);
@@ -749,17 +846,66 @@
 
     .cuenta-cobro-actions {
       display: flex;
-      justify-content: space-between;
+      justify-content: flex-end;
       align-items: center;
       gap: 8px;
-      margin-top: 2px;
+      margin-top: 0;
+    }
+
+    .cuenta-cobro-movimientos {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .cuenta-cobro-actions .button {
+      padding: 6px 9px;
+      min-height: 30px;
+    }
+
+    .cuenta-cobro-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .status-card-layout > div:first-child h3 {
+      color: var(--muted);
+      font-size: 15px;
+      font-weight: 800;
     }
 
     .method-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 12px;
-      margin-top: 14px;
+      gap: 6px;
+      margin-top: 8px;
+      opacity: 0.72;
+    }
+
+    .method-grid .mini-card {
+      padding: 8px;
+      min-height: auto;
+      background: #fbfbfe;
+    }
+
+    .method-secondary {
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+      margin-top: 2px;
+    }
+
+    .method-secondary h3 {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
     }
 
     .status-side {
@@ -2091,6 +2237,20 @@
         padding: 16px 20px;
       }
 
+      .cuentas-cobro-grid {
+        max-height: 330px;
+      }
+
+      .cuenta-cobro-actions {
+        justify-content: stretch;
+        align-items: stretch;
+      }
+
+      .cuenta-cobro-actions .button,
+      .cuenta-cobro-status {
+        width: 100%;
+      }
+
       .field-grid,
       .field-grid.two,
       .field-grid.five,
@@ -2322,7 +2482,7 @@
             </div>
 
             <div class="status-card-layout">
-              <div>
+              <div class="method-secondary">
                 <h3 style="margin: 0;">Resumen por metodo</h3>
                 <div class="method-grid">
                   <div class="mini-card">
@@ -2527,10 +2687,11 @@
                   <th>Metodo</th>
                   <th>Importe</th>
                   <th>Usuario</th>
+                  <th>Acciones</th>
                 </tr>
               </thead>
               <tbody id="tablaMovimientosBody">
-                <tr><td colspan="7">Cargando movimientos...</td></tr>
+                <tr><td colspan="8">Cargando movimientos...</td></tr>
               </tbody>
             </table>
           </div>
@@ -3238,7 +3399,10 @@
     let cajaResumenCuentasActual = null;
     let resumenCuentasCobroActual = [];
     let conciliacionesCuentasActuales = [];
+    let cuentasCobroCatalogo = [];
     let tipoMovimientoCajaActivo = "ingreso";
+    let movimientoCajaEditando = null;
+    let movimientoCajaClave = "";
     let toastTimer = null;
 
     function mostrarMensaje(texto, esError = false) {
@@ -4005,6 +4169,8 @@
     }
 
     function abrirMovimientoCaja(tipo) {
+      movimientoCajaEditando = null;
+      movimientoCajaClave = "";
       tipoMovimientoCajaActivo = tipo;
       const esIngreso = tipo === "ingreso";
       movimientoCajaTitulo.innerText = esIngreso ? "Ingresar dinero" : "Retirar dinero";
@@ -4020,6 +4186,35 @@
       movimientoCajaMonto.focus();
     }
 
+    function esMovimientoCajaManual(movimiento) {
+      return ["caja_movimiento_ingreso", "caja_movimiento_egreso"].includes(String(movimiento.tipo_operacion || ""));
+    }
+
+    function editarMovimientoCaja(movimiento) {
+      if (!esMovimientoCajaManual(movimiento)) {
+        mostrarMensaje("Solo se pueden editar movimientos manuales de caja.", true);
+        mostrarToast("Solo se pueden editar movimientos manuales de caja.", true);
+        return;
+      }
+
+      const clave = window.prompt("Ingresa la clave maestra para editar el movimiento:");
+      if (!clave) return;
+
+      movimientoCajaEditando = movimiento;
+      movimientoCajaClave = clave.trim();
+      tipoMovimientoCajaActivo = getMovimientoTipo(movimiento);
+      const esIngreso = tipoMovimientoCajaActivo === "ingreso";
+      movimientoCajaTitulo.innerText = "Editar movimiento de caja";
+      movimientoCajaAyuda.innerText = "La edicion requiere clave maestra y solo aplica a la caja abierta.";
+      confirmarMovimientoCaja.className = esIngreso ? "button success" : "button warning";
+      confirmarMovimientoCaja.innerText = "Guardar cambios";
+      movimientoCajaMonto.value = Number(movimiento.total || movimiento.monto || 0);
+      movimientoCajaConcepto.value = movimiento.concepto || movimiento.descripcion || "";
+      movimientoCajaUsuario.value = getMovimientoUsuario(movimiento) || "admin";
+      abrirModal(modalMovimientoCaja);
+      movimientoCajaMonto.focus();
+    }
+
     async function registrarMovimientoCaja() {
       const payload = {
         tipo: tipoMovimientoCajaActivo,
@@ -4027,6 +4222,10 @@
         concepto: movimientoCajaConcepto.value.trim(),
         usuario: movimientoCajaUsuario.value.trim() || "admin"
       };
+      const esEdicion = Boolean(movimientoCajaEditando);
+      if (esEdicion) {
+        payload.clave = movimientoCajaClave;
+      }
 
       if (payload.monto <= 0) {
         mostrarMensaje("El monto debe ser mayor a cero", true);
@@ -4041,11 +4240,11 @@
       }
 
       confirmarMovimientoCaja.disabled = true;
-      mostrarMensaje("Registrando movimiento de caja...");
+      mostrarMensaje(esEdicion ? "Actualizando movimiento de caja..." : "Registrando movimiento de caja...");
 
       try {
-        const res = await fetch("/caja/movimientos", {
-          method: "POST",
+        const res = await fetch(esEdicion ? `/caja/movimientos/${movimientoCajaEditando.id}` : "/caja/movimientos", {
+          method: esEdicion ? "PUT" : "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
         });
@@ -4058,8 +4257,10 @@
         }
 
         cerrarModal(modalMovimientoCaja);
-        mostrarMensaje(data.message || "Movimiento registrado");
-        mostrarToast(data.message || "Movimiento de caja registrado.");
+        movimientoCajaEditando = null;
+        movimientoCajaClave = "";
+        mostrarMensaje(data.message || (esEdicion ? "Movimiento actualizado" : "Movimiento registrado"));
+        mostrarToast(data.message || (esEdicion ? "Movimiento de caja actualizado." : "Movimiento de caja registrado."));
         await cargarCaja();
       } catch (error) {
         console.error("Error al registrar movimiento de caja:", error);
@@ -4075,7 +4276,7 @@
       movimientosFiltrados = Array.isArray(movimientos) ? movimientos : [];
 
       if (!movimientosFiltrados.length) {
-        tablaMovimientosBody.innerHTML = '<tr><td colspan="7">Sin movimientos.</td></tr>';
+        tablaMovimientosBody.innerHTML = '<tr><td colspan="8">Sin movimientos.</td></tr>';
         movimientosPageInfo.innerText = "Sin movimientos.";
         movimientosPagination.innerHTML = "";
         return;
@@ -4092,6 +4293,7 @@
         const origenMap = { venta: "Venta", pago: "Pago", cobro: "Cobro", caja: "Caja" };
         const origen = origenMap[getMovimientoOrigen(movimiento)] || "Venta";
         const descripcion = buildOperacionDescripcion(movimiento);
+        const puedeEditar = esMovimientoCajaManual(movimiento);
         const row = document.createElement("tr");
         row.innerHTML = `
           <td>${movimiento.hora || "-"}</td>
@@ -4101,7 +4303,12 @@
           <td>${movimiento.tipo_cobro || "-"}</td>
           <td>${money(movimiento.total)}</td>
           <td>${getMovimientoUsuario(movimiento)}</td>
+          <td>${puedeEditar ? '<button type="button" class="button secondary compact" data-editar-movimiento>Editar</button>' : "-"}</td>
         `;
+        const botonEditar = row.querySelector("[data-editar-movimiento]");
+        if (botonEditar) {
+          botonEditar.addEventListener("click", () => editarMovimientoCaja(movimiento));
+        }
         tablaMovimientosBody.appendChild(row);
       });
 
@@ -4538,12 +4745,50 @@
 
     function getConciliacionEstado(conciliacion) {
       if (!conciliacion) {
-        return { clase: "pendiente", texto: "Sin conciliacion" };
+        return { clase: "pendiente", texto: "Pendiente" };
       }
       if (conciliacion.estado === "conciliado") {
         return { clase: "conciliado", texto: "Conciliado" };
       }
-      return { clase: "diferencia", texto: `Diferencia ${money(conciliacion.diferencia)}` };
+      const diferencia = Number(conciliacion.diferencia || 0);
+      return {
+        clase: `diferencia ${Math.abs(diferencia) >= 1000 ? "fuerte" : ""}`.trim(),
+        texto: `Dif. ${money(diferencia)}`
+      };
+    }
+
+    function cuentaCobroMeta(cuenta) {
+      const id = Number(cuenta?.cuenta_cobro_id);
+      if (!Number.isFinite(id)) return null;
+      return cuentasCobroCatalogo.find((item) => Number(item.id) === id) || null;
+    }
+
+    function etiquetaMetodoCuenta(codigo) {
+      const key = String(codigo || "").toLowerCase();
+      const labels = {
+        efectivo: "Efectivo",
+        debito: "Deb / Cred",
+        credito: "Cred",
+        transferencia: "Transferencia",
+        qr: "QR",
+        billetera: "Billetera",
+        mixto: "Mixto"
+      };
+      return labels[key] || (key ? key.replace(/_/g, " ") : "");
+    }
+
+    function etiquetasSubtipoCuenta(cuenta) {
+      const key = getCuentaCobroKey(cuenta);
+      if (key === "sin-cuenta") return ["Sin asignar"];
+      const meta = cuentaCobroMeta(cuenta);
+      const etiquetas = [];
+      const metodo = etiquetaMetodoCuenta(meta?.tipo_pago_codigo || cuenta.tipo_pago_codigo);
+      if (metodo) etiquetas.push(metodo);
+      const tipoCuenta = String(meta?.tipo_cuenta || cuenta.tipo_cuenta || "").trim();
+      if (tipoCuenta) etiquetas.push(tipoCuenta.replace(/_/g, " "));
+      const proveedor = String(meta?.proveedor_integracion || cuenta.proveedor_integracion || "").trim();
+      if (proveedor && proveedor !== tipoCuenta) etiquetas.push(proveedor.replace(/_/g, " "));
+      return etiquetas.length ? [...new Set(etiquetas)].slice(0, 3) : ["Cuenta / terminal"];
     }
 
     function actualizarDiferenciaConciliacion() {
@@ -4610,24 +4855,42 @@
         return;
       }
 
-      const ordenados = [...items].sort((a, b) => Number(b.balance || 0) - Number(a.balance || 0));
+      const ordenados = [...items].sort((a, b) => {
+        const aSinCuenta = getCuentaCobroKey(a) === "sin-cuenta";
+        const bSinCuenta = getCuentaCobroKey(b) === "sin-cuenta";
+        if (aSinCuenta !== bSinCuenta) return aSinCuenta ? 1 : -1;
+        return Number(b.balance || 0) - Number(a.balance || 0);
+      });
       grid.innerHTML = ordenados.map((cuenta) => {
         const balance = Number(cuenta.balance || 0);
         const claseBalance = balance < 0 ? "negativo" : "positivo";
         const conciliacion = getConciliacionPorCuenta(cuenta);
         const estado = getConciliacionEstado(conciliacion);
         const key = getCuentaCobroKey(cuenta);
+        const esSinCuenta = key === "sin-cuenta";
+        const subtipo = etiquetasSubtipoCuenta(cuenta).map((etiqueta) => `<span>${etiqueta}</span>`).join("");
+        const signoIngresos = Number(cuenta.ingresos || 0) > 0 ? "+" : "";
+        const signoEgresos = Number(cuenta.egresos || 0) > 0 ? "-" : "";
         return `
-          <div class="cuenta-cobro-item">
+          <div class="cuenta-cobro-item ${esSinCuenta ? "sin-cuenta" : ""}">
             <div class="cuenta-cobro-top">
-              <strong>${cuenta.cuenta_nombre || "Sin cuenta"}</strong>
-              <span class="cuenta-cobro-balance ${claseBalance}">${money(balance)}</span>
+              <div class="cuenta-cobro-title">
+                <strong>${cuenta.cuenta_nombre || "Sin cuenta"}</strong>
+                <span class="cuenta-cobro-subtipo">${subtipo}</span>
+              </div>
+              <span class="cuenta-cobro-balance ${claseBalance}">= ${money(balance)}</span>
             </div>
-            <div class="cuenta-cobro-row"><span>Ingresos</span><strong>${money(cuenta.ingresos)}</strong></div>
-            <div class="cuenta-cobro-row"><span>Egresos</span><strong>${money(cuenta.egresos)}</strong></div>
-            <div class="cuenta-cobro-row"><span>Movimientos</span><strong>${Number(cuenta.ventas || 0)} ventas · ${Number(cuenta.pagos || 0)} pagos</strong></div>
-            <div class="cuenta-cobro-actions">
+            <div class="cuenta-cobro-values">
+              <div class="cuenta-cobro-metric"><span>Ingresos</span><strong class="positive-text">${signoIngresos}${money(cuenta.ingresos)}</strong></div>
+              <div class="cuenta-cobro-metric"><span>Egresos</span><strong class="negative-text">${signoEgresos}${money(cuenta.egresos)}</strong></div>
+              <div class="cuenta-cobro-metric"><span>Ventas</span><strong>${Number(cuenta.ventas || 0)}</strong></div>
+              <div class="cuenta-cobro-metric"><span>Pagos</span><strong>${Number(cuenta.pagos || 0)}</strong></div>
+            </div>
+            <div class="cuenta-cobro-footer">
+              <span class="cuenta-cobro-movimientos">${Number(cuenta.ventas || 0)} ventas · ${Number(cuenta.pagos || 0)} pagos</span>
               <span class="cuenta-cobro-status ${estado.clase}">${estado.texto}</span>
+            </div>
+            <div class="cuenta-cobro-actions">
               <button type="button" class="button secondary compact" data-conciliar-cuenta="${key}">Conciliar</button>
             </div>
           </div>
@@ -4643,9 +4906,16 @@
       const card = document.getElementById("resumenCuentasCobroCard");
       try {
         const url = cajaId ? `/caja/resumen/cuentas?caja_id=${encodeURIComponent(cajaId)}` : "/caja/resumen/cuentas";
-        const res = await fetch(url);
+        const [res, cuentasRes] = await Promise.all([
+          fetch(url),
+          fetch("/cuentas_cobro?todos=1").catch(() => null)
+        ]);
         if (!res.ok) throw new Error("No se pudo obtener resumen por cuenta");
         const data = await res.json();
+        if (cuentasRes.ok) {
+          const cuentasData = await cuentasRes.json();
+          cuentasCobroCatalogo = Array.isArray(cuentasData) ? cuentasData : [];
+        }
         cajaResumenCuentasActual = data.caja || null;
         resumenCuentasCobroActual = Array.isArray(data.cuentas) ? data.cuentas : [];
         try {
