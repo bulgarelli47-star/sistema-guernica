@@ -1490,6 +1490,10 @@
                 <span>Ahorraste</span>
                 <strong>$<span id="ticketDescuento">0.00</span></strong>
               </div>
+              <div class="summary-line hidden" id="ticketRecargoLinea">
+                <span>Recargo</span>
+                <strong>$<span id="ticketRecargo">0.00</span></strong>
+              </div>
               <div class="summary-line total">
                 <span>Total</span>
                 <strong>$<span id="ticketTotal">0.00</span></strong>
@@ -1548,6 +1552,10 @@
                 <select id="cuentaCobroVenta" class="field">
                   <option value="">Sin asignar</option>
                 </select>
+              </div>
+              <div id="cuotasVentaWrap" class="hidden">
+                <label class="muted" for="cuotasVenta">Cuotas</label>
+                <select id="cuotasVenta" class="field"></select>
               </div>
             </div>
 
@@ -1740,6 +1748,8 @@
     const ticketVacio = document.getElementById("ticketVacio");
     const ticketSubtotal = document.getElementById("ticketSubtotal");
     const ticketDescuento = document.getElementById("ticketDescuento");
+    const ticketRecargoLinea = document.getElementById("ticketRecargoLinea");
+    const ticketRecargo = document.getElementById("ticketRecargo");
     const ticketTotal = document.getElementById("ticketTotal");
     const tipoCobroNormal = document.getElementById("tipoCobroNormal");
     const montosMixtosNormal = document.getElementById("montosMixtosNormal");
@@ -1748,6 +1758,8 @@
     const esCuentaCorriente = document.getElementById("esCuentaCorriente");
     const cuentaCobroVenta = document.getElementById("cuentaCobroVenta");
     const cuentaCobroVentaWrap = document.getElementById("cuentaCobroVentaWrap");
+    const cuotasVenta = document.getElementById("cuotasVenta");
+    const cuotasVentaWrap = document.getElementById("cuotasVentaWrap");
     const paymentButtons = document.getElementById("paymentButtons");
     const ticketsPendientes = document.getElementById("ticketsPendientes");
     const ticketsAnulados = document.getElementById("ticketsAnulados");
@@ -1797,6 +1809,8 @@
     let pendingDirty = false;
     let selectedCategory = "Todos";
     let selectedPaymentMode = "efectivo";
+    let tiposPagoVentas = [];
+    let recargoVentaActual = { porcentaje: 0, monto: 0, cuotas: null, total: 0 };
     let notificationCounter = 0;
     let ultimaVistaVendidos = [];
     let ultimaVistaCombos = [];
@@ -1821,6 +1835,7 @@
         "ticket pendiente guardado",
         "ticket pendiente cobrado",
         "ticket pendiente anulado",
+        "ticket actualizado",
         "pendiente abierto",
         "cuenta corriente saldada",
         "pago registrado"
@@ -1870,6 +1885,48 @@
         badge.textContent = _notifCount > 99 ? "99+" : _notifCount;
         badge.style.display = "block";
       }
+    }
+
+    function mostrarToastSistema(texto, esError = false) {
+      let toast = document.getElementById("ventasToastSistema");
+      if (!toast) {
+        const style = document.createElement("style");
+        style.textContent = `
+          .ventas-toast-sistema {
+            position: fixed;
+            right: 22px;
+            bottom: 22px;
+            z-index: 5000;
+            max-width: 360px;
+            padding: 13px 16px;
+            border-radius: 14px;
+            background: #111827;
+            color: #fff;
+            box-shadow: 0 16px 35px rgba(17,24,39,.22);
+            font-weight: 800;
+            opacity: 0;
+            transform: translateY(12px);
+            pointer-events: none;
+            transition: opacity .18s ease, transform .18s ease;
+          }
+          .ventas-toast-sistema.open { opacity: 1; transform: translateY(0); }
+          .ventas-toast-sistema.error { background: #b91c1c; }
+          .ventas-toast-sistema.success { background: #166534; }
+        `;
+        document.head.appendChild(style);
+        toast = document.createElement("div");
+        toast.id = "ventasToastSistema";
+        toast.className = "ventas-toast-sistema";
+        toast.setAttribute("role", "status");
+        toast.setAttribute("aria-live", "polite");
+        document.body.appendChild(toast);
+      }
+      clearTimeout(mostrarToastSistema.timer);
+      toast.textContent = texto;
+      toast.className = `ventas-toast-sistema open ${esError ? "error" : "success"}`;
+      mostrarToastSistema.timer = setTimeout(() => {
+        toast.className = `ventas-toast-sistema ${esError ? "error" : "success"}`;
+      }, 2800);
     }
 
     function escapeHtml(value) {
@@ -2164,10 +2221,56 @@
       return `Auto guardado ${fecha} ${hora}`;
     }
 
-    function getTicketTotal() {
+    function getTicketSubtotalBase() {
       return Number(
         ticket.reduce((acc, item) => acc + item.cantidad * Number(item.precio_venta || 0), 0).toFixed(2)
       );
+    }
+
+    function getTicketTotal() {
+      return Number((Number(recargoVentaActual.total) || getTicketSubtotalBase()).toFixed(2));
+    }
+
+    function getMetodoPagoActual() {
+      return tiposPagoVentas.find((tipo) => tipo.codigo === tipoCobroNormal.value) || null;
+    }
+
+    function parseCuotasMetodo(value) {
+      try {
+        const parsed = typeof value === "string" ? JSON.parse(value || "[]") : value;
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function calcularRecargoFrontend(subtotal) {
+      if (esCuentaCorriente.checked || tipoCobroNormal.value === "mixto") {
+        return { porcentaje: 0, monto: 0, cuotas: null, total: subtotal };
+      }
+      const metodo = getMetodoPagoActual();
+      if (!metodo) {
+        return { porcentaje: 0, monto: 0, cuotas: null, total: subtotal };
+      }
+
+      let porcentaje = Number(metodo.usa_recargo) === 1 ? Number(metodo.porcentaje_recargo || 0) : 0;
+      let cuotas = null;
+      if (Number(metodo.permite_cuotas) === 1 && cuotasVenta?.value) {
+        const config = parseCuotasMetodo(metodo.cuotas_json);
+        const seleccion = Number(cuotasVenta.value) || 0;
+        const cuota = config.find((item) => Number(item.cuotas) === seleccion);
+        if (cuota) {
+          porcentaje = Number(cuota.recargo || 0);
+          cuotas = seleccion;
+        }
+      }
+      const monto = Number((subtotal * Math.max(0, porcentaje) / 100).toFixed(2));
+      return {
+        porcentaje: Number(Math.max(0, porcentaje).toFixed(2)),
+        monto,
+        cuotas,
+        total: Number((subtotal + monto).toFixed(2))
+      };
     }
 
     function crearSnapshotTicket(ventaId, cobro) {
@@ -2275,6 +2378,10 @@
         };
       }
 
+      if (tipoCobro) {
+        return { tipo_cobro: tipoCobro, monto_efectivo: 0, monto_debito: total };
+      }
+
       return null;
     }
 
@@ -2325,10 +2432,20 @@
       const cuentaCorrienteActiva = esCuentaCorriente.checked;
       const esMixto = tipoCobroNormal.value === "mixto" && !cuentaCorrienteActiva;
       const esEfectivo = tipoCobroNormal.value === "efectivo" && !cuentaCorrienteActiva;
+      const metodo = getMetodoPagoActual();
+      const cuotasConfig = metodo && Number(metodo.permite_cuotas) === 1 ? parseCuotasMetodo(metodo.cuotas_json) : [];
 
       montosMixtosNormal.classList.toggle("hidden", !esMixto);
       recibidoWrapper.classList.toggle("hidden", !esEfectivo);
       cuentaCobroVentaWrap?.classList.toggle("hidden", esMixto || cuentaCorrienteActiva || cuentaCobroVenta.options.length <= 1);
+      if (cuotasVenta && cuotasVentaWrap) {
+        cuotasVentaWrap.classList.toggle("hidden", cuentaCorrienteActiva || esMixto || cuotasConfig.length === 0);
+        const valorActual = cuotasVenta.value;
+        cuotasVenta.innerHTML = cuotasConfig.map((item) => `<option value="${Number(item.cuotas) || 1}">${Number(item.cuotas) || 1} cuota${Number(item.cuotas) === 1 ? "" : "s"} (${Number(item.recargo || 0)}%)</option>`).join("");
+        if (valorActual && [...cuotasVenta.options].some((opt) => opt.value === valorActual)) {
+          cuotasVenta.value = valorActual;
+        }
+      }
 
       montoEfectivoNormal.disabled = !esMixto;
       montoDebitoNormal.disabled = !esMixto;
@@ -2344,6 +2461,7 @@
       }
 
       actualizarVuelto();
+      renderizarTicket();
     }
 
     function actualizarAccionesTicket() {
@@ -2396,7 +2514,10 @@
         ticketVacio.style.display = "block";
         ticketSubtotal.innerText = "0.00";
         ticketDescuento.innerText = "0.00";
+        ticketRecargo.innerText = "0.00";
+        ticketRecargoLinea.classList.add("hidden");
         ticketTotal.innerText = "0.00";
+        recargoVentaActual = { porcentaje: 0, monto: 0, cuotas: null, total: 0 };
         actualizarVuelto();
         return;
       }
@@ -2469,9 +2590,12 @@
         ticketLista.appendChild(row);
       });
 
+      recargoVentaActual = calcularRecargoFrontend(Number(total.toFixed(2)));
       ticketSubtotal.innerText = formatearNumero(subtotalBruto);
       ticketDescuento.innerText = formatearNumero(totalDescuento);
-      ticketTotal.innerText = formatearNumero(total);
+      ticketRecargo.innerText = formatearNumero(recargoVentaActual.monto);
+      ticketRecargoLinea.classList.toggle("hidden", recargoVentaActual.monto <= 0);
+      ticketTotal.innerText = formatearNumero(recargoVentaActual.total);
       actualizarVuelto();
     }
 
@@ -2883,6 +3007,51 @@
       }
     }
 
+    function iconoMetodoPago(codigo) {
+      if (codigo === "efectivo") return "icon-money";
+      if (codigo === "debito" || codigo === "credito") return "icon-card";
+      if (codigo === "transferencia") return "icon-bank";
+      if (codigo === "mixto") return "icon-split";
+      return "icon-card";
+    }
+
+    function etiquetaMetodoPago(tipo) {
+      const nombre = String(tipo.nombre || tipo.codigo || "").trim();
+      if (!nombre) return tipo.codigo;
+      return nombre.length > 9 ? nombre.slice(0, 9) : nombre;
+    }
+
+    function renderMetodosPagoVentas() {
+      if (!paymentButtons) return;
+      const tipos = tiposPagoVentas.length ? tiposPagoVentas : [
+        { codigo: "efectivo", nombre: "Eft" },
+        { codigo: "debito", nombre: "Deb" },
+        { codigo: "transferencia", nombre: "Transf" },
+        { codigo: "mixto", nombre: "Mixto" }
+      ];
+      paymentButtons.innerHTML = tipos.map((tipo) => `
+        <button type="button" class="payment-button ${selectedPaymentMode === tipo.codigo ? "active" : ""}" data-payment="${tipo.codigo}">
+          <strong><span class="app-icon ${iconoMetodoPago(tipo.codigo)}" aria-hidden="true"></span> ${escapeHtml(etiquetaMetodoPago(tipo))}</strong>
+        </button>
+      `).join("") + `
+        <button type="button" class="payment-button ${selectedPaymentMode === "cuenta_corriente" ? "active" : ""}" data-payment="cuenta_corriente">
+          <strong><span class="app-icon icon-account" aria-hidden="true"></span> Cta Cte</strong>
+        </button>
+      `;
+    }
+
+    async function cargarTiposPagoVentas() {
+      try {
+        const res = await fetch("/tipos_pago");
+        const data = res.ok ? await res.json() : [];
+        tiposPagoVentas = Array.isArray(data) ? data : [];
+      } catch {
+        tiposPagoVentas = [];
+      }
+      renderMetodosPagoVentas();
+      actualizarCobroNormalUI();
+    }
+
     async function cargarProductos() {
       try {
         const res = await fetch("/productos");
@@ -2989,6 +3158,8 @@
       pendingDirty = false;
       actualizarAccionesTicket();
       actualizarEstadoEditor();
+      mostrarMensaje("Ticket actualizado correctamente");
+      mostrarToastSistema("Ticket actualizado correctamente");
       return true;
     }
 
@@ -3054,11 +3225,13 @@
       const ok = await autoGuardarAntesDeSalir();
 
       if (!ok) {
-        window.alert("No se pudo auto-guardar el ticket pendiente antes de salir.");
+        mostrarMensaje("No se pudo auto-guardar el ticket pendiente antes de salir.", true, { notificar: true });
+        mostrarToastSistema("No se pudo auto-guardar el ticket pendiente antes de salir.", true);
         return;
       }
 
-      window.alert("El ticket actual se guardo automáticamente como pendiente antes de salir.");
+      mostrarMensaje("El ticket actual se guardo automaticamente como pendiente antes de salir.", false, { notificar: true });
+      mostrarToastSistema("El ticket actual se guardo automaticamente como pendiente antes de salir.");
       window.location.href = destino;
     }
 
@@ -3130,6 +3303,9 @@
             estado: "registrada",
             es_cuenta_corriente: esCuentaCorriente.checked,
             cuenta_cobro_id: cuentaCobroVenta?.value ? Number(cuentaCobroVenta.value) : null,
+            recargo_porcentaje: recargoVentaActual.porcentaje,
+            recargo_monto: recargoVentaActual.monto,
+            cuotas: recargoVentaActual.cuotas,
             ...cobro
           })
         });
@@ -3299,7 +3475,10 @@
             tipo_cobro: cobro.tipo_cobro,
             monto_efectivo: cobro.monto_efectivo,
             monto_debito: cobro.monto_debito,
-            cuenta_cobro_id: cuentaCobroId ? Number(cuentaCobroId) : null
+            cuenta_cobro_id: cuentaCobroId ? Number(cuentaCobroId) : null,
+            recargo_porcentaje: recargoVentaActual.porcentaje,
+            recargo_monto: recargoVentaActual.monto,
+            cuotas: recargoVentaActual.cuotas
           })
         });
 
@@ -3336,7 +3515,6 @@
         mostrarMensaje("No tenés permisos para anular tickets", true, { notificar: true });
         return;
       }
-      if (!window.confirm("¿Seguro que querés anular este ticket pendiente?")) return;
       _ventaParaAnular = ventaId;
       document.getElementById("anularClaveInput").value = "";
       document.getElementById("anularClaveError").style.display = "none";
@@ -3380,7 +3558,8 @@
         cerrarModalAnularClave();
         if (currentPendingId === ventaAnulada) resetTicketEditor();
         cerrarModal(modalPendientes);
-        mostrarMensaje(data.message || "Ticket pendiente anulado");
+        mostrarMensaje("Ticket anulado correctamente");
+        mostrarToastSistema("Ticket anulado correctamente");
         await cargarProductos();
         await cargarPendientes();
         await cargarHistorialAnulados();
@@ -3526,6 +3705,10 @@
           monto_efectivo: Number(efectivo.toFixed(2)),
           monto_debito: Number(debito.toFixed(2))
         };
+      }
+
+      if (tipoCobro) {
+        return { tipo_cobro: tipoCobro, monto_efectivo: 0, monto_debito: totalNormalizado };
       }
 
       return null;
@@ -3733,6 +3916,11 @@
     montoDebitoNormal.addEventListener("input", actualizarVuelto);
     montoRecibido.addEventListener("input", actualizarVuelto);
     cuentaCobroVenta?.addEventListener("change", marcarPendienteEditado);
+    cuotasVenta?.addEventListener("change", () => {
+      renderizarTicket();
+      actualizarVuelto();
+      marcarPendienteEditado();
+    });
     modalIdentificadorPendiente.addEventListener("keydown", function (event) {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -3816,7 +4004,7 @@
     actualizarEstadoEditor();
     actualizarAccionesTicket();
     actualizarCobroNormalUI();
-    cargarCuentasCobroVenta(tipoCobroNormal.value);
+    cargarTiposPagoVentas().then(() => cargarCuentasCobroVenta(tipoCobroNormal.value));
     cargarClientes();
     cargarConfiguracionVentas().finally(() => {
       cargarProductos();

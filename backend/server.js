@@ -66,6 +66,7 @@ const {
 const {
   getTiposPagoActivos,
   getTodosTiposPago,
+  calcularRecargoTipoPago,
   crearTipoPago,
   actualizarTipoPago,
   toggleActivoTipoPago,
@@ -302,9 +303,17 @@ async function ensureTiposPagoSchema() {
       impacta_digital INTEGER NOT NULL DEFAULT 0,
       permite_mixto INTEGER NOT NULL DEFAULT 0,
       requiere_caja_abierta INTEGER NOT NULL DEFAULT 1,
-      orden INTEGER NOT NULL DEFAULT 0
+      orden INTEGER NOT NULL DEFAULT 0,
+      usa_recargo INTEGER NOT NULL DEFAULT 0,
+      porcentaje_recargo REAL NOT NULL DEFAULT 0,
+      permite_cuotas INTEGER NOT NULL DEFAULT 0,
+      cuotas_json TEXT
     )
   `);
+  await ensureColumn("tipos_pago", "usa_recargo", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn("tipos_pago", "porcentaje_recargo", "REAL NOT NULL DEFAULT 0");
+  await ensureColumn("tipos_pago", "permite_cuotas", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn("tipos_pago", "cuotas_json", "TEXT");
   await seedTiposPagoDefaults();
 }
 
@@ -2666,7 +2675,15 @@ app.post("/tipos_pago", async (req, res) => {
   if (!/^[a-z0-9_]+$/.test(codigo)) return res.status(400).json({ message: "El código solo puede tener letras, números y guiones bajos" });
 
   try {
-    await crearTipoPago({ codigo, nombre, orden });
+    await crearTipoPago({
+      codigo,
+      nombre,
+      orden,
+      usa_recargo: req.body.usa_recargo,
+      porcentaje_recargo: req.body.porcentaje_recargo,
+      permite_cuotas: req.body.permite_cuotas,
+      cuotas_json: req.body.cuotas_json
+    });
     return res.json({ message: "Tipo de pago creado" });
   } catch (error) {
     if (String(error.message).includes("UNIQUE")) {
@@ -2686,7 +2703,14 @@ app.put("/tipos_pago/:id", async (req, res) => {
   if (!nombre) return res.status(400).json({ message: "El nombre es obligatorio" });
 
   try {
-    await actualizarTipoPago(id, { nombre, orden });
+    await actualizarTipoPago(id, {
+      nombre,
+      orden,
+      usa_recargo: req.body.usa_recargo,
+      porcentaje_recargo: req.body.porcentaje_recargo,
+      permite_cuotas: req.body.permite_cuotas,
+      cuotas_json: req.body.cuotas_json
+    });
     return res.json({ message: "Tipo de pago actualizado" });
   } catch (error) {
     logError("Error al actualizar tipo de pago:", error);
@@ -3068,7 +3092,8 @@ app.post("/ventas", async (req, res) => {
     tipo_cobro,
     monto_efectivo,
     monto_debito,
-    cuenta_cobro_id
+    cuenta_cobro_id,
+    cuotas
   } = req.body;
 
   if (!Array.isArray(items) || items.length === 0) {
@@ -3113,7 +3138,24 @@ app.post("/ventas", async (req, res) => {
     : esCuentaCorriente
       ? "cuenta_corriente_pendiente"
       : "cobrada";
-  const total = calculateTotal(itemsVenta);
+  const subtotalVenta = Number(calculateTotal(itemsVenta).toFixed(2));
+  let total = subtotalVenta;
+  let recargoVenta = {
+    porcentaje_recargo: 0,
+    recargo_monto: 0,
+    cuotas: null,
+    total
+  };
+
+  if (tipoVenta === "normal" && !esCuentaCorriente) {
+    const recargo = await calcularRecargoTipoPago({ tipoPagoCodigo: tipo_cobro, subtotal: subtotalVenta, cuotas });
+    if (!recargo.ok) {
+      return res.status(400).json({ message: recargo.message || "Metodo de cobro invalido" });
+    }
+    recargoVenta = recargo;
+    total = recargo.total;
+  }
+
   const { fecha, hora } = getNowParts();
   const usuarioVenta = usuario || "admin";
   const clienteId = cliente_id ? Number(cliente_id) : null;
@@ -3207,6 +3249,10 @@ app.post("/ventas", async (req, res) => {
     return res.json({
       message: tipoVenta === "pendiente" ? "Ticket pendiente guardado" : "Venta registrada",
       venta_id: venta.lastID,
+      subtotal: subtotalVenta,
+      recargo_porcentaje: recargoVenta.porcentaje_recargo,
+      recargo_monto: recargoVenta.recargo_monto,
+      cuotas: recargoVenta.cuotas,
       total
     });
   } catch (error) {
@@ -4636,8 +4682,18 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
       return res.status(400).json({ message: "No hay una caja abierta para cobrar el ticket" });
     }
 
+    const recargo = await calcularRecargoTipoPago({
+      tipoPagoCodigo: tipoCobro,
+      subtotal: Number(venta.total) || 0,
+      cuotas: req.body.cuotas
+    });
+
+    if (!recargo.ok) {
+      return res.status(400).json({ message: recargo.message || "Metodo de cobro invalido" });
+    }
+
     const cobroReal = resolveCobroData(
-      Number(venta.total) || 0,
+      recargo.total,
       tipoCobro,
       req.body.monto_efectivo,
       req.body.monto_debito
@@ -4656,9 +4712,10 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
 
     await runQuery(
       `UPDATE ventas
-       SET estado = 'cobrada', metodo_pago = ?, tipo_cobro = ?, monto_efectivo = ?, monto_debito = ?, caja_id = ?, cuenta_cobro_id = ?
+       SET estado = 'cobrada', total = ?, metodo_pago = ?, tipo_cobro = ?, monto_efectivo = ?, monto_debito = ?, caja_id = ?, cuenta_cobro_id = ?
        WHERE id = ?`,
       [
+        recargo.total,
         cobroReal.tipo_cobro,
         cobroReal.tipo_cobro,
         cobroReal.monto_efectivo,

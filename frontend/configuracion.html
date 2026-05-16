@@ -96,7 +96,7 @@
     </article>
   </div>
   <div class="modal" id="modalTipoPago" aria-hidden="true">
-    <article class="dialog" role="dialog" aria-modal="true" aria-labelledby="tipoPagoModalTitulo" style="width:min(480px,100%)">
+    <article class="dialog" role="dialog" aria-modal="true" aria-labelledby="tipoPagoModalTitulo" style="width:min(640px,100%)">
       <div class="dialog-head">
         <div><h2 id="tipoPagoModalTitulo">Nuevo tipo de pago</h2><p class="muted" id="tipoPagoModalSub">Completá los datos del nuevo método.</p></div>
         <button class="icon-button" id="cerrarModalTipoPago" type="button"><span class="app-icon icon-close" aria-hidden="true"></span></button>
@@ -105,6 +105,18 @@
         <label>Nombre<input id="tpNombre" placeholder="Ej: Cheque"></label>
         <label>Código<input id="tpCodigo" placeholder="Ej: cheque"><small style="color:var(--muted);font-weight:400;font-size:11px">Solo letras, números y guión bajo. No se puede cambiar luego.</small></label>
         <label>Orden (menor = primero)<input id="tpOrden" type="number" step="1" min="0" value="50"></label>
+      </div>
+      <div class="channel-group" style="margin-top:12px">
+        <h3>Recargos y cuotas</h3>
+        <div class="grid">
+          <label style="display:flex;gap:8px;align-items:center;min-height:42px"><input id="tpUsaRecargo" type="checkbox" style="width:auto"> Usa recargo</label>
+          <label>% recargo<input id="tpPorcentajeRecargo" type="number" step="0.01" min="0" value="0"></label>
+          <label style="display:flex;gap:8px;align-items:center;min-height:42px"><input id="tpPermiteCuotas" type="checkbox" style="width:auto"> Permite cuotas</label>
+        </div>
+        <div id="tpCuotasWrap" style="margin-top:10px;display:none">
+          <div id="tpCuotasEditor" style="display:grid;gap:8px"></div>
+          <button class="button secondary" id="tpAgregarCuota" type="button" style="margin-top:8px;padding:7px 10px;font-size:12px">Agregar cuota</button>
+        </div>
       </div>
       <p id="tpMensaje" style="min-height:20px;font-weight:700;margin:10px 0 0;font-size:13px"></p>
       <div class="dialog-actions">
@@ -224,9 +236,60 @@
     // ── Administración de tipos de pago ──────────────────────────
     let tiposPagoActuales = [];
     let tipoPagoEditandoId = null;
+    let tipoPagoCuotas = [];
 
     function tpBadge(label, color) {
       return `<span style="display:inline-flex;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:800;background:${color.bg};color:${color.fg};margin-right:3px">${label}</span>`;
+    }
+
+    function parseCuotasTipoPago(value) {
+      try {
+        const parsed = typeof value === "string" ? JSON.parse(value || "[]") : value;
+        return Array.isArray(parsed)
+          ? parsed.map(item => ({
+              cuotas: Math.max(1, Math.trunc(Number(item.cuotas) || 0)),
+              recargo: Math.max(0, Number(item.recargo) || 0)
+            })).filter(item => item.cuotas > 0)
+          : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function renderCuotasTipoPago() {
+      const editor = $("tpCuotasEditor");
+      if (!editor) return;
+      if (!tipoPagoCuotas.length) {
+        tipoPagoCuotas = [{ cuotas: 1, recargo: 0 }];
+      }
+      editor.innerHTML = tipoPagoCuotas.map((item, index) => `
+        <div class="field-grid" style="grid-template-columns:1fr 1fr auto;align-items:end">
+          <label>Cuotas<input type="number" min="1" step="1" value="${item.cuotas}" data-tp-cuota="${index}"></label>
+          <label>% recargo<input type="number" min="0" step="0.01" value="${item.recargo}" data-tp-recargo-cuota="${index}"></label>
+          <button class="button ghost" type="button" data-tp-quitar-cuota="${index}" style="padding:9px 10px">Quitar</button>
+        </div>
+      `).join("");
+      editor.querySelectorAll("[data-tp-cuota]").forEach(input => {
+        input.oninput = () => { tipoPagoCuotas[Number(input.dataset.tpCuota)].cuotas = Math.max(1, Math.trunc(Number(input.value) || 1)); };
+      });
+      editor.querySelectorAll("[data-tp-recargo-cuota]").forEach(input => {
+        input.oninput = () => { tipoPagoCuotas[Number(input.dataset.tpRecargoCuota)].recargo = Math.max(0, Number(input.value) || 0); };
+      });
+      editor.querySelectorAll("[data-tp-quitar-cuota]").forEach(btn => {
+        btn.onclick = () => {
+          tipoPagoCuotas.splice(Number(btn.dataset.tpQuitarCuota), 1);
+          renderCuotasTipoPago();
+        };
+      });
+    }
+
+    function actualizarRecargoTipoPagoUI() {
+      const usaRecargo = $("tpUsaRecargo").checked;
+      const permiteCuotas = $("tpPermiteCuotas").checked;
+      $("tpPorcentajeRecargo").disabled = !usaRecargo;
+      if (!usaRecargo) $("tpPorcentajeRecargo").value = "0";
+      $("tpCuotasWrap").style.display = permiteCuotas ? "block" : "none";
+      if (permiteCuotas) renderCuotasTipoPago();
     }
 
     function renderTiposPago() {
@@ -240,7 +303,9 @@
         const badges = [
           t.impacta_caja   ? tpBadge("Caja",    {bg:"var(--primary-soft)",         fg:"var(--primary)"}) : "",
           t.impacta_digital? tpBadge("Digital",  {bg:"rgba(52,120,246,.1)",         fg:"#3478f6"})        : "",
-          t.permite_mixto  ? tpBadge("Mixto",    {bg:"rgba(217,154,33,.14)",        fg:"#d99a21"})        : ""
+          t.permite_mixto  ? tpBadge("Mixto",    {bg:"rgba(217,154,33,.14)",        fg:"#d99a21"})        : "",
+          Number(t.usa_recargo) === 1 ? tpBadge(`+${Number(t.porcentaje_recargo || 0)}%`, {bg:"rgba(224,82,82,.12)", fg:"#e05252"}) : "",
+          Number(t.permite_cuotas) === 1 ? tpBadge("Cuotas", {bg:"rgba(84,62,180,.12)", fg:"#543eb4"}) : ""
         ].filter(Boolean).join("");
         const activo = Number(t.activo) === 1;
         const esDefault = ["efectivo", "debito", "transferencia", "mixto"].includes(t.codigo);
@@ -272,6 +337,11 @@
           $("tpCodigo").value = t.codigo;
           $("tpCodigo").disabled = true;
           $("tpOrden").value = t.orden;
+          $("tpUsaRecargo").checked = Number(t.usa_recargo) === 1;
+          $("tpPorcentajeRecargo").value = Number(t.porcentaje_recargo || 0);
+          $("tpPermiteCuotas").checked = Number(t.permite_cuotas) === 1;
+          tipoPagoCuotas = parseCuotasTipoPago(t.cuotas_json);
+          actualizarRecargoTipoPagoUI();
           $("tpMensaje").textContent = "";
           abrirModal($("modalTipoPago"));
           $("tpNombre").focus();
@@ -339,13 +409,23 @@
       if (!nombre) { tpMsg.style.color = "var(--danger)"; tpMsg.textContent = "El nombre es obligatorio"; return; }
       if (!tipoPagoEditandoId && !codigo) { tpMsg.style.color = "var(--danger)"; tpMsg.textContent = "El código es obligatorio"; return; }
 
+      const permiteCuotas = $("tpPermiteCuotas").checked;
+      const recargoPayload = {
+        usa_recargo: $("tpUsaRecargo").checked,
+        porcentaje_recargo: Number($("tpPorcentajeRecargo").value) || 0,
+        permite_cuotas: permiteCuotas,
+        cuotas_json: permiteCuotas ? JSON.stringify(tipoPagoCuotas.map(item => ({
+          cuotas: Math.max(1, Math.trunc(Number(item.cuotas) || 1)),
+          recargo: Math.max(0, Number(item.recargo) || 0)
+        }))) : null
+      };
       const btn = $("guardarTipoPagoBtn");
       btn.disabled = true;
       tpMsg.textContent = "";
       try {
         const url    = tipoPagoEditandoId ? `/tipos_pago/${tipoPagoEditandoId}` : "/tipos_pago";
         const method = tipoPagoEditandoId ? "PUT" : "POST";
-        const body   = tipoPagoEditandoId ? { nombre, orden } : { nombre, codigo, orden };
+        const body   = tipoPagoEditandoId ? { nombre, orden, ...recargoPayload } : { nombre, codigo, orden, ...recargoPayload };
         const res    = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
         const data   = await res.json();
         if (!res.ok) { tpMsg.style.color = "var(--danger)"; tpMsg.textContent = data.message || "Error al guardar"; return; }
@@ -368,6 +448,11 @@
       $("tpCodigo").value = "";
       $("tpCodigo").disabled = false;
       $("tpOrden").value = "50";
+      $("tpUsaRecargo").checked = false;
+      $("tpPorcentajeRecargo").value = "0";
+      $("tpPermiteCuotas").checked = false;
+      tipoPagoCuotas = [{ cuotas: 1, recargo: 0 }];
+      actualizarRecargoTipoPagoUI();
       $("tpMensaje").textContent = "";
       abrirModal($("modalTipoPago"));
       $("tpNombre").focus();
@@ -375,6 +460,13 @@
     $("cerrarModalTipoPago").onclick  = () => cerrarModal($("modalTipoPago"));
     $("cancelarTipoPago").onclick     = () => cerrarModal($("modalTipoPago"));
     $("guardarTipoPagoBtn").onclick   = guardarTipoPago;
+    $("tpUsaRecargo").onchange        = actualizarRecargoTipoPagoUI;
+    $("tpPermiteCuotas").onchange     = actualizarRecargoTipoPagoUI;
+    $("tpAgregarCuota").onclick       = () => {
+      const siguiente = tipoPagoCuotas.length ? Math.max(...tipoPagoCuotas.map(item => Number(item.cuotas) || 1)) + 1 : 1;
+      tipoPagoCuotas.push({ cuotas: siguiente, recargo: 0 });
+      renderCuotasTipoPago();
+    };
     $("modalTipoPago").addEventListener("click", e => { if (e.target === $("modalTipoPago")) cerrarModal($("modalTipoPago")); });
 
 

@@ -47,6 +47,14 @@ function resolveCobroData(total, tipoCobro, montoEfectivo, montoDebito) {
     };
   }
 
+  if (tipo) {
+    return {
+      tipo_cobro: tipo,
+      monto_efectivo: 0,
+      monto_debito: totalRounded
+    };
+  }
+
   return null;
 }
 

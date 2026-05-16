@@ -3805,6 +3805,183 @@ async function testTipoPagoModificaNombreYOrden() {
   }
 }
 
+async function testTiposPagoRecargosYCuotasCrud() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+
+      const { response: getResponse, data: activos } = await requestJson(baseUrl, "GET", "/tipos_pago", null, token);
+      if (!getResponse.ok) throw new Error(`GET /tipos_pago fallo: ${activos?.message || getResponse.status}`);
+      const efectivo = activos.find((tipo) => tipo.codigo === "efectivo");
+      if (!efectivo) throw new Error("GET /tipos_pago debe devolver efectivo");
+      ["usa_recargo", "porcentaje_recargo", "permite_cuotas", "cuotas_json"].forEach((campo) => {
+        if (!Object.prototype.hasOwnProperty.call(efectivo, campo)) throw new Error(`GET /tipos_pago debe incluir ${campo}`);
+      });
+      assertEqual(efectivo.usa_recargo, 0, "Efectivo default no debe usar recargo");
+      assertEqual(efectivo.permite_cuotas, 0, "Efectivo default no debe permitir cuotas");
+
+      await requestJson(baseUrl, "POST", "/tipos_pago", {
+        codigo: "credito_recargo_test",
+        nombre: "Credito recargo TEST",
+        orden: 52
+      }, token);
+
+      const { data: todos } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
+      const tipo = todos.find((item) => item.codigo === "credito_recargo_test");
+      if (!tipo) throw new Error("El tipo credito_recargo_test debe existir antes del PUT");
+
+      const cuotasJson = JSON.stringify([{ cuotas: 1, recargo: 0 }, { cuotas: 3, recargo: 10 }, { cuotas: 6, recargo: 18 }]);
+      const { response: putResponse, data: putData } = await requestJson(baseUrl, "PUT", `/tipos_pago/${tipo.id}`, {
+        nombre: "Credito recargo TEST editado",
+        orden: 53,
+        usa_recargo: true,
+        porcentaje_recargo: 12.5,
+        permite_cuotas: true,
+        cuotas_json: cuotasJson
+      }, token);
+      if (!putResponse.ok) throw new Error(`PUT recargo/cuotas fallo: ${putData?.message || putResponse.status}`);
+
+      const { data: todosPost } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
+      const actualizado = todosPost.find((item) => item.codigo === "credito_recargo_test");
+      if (actualizado.nombre !== "Credito recargo TEST editado") {
+        throw new Error(`PUT debe mantener edicion de nombre. Actual=${actualizado.nombre}`);
+      }
+      assertEqual(actualizado.orden, 53, "PUT debe mantener edicion de orden");
+      assertEqual(actualizado.usa_recargo, 1, "PUT debe actualizar usa_recargo");
+      assertApprox(actualizado.porcentaje_recargo, 12.5, "PUT debe actualizar porcentaje_recargo");
+      assertEqual(actualizado.permite_cuotas, 1, "PUT debe actualizar permite_cuotas");
+      const cuotas = JSON.parse(actualizado.cuotas_json);
+      assertEqual(cuotas.length, 3, "PUT debe guardar cuotas_json");
+      assertApprox(cuotas.find((item) => item.cuotas === 6).recargo, 18, "PUT debe guardar recargo de cuota 6");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testVentasAplicanRecargosMetodosPago() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      await requestJson(baseUrl, "POST", "/tipos_pago", {
+        codigo: "credito_general_test",
+        nombre: "Credito general TEST",
+        orden: 54,
+        usa_recargo: true,
+        porcentaje_recargo: 10
+      }, token);
+
+      const efectivo = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({ tipo_cobro: "efectivo" }), token);
+      if (!efectivo.response.ok) throw new Error(`Venta efectivo sin recargo fallo: ${efectivo.data?.message || efectivo.response.status}`);
+      assertApprox(efectivo.data.total, 200, "Venta efectivo sin recargo conserva total");
+
+      const debito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({ tipo_cobro: "debito" }), token);
+      if (!debito.response.ok) throw new Error(`Venta debito sin recargo fallo: ${debito.data?.message || debito.response.status}`);
+      assertApprox(debito.data.total, 200, "Venta debito sin recargo conserva total");
+
+      const credito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "credito_general_test",
+        recargo_porcentaje: 99,
+        recargo_monto: 999
+      }), token);
+      if (!credito.response.ok) throw new Error(`Venta credito con recargo fallo: ${credito.data?.message || credito.response.status}`);
+      assertApprox(credito.data.subtotal, 200, "Venta credito debe informar subtotal base");
+      assertApprox(credito.data.recargo_monto, 20, "Venta credito debe recalcular recargo backend");
+      assertApprox(credito.data.total, 220, "Venta credito con recargo aumenta total");
+
+      const detalle = await getVentaDetalle(baseUrl, token, credito.data.venta_id);
+      assertApprox(detalle.venta.total, 220, "Venta credito debe guardar total final con recargo");
+      assertApprox(detalle.venta.monto_debito, 220, "Venta credito debe guardar monto digital por total final");
+      assertApprox(detalle.items[0].subtotal, 200, "Detalle venta conserva subtotal de productos sin duplicar recargo");
+
+      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${credito.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anulacion.response.ok) throw new Error(`Anulacion de venta con recargo fallo: ${anulacion.data?.message || anulacion.response.status}`);
+      assertEqual((await getProduct(baseUrl, token, 11)).stock, 76, "Anulacion de venta con recargo debe reponer stock sin romper caja");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testVentasCuotasYPendientesNoDuplicanRecargo() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      await requestJson(baseUrl, "POST", "/tipos_pago", {
+        codigo: "credito_cuotas_test",
+        nombre: "Credito cuotas TEST",
+        orden: 55,
+        usa_recargo: true,
+        porcentaje_recargo: 5,
+        permite_cuotas: true,
+        cuotas_json: JSON.stringify([{ cuotas: 1, recargo: 0 }, { cuotas: 3, recargo: 10 }, { cuotas: 6, recargo: 18 }])
+      }, token);
+
+      await requestJson(baseUrl, "POST", "/tipos_pago", {
+        codigo: "credito_sin_cuotas_test",
+        nombre: "Credito sin cuotas TEST",
+        orden: 56,
+        usa_recargo: true,
+        porcentaje_recargo: 7,
+        permite_cuotas: false,
+        cuotas_json: JSON.stringify([{ cuotas: 6, recargo: 30 }])
+      }, token);
+
+      const ventaCuotas = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "credito_cuotas_test",
+        cuotas: 3
+      }), token);
+      if (!ventaCuotas.response.ok) throw new Error(`Venta credito cuotas fallo: ${ventaCuotas.data?.message || ventaCuotas.response.status}`);
+      assertApprox(ventaCuotas.data.recargo_monto, 20, "Venta credito con cuotas debe aplicar recargo de la cuota");
+      assertApprox(ventaCuotas.data.total, 220, "Venta credito con 3 cuotas debe totalizar 220");
+
+      const ventaSinCuotas = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "credito_sin_cuotas_test",
+        cuotas: 6
+      }), token);
+      if (!ventaSinCuotas.response.ok) throw new Error(`Venta tipo sin cuotas fallo: ${ventaSinCuotas.data?.message || ventaSinCuotas.response.status}`);
+      assertApprox(ventaSinCuotas.data.recargo_monto, 14, "Tipo sin cuotas debe ignorar cuotas enviadas y usar recargo general");
+      assertApprox(ventaSinCuotas.data.total, 214, "Tipo sin cuotas debe aplicar solo recargo general");
+
+      const pendiente = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo: "pendiente",
+        identificador_pendiente: "Mesa recargo TEST",
+        tipo_cobro: undefined
+      }), token);
+      if (!pendiente.response.ok) throw new Error(`Pendiente con recargo fallo: ${pendiente.data?.message || pendiente.response.status}`);
+      assertApprox(pendiente.data.total, 200, "Pendiente debe guardarse sin recargo hasta cobrar");
+
+      const cobro = await requestJson(baseUrl, "POST", `/ventas/${pendiente.data.venta_id}/cobrar`, {
+        tipo_cobro: "credito_cuotas_test",
+        cuotas: 3
+      }, token);
+      if (!cobro.response.ok) throw new Error(`Cobro pendiente con recargo fallo: ${cobro.data?.message || cobro.response.status}`);
+
+      const detallePendiente = await getVentaDetalle(baseUrl, token, pendiente.data.venta_id);
+      assertApprox(detallePendiente.venta.total, 220, "Cobrar pendiente con cuotas aplica recargo una sola vez");
+      assertApprox(detallePendiente.venta.monto_debito, 220, "Cobrar pendiente con cuotas registra monto final");
+      assertEqual((await getProduct(baseUrl, token, 11)).stock, 74, "Cobrar pendiente con recargo no descuenta stock nuevamente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testTipoPagoDesactiva() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -5145,6 +5322,9 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
   await testTipoPagoCreaNuevo();
   await testTipoPagoNoDuplicaCodigo();
   await testTipoPagoModificaNombreYOrden();
+  await testTiposPagoRecargosYCuotasCrud();
+  await testVentasAplicanRecargosMetodosPago();
+  await testVentasCuotasYPendientesNoDuplicanRecargo();
   await testTipoPagoDesactiva();
   await testTipoPagoReactiva();
   await testTipoPagoGetExcluyeInactivos();
