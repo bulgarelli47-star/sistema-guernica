@@ -37,7 +37,7 @@
         <aside class="section-menu" id="menuSecciones"></aside>
         <form class="card" id="formConfig">
           <section class="config-section active" data-section="negocio"><h2>Datos del comercio</h2><div class="grid three"><label>Nombre comercial<input data-key="negocio_nombre_comercial"></label><label>Razón social<input data-key="negocio_razon_social"></label><label>CUIT<input data-key="negocio_cuit"></label><label>Teléfono<input data-key="negocio_telefono"></label><label style="grid-column:span 2">Dirección<input data-key="negocio_direccion"></label></div><div class="regime-row"><div class="toggle"><div><strong>Monotributo</strong><small>Ayuda: normalmente no corresponde activar IMP.</small></div><label class="switch"><input data-key="negocio_regimen_monotributo" type="checkbox"><span class="slider"></span></label></div><div class="toggle"><div><strong>Resp. inscripto</strong><small>Habilita uso fiscal completo e IMP.</small></div><label class="switch"><input data-key="negocio_regimen_responsable_inscripto" type="checkbox"><span class="slider"></span></label></div></div><input type="hidden" data-key="negocio_email"><input type="hidden" data-key="negocio_condicion_fiscal"><input type="hidden" data-key="negocio_logo_url"><input type="hidden" id="negocio_logo_escala_field" data-key="negocio_logo_escala" value="100"><div class="logo-drop" id="logoDrop"><input type="file" id="logoFile" accept="image/*"><div><strong>Logo del comercio</strong><small class="muted">Se refleja en la marca del header, reemplazando la G.</small></div><div id="logoPreviewWrap" style="display:none"><div style="width:54px;height:54px;border-radius:12px;overflow:hidden;background:#fff;border:1px solid var(--border);display:grid;place-items:center;flex-shrink:0"><img id="logoPreview" alt="Logo" style="width:100%;height:100%;object-fit:contain;transform-origin:center;transition:transform .15s"></div></div></div><div id="logoEscalaWrap" style="display:none;margin-top:10px"><label style="display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:800">Tamaño en header<div style="display:flex;align-items:center;gap:12px"><input type="range" id="logoEscalaRange" min="50" max="200" step="5" value="100" style="flex:1;accent-color:var(--primary)"><span id="logoEscalaLabel" style="min-width:40px;font-weight:800;color:var(--text)">100%</span></div><small class="muted">Ajustá el zoom sin modificar la imagen original.</small></label></div></section>
-          <section class="config-section" data-section="metodos_pago"><h2>Métodos / cuentas de cobro</h2><div class="toggle-list" id="metodosPago" style="display:none"></div><input type="hidden" data-key="pago_tipos_disponibles"><h3>Configuración anterior / legacy</h3><p class="muted" style="margin:0 0 10px">Se conserva por compatibilidad con datos existentes. Los nuevos canales se administran abajo.</p><input type="hidden" data-key="pago_cuentas_billeteras"><input type="hidden" data-key="cuenta_caja_principal"><input type="hidden" data-key="cuenta_banco_principal"><input type="hidden" data-key="cuenta_billetera_principal"><input type="hidden" data-key="cuenta_saldo_inicial"><div id="cuentasPago"></div><div class="inline-actions"><button class="button secondary" id="agregarCuentaPago" type="button">+ Op</button></div><div class="category-segment" id="tiposPagoSegmento" style="margin-top:14px"><div class="section-head" style="margin-bottom:0"><div><h3>Métodos de cobro</h3><p class="muted">Define cómo paga el cliente: efectivo, débito, crédito, transferencia, QR o mixto.</p></div><button class="button" id="abrirNuevoTipoPago" type="button">Nuevo método</button></div><div style="overflow:auto;border:1px solid var(--border);border-radius:12px;margin-top:10px"><table class="compact-table" id="tablaTiposPago"><thead><tr><th>Código</th><th>Nombre</th><th>Orden</th><th>Características</th><th>Estado</th><th></th></tr></thead><tbody><tr><td colspan="6" style="color:var(--muted)">Cargando...</td></tr></tbody></table></div></div><div class="category-segment" id="cuentasCobroSegmento" style="margin-top:14px"><div class="section-head" style="margin-bottom:0"><div><h3>Canales / terminales de cobro</h3><p class="muted">Define por dónde se cobra y a qué cuenta operativa se asocia actualmente. Más adelante se separará cuenta destino real.</p></div><button class="button" id="abrirNuevaCuentaCobro" type="button">Nuevo canal</button></div><div style="overflow:auto;border:1px solid var(--border);border-radius:12px;margin-top:10px"><table class="compact-table" id="tablaCuentasCobro"><thead><tr><th>Nombre</th><th>Método</th><th>Cuenta / canal</th><th>Alias / Terminal</th><th>Orden</th><th>Estado</th><th></th></tr></thead><tbody><tr><td colspan="7" style="color:var(--muted)">Cargando...</td></tr></tbody></table></div></div><div class="notice">Por ahora cada canal sigue asociado a un método de cobro por compatibilidad. Próxima etapa: separar cuenta destino real.</div></section>
+          <section class="config-section" data-section="metodos_pago"><h2>Métodos / cuentas de cobro</h2><div class="toggle-list" id="metodosPago" style="display:none"></div><input type="hidden" data-key="pago_tipos_disponibles"><div class="category-segment" id="tiposPagoSegmento"><div class="section-head" style="margin-bottom:0"><div><h3>Métodos de cobro</h3><p class="muted">Define cómo paga el cliente: efectivo, débito, crédito, transferencia, QR o mixto.</p></div><button class="button" id="abrirNuevoTipoPago" type="button">Nuevo método</button></div><div style="overflow:auto;border:1px solid var(--border);border-radius:12px;margin-top:10px"><table class="compact-table" id="tablaTiposPago"><thead><tr><th>Código</th><th>Nombre</th><th>Orden</th><th>Características</th><th>Estado</th><th></th></tr></thead><tbody><tr><td colspan="6" style="color:var(--muted)">Cargando...</td></tr></tbody></table></div></div><div class="category-segment" id="cuentasCobroSegmento" style="margin-top:14px"><div class="section-head" style="margin-bottom:0"><div><h3>Canales / terminales de cobro</h3><p class="muted">Define por dónde se cobra y a qué cuenta operativa se asocia actualmente.</p></div><button class="button" id="abrirNuevaCuentaCobro" type="button">Nuevo canal</button></div><div style="overflow:auto;border:1px solid var(--border);border-radius:12px;margin-top:10px"><table class="compact-table" id="tablaCuentasCobro"><thead><tr><th>Nombre</th><th>Método</th><th>Cuenta / canal</th><th>Alias / Terminal</th><th>Orden</th><th>Estado</th><th></th></tr></thead><tbody><tr><td colspan="7" style="color:var(--muted)">Cargando...</td></tr></tbody></table></div></div><div class="notice">Por ahora cada canal sigue asociado a un método de cobro por compatibilidad. Próxima etapa: separar cuenta destino real.</div><details class="category-segment" style="margin-top:14px;background:#fff"><summary style="cursor:pointer;font-weight:900">Configuración anterior / legacy</summary><p class="muted" style="margin:10px 0">Se conserva solo por compatibilidad con datos existentes.</p><input type="hidden" data-key="pago_cuentas_billeteras"><input type="hidden" data-key="cuenta_caja_principal"><input type="hidden" data-key="cuenta_banco_principal"><input type="hidden" data-key="cuenta_billetera_principal"><input type="hidden" data-key="cuenta_saldo_inicial"><div id="cuentasPago"></div><div class="inline-actions"><button class="button secondary" id="agregarCuentaPago" type="button">+ Op</button></div></details></section>
           <section class="config-section" data-section="stock"><h2>Stock</h2><div class="toggle-list stock-toggle-group" id="stockToggles"></div><input type="hidden" data-key="stock_unidad_default"><input type="hidden" data-key="stock_valor_alerta"><div class="category-segment"><div class="section-head"><div><h3>Segmento Categorías</h3><p class="muted">Las categorías definen nombre y margen de ganancia para los productos.</p></div><div class="toolbar"><button class="button" id="abrirNuevaCategoria" type="button">Nueva categoría</button><button class="button secondary" id="abrirMostrarCategorias" type="button">Mostrar categorías</button></div></div><div id="categoriasStockResumen" class="summary"></div></div><h3>IMP</h3><div class="toggle-list" id="impToggles"></div><div class="toggle"><div><strong>Costos incluyen IMP</strong><small>Ayuda: si marcaste monotributo, normalmente no corresponde activar IMP. El sistema no lo bloquea.</small></div><label class="switch"><input data-key="iva_precios_incluyen" type="checkbox"><span class="slider"></span></label></div><input type="hidden" data-key="iva_porcentaje_default"><h3>Redondeo</h3><div class="grid"><label>Redondeo por defecto<select data-key="redondeo_tipo"><option value="0">Sin redondeo</option><option value="5">$5</option><option value="10">$10</option><option value="50">$50</option><option value="100">$100</option><option value="500">$500</option><option value="1000">$1000</option></select></label></div><div class="notice">Unidad, alertas y costos compuestos quedan como variables de cada producto.</div></section>
           <section class="config-section" data-section="cuentas_corrientes"><h2>Cuentas corrientes</h2><div class="toggle-list" id="ccToggles"></div><div class="grid"><label>Interés por mora %<input data-key="cuentas_interes_mora" type="number" step="0.01"></label><label>Plazo de fiados<input data-key="cuentas_dias_vencimiento" type="number" step="1"></label><label>Días para considerar costo<input data-key="cuentas_dias_a_costo" type="number" step="1"></label><label>Límite global de cuenta corriente<input data-key="cuentas_limite_global_monto" type="number" step="0.01"></label></div><div class="toggle-list"><div class="toggle"><div><strong>Int x mora</strong><small>Al vencer actualiza automáticamente el monto.</small></div><label class="switch"><input data-key="cuentas_interes_mora_activo" type="checkbox"><span class="slider"></span></label></div><div class="toggle"><div><strong>Desactivar por vencimiento</strong><small>Si pasan 90 días, bloquea al cliente, congela el saldo y deja de impactar en el total fiado. Al vencer alerta y recomienda cobrar la cuenta completa.</small></div><label class="switch"><input data-key="cuentas_desactivar_por_vencimiento" type="checkbox"><span class="slider"></span></label></div><div class="toggle"><div><strong>Límite global habilitado</strong><small>La suma de cuentas no puede superar el monto.</small></div><label class="switch"><input data-key="cuentas_limite_global_activo" type="checkbox"><span class="slider"></span></label></div></div></section>
           <section class="config-section" data-section="usuarios_permisos"><h2>Usuarios / permisos</h2><div class="notice">Configurá qué puede hacer cada tipo de usuario y qué módulos ve en el sistema.</div><div class="permission-panel"><h3>Acciones críticas</h3><p class="muted" style="margin:4px 0 10px">Esta clave se requiere para anular tickets, editar pagos y otras operaciones sensibles.</p><div class="grid two"><label>Contraseña maestra<input type="password" data-key="autorizacion_clave_maestra" autocomplete="new-password" placeholder="••••"></label><label style="align-self:end"><button type="button" id="toggleMostrarClave" class="button secondary" style="width:100%;height:44px">Mostrar</button></label></div></div><div class="permission-panel"><div class="section-head"><div><h3>Módulos visibles en sidebar</h3><p class="muted">Este cuadro controla qué aparece en la slidebar para cada rol.</p></div></div><div class="summary" id="modulosSidebarResumen"></div><div class="permissions-wrap" id="permisosModulos"></div></div><div class="permission-panel"><div class="section-head"><div><h3>Permisos por acción</h3><p class="muted">Filas: acciones operativas. Columnas: roles.</p></div></div><input type="hidden" data-key="permisos_acciones_roles"><div id="permisosAcciones"></div></div><div class="permission-panel"><h3>Inicio por rol</h3><p class="muted">Define qué pantalla de Inicio ve cada rol al entrar al sistema.</p><div class="grid"><label>Admin<select data-key="dashboard_tipo_admin"><option value="simple">Simple</option><option value="complejo">Complejo</option></select></label><label>Encargado<select data-key="dashboard_tipo_encargado"><option value="simple">Simple</option><option value="complejo">Complejo</option></select></label><label>Colaborador<select data-key="dashboard_tipo_colaborador"><option value="simple">Simple</option><option value="complejo">Complejo</option></select></label></div><input type="hidden" data-key="dashboard_pizarra_categorias"><div class="permission-panel"><div class="section-head"><div><h3>Categorías en Pizarra</h3><p class="muted">Los productos de estas categorías aparecen en el grid de Ventas.</p></div><button class="button secondary" id="abrirModalPizarraCategorias" type="button">Seleccionar</button></div><div id="pizarraCategoriasResumen" class="summary"></div></div><input type="hidden" data-key="dashboard_pizarra_productos"><div class="permission-panel"><div class="section-head"><div><h3>Productos fijos en Pizarra</h3><p class="muted">Productos que siempre aparecen en Ventas, sin importar la categoría.</p></div><button class="button secondary" id="abrirModalPizarraProductos" type="button">Seleccionar</button></div><div id="pizarraProductosResumen" class="summary"></div></div></div></section>
@@ -136,8 +136,8 @@
           <h3>Identidad</h3>
           <div class="grid three">
             <label>Nombre<input id="ccNombre" placeholder="Ej: Point barra"></label>
-            <label>Método aceptado<select id="ccTipoPago"></select></label>
-            <label>Tipo de cuenta / canal<input id="ccTipoCuenta" placeholder="terminal / banco / billetera / caja"></label>
+            <label>Método aceptado<select id="ccTipoPago"></select><small style="color:var(--muted);font-weight:400;font-size:11px">Qué método de cobro usa este canal.</small></label>
+            <label>Tipo de cuenta / canal<select id="ccTipoCuenta"><option value="caja">Caja / efectivo</option><option value="banco">Banco / cuenta bancaria</option><option value="billetera">Billetera virtual</option><option value="terminal">Terminal física / POS</option><option value="qr">QR / link de pago</option><option value="otro">Otro canal</option></select><small style="color:var(--muted);font-weight:400;font-size:11px">Qué clase de destino/canal representa.</small></label>
             <label>Orden<input id="ccOrden" type="number" step="1" value="50"></label>
             <label>Estado<select id="ccActivo"><option value="1">Activa</option><option value="0">Inactiva</option></select></label>
           </div>
@@ -161,7 +161,7 @@
         </div>
         <div class="channel-group" data-cc-group="avanzado">
           <h3>Avanzado</h3>
-          <label>Metadata JSON<textarea id="ccMetadataJson" placeholder='{"clave":"valor"}'></textarea></label>
+          <label class="channel-field" data-cc-field="metadata_json">Metadata JSON<textarea id="ccMetadataJson" placeholder='{"clave":"valor"}'></textarea></label>
         </div>
       </div>
       <div class="notice" style="margin-top:12px">Por ahora cada canal sigue asociado a un método de cobro por compatibilidad. Próxima etapa: separar cuenta destino real.</div>
@@ -242,28 +242,47 @@
       return `<span style="display:inline-flex;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:800;background:${color.bg};color:${color.fg};margin-right:3px">${label}</span>`;
     }
 
+    function normalizarCuotasTipoPago(items = []) {
+      const porCuota = new Map();
+      items.forEach(item => {
+        const cuotas = Math.max(1, Math.trunc(Number(item?.cuotas) || 0));
+        if (!cuotas) return;
+        porCuota.set(cuotas, {
+          cuotas,
+          recargo: Math.max(0, Number(item?.recargo) || 0)
+        });
+      });
+      return [...porCuota.values()].sort((a, b) => a.cuotas - b.cuotas);
+    }
+
     function parseCuotasTipoPago(value) {
       try {
         const parsed = typeof value === "string" ? JSON.parse(value || "[]") : value;
-        return Array.isArray(parsed)
-          ? parsed.map(item => ({
-              cuotas: Math.max(1, Math.trunc(Number(item.cuotas) || 0)),
-              recargo: Math.max(0, Number(item.recargo) || 0)
-            })).filter(item => item.cuotas > 0)
-          : [];
+        return Array.isArray(parsed) ? normalizarCuotasTipoPago(parsed) : [];
       } catch {
         return [];
       }
     }
 
+    function leerCuotasTipoPagoDesdeEditor() {
+      const editor = $("tpCuotasEditor");
+      if (!editor) return normalizarCuotasTipoPago(tipoPagoCuotas);
+      const rows = [...editor.querySelectorAll("[data-tp-cuota-row]")];
+      return normalizarCuotasTipoPago(rows.map(row => ({
+        cuotas: row.querySelector("[data-tp-cuota]")?.value,
+        recargo: row.querySelector("[data-tp-recargo-cuota]")?.value
+      })));
+    }
+
     function renderCuotasTipoPago() {
       const editor = $("tpCuotasEditor");
       if (!editor) return;
+      tipoPagoCuotas = normalizarCuotasTipoPago(tipoPagoCuotas);
       if (!tipoPagoCuotas.length) {
         tipoPagoCuotas = [{ cuotas: 1, recargo: 0 }];
       }
       editor.innerHTML = tipoPagoCuotas.map((item, index) => `
-        <div class="field-grid" style="grid-template-columns:1fr 1fr auto;align-items:end">
+        <div class="field-grid" data-tp-cuota-row style="grid-template-columns:1fr 1fr auto;align-items:end">
           <label>Cuotas<input type="number" min="1" step="1" value="${item.cuotas}" data-tp-cuota="${index}"></label>
           <label>% recargo<input type="number" min="0" step="0.01" value="${item.recargo}" data-tp-recargo-cuota="${index}"></label>
           <button class="button ghost" type="button" data-tp-quitar-cuota="${index}" style="padding:9px 10px">Quitar</button>
@@ -277,6 +296,7 @@
       });
       editor.querySelectorAll("[data-tp-quitar-cuota]").forEach(btn => {
         btn.onclick = () => {
+          tipoPagoCuotas = leerCuotasTipoPagoDesdeEditor();
           tipoPagoCuotas.splice(Number(btn.dataset.tpQuitarCuota), 1);
           renderCuotasTipoPago();
         };
@@ -410,14 +430,15 @@
       if (!tipoPagoEditandoId && !codigo) { tpMsg.style.color = "var(--danger)"; tpMsg.textContent = "El código es obligatorio"; return; }
 
       const permiteCuotas = $("tpPermiteCuotas").checked;
+      if (permiteCuotas) {
+        tipoPagoCuotas = leerCuotasTipoPagoDesdeEditor();
+        renderCuotasTipoPago();
+      }
       const recargoPayload = {
         usa_recargo: $("tpUsaRecargo").checked,
         porcentaje_recargo: Number($("tpPorcentajeRecargo").value) || 0,
         permite_cuotas: permiteCuotas,
-        cuotas_json: permiteCuotas ? JSON.stringify(tipoPagoCuotas.map(item => ({
-          cuotas: Math.max(1, Math.trunc(Number(item.cuotas) || 1)),
-          recargo: Math.max(0, Number(item.recargo) || 0)
-        }))) : null
+        cuotas_json: permiteCuotas ? tipoPagoCuotas : []
       };
       const btn = $("guardarTipoPagoBtn");
       btn.disabled = true;
@@ -463,6 +484,7 @@
     $("tpUsaRecargo").onchange        = actualizarRecargoTipoPagoUI;
     $("tpPermiteCuotas").onchange     = actualizarRecargoTipoPagoUI;
     $("tpAgregarCuota").onclick       = () => {
+      tipoPagoCuotas = leerCuotasTipoPagoDesdeEditor();
       const siguiente = tipoPagoCuotas.length ? Math.max(...tipoPagoCuotas.map(item => Number(item.cuotas) || 1)) + 1 : 1;
       tipoPagoCuotas.push({ cuotas: siguiente, recargo: 0 });
       renderCuotasTipoPago();
@@ -473,6 +495,16 @@
     // Administracion de cuentas y terminales de cobro
     let cuentasCobroActuales = [];
     let cuentaCobroEditandoId = null;
+    let cuentaCobroTipoOriginal = "";
+    let cuentaCobroTipoVisualOriginal = "";
+    const TIPOS_CUENTA_LABELS = {
+      caja: "Caja / efectivo",
+      banco: "Banco / cuenta bancaria",
+      billetera: "Billetera virtual",
+      terminal: "Terminal física / POS",
+      qr: "QR / link de pago",
+      otro: "Otro canal"
+    };
 
     function opcionesTiposPago(selected = "") {
       const tipos = tiposPagoActuales.length ? tiposPagoActuales : [
@@ -500,7 +532,7 @@
         return `<tr>
           <td><strong>${c.nombre || "-"}</strong></td>
           <td>${tipo?.nombre || c.tipo_pago_codigo || "-"}</td>
-          <td>${c.tipo_cuenta || "-"}</td>
+          <td>${TIPOS_CUENTA_LABELS[normalizarTipoCuentaCanal(c.tipo_cuenta)] || c.tipo_cuenta || "-"}</td>
           <td>${c.alias || c.terminal_id || "-"}</td>
           <td>${Number(c.orden) || 0}</td>
           <td>${pill}</td>
@@ -537,21 +569,25 @@
 
     function normalizarTipoCuentaCanal(valor = "") {
       const tipo = String(valor || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
-      if (["banco", "bancaria", "cuenta_bancaria"].includes(tipo)) return "banco";
-      if (["billetera", "mercado_pago", "mercadopago", "mp", "qr", "cuenta_dni"].includes(tipo)) return "billetera";
-      if (["terminal", "pos", "point", "tarjeta"].includes(tipo)) return "terminal";
-      if (["caja", "efectivo", "interna", "interno"].includes(tipo)) return "interna";
-      return tipo || "terminal";
+      if (["banco", "bancaria", "cuenta_bancaria", "cuenta bancaria", "galicia"].includes(tipo)) return "banco";
+      if (["qr", "mp_qr", "mp-qr", "mercadopago_qr", "mercado_pago_qr", "mercado pago qr", "link", "link_pago", "link de pago"].includes(tipo)) return "qr";
+      if (["billetera", "mercado_pago", "mercadopago", "mercado pago", "mp", "cuenta_dni", "cuenta dni", "billetera_virtual"].includes(tipo)) return "billetera";
+      if (["terminal", "pos", "point", "tarjeta", "terminal_fisica", "terminal fisica"].includes(tipo)) return "terminal";
+      if (["caja", "efectivo", "interna", "interno"].includes(tipo)) return "caja";
+      if (["otro", "otros", "legacy"].includes(tipo)) return "otro";
+      return tipo ? "otro" : "terminal";
     }
 
     function actualizarCamposCuentaCobro() {
       const tipo = normalizarTipoCuentaCanal($("ccTipoCuenta")?.value);
       const visibles = {
         banco: ["alias", "cbu_cvu"],
-        billetera: ["alias", "proveedor_integracion", "external_id", "store_id", "pos_id"],
+        billetera: ["alias", "proveedor_integracion", "external_id"],
         terminal: ["proveedor_integracion", "terminal_id", "store_id", "pos_id"],
-        interna: []
-      }[tipo] || ["alias", "cbu_cvu", "proveedor_integracion", "external_id", "terminal_id", "store_id", "pos_id"];
+        qr: ["alias", "proveedor_integracion", "external_id", "store_id", "pos_id"],
+        caja: [],
+        otro: ["alias", "cbu_cvu", "proveedor_integracion", "external_id", "terminal_id", "store_id", "pos_id", "metadata_json"]
+      }[tipo] || ["alias", "cbu_cvu", "proveedor_integracion", "external_id", "terminal_id", "store_id", "pos_id", "metadata_json"];
 
       document.querySelectorAll("[data-cc-field]").forEach((field) => {
         field.classList.toggle("hidden", !visibles.includes(field.dataset.ccField));
@@ -565,11 +601,13 @@
 
     function abrirCuentaCobroModal(cuenta = null) {
       cuentaCobroEditandoId = cuenta?.id || null;
+      cuentaCobroTipoOriginal = cuenta?.tipo_cuenta || "";
+      cuentaCobroTipoVisualOriginal = normalizarTipoCuentaCanal(cuentaCobroTipoOriginal || "terminal");
       $("cuentaCobroModalTitulo").textContent = cuenta ? "Editar canal / terminal de cobro" : "Nuevo canal / terminal de cobro";
       $("cuentaCobroModalSub").textContent = cuenta ? `ID ${cuenta.id}` : "Completá los datos del canal. Por compatibilidad sigue asociado a un método de cobro.";
       $("ccNombre").value = cuenta?.nombre || "";
       $("ccTipoPago").innerHTML = opcionesTiposPago(cuenta?.tipo_pago_codigo || "efectivo");
-      $("ccTipoCuenta").value = cuenta?.tipo_cuenta || "terminal";
+      $("ccTipoCuenta").value = cuentaCobroTipoVisualOriginal;
       $("ccProveedorIntegracion").value = cuenta?.proveedor_integracion || "interno";
       $("ccAlias").value = cuenta?.alias || "";
       $("ccCbuCvu").value = cuenta?.cbu_cvu || "";
@@ -588,10 +626,13 @@
 
     async function guardarCuentaCobro() {
       const ccMsg = $("ccMensaje");
+      const tipoCuentaSeleccionado = $("ccTipoCuenta").value;
       const payload = {
         nombre: $("ccNombre").value.trim(),
         tipo_pago_codigo: $("ccTipoPago").value,
-        tipo_cuenta: $("ccTipoCuenta").value.trim(),
+        tipo_cuenta: cuentaCobroEditandoId && cuentaCobroTipoOriginal && tipoCuentaSeleccionado === cuentaCobroTipoVisualOriginal
+          ? cuentaCobroTipoOriginal
+          : tipoCuentaSeleccionado,
         proveedor_integracion: $("ccProveedorIntegracion").value.trim(),
         alias: $("ccAlias").value.trim(),
         cbu_cvu: $("ccCbuCvu").value.trim(),

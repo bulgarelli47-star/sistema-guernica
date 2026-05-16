@@ -3833,14 +3833,14 @@ async function testTiposPagoRecargosYCuotasCrud() {
       const tipo = todos.find((item) => item.codigo === "credito_recargo_test");
       if (!tipo) throw new Error("El tipo credito_recargo_test debe existir antes del PUT");
 
-      const cuotasJson = JSON.stringify([{ cuotas: 1, recargo: 0 }, { cuotas: 3, recargo: 10 }, { cuotas: 6, recargo: 18 }]);
+      const cuotasArray = [{ cuotas: 3, recargo: 10 }, { cuotas: 6, recargo: 18 }];
       const { response: putResponse, data: putData } = await requestJson(baseUrl, "PUT", `/tipos_pago/${tipo.id}`, {
         nombre: "Credito recargo TEST editado",
         orden: 53,
         usa_recargo: true,
         porcentaje_recargo: 12.5,
         permite_cuotas: true,
-        cuotas_json: cuotasJson
+        cuotas_json: cuotasArray
       }, token);
       if (!putResponse.ok) throw new Error(`PUT recargo/cuotas fallo: ${putData?.message || putResponse.status}`);
 
@@ -3853,9 +3853,66 @@ async function testTiposPagoRecargosYCuotasCrud() {
       assertEqual(actualizado.usa_recargo, 1, "PUT debe actualizar usa_recargo");
       assertApprox(actualizado.porcentaje_recargo, 12.5, "PUT debe actualizar porcentaje_recargo");
       assertEqual(actualizado.permite_cuotas, 1, "PUT debe actualizar permite_cuotas");
-      const cuotas = JSON.parse(actualizado.cuotas_json);
-      assertEqual(cuotas.length, 3, "PUT debe guardar cuotas_json");
+      const cuotas = actualizado.cuotas_json;
+      if (!Array.isArray(cuotas)) throw new Error("GET /tipos_pago?todos=1 debe devolver cuotas_json como array");
+      assertEqual(cuotas.length, 2, "PUT debe guardar cuotas_json con varias cuotas");
+      assertApprox(cuotas.find((item) => item.cuotas === 3).recargo, 10, "PUT debe guardar recargo de cuota 3");
       assertApprox(cuotas.find((item) => item.cuotas === 6).recargo, 18, "PUT debe guardar recargo de cuota 6");
+
+      const dbRow = (await allSql(dbPath, "SELECT cuotas_json FROM tipos_pago WHERE id = ?", [tipo.id]))[0];
+      if (typeof dbRow.cuotas_json !== "string") throw new Error("La DB debe guardar cuotas_json como string JSON");
+      assertEqual(JSON.parse(dbRow.cuotas_json).length, 2, "La DB debe persistir todas las cuotas");
+
+      const putNombre = await requestJson(baseUrl, "PUT", `/tipos_pago/${tipo.id}`, {
+        nombre: "Credito recargo TEST retocado",
+        orden: 54,
+        usa_recargo: true,
+        porcentaje_recargo: 12.5,
+        permite_cuotas: true,
+        cuotas_json: cuotas
+      }, token);
+      if (!putNombre.response.ok) throw new Error(`PUT posterior con cuotas existentes fallo: ${putNombre.data?.message || putNombre.response.status}`);
+
+      const { data: todosRetocado } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
+      const retocado = todosRetocado.find((item) => item.codigo === "credito_recargo_test");
+      assertEqual(retocado.cuotas_json.length, 2, "PUT posterior no debe borrar cuotas si se envian existentes");
+      assertApprox(retocado.cuotas_json.find((item) => item.cuotas === 6).recargo, 18, "PUT posterior debe conservar cuota 6");
+
+      const segundoPost = await requestJson(baseUrl, "POST", "/tipos_pago", {
+        codigo: "qr_cuotas_test",
+        nombre: "QR cuotas TEST",
+        orden: 55
+      }, token);
+      if (!segundoPost.response.ok) throw new Error(`POST segundo tipo fallo: ${segundoPost.data?.message || segundoPost.response.status}`);
+      const { data: todosSegundo } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
+      const segundo = todosSegundo.find((item) => item.codigo === "qr_cuotas_test");
+      const putSegundo = await requestJson(baseUrl, "PUT", `/tipos_pago/${segundo.id}`, {
+        nombre: "QR cuotas TEST",
+        orden: 55,
+        usa_recargo: true,
+        porcentaje_recargo: 0,
+        permite_cuotas: true,
+        cuotas_json: [{ cuotas: 2, recargo: 5 }, { cuotas: 4, recargo: 9 }]
+      }, token);
+      if (!putSegundo.response.ok) throw new Error(`PUT segundo tipo cuotas fallo: ${putSegundo.data?.message || putSegundo.response.status}`);
+
+      const apagar = await requestJson(baseUrl, "PUT", `/tipos_pago/${tipo.id}`, {
+        nombre: "Credito recargo TEST sin cuotas",
+        orden: 56,
+        usa_recargo: true,
+        porcentaje_recargo: 12.5,
+        permite_cuotas: false,
+        cuotas_json: cuotas
+      }, token);
+      if (!apagar.response.ok) throw new Error(`PUT permite_cuotas=false fallo: ${apagar.data?.message || apagar.response.status}`);
+
+      const { data: todosFinal } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
+      const apagado = todosFinal.find((item) => item.codigo === "credito_recargo_test");
+      const segundoFinal = todosFinal.find((item) => item.codigo === "qr_cuotas_test");
+      assertEqual(apagado.permite_cuotas, 0, "PUT permite_cuotas=false debe apagar cuotas");
+      assertEqual(apagado.cuotas_json.length, 0, "PUT permite_cuotas=false debe devolver cuotas_json vacio");
+      assertEqual(segundoFinal.cuotas_json.length, 2, "Varios metodos deben conservar cuotas independientes");
+      assertApprox(segundoFinal.cuotas_json.find((item) => item.cuotas === 4).recargo, 9, "Segundo metodo debe conservar su cuota 4");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });

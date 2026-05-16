@@ -14,7 +14,7 @@ const TIPOS_PAGO_DEFAULTS = [
     usa_recargo: 0,
     porcentaje_recargo: 0,
     permite_cuotas: 0,
-    cuotas_json: null
+    cuotas_json: []
   },
   {
     codigo: "debito",
@@ -28,7 +28,7 @@ const TIPOS_PAGO_DEFAULTS = [
     usa_recargo: 0,
     porcentaje_recargo: 0,
     permite_cuotas: 0,
-    cuotas_json: null
+    cuotas_json: []
   },
   {
     codigo: "transferencia",
@@ -42,7 +42,7 @@ const TIPOS_PAGO_DEFAULTS = [
     usa_recargo: 0,
     porcentaje_recargo: 0,
     permite_cuotas: 0,
-    cuotas_json: null
+    cuotas_json: []
   },
   {
     codigo: "mixto",
@@ -56,7 +56,7 @@ const TIPOS_PAGO_DEFAULTS = [
     usa_recargo: 0,
     porcentaje_recargo: 0,
     permite_cuotas: 0,
-    cuotas_json: null
+    cuotas_json: []
   }
 ];
 
@@ -89,10 +89,41 @@ async function seedTiposPagoDefaults() {
         tipo.usa_recargo,
         tipo.porcentaje_recargo,
         tipo.permite_cuotas,
-        tipo.cuotas_json
+        JSON.stringify(tipo.cuotas_json || [])
       ]
     );
   }
+}
+
+function normalizarCuotasArray(cuotasJson) {
+  if (cuotasJson == null || cuotasJson === "") return [];
+  const parsed = typeof cuotasJson === "string" ? JSON.parse(cuotasJson) : cuotasJson;
+  if (!Array.isArray(parsed)) throw new Error("cuotas_json debe ser un array");
+  const porCuota = new Map();
+  parsed.forEach((item) => {
+    const cuotas = Math.max(1, Math.trunc(Number(item?.cuotas) || 0));
+    if (!cuotas) return;
+    porCuota.set(cuotas, {
+      cuotas,
+      recargo: Math.max(0, Number(item?.recargo) || 0)
+    });
+  });
+  return [...porCuota.values()].sort((a, b) => a.cuotas - b.cuotas);
+}
+
+function serializarCuotasJson(cuotasJson) {
+  return JSON.stringify(normalizarCuotasArray(cuotasJson));
+}
+
+function mapTipoPagoRow(row) {
+  if (!row) return row;
+  return {
+    ...row,
+    usa_recargo: Number(row.usa_recargo || 0),
+    porcentaje_recargo: Number(row.porcentaje_recargo || 0),
+    permite_cuotas: Number(row.permite_cuotas || 0),
+    cuotas_json: normalizarCuotasArray(row.cuotas_json)
+  };
 }
 
 async function getTiposPagoActivos() {
@@ -104,13 +135,13 @@ async function getTiposPagoActivos() {
     );
 
     if (tipos.length) {
-      return tipos;
+      return tipos.map(mapTipoPagoRow);
     }
   } catch (error) {
     return TIPOS_PAGO_DEFAULTS.filter((tipo) => Number(tipo.activo) === 1);
   }
 
-  return TIPOS_PAGO_DEFAULTS.filter((tipo) => Number(tipo.activo) === 1);
+  return TIPOS_PAGO_DEFAULTS.filter((tipo) => Number(tipo.activo) === 1).map(mapTipoPagoRow);
 }
 
 async function getTodosTiposPago() {
@@ -119,24 +150,14 @@ async function getTodosTiposPago() {
       `${TIPOS_PAGO_SELECT}
        ORDER BY orden ASC, nombre ASC`
     );
-    return tipos.length ? tipos : TIPOS_PAGO_DEFAULTS;
+    return (tipos.length ? tipos : TIPOS_PAGO_DEFAULTS).map(mapTipoPagoRow);
   } catch {
-    return TIPOS_PAGO_DEFAULTS;
+    return TIPOS_PAGO_DEFAULTS.map(mapTipoPagoRow);
   }
 }
 
 function normalizarCuotasJson(cuotasJson) {
-  if (cuotasJson == null || cuotasJson === "") return null;
-  const parsed = typeof cuotasJson === "string" ? JSON.parse(cuotasJson) : cuotasJson;
-  if (!Array.isArray(parsed)) throw new Error("cuotas_json debe ser un array");
-  const cuotas = parsed
-    .map((item) => ({
-      cuotas: Math.max(1, Math.trunc(Number(item?.cuotas) || 0)),
-      recargo: Math.max(0, Number(item?.recargo) || 0)
-    }))
-    .filter((item) => item.cuotas > 0)
-    .sort((a, b) => a.cuotas - b.cuotas);
-  return cuotas.length ? JSON.stringify(cuotas) : null;
+  return serializarCuotasJson(cuotasJson);
 }
 
 function normalizarTipoPagoPayload(payload = {}) {
@@ -147,7 +168,7 @@ function normalizarTipoPagoPayload(payload = {}) {
     usa_recargo: usaRecargo ? 1 : 0,
     porcentaje_recargo: Number(porcentajeRecargo.toFixed(2)),
     permite_cuotas: permiteCuotas ? 1 : 0,
-    cuotas_json: permiteCuotas ? normalizarCuotasJson(payload.cuotas_json) : null
+    cuotas_json: permiteCuotas ? normalizarCuotasJson(payload.cuotas_json) : "[]"
   };
 }
 
@@ -163,7 +184,19 @@ async function crearTipoPago({ codigo, nombre, orden, usa_recargo, porcentaje_re
 }
 
 async function actualizarTipoPago(id, { nombre, orden, usa_recargo, porcentaje_recargo, permite_cuotas, cuotas_json }) {
-  const recargo = normalizarTipoPagoPayload({ usa_recargo, porcentaje_recargo, permite_cuotas, cuotas_json });
+  const existente = await allQuery(
+    `${TIPOS_PAGO_SELECT}
+     WHERE id = ?
+     LIMIT 1`,
+    [id]
+  ).then((rows) => rows[0] || null);
+  const payload = {
+    usa_recargo: usa_recargo ?? existente?.usa_recargo ?? 0,
+    porcentaje_recargo: porcentaje_recargo ?? existente?.porcentaje_recargo ?? 0,
+    permite_cuotas: permite_cuotas ?? existente?.permite_cuotas ?? 0,
+    cuotas_json: cuotas_json ?? existente?.cuotas_json ?? []
+  };
+  const recargo = normalizarTipoPagoPayload(payload);
   await runQuery(
     `UPDATE tipos_pago
      SET nombre = ?, orden = ?, usa_recargo = ?, porcentaje_recargo = ?, permite_cuotas = ?, cuotas_json = ?
@@ -191,21 +224,21 @@ async function getTipoPagoPorCodigo(codigo, { todos = false } = {}) {
   const normalized = String(codigo || "").trim().toLowerCase();
   if (!normalized) return null;
   try {
-    return await allQuery(
+    const tipo = await allQuery(
       `${TIPOS_PAGO_SELECT}
        WHERE codigo = ? ${todos ? "" : "AND activo = 1"}
        LIMIT 1`,
       [normalized]
     ).then((rows) => rows[0] || null);
+    return mapTipoPagoRow(tipo);
   } catch {
-    return TIPOS_PAGO_DEFAULTS.find((tipo) => tipo.codigo === normalized && (todos || Number(tipo.activo) === 1)) || null;
+    return mapTipoPagoRow(TIPOS_PAGO_DEFAULTS.find((tipo) => tipo.codigo === normalized && (todos || Number(tipo.activo) === 1)) || null);
   }
 }
 
 function parseCuotasConfig(cuotasJson) {
   try {
-    const parsed = typeof cuotasJson === "string" ? JSON.parse(cuotasJson || "[]") : cuotasJson;
-    return Array.isArray(parsed) ? parsed : [];
+    return normalizarCuotasArray(cuotasJson);
   } catch {
     return [];
   }
