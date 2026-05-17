@@ -98,6 +98,14 @@ const {
   validarCuentaCobroParaTipo
 } = require("./services/cuentaCobroService");
 const {
+  actualizarCuentaDestino,
+  crearCuentaDestino,
+  listarCuentasDestino,
+  obtenerCuentaDestino,
+  seedCuentasDestinoDefaults,
+  setActivoCuentaDestino
+} = require("./services/cuentaDestinoService");
+const {
   aplicarStockComponentesSnapshot,
   aplicarStockDiffComponentesExtra,
   borrarSnapshotsDetalles,
@@ -321,6 +329,19 @@ async function ensureCuentasCobroSchema() {
   await ensureColumn("pagos", "cuenta_cobro_id", "INTEGER");
   await ensureColumn("ventas", "cuenta_cobro_id", "INTEGER");
   await runQuery(`
+    CREATE TABLE IF NOT EXISTS cuentas_destino (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nombre TEXT NOT NULL,
+      tipo_destino TEXT NOT NULL DEFAULT 'otro',
+      alias TEXT,
+      cbu_cvu TEXT,
+      activo INTEGER NOT NULL DEFAULT 1,
+      orden INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT,
+      updated_at TEXT
+    )
+  `);
+  await runQuery(`
     CREATE TABLE IF NOT EXISTS cuentas_cobro (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       nombre TEXT NOT NULL,
@@ -336,10 +357,13 @@ async function ensureCuentasCobroSchema() {
       store_id TEXT,
       pos_id TEXT,
       metadata_json TEXT,
+      cuenta_destino_id INTEGER,
       created_at TEXT,
       updated_at TEXT
     )
   `);
+  await ensureColumn("cuentas_cobro", "cuenta_destino_id", "INTEGER");
+  await seedCuentasDestinoDefaults();
 }
 
 async function ensureProductosSchema() {
@@ -2622,6 +2646,66 @@ app.get("/cuentas_cobro/tipo/:codigo", async (req, res) => {
   } catch (error) {
     logError("Error al listar cuentas de cobro por tipo:", error);
     return res.status(500).json({ message: "Error al obtener cuentas de cobro" });
+  }
+});
+
+app.get("/cuentas_destino", async (req, res) => {
+  try {
+    return res.json(await listarCuentasDestino({ todos: req.query.todos === "1" }));
+  } catch (error) {
+    logError("Error al listar cuentas destino:", error);
+    return res.status(500).json({ message: "Error al obtener cuentas destino" });
+  }
+});
+
+app.get("/cuentas_destino/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "ID invalido" });
+  try {
+    const cuenta = await obtenerCuentaDestino(id);
+    if (!cuenta) return res.status(404).json({ message: "Cuenta destino no encontrada" });
+    return res.json(cuenta);
+  } catch (error) {
+    logError("Error al obtener cuenta destino:", error);
+    return res.status(500).json({ message: "Error al obtener cuenta destino" });
+  }
+});
+
+app.post("/cuentas_destino", async (req, res) => {
+  try {
+    const cuenta = await crearCuentaDestino(req.body);
+    return res.json({ message: "Cuenta destino creada", cuenta });
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
+    logError("Error al crear cuenta destino:", error);
+    return res.status(500).json({ message: "Error al crear cuenta destino" });
+  }
+});
+
+app.put("/cuentas_destino/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "ID invalido" });
+  try {
+    const cuenta = await actualizarCuentaDestino(id, req.body);
+    if (!cuenta) return res.status(404).json({ message: "Cuenta destino no encontrada" });
+    return res.json({ message: "Cuenta destino actualizada", cuenta });
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
+    logError("Error al actualizar cuenta destino:", error);
+    return res.status(500).json({ message: "Error al actualizar cuenta destino" });
+  }
+});
+
+app.patch("/cuentas_destino/:id/activo", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "ID invalido" });
+  try {
+    const cuenta = await setActivoCuentaDestino(id, req.body.activo);
+    if (!cuenta) return res.status(404).json({ message: "Cuenta destino no encontrada" });
+    return res.json({ message: Number(cuenta.activo) === 1 ? "Cuenta destino activada" : "Cuenta destino desactivada", cuenta });
+  } catch (error) {
+    logError("Error al cambiar estado de cuenta destino:", error);
+    return res.status(500).json({ message: "Error al cambiar estado" });
   }
 });
 

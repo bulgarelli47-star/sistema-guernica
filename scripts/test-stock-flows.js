@@ -314,6 +314,24 @@ async function crearCuentaCobro(baseUrl, token, payload) {
   return result.data.cuenta;
 }
 
+async function crearCuentaDestino(baseUrl, token, payload) {
+  const result = await requestJson(baseUrl, "POST", "/cuentas_destino", {
+    nombre: `Cuenta destino TEST ${Date.now()}`,
+    tipo_destino: "billetera",
+    alias: "",
+    cbu_cvu: "",
+    activo: true,
+    orden: 10,
+    ...payload
+  }, token);
+
+  if (!result.response.ok) {
+    throw new Error(`No se pudo crear cuenta_destino: ${result.data?.message || result.response.status}`);
+  }
+
+  return result.data.cuenta;
+}
+
 async function getPagos(baseUrl, token) {
   const { response, data } = await requestJson(baseUrl, "GET", "/pagos", null, token);
   if (!response.ok) throw new Error(`No se pudo listar pagos: ${response.status}`);
@@ -4241,6 +4259,87 @@ async function testCuentasCobroEtapa2PagosYVentas() {
   }
 }
 
+async function testCuentasDestinoEtapa3AInfraestructura() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const tablas = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cuentas_destino'");
+      assertEqual(tablas.length, 1, "Debe crear tabla cuentas_destino");
+
+      const columnasCobro = await allSql(dbPath, "PRAGMA table_info(cuentas_cobro)");
+      if (!columnasCobro.some((col) => col.name === "cuenta_destino_id")) {
+        throw new Error("cuentas_cobro debe tener columna nullable cuenta_destino_id");
+      }
+
+      const defaults = await requestJson(baseUrl, "GET", "/cuentas_destino?todos=1", null, token);
+      if (!defaults.response.ok) throw new Error(`GET /cuentas_destino?todos=1 fallo: ${defaults.data?.message || defaults.response.status}`);
+      if (!defaults.data.some((cuenta) => cuenta.nombre === "Caja efectivo")) throw new Error("Debe crear default Caja efectivo");
+      if (!defaults.data.some((cuenta) => cuenta.nombre === "Mercado Pago")) throw new Error("Debe crear default Mercado Pago");
+
+      const banco = await crearCuentaDestino(baseUrl, token, {
+        nombre: "Banco Galicia destino TEST",
+        tipo_destino: "banco",
+        alias: "galicia.test",
+        cbu_cvu: "0000000000000000000001",
+        orden: 30
+      });
+      assertEqual(banco.tipo_destino === "banco" ? 1 : 0, 1, "POST /cuentas_destino debe guardar tipo_destino");
+
+      const update = await requestJson(baseUrl, "PUT", `/cuentas_destino/${banco.id}`, {
+        nombre: "Banco Galicia destino TEST editado",
+        tipo_destino: "banco",
+        alias: "galicia.editado",
+        cbu_cvu: "0000000000000000000002",
+        activo: true,
+        orden: 31
+      }, token);
+      if (!update.response.ok) throw new Error(`PUT /cuentas_destino fallo: ${update.data?.message || update.response.status}`);
+      assertEqual(update.data.cuenta.orden, 31, "PUT /cuentas_destino debe actualizar orden");
+
+      const toggle = await requestJson(baseUrl, "PATCH", `/cuentas_destino/${banco.id}/activo`, { activo: false }, token);
+      if (!toggle.response.ok) throw new Error(`PATCH /cuentas_destino activo fallo: ${toggle.data?.message || toggle.response.status}`);
+      assertEqual(toggle.data.cuenta.activo, 0, "PATCH /cuentas_destino debe desactivar");
+      await requestJson(baseUrl, "PATCH", `/cuentas_destino/${banco.id}/activo`, { activo: true }, token);
+
+      const cuentaCobro = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Terminal con destino TEST",
+        tipo_pago_codigo: "debito",
+        cuenta_destino_id: banco.id,
+        terminal_id: "DEST-TERM"
+      });
+      assertEqual(cuentaCobro.cuenta_destino_id, banco.id, "cuentas_cobro debe guardar cuenta_destino_id");
+
+      const cuentasCobro = await requestJson(baseUrl, "GET", "/cuentas_cobro?todos=1", null, token);
+      if (!cuentasCobro.response.ok) throw new Error(`GET /cuentas_cobro?todos=1 fallo: ${cuentasCobro.data?.message || cuentasCobro.response.status}`);
+      const cuentaListada = cuentasCobro.data.find((cuenta) => Number(cuenta.id) === Number(cuentaCobro.id));
+      assertEqual(cuentaListada.cuenta_destino_id, banco.id, "GET cuentas_cobro debe devolver cuenta_destino_id");
+      if (cuentaListada.cuenta_destino_nombre !== "Banco Galicia destino TEST editado") {
+        throw new Error(`GET cuentas_cobro debe devolver nombre de cuenta destino. Actual=${cuentaListada.cuenta_destino_nombre}`);
+      }
+
+      const cuentaLegacy = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Canal legacy sin destino TEST",
+        tipo_pago_codigo: "efectivo",
+        cuenta_destino_id: null
+      });
+      assertEqual(cuentaLegacy.cuenta_destino_id || 0, 0, "Canal sin cuenta_destino_id debe seguir funcionando");
+
+      const ventaLegacy = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "efectivo",
+        cuenta_cobro_id: null
+      }), token);
+      if (!ventaLegacy.response.ok) throw new Error(`Venta legacy sin cuenta destino fallo: ${ventaLegacy.data?.message || ventaLegacy.response.status}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testCajaResumenPorCuentaCobro() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -5387,6 +5486,7 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
   await testTipoPagoGetExcluyeInactivos();
   await testTipoPagoGetTodosIncluyeInactivos();
   await testCuentasCobroEtapa2PagosYVentas();
+  await testCuentasDestinoEtapa3AInfraestructura();
   await testCajaResumenPorCuentaCobro();
   await testConciliacionManualPorCuentaCobro();
   await testReporteCuentasCobro();

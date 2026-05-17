@@ -14,6 +14,9 @@ function normalizarActivo(valor, fallback = 1) {
 }
 
 function normalizarPayload(payload = {}) {
+  const cuentaDestinoId = payload.cuenta_destino_id === undefined || payload.cuenta_destino_id === null || payload.cuenta_destino_id === ""
+    ? null
+    : Number(payload.cuenta_destino_id) || null;
   return {
     nombre: normalizarTexto(payload.nombre),
     tipo_pago_codigo: normalizarCodigo(payload.tipo_pago_codigo),
@@ -27,6 +30,7 @@ function normalizarPayload(payload = {}) {
     terminal_id: normalizarTexto(payload.terminal_id),
     store_id: normalizarTexto(payload.store_id),
     pos_id: normalizarTexto(payload.pos_id),
+    cuenta_destino_id: cuentaDestinoId,
     metadata_json: payload.metadata_json == null
       ? null
       : typeof payload.metadata_json === "string"
@@ -46,23 +50,27 @@ function validarPayloadCuenta(data) {
 
 async function getCuentasCobro({ todos = false } = {}) {
   return allQuery(
-    `SELECT id, nombre, tipo_pago_codigo, tipo_cuenta, proveedor_integracion, activo, orden,
-            alias, cbu_cvu, external_id, terminal_id, store_id, pos_id, metadata_json,
-            created_at, updated_at
-     FROM cuentas_cobro
-     ${todos ? "" : "WHERE activo = 1"}
-     ORDER BY orden ASC, nombre ASC`
+    `SELECT cc.id, cc.nombre, cc.tipo_pago_codigo, cc.tipo_cuenta, cc.proveedor_integracion, cc.activo, cc.orden,
+            cc.alias, cc.cbu_cvu, cc.external_id, cc.terminal_id, cc.store_id, cc.pos_id, cc.metadata_json,
+            cc.cuenta_destino_id, cd.nombre AS cuenta_destino_nombre, cd.tipo_destino AS cuenta_destino_tipo,
+            cc.created_at, cc.updated_at
+     FROM cuentas_cobro cc
+     LEFT JOIN cuentas_destino cd ON cd.id = cc.cuenta_destino_id
+     ${todos ? "" : "WHERE cc.activo = 1"}
+     ORDER BY cc.orden ASC, cc.nombre ASC`
   );
 }
 
 async function getCuentasCobroPorTipo(codigo) {
   return allQuery(
-    `SELECT id, nombre, tipo_pago_codigo, tipo_cuenta, proveedor_integracion, activo, orden,
-            alias, cbu_cvu, external_id, terminal_id, store_id, pos_id, metadata_json,
-            created_at, updated_at
-     FROM cuentas_cobro
-     WHERE activo = 1 AND tipo_pago_codigo = ?
-     ORDER BY orden ASC, nombre ASC`,
+    `SELECT cc.id, cc.nombre, cc.tipo_pago_codigo, cc.tipo_cuenta, cc.proveedor_integracion, cc.activo, cc.orden,
+            cc.alias, cc.cbu_cvu, cc.external_id, cc.terminal_id, cc.store_id, cc.pos_id, cc.metadata_json,
+            cc.cuenta_destino_id, cd.nombre AS cuenta_destino_nombre, cd.tipo_destino AS cuenta_destino_tipo,
+            cc.created_at, cc.updated_at
+     FROM cuentas_cobro cc
+     LEFT JOIN cuentas_destino cd ON cd.id = cc.cuenta_destino_id
+     WHERE cc.activo = 1 AND cc.tipo_pago_codigo = ?
+     ORDER BY cc.orden ASC, cc.nombre ASC`,
     [normalizarCodigo(codigo)]
   );
 }
@@ -79,8 +87,8 @@ async function crearCuentaCobro(payload) {
   const result = await runQuery(
     `INSERT INTO cuentas_cobro
      (nombre, tipo_pago_codigo, tipo_cuenta, proveedor_integracion, activo, orden,
-      alias, cbu_cvu, external_id, terminal_id, store_id, pos_id, metadata_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+      alias, cbu_cvu, external_id, terminal_id, store_id, pos_id, metadata_json, cuenta_destino_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
     [
       data.nombre,
       data.tipo_pago_codigo,
@@ -94,7 +102,8 @@ async function crearCuentaCobro(payload) {
       data.terminal_id,
       data.store_id,
       data.pos_id,
-      data.metadata_json
+      data.metadata_json,
+      data.cuenta_destino_id
     ]
   );
 
@@ -114,7 +123,7 @@ async function actualizarCuentaCobro(id, payload) {
     `UPDATE cuentas_cobro
      SET nombre = ?, tipo_pago_codigo = ?, tipo_cuenta = ?, proveedor_integracion = ?,
          activo = ?, orden = ?, alias = ?, cbu_cvu = ?, external_id = ?, terminal_id = ?,
-         store_id = ?, pos_id = ?, metadata_json = ?, updated_at = datetime('now')
+         store_id = ?, pos_id = ?, metadata_json = ?, cuenta_destino_id = ?, updated_at = datetime('now')
      WHERE id = ?`,
     [
       data.nombre,
@@ -130,6 +139,7 @@ async function actualizarCuentaCobro(id, payload) {
       data.store_id,
       data.pos_id,
       data.metadata_json,
+      data.cuenta_destino_id,
       Number(id)
     ]
   );
