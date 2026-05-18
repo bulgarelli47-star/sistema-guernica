@@ -332,6 +332,11 @@
       grid-template-columns: 1fr;
       gap: 0;
       align-items: start;
+      position: sticky;
+      top: var(--header-height);
+      z-index: 18;
+      background: linear-gradient(180deg, #fbfaff 0%, rgba(251, 250, 255, .94) 100%);
+      padding-top: 2px;
     }
 
     .top-grid > .card {
@@ -383,6 +388,30 @@
       gap: 4px;
       flex: 1 1 auto;
       min-width: 260px;
+    }
+
+    .legacy-detail {
+      order: 8;
+      display: block;
+      border: 1px dashed var(--border);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, .68);
+      padding: 8px 10px;
+    }
+
+    .legacy-detail summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+      list-style-position: inside;
+    }
+
+    .legacy-detail .card {
+      margin-top: 8px;
+      box-shadow: none;
+      border-style: dashed;
+      background: #fbfbfe;
     }
 
     .tab-button {
@@ -465,6 +494,10 @@
     #tab-resumen .equal-panel { min-height: auto; }
     #tab-resumen .status-card { gap: 8px; }
     #tab-resumen .status-banner { padding-bottom: 4px; }
+    #tab-resumen .summary-detail-grid { order: 1; grid-template-columns: 1fr; }
+    #tab-resumen .metrics-grid { order: 2; }
+    #tab-resumen .method-secondary { display: none; }
+    #tab-resumen .movements-panel { display: none; }
 
     .movements-panel {
       display: grid;
@@ -711,6 +744,17 @@
 
     .cuentas-cobro-card.visible {
       display: grid;
+    }
+
+    #resumenCuentasDestinoCard {
+      order: 3;
+      border-color: rgba(34, 163, 90, .22);
+      background: linear-gradient(180deg, #ffffff 0%, #f6fff9 100%);
+    }
+
+    .legacy-detail #resumenCuentasCobroCard {
+      border-color: var(--border);
+      background: #fbfbfe;
     }
 
     .cuentas-cobro-card .section-header {
@@ -1054,6 +1098,9 @@
 
     #tab-movimientos .table-card {
       margin-top: 0;
+      padding: 14px;
+      display: grid;
+      gap: 10px;
     }
 
     .table-toolbar {
@@ -1061,7 +1108,7 @@
       justify-content: space-between;
       gap: 12px;
       flex-wrap: wrap;
-      margin-bottom: 14px;
+      margin-bottom: 0;
     }
 
     .field,
@@ -1092,9 +1139,41 @@
     .movement-filters {
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr)) auto auto;
-      gap: 12px;
-      margin-bottom: 16px;
+      gap: 8px;
+      margin-bottom: 0;
       align-items: center;
+    }
+
+    #tab-movimientos .movement-kpis {
+      margin: 0;
+      gap: 8px;
+    }
+
+    #tab-movimientos .metric-card {
+      padding: 10px;
+      min-height: auto;
+    }
+
+    #tab-movimientos .metric-card small {
+      display: none;
+    }
+
+    #tab-movimientos .table-scroll {
+      overflow: auto;
+      max-height: min(58vh, 620px);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fff;
+    }
+
+    #tab-movimientos table {
+      margin: 0;
+    }
+
+    #tab-movimientos thead th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
     }
 
     .table-footer {
@@ -1635,6 +1714,14 @@
     /* Compact closure tab cards: keep content-driven sizing without affecting other modules. */
     #tab-apertura-cierre .card {
       padding: 12px;
+    }
+
+    #tab-apertura-cierre .day-summary-card {
+      display: none;
+    }
+
+    #tab-apertura-cierre .closure-overview-grid {
+      grid-template-columns: minmax(240px, 420px);
     }
 
     #tab-apertura-cierre .closure-overview-grid,
@@ -2377,6 +2464,11 @@
         position: static;
       }
 
+      .top-grid {
+        position: sticky;
+        top: 0;
+      }
+
       .app-shell {
         grid-template-columns: 1fr;
         margin-top: 0;
@@ -2465,13 +2557,22 @@
     }
 
     .closure-real-panel {
-      margin-top: 16px;
+      margin-top: 0;
       border: 1px solid var(--border);
       border-radius: 16px;
       background: #fbfbfe;
       padding: 14px;
       display: grid;
       gap: 12px;
+    }
+
+    .close-cash-layout > div {
+      display: grid;
+      gap: 12px;
+    }
+
+    .close-cash-layout .closure-real-panel {
+      order: -1;
     }
 
     .closure-real-head {
@@ -2755,15 +2856,18 @@
           <div class="cuentas-cobro-grid" id="resumenCuentasDestino"></div>
         </article>
 
-        <article class="card cuentas-cobro-card" id="resumenCuentasCobroCard">
-          <div class="section-header">
-            <div>
-              <h3>Resumen por cuenta / terminal</h3>
-              <small>Ingresos, egresos y balance asociados a cuentas de cobro.</small>
+        <details class="legacy-detail" id="detalleLegacyCuentas">
+          <summary>Detalle técnico / legacy por canal</summary>
+          <article class="card cuentas-cobro-card" id="resumenCuentasCobroCard">
+            <div class="section-header">
+              <div>
+                <h3>Resumen por cuenta / terminal</h3>
+                <small>Solo para auditoría: ingresos, egresos y balance por canal heredado.</small>
+              </div>
             </div>
-          </div>
-          <div class="cuentas-cobro-grid" id="resumenCuentasCobro"></div>
-        </article>
+            <div class="cuentas-cobro-grid" id="resumenCuentasCobro"></div>
+          </article>
+        </details>
 
         <div class="summary-detail-grid">
           <div class="card status-card equal-panel">
@@ -2989,7 +3093,7 @@
             <button type="button" class="button secondary compact" id="limpiarFiltrosMovimientos">Limpiar</button>
           </div>
 
-          <div style="overflow:auto;">
+          <div class="table-scroll">
             <table>
               <thead>
                 <tr>
@@ -3077,7 +3181,7 @@
                 <div class="metric-head">
                   <div class="metric-title-amount">
                     <span>Operaciones mixtas</span>
-                    <strong class="amount-value"><span class="amount-number" id="cierreResumenMixtas">0</span></strong>
+                    <strong class="amount-value"><span class="amount-number" id="cierreResumenMixtas" data-kpi-sensitive="false">0</span></strong>
                   </div>
                   <div class="metric-icon" aria-hidden="true">&#215;/&#247;</div>
                 </div>
@@ -3279,7 +3383,7 @@
                 <div class="metric-head">
                   <div class="metric-title-amount">
                     <span>Operaciones mixtas</span>
-                    <strong class="amount-value"><span class="amount-number" id="arqueoResumenMixtas">0</span></strong>
+                    <strong class="amount-value"><span class="amount-number" id="arqueoResumenMixtas" data-kpi-sensitive="false">0</span></strong>
                   </div>
                   <div class="metric-icon" aria-hidden="true">&#215;/&#247;</div>
                 </div>
@@ -3877,6 +3981,26 @@
       element.title = money(valor);
     }
 
+    function aplicarMascaraCajaANuevosMontos() {
+      const button = document.getElementById("toggleKpisBtnCaja");
+      if (!button?.classList.contains("is-hidden")) return;
+      document.querySelectorAll([
+        "main .amount-number",
+        "main .cuenta-cobro-balance",
+        "main .cuenta-cobro-metric strong",
+        "main .closure-real-card strong",
+        "main .close-number",
+        "main #arqueoDigitalReal",
+        "main #arqueoDiferenciaDigital",
+        "main #resultadoDiferenciaEfectivo",
+        "main #resultadoDiferenciaDigital"
+      ].join(",")).forEach((node) => {
+        if (!node.dataset.kpiOriginalValue) node.dataset.kpiOriginalValue = node.textContent;
+        node.textContent = "****";
+        node.classList.add("kpi-sensitive-hidden");
+      });
+    }
+
     function ajustarBotonVisibilidadCaja() {
       const button = document.getElementById("toggleKpisBtnCaja");
       if (!button) {
@@ -4115,7 +4239,9 @@
     }
 
     function setSignedValue(element, value) {
-      element.innerText = money(value);
+      const texto = money(value);
+      element.dataset.kpiOriginalValue = texto;
+      element.innerText = element.classList.contains("kpi-sensitive-hidden") ? "****" : texto;
       element.classList.toggle("positive-text", Number(value || 0) >= 0);
       element.classList.toggle("negative-text", Number(value || 0) < 0);
     }
@@ -4158,7 +4284,7 @@
           return {
             cuenta_destino_id: cuenta.cuenta_destino_id == null ? null : Number(cuenta.cuenta_destino_id),
             cuenta_cobro_id: null,
-            nombre: cuenta.cuenta_destino_nombre || "Sin cuenta destino",
+            nombre: cuenta.sin_cuenta_destino ? "Movimientos sin asignación" : (cuenta.cuenta_destino_nombre || "Sin cuenta destino"),
             tipo_destino: cuenta.tipo_destino || "otro",
             canales: Array.isArray(cuenta.canales) ? cuenta.canales : [],
             sin_cuenta_destino: Boolean(cuenta.sin_cuenta_destino),
@@ -4364,6 +4490,7 @@
       });
       saldoFisicoRealManual?.addEventListener("input", actualizarResumenCierre);
       saldoFisicoRealManual?.addEventListener("input", marcarArqueoPendienteRegistro);
+      aplicarMascaraCajaANuevosMontos();
     }
 
     function actualizarCuentasDigitalesUI() {
@@ -5567,6 +5694,7 @@
         button.addEventListener("click", () => abrirConciliacionCuenta(button.dataset.conciliarCuenta));
       });
       card.classList.add("visible");
+      aplicarMascaraCajaANuevosMontos();
     }
 
     function renderizarResumenCuentasDestino(cuentas) {
@@ -5600,6 +5728,7 @@
         const canales = Array.isArray(cuenta.canales) && cuenta.canales.length
           ? cuenta.canales.join(" · ")
           : "Sin canales asignados";
+        const nombreCuenta = esSinCuenta ? "Movimientos sin asignación" : (cuenta.cuenta_destino_nombre || "Sin cuenta destino");
         const tipo = cuenta.tipo_destino && cuenta.tipo_destino !== "sin_cuenta"
           ? cuenta.tipo_destino
           : "sin cuenta";
@@ -5609,7 +5738,7 @@
           <div class="cuenta-cobro-item ${esSinCuenta ? "sin-cuenta" : ""}">
             <div class="cuenta-cobro-top">
               <div class="cuenta-cobro-title">
-                <strong>${cuenta.cuenta_destino_nombre || "Sin cuenta destino"}</strong>
+                <strong>${nombreCuenta}</strong>
                 <span class="cuenta-cobro-subtipo"><span>${tipo}</span></span>
               </div>
               <span class="cuenta-cobro-balance ${claseBalance}">= ${money(balance)}</span>
@@ -5634,6 +5763,7 @@
         button.addEventListener("click", () => abrirConciliacionCuentaDestino(button.dataset.conciliarDestino));
       });
       card.classList.add("visible");
+      aplicarMascaraCajaANuevosMontos();
     }
 
     async function cargarResumenCuentasDestino(cajaId = null) {
@@ -6126,10 +6256,21 @@
       await cargarCaja();
       window.initKpiVisibility?.({
         gridSelector: "#tab-resumen .metrics-grid",
+        targetSelectors: ["main"],
         storageKey: "guernica_kpis_caja",
         barId: "kpiToggleBarCaja",
         buttonId: "toggleKpisBtnCaja",
-        sensitiveSelectors: [".metric-card .amount-number"]
+        sensitiveSelectors: [
+          ".amount-number",
+          ".cuenta-cobro-balance",
+          ".cuenta-cobro-metric strong",
+          ".closure-real-card strong",
+          ".close-number",
+          "#arqueoDigitalReal",
+          "#arqueoDiferenciaDigital",
+          "#resultadoDiferenciaEfectivo",
+          "#resultadoDiferenciaDigital"
+        ]
       });
       ubicarBotonVisibilidadCaja();
 
