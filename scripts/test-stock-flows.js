@@ -213,6 +213,13 @@ async function getMovimientosStock(baseUrl, token, productoId) {
   return data;
 }
 
+async function getAjustesPendientesStock(baseUrl, token, estado = "") {
+  const url = estado ? `/stock/ajustes-pendientes?estado=${encodeURIComponent(estado)}` : "/stock/ajustes-pendientes";
+  const { response, data } = await requestJson(baseUrl, "GET", url, null, token);
+  if (!response.ok) throw new Error(`No se pudo obtener ajustes pendientes de stock: ${data?.message || response.status}`);
+  return data;
+}
+
 async function getVentaDetalle(baseUrl, token, ventaId) {
   const { response, data } = await requestJson(baseUrl, "GET", `/ventas/${ventaId}/detalle`, null, token);
   if (!response.ok) throw new Error(`No se pudo obtener detalle de venta: ${response.status}`);
@@ -538,6 +545,121 @@ async function testPermisosColaborador() {
         ticket_nombre: "No autorizado"
       }, colaboradorToken);
       assertEqual(config.response.status, 403, "El colaborador no debe modificar configuracion");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAjustesPendientesStockInfraestructura() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Ajustes",
+        usuario: "colaborador_ajustes",
+        password: "colaborador123",
+        confirmar_password: "colaborador123",
+        rol: "colaborador",
+        activo: true
+      }, adminToken);
+
+      const colaboradorToken = await login(baseUrl, "colaborador_ajustes", "colaborador123");
+      const productoAntes = await getProduct(baseUrl, adminToken, 11);
+      const movimientosAntes = await getMovimientosStock(baseUrl, adminToken, 11);
+
+      const creado = await requestJson(baseUrl, "POST", "/stock/ajustes-pendientes", {
+        producto_id: 11,
+        tipo_movimiento: "ingreso",
+        cantidad: 5,
+        motivo: "TEST ajuste pendiente",
+        observaciones: "Conteo informado por colaborador"
+      }, colaboradorToken);
+      if (!creado.response.ok) throw new Error(`Crear ajuste pendiente fallo: ${creado.data?.message || creado.response.status}`);
+
+      assertEqual(creado.response.status, 201, "Crear ajuste pendiente debe responder 201");
+      assertEqual(creado.data.ajuste.producto_id, 11, "Ajuste pendiente debe devolver producto_id");
+      assertEqual(creado.data.ajuste.cantidad, 5, "Ajuste pendiente debe devolver cantidad");
+      assertEqual(creado.data.ajuste.estado === "pendiente" ? 1 : 0, 1, "Estado inicial debe ser pendiente");
+      assertEqual(creado.data.ajuste.stock_actual_snapshot, productoAntes.stock, "Snapshot debe guardar stock actual");
+      if (!creado.data.ajuste.producto_nombre) throw new Error("Ajuste pendiente debe devolver producto_nombre");
+
+      const productoDespues = await getProduct(baseUrl, adminToken, 11);
+      assertEqual(productoDespues.stock, productoAntes.stock, "Crear pendiente no debe modificar productos.stock");
+
+      const movimientosDespues = await getMovimientosStock(baseUrl, adminToken, 11);
+      assertEqual(movimientosDespues.length, movimientosAntes.length, "Crear pendiente no debe insertar movimientos_stock");
+
+      const propio = await requestJson(baseUrl, "GET", `/stock/ajustes-pendientes/${creado.data.ajuste.id}`, null, colaboradorToken);
+      if (!propio.response.ok) throw new Error(`El creador debe poder ver su ajuste: ${propio.data?.message || propio.response.status}`);
+      assertEqual(propio.data.id, creado.data.ajuste.id, "GET por id debe devolver el ajuste creado");
+
+      const listado = await getAjustesPendientesStock(baseUrl, adminToken, "pendiente");
+      const encontrado = listado.find((ajuste) => Number(ajuste.id) === Number(creado.data.ajuste.id));
+      if (!encontrado) throw new Error("Admin debe listar el ajuste pendiente creado");
+      assertEqual(encontrado.estado === "pendiente" ? 1 : 0, 1, "Listado debe conservar estado pendiente");
+
+      const cantidadInvalida = await requestJson(baseUrl, "POST", "/stock/ajustes-pendientes", {
+        producto_id: 11,
+        tipo_movimiento: "ingreso",
+        cantidad: 0
+      }, colaboradorToken);
+      assertEqual(cantidadInvalida.response.status, 400, "Cantidad invalida debe fallar");
+
+      const tipoInvalido = await requestJson(baseUrl, "POST", "/stock/ajustes-pendientes", {
+        producto_id: 11,
+        tipo_movimiento: "rotura",
+        cantidad: 1
+      }, colaboradorToken);
+      assertEqual(tipoInvalido.response.status, 400, "Tipo de movimiento invalido debe fallar");
+
+      const productoInexistente = await requestJson(baseUrl, "POST", "/stock/ajustes-pendientes", {
+        producto_id: 999999,
+        tipo_movimiento: "egreso",
+        cantidad: 1
+      }, colaboradorToken);
+      assertEqual(productoInexistente.response.status, 404, "Producto inexistente debe fallar");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAjustePendienteRequiereStockVer() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, [
+      [
+        `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)
+         VALUES ('permisos_acciones_roles', ?, 'usuarios_permisos', datetime('now'))
+         ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, seccion = excluded.seccion, actualizado_en = excluded.actualizado_en`,
+        [JSON.stringify({ stock_ver: { admin: true, encargado: true, colaborador: false } })]
+      ]
+    ]);
+
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Sin Stock",
+        usuario: "colaborador_sin_stock",
+        password: "colaborador123",
+        confirmar_password: "colaborador123",
+        rol: "colaborador",
+        activo: true
+      }, adminToken);
+
+      const colaboradorToken = await login(baseUrl, "colaborador_sin_stock", "colaborador123");
+      const result = await requestJson(baseUrl, "POST", "/stock/ajustes-pendientes", {
+        producto_id: 11,
+        tipo_movimiento: "ingreso",
+        cantidad: 1
+      }, colaboradorToken);
+      assertEqual(result.response.status, 403, "Usuario sin stock_ver no debe crear ajuste pendiente");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -5673,6 +5795,8 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
   await testBatchManual();
   await testBatchComoComponente();
   await testPermisosColaborador();
+  await testAjustesPendientesStockInfraestructura();
+  await testAjustePendienteRequiereStockVer();
   await testClientesTipoClienteClasificacion();
   await testClientesHistorialProductosComprados();
   await testClientesDeudaActualizadaComparacionSegura();

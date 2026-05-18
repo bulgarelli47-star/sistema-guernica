@@ -127,6 +127,12 @@ const {
   guardarSnapshotsModificadoresVenta,
   resolverComposicionItemVenta
 } = require("./services/modificadorService");
+const {
+  crearAjustePendiente,
+  ensureStockAjustesPendientesSchema,
+  listarAjustesPendientes,
+  obtenerAjustePendiente
+} = require("./services/stockAjustePendienteService");
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -2337,6 +2343,79 @@ app.get("/productos/:id/historial", async (req, res) => {
   } catch (error) {
     logError("Error al obtener historial del producto:", error);
     return res.status(500).json({ message: "Error al obtener historial del producto" });
+  }
+});
+
+async function puedeGestionarAjustesPendientes(req) {
+  return puedeRol(req, ROLES.ADMIN_ENCARGADO) || await tienePermisoAccion(req, "stock_ajustar");
+}
+
+app.post("/stock/ajustes-pendientes", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_ver", "No tenes permisos para proponer ajustes de stock"))) return;
+
+  try {
+    const ajuste = await crearAjustePendiente({
+      producto_id: req.body.producto_id,
+      tipo_movimiento: req.body.tipo_movimiento,
+      cantidad: req.body.cantidad,
+      motivo: req.body.motivo,
+      observaciones: req.body.observaciones,
+      proveedor_id: req.body.proveedor_id,
+      caja_id: req.body.caja_id,
+      usuario: req.usuario?.nombre || req.body.usuario || "usuario",
+      rol: req.usuario?.rol || ""
+    });
+
+    return res.status(201).json({
+      ajuste: {
+        id: ajuste.id,
+        producto_id: ajuste.producto_id,
+        producto_nombre: ajuste.producto_nombre,
+        tipo_movimiento: ajuste.tipo_movimiento,
+        cantidad: ajuste.cantidad,
+        estado: ajuste.estado,
+        stock_actual_snapshot: ajuste.stock_actual_snapshot
+      }
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    logError("Error al crear ajuste pendiente de stock:", error);
+    return res.status(500).json({ message: "Error al crear ajuste pendiente de stock" });
+  }
+});
+
+app.get("/stock/ajustes-pendientes", async (req, res) => {
+  if (!(await puedeGestionarAjustesPendientes(req))) {
+    return res.status(403).json({ message: "No tenes permisos para listar ajustes pendientes de stock" });
+  }
+
+  try {
+    const ajustes = await listarAjustesPendientes({ estado: req.query.estado });
+    return res.json(ajustes);
+  } catch (error) {
+    logError("Error al listar ajustes pendientes de stock:", error);
+    return res.status(500).json({ message: "Error al listar ajustes pendientes de stock" });
+  }
+});
+
+app.get("/stock/ajustes-pendientes/:id", async (req, res) => {
+  try {
+    const ajuste = await obtenerAjustePendiente(req.params.id);
+    if (!ajuste) {
+      return res.status(404).json({ message: "Ajuste pendiente no encontrado" });
+    }
+
+    const esCreador = String(ajuste.solicitado_por || "").trim() === String(req.usuario?.nombre || "").trim();
+    if (!(await puedeGestionarAjustesPendientes(req)) && !esCreador) {
+      return res.status(403).json({ message: "No tenes permisos para ver este ajuste pendiente" });
+    }
+
+    return res.json(ajuste);
+  } catch (error) {
+    logError("Error al obtener ajuste pendiente de stock:", error);
+    return res.status(500).json({ message: "Error al obtener ajuste pendiente de stock" });
   }
 });
 
@@ -5565,6 +5644,7 @@ Promise.all([
   ensureConciliacionesCuentasDestinoTable(),
   ensureModificadoresSchema(),
   ensureRecalculosCuentaCorrienteTable(),
+  ensureStockAjustesPendientesSchema(),
   ensureProductosSchema(),
   ensureClientesSchema(),
   ensureConfiguracionSchema()
