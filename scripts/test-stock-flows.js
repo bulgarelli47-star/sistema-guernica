@@ -174,6 +174,13 @@ async function getCajaResumenCuentas(baseUrl, token, cajaId = null) {
   return data;
 }
 
+async function getCajaResumenCuentasDestino(baseUrl, token, cajaId = null) {
+  const url = cajaId ? `/caja/resumen/cuentas-destino?caja_id=${cajaId}` : "/caja/resumen/cuentas-destino";
+  const { response, data } = await requestJson(baseUrl, "GET", url, null, token);
+  if (!response.ok) throw new Error(`No se pudo obtener caja/resumen/cuentas-destino: ${data?.message || response.status}`);
+  return data;
+}
+
 async function getCajaConciliacionesCuentas(baseUrl, token, cajaId = null) {
   const url = cajaId ? `/caja/conciliaciones/cuentas?caja_id=${cajaId}` : "/caja/conciliaciones/cuentas";
   const { response, data } = await requestJson(baseUrl, "GET", url, null, token);
@@ -181,9 +188,22 @@ async function getCajaConciliacionesCuentas(baseUrl, token, cajaId = null) {
   return data;
 }
 
+async function getCajaConciliacionesCuentasDestino(baseUrl, token, cajaId = null) {
+  const url = cajaId ? `/caja/conciliaciones/cuentas-destino?caja_id=${cajaId}` : "/caja/conciliaciones/cuentas-destino";
+  const { response, data } = await requestJson(baseUrl, "GET", url, null, token);
+  if (!response.ok) throw new Error(`No se pudo obtener caja/conciliaciones/cuentas-destino: ${data?.message || response.status}`);
+  return data;
+}
+
 async function guardarConciliacionCuenta(baseUrl, token, payload) {
   const { response, data } = await requestJson(baseUrl, "POST", "/caja/conciliaciones/cuentas", payload, token);
   if (!response.ok) throw new Error(`No se pudo guardar conciliacion cuenta: ${data?.message || response.status}`);
+  return data;
+}
+
+async function guardarConciliacionCuentaDestino(baseUrl, token, payload) {
+  const { response, data } = await requestJson(baseUrl, "POST", "/caja/conciliaciones/cuentas-destino", payload, token);
+  if (!response.ok) throw new Error(`No se pudo guardar conciliacion cuenta destino: ${data?.message || response.status}`);
   return data;
 }
 
@@ -4340,6 +4360,241 @@ async function testCuentasDestinoEtapa3AInfraestructura() {
   }
 }
 
+async function testCajaResumenPorCuentaDestino() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const apertura = await abrirCaja(baseUrl, token, 1000);
+      const mercadoPago = await crearCuentaDestino(baseUrl, token, {
+        nombre: "Mercado Pago destino resumen TEST",
+        tipo_destino: "billetera",
+        alias: "mp.destino.test",
+        orden: 10
+      });
+      const point = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Point barra destino TEST",
+        tipo_pago_codigo: "debito",
+        tipo_cuenta: "terminal",
+        cuenta_destino_id: mercadoPago.id,
+        orden: 10
+      });
+      const qr = await crearCuentaCobro(baseUrl, token, {
+        nombre: "QR mostrador destino TEST",
+        tipo_pago_codigo: "transferencia",
+        tipo_cuenta: "qr",
+        cuenta_destino_id: mercadoPago.id,
+        orden: 20
+      });
+      const legacySinDestino = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Canal sin destino resumen TEST",
+        tipo_pago_codigo: "efectivo",
+        tipo_cuenta: "caja",
+        cuenta_destino_id: null,
+        orden: 30
+      });
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      const ventaPoint = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "debito",
+        cuenta_cobro_id: point.id
+      }), token);
+      if (!ventaPoint.response.ok) throw new Error(`Venta Point destino fallo: ${ventaPoint.data?.message || ventaPoint.response.status}`);
+
+      const ventaQr = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "transferencia",
+        cuenta_cobro_id: qr.id
+      }), token);
+      if (!ventaQr.response.ok) throw new Error(`Venta QR destino fallo: ${ventaQr.data?.message || ventaQr.response.status}`);
+
+      const ventaCanalSinDestino = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "efectivo",
+        cuenta_cobro_id: legacySinDestino.id
+      }), token);
+      if (!ventaCanalSinDestino.response.ok) throw new Error(`Venta canal sin destino fallo: ${ventaCanalSinDestino.data?.message || ventaCanalSinDestino.response.status}`);
+
+      const ventaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "efectivo",
+        cuenta_cobro_id: null
+      }), token);
+      if (!ventaSinCuenta.response.ok) throw new Error(`Venta sin cuenta destino fallo: ${ventaSinCuenta.data?.message || ventaSinCuenta.response.status}`);
+
+      const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "debito",
+        cuenta_cobro_id: point.id
+      }), token);
+      if (!ventaAnular.response.ok) throw new Error(`Venta a anular destino fallo: ${ventaAnular.data?.message || ventaAnular.response.status}`);
+      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${ventaAnular.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anulacion.response.ok) throw new Error(`Anulacion destino fallo: ${anulacion.data?.message || anulacion.response.status}`);
+
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST egreso Mercado Pago destino",
+        monto_total: 50,
+        tipo_pago: "debito",
+        estado: "registrado",
+        cuenta_cobro_id: point.id
+      });
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST egreso sin cuenta destino",
+        monto_total: 20,
+        tipo_pago: "efectivo",
+        estado: "registrado",
+        cuenta_cobro_id: null
+      });
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST pendiente no impacta destino",
+        monto_total: 70,
+        tipo_pago: "debito",
+        estado: "pendiente",
+        cuenta_cobro_id: point.id
+      });
+
+      const resumenAbierta = await getCajaResumenCuentasDestino(baseUrl, token);
+      assertEqual(resumenAbierta.caja.id, apertura.id, "Resumen por cuenta destino sin caja_id debe usar caja abierta");
+      const mp = resumenAbierta.cuentas.find((cuenta) => cuenta.cuenta_destino_id === mercadoPago.id);
+      const sinDestino = resumenAbierta.cuentas.find((cuenta) => cuenta.sin_cuenta_destino);
+
+      if (!mp || !sinDestino) {
+        throw new Error(`Resumen por cuenta destino debe incluir Mercado Pago y Sin cuenta destino. Actual=${JSON.stringify(resumenAbierta.cuentas)}`);
+      }
+
+      assertApprox(mp.ingresos, 400, "Dos canales asociados a Mercado Pago deben agrupar ingresos");
+      assertApprox(mp.egresos, 50, "Pago por canal Mercado Pago debe restar en Mercado Pago");
+      assertApprox(mp.balance, 350, "Balance Mercado Pago debe ser ingresos - egresos");
+      assertEqual(mp.ventas, 2, "Venta anulada no debe contar en cuenta destino");
+      assertEqual(mp.pagos, 1, "Pago pendiente no debe contar en cuenta destino");
+      if (!mp.canales.includes("Point barra destino TEST") || !mp.canales.includes("QR mostrador destino TEST")) {
+        throw new Error(`Cuenta destino debe listar canales usados. Actual=${JSON.stringify(mp.canales)}`);
+      }
+
+      assertApprox(sinDestino.ingresos, 400, "Canal sin destino y movimiento sin cuenta deben agruparse en Sin cuenta destino");
+      assertApprox(sinDestino.egresos, 20, "Movimiento sin cuenta_cobro_id debe restar en Sin cuenta destino");
+      assertApprox(sinDestino.balance, 380, "Balance Sin cuenta destino debe ser ingresos - egresos");
+      assertEqual(sinDestino.ventas, 2, "Sin cuenta destino debe contar ventas de canal legacy y sin cuenta");
+      assertEqual(sinDestino.pagos, 1, "Sin cuenta destino debe contar pagos sin cuenta");
+
+      const ultimo = resumenAbierta.cuentas[resumenAbierta.cuentas.length - 1];
+      if (!ultimo.sin_cuenta_destino) {
+        throw new Error(`Sin cuenta destino debe ordenarse al final. Actual=${JSON.stringify(resumenAbierta.cuentas)}`);
+      }
+
+      const cajaCerrada = await cerrarCaja(baseUrl, token, 3000, 0, 0);
+      const resumenCerrada = await getCajaResumenCuentasDestino(baseUrl, token);
+      assertEqual(resumenCerrada.caja.id, cajaCerrada.id, "Resumen por cuenta destino sin caja abierta debe usar ultima caja cerrada");
+      const mpCerrada = resumenCerrada.cuentas.find((cuenta) => cuenta.cuenta_destino_id === mercadoPago.id);
+      assertApprox(mpCerrada?.balance, 350, "Resumen por cuenta destino de ultima caja cerrada debe conservar balance");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testConciliacionManualPorCuentaDestino() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const apertura = await abrirCaja(baseUrl, token, 1000);
+      const mercadoPago = await crearCuentaDestino(baseUrl, token, {
+        nombre: "Mercado Pago conciliacion destino TEST",
+        tipo_destino: "billetera",
+        orden: 10
+      });
+      const banco = await crearCuentaDestino(baseUrl, token, {
+        nombre: "Banco conciliacion destino TEST",
+        tipo_destino: "banco",
+        orden: 20
+      });
+      const cuentaMp = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Point conciliacion destino TEST",
+        tipo_pago_codigo: "debito",
+        cuenta_destino_id: mercadoPago.id
+      });
+      const cuentaBanco = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Transferencia conciliacion destino TEST",
+        tipo_pago_codigo: "transferencia",
+        cuenta_destino_id: banco.id
+      });
+
+      const ventaMp = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "debito",
+        cuenta_cobro_id: cuentaMp.id
+      }), token);
+      if (!ventaMp.response.ok) throw new Error(`Venta MP conciliacion destino fallo: ${ventaMp.data?.message || ventaMp.response.status}`);
+      const ventaBanco = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "transferencia",
+        cuenta_cobro_id: cuentaBanco.id
+      }), token);
+      if (!ventaBanco.response.ok) throw new Error(`Venta banco conciliacion destino fallo: ${ventaBanco.data?.message || ventaBanco.response.status}`);
+
+      const resumenAntes = await getCajaResumenCuentasDestino(baseUrl, token, apertura.id);
+      const mpAntes = resumenAntes.cuentas.find((cuenta) => cuenta.cuenta_destino_id === mercadoPago.id);
+      assertApprox(mpAntes?.balance, 200, "Resumen esperado destino antes de conciliar");
+
+      const positiva = await guardarConciliacionCuentaDestino(baseUrl, token, {
+        caja_id: apertura.id,
+        cuenta_destino_id: mercadoPago.id,
+        monto_sistema: 200,
+        monto_real: 250,
+        observaciones: "positiva"
+      });
+      assertApprox(positiva.conciliacion.diferencia, 50, "Conciliacion destino debe calcular diferencia positiva");
+      assertEqual(positiva.conciliacion.estado === "diferencia" ? 1 : 0, 1, "Diferencia positiva debe quedar en estado diferencia");
+
+      const negativa = await guardarConciliacionCuentaDestino(baseUrl, token, {
+        caja_id: apertura.id,
+        cuenta_destino_id: mercadoPago.id,
+        monto_sistema: 200,
+        monto_real: 175,
+        observaciones: "negativa update"
+      });
+      assertEqual(negativa.conciliacion.id, positiva.conciliacion.id, "Conciliacion destino debe actualizar la existente");
+      assertApprox(negativa.conciliacion.diferencia, -25, "Conciliacion destino debe calcular diferencia negativa");
+
+      const cero = await guardarConciliacionCuentaDestino(baseUrl, token, {
+        caja_id: apertura.id,
+        cuenta_destino_id: banco.id,
+        monto_sistema: 200,
+        monto_real: 200,
+        observaciones: "cero"
+      });
+      assertApprox(cero.conciliacion.diferencia, 0, "Conciliacion destino debe calcular diferencia cero");
+      assertEqual(cero.conciliacion.estado === "conciliado" ? 1 : 0, 1, "Diferencia cero debe quedar conciliada");
+
+      const getPorCaja = await getCajaConciliacionesCuentasDestino(baseUrl, token, apertura.id);
+      assertEqual(getPorCaja.caja.id, apertura.id, "GET conciliaciones destino por caja debe devolver caja solicitada");
+      if (getPorCaja.conciliaciones.length !== 2) {
+        throw new Error(`GET conciliaciones destino debe devolver dos registros. Actual=${JSON.stringify(getPorCaja.conciliaciones)}`);
+      }
+
+      const resumenDespues = await getCajaResumenCuentasDestino(baseUrl, token, apertura.id);
+      const mpDespues = resumenDespues.cuentas.find((cuenta) => cuenta.cuenta_destino_id === mercadoPago.id);
+      assertApprox(mpDespues?.balance, 200, "Conciliacion destino no debe alterar resumen esperado");
+
+      const getAbierta = await getCajaConciliacionesCuentasDestino(baseUrl, token);
+      assertEqual(getAbierta.caja.id, apertura.id, "GET conciliaciones destino sin caja_id debe usar caja abierta");
+
+      const cajaCerrada = await cerrarCaja(baseUrl, token, 1000, 0, 0);
+      const getCerrada = await getCajaConciliacionesCuentasDestino(baseUrl, token);
+      assertEqual(getCerrada.caja.id, cajaCerrada.id, "GET conciliaciones destino sin caja abierta debe usar ultima caja cerrada");
+      if (!getCerrada.conciliaciones.some((item) => Number(item.cuenta_destino_id) === Number(mercadoPago.id))) {
+        throw new Error("GET conciliaciones destino de ultima caja cerrada debe conservar conciliacion Mercado Pago");
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testCajaResumenPorCuentaCobro() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -5487,6 +5742,8 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
   await testTipoPagoGetTodosIncluyeInactivos();
   await testCuentasCobroEtapa2PagosYVentas();
   await testCuentasDestinoEtapa3AInfraestructura();
+  await testCajaResumenPorCuentaDestino();
+  await testConciliacionManualPorCuentaDestino();
   await testCajaResumenPorCuentaCobro();
   await testConciliacionManualPorCuentaCobro();
   await testReporteCuentasCobro();

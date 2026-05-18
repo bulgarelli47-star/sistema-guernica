@@ -35,13 +35,17 @@ const {
   ensureCajaArqueosTable,
   ensureCajaMovimientosTable,
   ensureConciliacionesCuentasCobroTable,
+  ensureConciliacionesCuentasDestinoTable,
   getCajaAbiertaActual,
   getCajaParaArqueos,
   getConciliacionesCuentaCobro,
+  getConciliacionesCuentaDestino,
   getPagosCaja,
   getResumenPorCuentaCobro,
+  getResumenPorCuentaDestino,
   getUltimaCajaRegistrada,
   guardarConciliacionCuentaCobro,
+  guardarConciliacionCuentaDestino,
   mapCajaArqueo,
   parseJsonOrFallback
 } = require("./services/cajaService");
@@ -3674,6 +3678,27 @@ app.get("/caja/resumen/cuentas", async (req, res) => {
   }
 });
 
+app.get("/caja/resumen/cuentas-destino", async (req, res) => {
+  try {
+    const cajaId = Number(req.query.caja_id) || null;
+    const caja = cajaId
+      ? await getQuery("SELECT * FROM caja_aperturas WHERE id = ?", [cajaId])
+      : await getCajaAbiertaActual() || await getUltimaCajaRegistrada();
+
+    if (!caja) {
+      return res.json({ caja: null, cuentas: [] });
+    }
+
+    return res.json({
+      caja,
+      cuentas: await getResumenPorCuentaDestino({ cajaId: caja.id })
+    });
+  } catch (error) {
+    logError("Error al obtener resumen por cuenta destino:", error);
+    return res.status(500).json({ message: "Error al obtener resumen por cuenta destino" });
+  }
+});
+
 app.get("/caja/conciliaciones/cuentas", async (req, res) => {
   try {
     const cajaId = Number(req.query.caja_id) || null;
@@ -3724,6 +3749,59 @@ app.post("/caja/conciliaciones/cuentas", async (req, res) => {
   } catch (error) {
     logError("Error al guardar conciliacion por cuenta de cobro:", error);
     return res.status(error.statusCode || 500).json({ message: error.message || "Error al guardar conciliacion por cuenta de cobro" });
+  }
+});
+
+app.get("/caja/conciliaciones/cuentas-destino", async (req, res) => {
+  try {
+    const cajaId = Number(req.query.caja_id) || null;
+    const caja = cajaId
+      ? await getQuery("SELECT * FROM caja_aperturas WHERE id = ?", [cajaId])
+      : await getCajaAbiertaActual() || await getUltimaCajaRegistrada();
+
+    if (!caja) {
+      return res.json({ caja: null, conciliaciones: [] });
+    }
+
+    return res.json({
+      caja,
+      conciliaciones: await getConciliacionesCuentaDestino({ cajaId: caja.id })
+    });
+  } catch (error) {
+    logError("Error al obtener conciliaciones por cuenta destino:", error);
+    return res.status(500).json({ message: "Error al obtener conciliaciones por cuenta destino" });
+  }
+});
+
+app.post("/caja/conciliaciones/cuentas-destino", async (req, res) => {
+  if (!(await requirePermiso(req, res, "caja_registrar_arqueo", "No tenes permisos para conciliar caja"))) return;
+
+  try {
+    const cajaId = Number(req.body.caja_id) || null;
+    const caja = cajaId
+      ? await getQuery("SELECT * FROM caja_aperturas WHERE id = ?", [cajaId])
+      : await getCajaAbiertaActual() || await getUltimaCajaRegistrada();
+
+    if (!caja) {
+      return res.status(400).json({ message: "No hay caja disponible para conciliar" });
+    }
+
+    const { fecha, hora } = getNowParts();
+    const conciliacion = await guardarConciliacionCuentaDestino({
+      cajaId: caja.id,
+      cuentaDestinoId: req.body.cuenta_destino_id,
+      montoSistema: req.body.monto_sistema,
+      montoReal: req.body.monto_real,
+      observaciones: req.body.observaciones,
+      usuario: req.body.usuario || req.usuario?.nombre || req.usuario?.usuario || "admin",
+      fecha,
+      hora
+    });
+
+    return res.json({ message: "Conciliacion de cuenta destino guardada", caja, conciliacion });
+  } catch (error) {
+    logError("Error al guardar conciliacion por cuenta destino:", error);
+    return res.status(error.statusCode || 500).json({ message: error.message || "Error al guardar conciliacion por cuenta destino" });
   }
 });
 
@@ -5484,6 +5562,7 @@ Promise.all([
   ensureTiposPagoSchema(),
   ensureCuentasCobroSchema(),
   ensureConciliacionesCuentasCobroTable(),
+  ensureConciliacionesCuentasDestinoTable(),
   ensureModificadoresSchema(),
   ensureRecalculosCuentaCorrienteTable(),
   ensureProductosSchema(),

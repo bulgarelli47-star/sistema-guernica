@@ -73,6 +73,30 @@ async function ensureConciliacionesCuentasCobroTable() {
   `);
 }
 
+async function ensureConciliacionesCuentasDestinoTable() {
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS conciliaciones_cuentas_destino (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      caja_id INTEGER NOT NULL,
+      cuenta_destino_id INTEGER,
+      monto_sistema REAL NOT NULL DEFAULT 0,
+      monto_real REAL NOT NULL DEFAULT 0,
+      diferencia REAL NOT NULL DEFAULT 0,
+      estado TEXT NOT NULL,
+      observaciones TEXT,
+      fecha TEXT NOT NULL,
+      hora TEXT NOT NULL,
+      usuario TEXT NOT NULL DEFAULT 'admin',
+      UNIQUE(caja_id, cuenta_destino_id)
+    )
+  `);
+  await runQuery(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_conciliaciones_destino_sin_cuenta
+    ON conciliaciones_cuentas_destino(caja_id)
+    WHERE cuenta_destino_id IS NULL
+  `);
+}
+
 async function getCajaAperturaHoy(fecha) {
   return getQuery(
     `SELECT *
@@ -383,6 +407,119 @@ async function getResumenPorCuentaCobro({ cajaId } = {}) {
   return rows.map(mapResumenCuenta);
 }
 
+function mapResumenCuentaDestino(row) {
+  const ingresos = Number(row.ingresos || 0);
+  const egresos = Number(row.egresos || 0);
+  const sinCuentaDestino = Number(row.sin_cuenta_destino || 0) === 1;
+  const canales = String(row.canales || "")
+    .split("|")
+    .map((canal) => canal.trim())
+    .filter(Boolean);
+
+  return {
+    cuenta_destino_id: sinCuentaDestino || row.cuenta_destino_id == null ? null : Number(row.cuenta_destino_id),
+    cuenta_destino_nombre: sinCuentaDestino ? "Sin cuenta destino" : (row.cuenta_destino_nombre || "Sin cuenta destino"),
+    tipo_destino: sinCuentaDestino ? "sin_cuenta" : (row.tipo_destino || "otro"),
+    ingresos: Number(ingresos.toFixed(2)),
+    egresos: Number(egresos.toFixed(2)),
+    balance: Number((ingresos - egresos).toFixed(2)),
+    ventas: Number(row.ventas || 0),
+    pagos: Number(row.pagos || 0),
+    canales,
+    sin_cuenta_destino: sinCuentaDestino
+  };
+}
+
+async function getResumenPorCuentaDestino({ cajaId } = {}) {
+  if (!cajaId) {
+    return [];
+  }
+
+  const rows = await allQuery(
+    `WITH movimientos AS (
+       SELECT
+         cd.id AS cuenta_destino_id,
+         cd.nombre AS cuenta_destino_nombre,
+         cd.tipo_destino AS tipo_destino,
+         CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END AS sin_cuenta_destino,
+         cc.nombre AS canal_nombre,
+         SUM(COALESCE(v.total, 0)) AS ingresos,
+         0 AS egresos,
+         COUNT(*) AS ventas,
+         0 AS pagos
+       FROM ventas v
+       LEFT JOIN cuentas_cobro cc ON cc.id = v.cuenta_cobro_id
+       LEFT JOIN cuentas_destino cd ON cd.id = cc.cuenta_destino_id
+       WHERE v.caja_id = ?
+         AND v.estado = 'cobrada'
+         AND COALESCE(v.estado, '') != 'anulado'
+       GROUP BY cd.id, cd.nombre, cd.tipo_destino, CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END, cc.nombre
+
+       UNION ALL
+
+       SELECT
+         cd.id AS cuenta_destino_id,
+         cd.nombre AS cuenta_destino_nombre,
+         cd.tipo_destino AS tipo_destino,
+         CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END AS sin_cuenta_destino,
+         cc.nombre AS canal_nombre,
+         0 AS ingresos,
+         SUM(COALESCE(p.monto_total, 0)) AS egresos,
+         0 AS ventas,
+         COUNT(*) AS pagos
+       FROM pagos p
+       LEFT JOIN cuentas_cobro cc ON cc.id = p.cuenta_cobro_id
+       LEFT JOIN cuentas_destino cd ON cd.id = cc.cuenta_destino_id
+       WHERE p.caja_id = ?
+         AND p.estado = 'registrado'
+       GROUP BY cd.id, cd.nombre, cd.tipo_destino, CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END, cc.nombre
+     ),
+     agrupado AS (
+       SELECT
+         cuenta_destino_id,
+         cuenta_destino_nombre,
+         tipo_destino,
+         sin_cuenta_destino,
+         SUM(ingresos) AS ingresos,
+         SUM(egresos) AS egresos,
+         SUM(ventas) AS ventas,
+         SUM(pagos) AS pagos
+       FROM movimientos
+       GROUP BY cuenta_destino_id, cuenta_destino_nombre, tipo_destino, sin_cuenta_destino
+     ),
+     canales AS (
+       SELECT
+         cuenta_destino_id,
+         sin_cuenta_destino,
+         GROUP_CONCAT(canal_nombre, '|') AS canales
+       FROM (
+         SELECT DISTINCT cuenta_destino_id, sin_cuenta_destino, canal_nombre
+         FROM movimientos
+         WHERE canal_nombre IS NOT NULL AND canal_nombre != ''
+       )
+       GROUP BY cuenta_destino_id, sin_cuenta_destino
+     )
+     SELECT
+       a.cuenta_destino_id,
+       a.cuenta_destino_nombre,
+       a.tipo_destino,
+       a.sin_cuenta_destino,
+       a.ingresos,
+       a.egresos,
+       a.ventas,
+       a.pagos,
+       COALESCE(c.canales, '') AS canales
+     FROM agrupado a
+     LEFT JOIN canales c
+       ON (c.cuenta_destino_id = a.cuenta_destino_id OR (c.cuenta_destino_id IS NULL AND a.cuenta_destino_id IS NULL))
+      AND c.sin_cuenta_destino = a.sin_cuenta_destino
+     ORDER BY a.sin_cuenta_destino ASC, (a.ingresos - a.egresos) DESC, a.cuenta_destino_nombre ASC`,
+    [cajaId, cajaId]
+  );
+
+  return rows.map(mapResumenCuentaDestino);
+}
+
 async function getConciliacionesCuentaCobro({ cajaId } = {}) {
   if (!cajaId) {
     return [];
@@ -452,6 +589,84 @@ async function guardarConciliacionCuentaCobro({
     [caja, cuenta, sistema, real, diferencia, estado, obs, fechaFinal, horaFinal, user]
   );
   return getQuery("SELECT * FROM conciliaciones_cuentas_cobro WHERE id = ?", [result.lastID]);
+}
+
+async function getConciliacionesCuentaDestino({ cajaId } = {}) {
+  if (!cajaId) {
+    return [];
+  }
+  await ensureConciliacionesCuentasDestinoTable();
+  return allQuery(
+    `SELECT c.*, cd.nombre AS cuenta_destino_nombre, cd.tipo_destino
+     FROM conciliaciones_cuentas_destino c
+     LEFT JOIN cuentas_destino cd ON cd.id = c.cuenta_destino_id
+     WHERE c.caja_id = ?
+     ORDER BY c.id ASC`,
+    [cajaId]
+  );
+}
+
+async function guardarConciliacionCuentaDestino({
+  cajaId,
+  cuentaDestinoId = null,
+  montoSistema = 0,
+  montoReal = 0,
+  observaciones = "",
+  usuario = "admin",
+  fecha,
+  hora
+} = {}) {
+  await ensureConciliacionesCuentasDestinoTable();
+  const caja = Number(cajaId) || 0;
+  if (!caja) {
+    const error = new Error("Caja invalida");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const cuenta = cuentaDestinoId === null || cuentaDestinoId === undefined || cuentaDestinoId === "" ? null : Number(cuentaDestinoId);
+  if (cuenta !== null && !Number.isFinite(cuenta)) {
+    const error = new Error("Cuenta destino invalida");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const sistema = Number(Number(montoSistema || 0).toFixed(2));
+  const real = Number(Number(montoReal || 0).toFixed(2));
+  const diferencia = Number((real - sistema).toFixed(2));
+  const estado = Math.abs(diferencia) < 0.01 ? "conciliado" : "diferencia";
+  const obs = String(observaciones || "").trim();
+  const user = String(usuario || "admin").trim() || "admin";
+  const fechaFinal = fecha || new Date().toISOString().slice(0, 10);
+  const horaFinal = hora || new Date().toTimeString().slice(0, 8);
+
+  const existente = cuenta == null
+    ? await getQuery(
+        "SELECT id FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id IS NULL",
+        [caja]
+      )
+    : await getQuery(
+        "SELECT id FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [caja, cuenta]
+      );
+
+  if (existente) {
+    await runQuery(
+      `UPDATE conciliaciones_cuentas_destino
+       SET monto_sistema = ?, monto_real = ?, diferencia = ?, estado = ?, observaciones = ?, fecha = ?, hora = ?, usuario = ?
+       WHERE id = ?`,
+      [sistema, real, diferencia, estado, obs, fechaFinal, horaFinal, user, existente.id]
+    );
+    return getQuery("SELECT * FROM conciliaciones_cuentas_destino WHERE id = ?", [existente.id]);
+  }
+
+  const result = await runQuery(
+    `INSERT INTO conciliaciones_cuentas_destino
+     (caja_id, cuenta_destino_id, monto_sistema, monto_real, diferencia, estado, observaciones, fecha, hora, usuario)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [caja, cuenta, sistema, real, diferencia, estado, obs, fechaFinal, horaFinal, user]
+  );
+  return getQuery("SELECT * FROM conciliaciones_cuentas_destino WHERE id = ?", [result.lastID]);
 }
 
 function buildCajaResumen(ventas) {
@@ -596,12 +811,29 @@ async function buildCajaArqueoData(apertura, body = {}) {
   const conteoResultado = buildConteoBilletes(conteo);
   const efectivoContado = Number(conteoResultado.total || 0);
   const diferenciaEfectivo = Number((efectivoContado - efectivoEsperado).toFixed(2));
+  const resumenPorCuenta = await getResumenPorCuentaCobro({ cajaId: apertura.id });
+  const esperadoPorCuenta = new Map(
+    resumenPorCuenta.map((cuenta) => [
+      cuenta.cuenta_cobro_id == null ? "sin-cuenta" : String(cuenta.cuenta_cobro_id),
+      cuenta
+    ])
+  );
   const cuentasDetalle = cuentas.map((cuenta, index) => {
-    const nombre = String(cuenta.nombre || `Cuenta ${index + 1}`).trim() || `Cuenta ${index + 1}`;
+    const cuentaCobroId = cuenta.cuenta_cobro_id == null || cuenta.cuenta_cobro_id === ""
+      ? null
+      : Number(cuenta.cuenta_cobro_id);
+    const cuentaKey = cuentaCobroId == null ? "sin-cuenta" : String(cuentaCobroId);
+    const cuentaSistema = esperadoPorCuenta.get(cuentaKey);
+    const nombre = String(cuenta.nombre || cuenta.cuenta_nombre || cuentaSistema?.cuenta_nombre || `Cuenta ${index + 1}`).trim() || `Cuenta ${index + 1}`;
     const saldoInicial = Number(cuenta.saldo_inicial || 0);
     const saldoActual = Number(cuenta.saldo_actual || 0);
+    const montoSistema = Number(
+      cuenta.monto_sistema ?? cuenta.balance ?? cuentaSistema?.balance ?? 0
+    );
     return {
+      cuenta_cobro_id: cuentaCobroId,
       nombre,
+      monto_sistema: Number(montoSistema.toFixed(2)),
       saldo_inicial: Number(saldoInicial.toFixed(2)),
       saldo_actual: Number(saldoActual.toFixed(2)),
       recaudacion_real: Number((saldoActual - saldoInicial).toFixed(2))
@@ -610,10 +842,16 @@ async function buildCajaArqueoData(apertura, body = {}) {
   const digitalReal = Number(
     cuentasDetalle.reduce((acc, cuenta) => acc + Number(cuenta.recaudacion_real || 0), 0).toFixed(2)
   );
-  const digitalEsperado = Number((
-    Number(resumen.total_debito_tarjeta ?? resumen.total_debito ?? 0) +
-    Number(resumen.total_transferencia || 0)
-  ).toFixed(2));
+  const tieneCuentasCobro = cuentasDetalle.some((cuenta) => cuenta.cuenta_cobro_id !== null) ||
+    resumenPorCuenta.length > 0;
+  const digitalEsperado = tieneCuentasCobro
+    ? Number((cuentasDetalle.length ? cuentasDetalle : resumenPorCuenta)
+        .reduce((acc, cuenta) => acc + Number(cuenta.monto_sistema ?? cuenta.balance ?? 0), 0)
+        .toFixed(2))
+    : Number((
+        Number(resumen.total_debito_tarjeta ?? resumen.total_debito ?? 0) +
+        Number(resumen.total_transferencia || 0)
+      ).toFixed(2));
   const diferenciaDigital = Number((digitalReal - digitalEsperado).toFixed(2));
   const resultadoFinal = Number((diferenciaEfectivo + diferenciaDigital).toFixed(2));
   const estado = resultadoFinal >= 0 ? "Sobra" : "Falta";
@@ -645,6 +883,7 @@ module.exports = {
   ensureCajaArqueosTable,
   ensureCajaMovimientosTable,
   ensureConciliacionesCuentasCobroTable,
+  ensureConciliacionesCuentasDestinoTable,
   getCajaAbiertaActual,
   getCajaAperturaHoy,
   getCajaParaArqueos,
@@ -652,7 +891,10 @@ module.exports = {
   getPagosCaja,
   getUltimaCajaRegistrada,
   getConciliacionesCuentaCobro,
+  getConciliacionesCuentaDestino,
+  getResumenPorCuentaDestino,
   guardarConciliacionCuentaCobro,
+  guardarConciliacionCuentaDestino,
   mapCajaArqueo,
   parseJsonOrFallback
 };

@@ -315,7 +315,8 @@
       min-width: 0;
       padding: 24px;
       display: grid;
-      gap: 18px;
+      gap: 8px;
+      align-content: start;
     }
 
     .card {
@@ -341,6 +342,38 @@
       margin: 0 0 -1px 12px;
       position: relative;
       z-index: 2;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    #kpiToggleBarCaja {
+      min-height: 30px;
+      margin: 0;
+      width: auto;
+      justify-content: flex-end;
+      flex: 0 0 auto;
+      align-self: flex-end;
+      padding: 0;
+    }
+
+    #toggleKpisBtnCaja.kpi-visibility-button {
+      width: 34px;
+      height: 34px;
+      min-width: 34px;
+      padding: 0;
+      gap: 0;
+    }
+
+    #toggleKpisBtnCaja .kpi-visibility-text {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
     }
 
     .tabs {
@@ -348,6 +381,8 @@
       flex-wrap: wrap;
       align-items: flex-end;
       gap: 4px;
+      flex: 1 1 auto;
+      min-width: 260px;
     }
 
     .tab-button {
@@ -997,6 +1032,7 @@
 
     .section.active {
       display: grid;
+      align-content: start;
     }
 
     .section-grid {
@@ -1008,6 +1044,16 @@
 
     .table-card {
       overflow: hidden;
+    }
+
+    #tab-movimientos {
+      gap: 0;
+      margin-top: 0;
+      padding-top: 0;
+    }
+
+    #tab-movimientos .table-card {
+      margin-top: 0;
     }
 
     .table-toolbar {
@@ -1187,9 +1233,9 @@
 
     .closure-work-grid {
       display: grid;
-      grid-template-columns: minmax(220px, 0.45fr) minmax(0, 1.55fr);
+      grid-template-columns: 1fr;
       gap: 18px;
-      align-items: stretch;
+      align-items: start;
     }
 
     .cash-state-card,
@@ -1408,14 +1454,17 @@
     }
 
     .action-stack {
-      display: grid;
+      display: flex;
+      flex-wrap: wrap;
       gap: 8px;
-      align-content: center;
-      min-height: 100%;
+      align-items: center;
     }
 
     .cash-actions-card {
-      align-content: start;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
       gap: 10px;
       padding: 14px;
       min-height: 0;
@@ -1429,6 +1478,7 @@
       padding: 8px 10px;
       border-radius: 10px;
       font-size: 11px;
+      min-height: 34px;
     }
 
     .button.success-soft {
@@ -1743,18 +1793,17 @@
     }
 
     #tab-apertura-cierre .cash-actions-card {
-      align-content: stretch;
+      align-content: start;
     }
 
     #tab-apertura-cierre .action-stack {
-      grid-template-columns: 1fr;
-      align-content: stretch;
-      height: 100%;
+      justify-content: flex-end;
+      height: auto;
     }
 
     #tab-apertura-cierre .cash-actions-card .button {
-      min-height: 46px;
-      height: 100%;
+      min-height: 34px;
+      height: auto;
     }
 
     #tab-apertura-cierre .close-cash-totals .mini-card,
@@ -2048,9 +2097,59 @@
 
     .accounts-row {
       display: grid;
-      grid-template-columns: 0.9fr 1fr 1fr 1fr;
+      grid-template-columns: 1.15fr .8fr .8fr .8fr auto;
       gap: 6px;
       align-items: end;
+    }
+
+    .accounts-row.sin-cuenta-destino {
+      opacity: .82;
+      border: 1px dashed rgba(217, 154, 33, .45);
+      border-radius: 12px;
+      padding: 6px;
+      background: rgba(217, 154, 33, .06);
+    }
+
+    .account-name-field {
+      display: grid;
+      gap: 4px;
+    }
+
+    .account-channel-hint {
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.25;
+    }
+
+    .account-diff-pill {
+      align-self: end;
+      justify-self: stretch;
+      min-height: 34px;
+      border-radius: 999px;
+      padding: 7px 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 900;
+      white-space: nowrap;
+      background: #eef2f7;
+      color: #64748b;
+    }
+
+    .account-diff-pill.conciliado {
+      background: rgba(34, 163, 90, .12);
+      color: #166534;
+    }
+
+    .account-diff-pill.diferencia {
+      background: rgba(217, 154, 33, .14);
+      color: #92400e;
+    }
+
+    .account-diff-pill.alerta {
+      background: rgba(224, 82, 82, .12);
+      color: #b91c1c;
     }
 
     .accounts-row .field {
@@ -2454,6 +2553,10 @@
       color: #991b1b;
     }
 
+    #tab-apertura-cierre .closure-work-grid {
+      grid-template-columns: 1fr;
+    }
+
     @media (max-width: 720px) {
       .main {
         padding: 14px;
@@ -2478,6 +2581,10 @@
 
       .closure-real-head span {
         text-align: left;
+      }
+
+      .accounts-row {
+        grid-template-columns: 1fr;
       }
 
       .cuentas-cobro-grid {
@@ -2637,6 +2744,16 @@
             <small>Comparación con arqueo</small>
           </div>
         </div>
+
+        <article class="card cuentas-cobro-card" id="resumenCuentasDestinoCard">
+          <div class="section-header">
+            <div>
+              <h3>Resumen por cuenta destino</h3>
+              <small>Ingresos, egresos y balance agrupados por cuenta real.</small>
+            </div>
+          </div>
+          <div class="cuentas-cobro-grid" id="resumenCuentasDestino"></div>
+        </article>
 
         <article class="card cuentas-cobro-card" id="resumenCuentasCobroCard">
           <div class="section-header">
@@ -3194,7 +3311,7 @@
 
           <article class="card audit-card">
             <h3>Control bancario / electronico</h3>
-            <p class="muted">El sistema calcula la recaudacion real en base al saldo inicial y actual.</p>
+            <p class="muted">El sistema agrupa por cuenta destino real. El efectivo se controla aparte con romaneo.</p>
             <div class="system-expected-card">
               <span>Segun sistema (esperado)</span>
               <div class="audit-mini-grid">
@@ -3204,7 +3321,7 @@
               </div>
             </div>
             <div class="accounts-card">
-              <strong>Segun cuentas</strong>
+              <strong>Segun cuentas destino</strong>
               <div class="accounts-table" id="cuentasDigitalesBody"></div>
             </div>
             <div class="audit-result-line">
@@ -3649,7 +3766,10 @@
     let arqueoPreparadoParaCierre = false;
     let cajaResumenCuentasActual = null;
     let resumenCuentasCobroActual = [];
+    let resumenCuentasDestinoActual = [];
     let conciliacionesCuentasActuales = [];
+    let conciliacionesCuentasDestinoActuales = [];
+    let conciliacionCuentaModo = "cobro";
     let cuentasCobroCatalogo = [];
     let tipoMovimientoCajaActivo = "ingreso";
     let movimientoCajaEditando = null;
@@ -3693,6 +3813,43 @@
       return `$${formatearNumero(valor)}`;
     }
 
+    function numeroCaja(...valores) {
+      for (const valor of valores) {
+        const numero = Number(valor);
+        if (Number.isFinite(numero)) {
+          return numero;
+        }
+      }
+      return 0;
+    }
+
+    function normalizarResumenCaja(resumen = {}) {
+      const origen = resumen?.resumen && typeof resumen.resumen === "object"
+        ? resumen.resumen
+        : resumen || {};
+
+      return {
+        ...origen,
+        total_efectivo: numeroCaja(origen.total_efectivo, origen.efectivo, origen.ventas_efectivo),
+        total_debito: numeroCaja(origen.total_debito, origen.total_debito_tarjeta, origen.ventas_debito),
+        total_debito_tarjeta: numeroCaja(origen.total_debito_tarjeta, origen.total_debito, origen.ventas_debito),
+        total_transferencia: numeroCaja(origen.total_transferencia, origen.ventas_transferencia),
+        total_cuenta_corriente: numeroCaja(origen.total_cuenta_corriente, origen.ventas_cuenta_corriente),
+        total_pagos_efectivo: numeroCaja(origen.total_pagos_efectivo, origen.pagos_efectivo),
+        total_pagos_debito: numeroCaja(origen.total_pagos_debito, origen.pagos_debito),
+        total_pagos_general: numeroCaja(origen.total_pagos_general, origen.total_pagos, origen.pagos_totales),
+        operaciones_mixtas: numeroCaja(origen.operaciones_mixtas),
+        total_general: numeroCaja(origen.total_general, origen.balance_general),
+        total_ventas: numeroCaja(origen.total_ventas, origen.ventas_totales),
+        costo_estimado_vendido: numeroCaja(origen.costo_estimado_vendido),
+        ganancia_bruta_estimada: numeroCaja(origen.ganancia_bruta_estimada),
+        total_ventas_manual_sin_costo: numeroCaja(origen.total_ventas_manual_sin_costo),
+        resultado_estimado_dia: numeroCaja(origen.resultado_estimado_dia),
+        saldo_inicial_mp: numeroCaja(origen.saldo_inicial_mp),
+        saldo_mp_estimado: numeroCaja(origen.saldo_mp_estimado)
+      };
+    }
+
     function descargarCsv(nombreArchivo, encabezados, filas) {
       const escapeCsv = (valor) => {
         const texto = String(valor ?? "");
@@ -3714,8 +3871,31 @@
         return;
       }
 
-      element.innerText = formatearCompacto(valor);
+      const texto = formatearCompacto(valor);
+      element.dataset.kpiOriginalValue = texto;
+      element.innerText = element.classList.contains("kpi-sensitive-hidden") ? "****" : texto;
       element.title = money(valor);
+    }
+
+    function ajustarBotonVisibilidadCaja() {
+      const button = document.getElementById("toggleKpisBtnCaja");
+      if (!button) {
+        return;
+      }
+
+      const oculto = button.classList.contains("is-hidden");
+      button.title = oculto ? "Oculto" : "Visible";
+      button.setAttribute("aria-label", oculto ? "Oculto" : "Visible");
+    }
+
+    function ubicarBotonVisibilidadCaja() {
+      const bar = document.getElementById("kpiToggleBarCaja");
+      const tabsCard = document.querySelector(".top-grid > .card");
+      if (!bar || !tabsCard || bar.parentElement === tabsCard) {
+        return;
+      }
+
+      tabsCard.appendChild(bar);
     }
 
     function calcularEfectivoEsperado() {
@@ -3942,9 +4122,76 @@
 
     function getCuentasDigitales() {
       return cuentaInputs.map((cuenta) => ({
+        cuenta_cobro_id: cuenta.cuentaCobroId ?? null,
+        cuenta_destino_id: cuenta.cuentaDestinoId ?? null,
+        tipo_destino: cuenta.tipoDestino || null,
+        canales: Array.isArray(cuenta.canales) ? cuenta.canales : [],
+        sin_cuenta_destino: Boolean(cuenta.sinCuentaDestino),
         nombre: cuenta.nombre.value.trim() || "Cuenta",
         saldo_inicial: Number(cuenta.saldoInicial.value) || 0,
-        saldo_actual: Number(cuenta.saldoActual.value) || 0
+        saldo_actual: Number(cuenta.saldoActual.value) || 0,
+        monto_sistema: Number(cuenta.montoSistema || 0)
+      }));
+    }
+
+    function tieneResumenPorCuentaDestino() {
+      return Array.isArray(resumenCuentasDestinoActual) && resumenCuentasDestinoActual.length > 0;
+    }
+
+    function getResumenCuentasDestinoDigital() {
+      if (!tieneResumenPorCuentaDestino()) return [];
+      return resumenCuentasDestinoActual.filter((cuenta) => {
+        if (cuenta.sin_cuenta_destino) return true;
+        return String(cuenta.tipo_destino || "").toLowerCase() !== "efectivo";
+      });
+    }
+
+    function tieneResumenPorCuentaCobro() {
+      return Array.isArray(resumenCuentasCobroActual) && resumenCuentasCobroActual.length > 0;
+    }
+
+    function getCuentasArqueoBase() {
+      if (tieneResumenPorCuentaDestino()) {
+        return getResumenCuentasDestinoDigital().map((cuenta) => {
+          const sistema = Number(cuenta.balance || 0);
+          const conciliacion = getConciliacionPorCuentaDestino(cuenta);
+          return {
+            cuenta_destino_id: cuenta.cuenta_destino_id == null ? null : Number(cuenta.cuenta_destino_id),
+            cuenta_cobro_id: null,
+            nombre: cuenta.cuenta_destino_nombre || "Sin cuenta destino",
+            tipo_destino: cuenta.tipo_destino || "otro",
+            canales: Array.isArray(cuenta.canales) ? cuenta.canales : [],
+            sin_cuenta_destino: Boolean(cuenta.sin_cuenta_destino),
+            saldo_inicial: 0,
+            saldo_actual: conciliacion ? Number(conciliacion.monto_real || 0) : sistema,
+            monto_sistema: sistema,
+            bloqueada: true,
+            ejeDestino: true,
+            conciliada: Boolean(conciliacion)
+          };
+        });
+      }
+
+      if (tieneResumenPorCuentaCobro()) {
+        return resumenCuentasCobroActual.map((cuenta) => {
+          const sistema = Number(cuenta.balance || 0);
+          const conciliacion = getConciliacionPorCuenta(cuenta);
+          return {
+            cuenta_cobro_id: cuenta.cuenta_cobro_id == null ? null : Number(cuenta.cuenta_cobro_id),
+            nombre: cuenta.cuenta_nombre || "Sin cuenta",
+            saldo_inicial: 0,
+            saldo_actual: conciliacion ? Number(conciliacion.monto_real || 0) : sistema,
+            monto_sistema: sistema,
+            bloqueada: true
+          };
+        });
+      }
+
+      return cuentasDigitales.map((cuenta) => ({
+        ...cuenta,
+        cuenta_cobro_id: null,
+        monto_sistema: Number(cuenta.saldo_actual || 0) - Number(cuenta.saldo_inicial || 0),
+        bloqueada: false
       }));
     }
 
@@ -3984,6 +4231,18 @@
     }
 
     function calcularDigitalEsperado() {
+      if (tieneResumenPorCuentaDestino()) {
+        return Number(getResumenCuentasDestinoDigital()
+          .reduce((acc, cuenta) => acc + Number(cuenta.balance || 0), 0)
+          .toFixed(2));
+      }
+
+      if (tieneResumenPorCuentaCobro()) {
+        return Number(resumenCuentasCobroActual
+          .reduce((acc, cuenta) => acc + Number(cuenta.balance || 0), 0)
+          .toFixed(2));
+      }
+
       return Number((
         Number(resumenActual?.total_debito_tarjeta ?? resumenActual?.total_debito ?? 0) +
         Number(resumenActual?.total_transferencia || 0)
@@ -3991,31 +4250,18 @@
     }
 
     function calcularCuentasEsperadas() {
-      if (Array.isArray(resumenCuentasCobroActual) && resumenCuentasCobroActual.length) {
-        return Number(resumenCuentasCobroActual
-          .reduce((acc, cuenta) => acc + Number(cuenta.balance || 0), 0)
-          .toFixed(2));
-      }
-
       return calcularDigitalEsperado();
     }
 
     function calcularCuentasReales() {
-      if (Array.isArray(resumenCuentasCobroActual) && resumenCuentasCobroActual.length) {
-        return Number(resumenCuentasCobroActual
-          .reduce((acc, cuenta) => {
-            const conciliacion = getConciliacionPorCuenta(cuenta);
-            const esperado = Number(cuenta.balance || 0);
-            const real = conciliacion ? Number(conciliacion.monto_real || 0) : esperado;
-            return acc + real;
-          }, 0)
-          .toFixed(2));
-      }
-
       return calcularDigitalReal();
     }
 
     function hayCuentasSinConciliar() {
+      if (tieneResumenPorCuentaDestino()) {
+        return cuentaInputs.some((cuenta) => cuenta.sinCuentaDestino || (!cuenta.manualRealCargado && !cuenta.conciliada));
+      }
+
       return Array.isArray(resumenCuentasCobroActual) &&
         resumenCuentasCobroActual.some((cuenta) => !getConciliacionPorCuenta(cuenta));
     }
@@ -4071,20 +4317,47 @@
     function renderizarCuentasDigitales() {
       cuentasDigitalesBody.innerHTML = "";
       cuentaInputs.length = 0;
-      cuentasDigitales.forEach((cuenta) => {
+      getCuentasArqueoBase().forEach((cuenta) => {
         const row = document.createElement("div");
-        row.className = "accounts-row";
+        row.className = `accounts-row ${cuenta.sin_cuenta_destino ? "sin-cuenta-destino" : ""}`;
+        const readonlyCuenta = cuenta.bloqueada ? "readonly" : "";
+        const readonlyInicial = cuenta.bloqueada ? "readonly" : "";
+        const canales = Array.isArray(cuenta.canales) && cuenta.canales.length
+          ? cuenta.canales.join(" · ")
+          : (cuenta.ejeDestino ? "Sin canales asignados" : "");
         row.innerHTML = `
-          <label><span>Cuenta</span><input type="text" class="field" value="${cuenta.nombre}" /></label>
-          <label><span>Saldo inicial</span><input type="number" class="field" value="${cuenta.saldo_inicial}" step="0.01" min="0" /></label>
-          <label><span>Saldo actual</span><input type="number" class="field" value="${cuenta.saldo_actual}" step="0.01" min="0" /></label>
+          <label class="account-name-field"><span>Cuenta</span><input type="text" class="field" value="${cuenta.nombre}" ${readonlyCuenta} />${cuenta.ejeDestino ? `<small class="account-channel-hint">${cuenta.tipo_destino || "otro"} · ${canales}</small>` : ""}</label>
+          <label><span>Saldo inicial</span><input type="number" class="field" value="${cuenta.saldo_inicial}" step="0.01" ${readonlyInicial} /></label>
+          <label><span>Saldo actual</span><input type="number" class="field" value="${cuenta.saldo_actual}" step="0.01" /></label>
           <label><span>Recaudacion real</span><input type="text" class="field" value="$0.00" disabled /></label>
+          <span class="account-diff-pill pendiente">Pendiente</span>
         `;
         const [nombre, saldoInicial, saldoActual, recaudacion] = row.querySelectorAll("input");
-        const item = { nombre, saldoInicial, saldoActual, recaudacion };
+        const estado = row.querySelector(".account-diff-pill");
+        const item = {
+          cuentaCobroId: cuenta.cuenta_cobro_id ?? null,
+          cuentaDestinoId: cuenta.cuenta_destino_id ?? null,
+          tipoDestino: cuenta.tipo_destino || null,
+          canales: Array.isArray(cuenta.canales) ? cuenta.canales : [],
+          sinCuentaDestino: Boolean(cuenta.sin_cuenta_destino),
+          ejeDestino: Boolean(cuenta.ejeDestino),
+          conciliada: Boolean(cuenta.conciliada),
+          montoSistema: Number(cuenta.monto_sistema || 0),
+          manualRealCargado: Boolean(cuenta.conciliada),
+          nombre,
+          saldoInicial,
+          saldoActual,
+          recaudacion,
+          estado
+        };
         cuentaInputs.push(item);
         [nombre, saldoInicial, saldoActual].forEach((input) => {
-          input.addEventListener("input", actualizarResumenCierre);
+          input.addEventListener("input", () => {
+            if (input === saldoActual || input === saldoInicial) {
+              item.manualRealCargado = true;
+            }
+            actualizarResumenCierre();
+          });
           input.addEventListener("input", marcarArqueoPendienteRegistro);
         });
         cuentasDigitalesBody.appendChild(row);
@@ -4096,7 +4369,24 @@
     function actualizarCuentasDigitalesUI() {
       cuentaInputs.forEach((cuenta) => {
         const real = (Number(cuenta.saldoActual.value) || 0) - (Number(cuenta.saldoInicial.value) || 0);
+        const diferencia = Number((real - Number(cuenta.montoSistema || 0)).toFixed(2));
         cuenta.recaudacion.value = money(real);
+        if (cuenta.estado) {
+          cuenta.estado.className = "account-diff-pill";
+          if (cuenta.sinCuentaDestino) {
+            cuenta.estado.classList.add("alerta");
+            cuenta.estado.textContent = "Sin destino";
+          } else if (!cuenta.manualRealCargado && !cuenta.conciliada) {
+            cuenta.estado.classList.add("pendiente");
+            cuenta.estado.textContent = "Pendiente";
+          } else if (Math.abs(diferencia) < 0.01) {
+            cuenta.estado.classList.add("conciliado");
+            cuenta.estado.textContent = "Conciliado";
+          } else {
+            cuenta.estado.classList.add("diferencia");
+            cuenta.estado.textContent = money(diferencia);
+          }
+        }
       });
     }
 
@@ -4128,6 +4418,7 @@
       totalRetiroRomaneo.innerText = formatearNumero(desgloseConteo.totalRetiro);
       cajaInicioCambio.innerText = formatearNumero(desgloseConteo.totalCambio);
       actualizarCuentasDigitalesUI();
+      setMontoVisual(totalEfectivo, manualReal > 0 || tieneRomaneoCargado() ? contado : esperado);
       setMontoVisual(efectivoEsperado, esperado);
       efectivoEsperadoCopia.innerText = formatearNumero(esperado);
       efectivoContado.innerText = formatearNumero(contado);
@@ -4266,8 +4557,10 @@
     }
 
     function renderizarResumen(resumen) {
-      resumenActual = resumen;
-      setMontoVisual(totalEfectivo, resumen.total_efectivo);
+      resumenActual = normalizarResumenCaja(resumen);
+      resumen = resumenActual;
+      const efectivoEnCaja = calcularEfectivoEsperado();
+      setMontoVisual(totalEfectivo, efectivoEnCaja);
       setMontoVisual(totalDebito, resumen.total_debito_tarjeta ?? resumen.total_debito);
       totalPagosEfectivo.innerText = formatearNumero(resumen.total_pagos_efectivo);
       totalPagosDebito.innerText = formatearNumero(resumen.total_pagos_debito);
@@ -5068,9 +5361,29 @@
       return id === null || id === undefined || id === "" ? "sin-cuenta" : String(id);
     }
 
+    function getCuentaArqueoKey(cuenta) {
+      if (cuenta?.cuenta_destino_id !== null && cuenta?.cuenta_destino_id !== undefined && cuenta?.cuenta_destino_id !== "") {
+        return `destino:${cuenta.cuenta_destino_id}`;
+      }
+      if (cuenta?.sin_cuenta_destino) {
+        return "destino:sin-cuenta";
+      }
+      return `cobro:${getCuentaCobroKey(cuenta)}`;
+    }
+
     function getConciliacionPorCuenta(cuenta) {
       const key = getCuentaCobroKey(cuenta);
       return conciliacionesCuentasActuales.find((item) => getCuentaCobroKey(item) === key) || null;
+    }
+
+    function getCuentaDestinoKey(cuenta) {
+      const id = cuenta?.cuenta_destino_id;
+      return id === null || id === undefined || id === "" || cuenta?.sin_cuenta_destino ? "sin-destino" : String(id);
+    }
+
+    function getConciliacionPorCuentaDestino(cuenta) {
+      const key = getCuentaDestinoKey(cuenta);
+      return conciliacionesCuentasDestinoActuales.find((item) => getCuentaDestinoKey(item) === key) || null;
     }
 
     function getConciliacionEstado(conciliacion) {
@@ -5133,6 +5446,7 @@
       const cuenta = resumenCuentasCobroActual.find((item) => getCuentaCobroKey(item) === key);
       if (!cuenta) return;
 
+      conciliacionCuentaModo = "cobro";
       const conciliacion = getConciliacionPorCuenta(cuenta);
       conciliacionCuentaTitulo.innerText = `Conciliar ${cuenta.cuenta_nombre || "Sin cuenta"}`;
       conciliacionCajaId.value = cajaResumenCuentasActual?.id || aperturaActual?.id || "";
@@ -5144,18 +5458,39 @@
       abrirModal(modalConciliacionCuenta);
     }
 
+    function abrirConciliacionCuentaDestino(key) {
+      const cuenta = resumenCuentasDestinoActual.find((item) => getCuentaDestinoKey(item) === key);
+      if (!cuenta) return;
+
+      conciliacionCuentaModo = "destino";
+      const conciliacion = getConciliacionPorCuentaDestino(cuenta);
+      conciliacionCuentaTitulo.innerText = `Conciliar ${cuenta.cuenta_destino_nombre || "Sin cuenta destino"}`;
+      conciliacionCajaId.value = cajaResumenCuentasActual?.id || aperturaActual?.id || "";
+      conciliacionCuentaId.value = cuenta.cuenta_destino_id == null ? "" : cuenta.cuenta_destino_id;
+      conciliacionMontoSistema.value = Number(cuenta.balance || 0).toFixed(2);
+      conciliacionMontoReal.value = conciliacion ? Number(conciliacion.monto_real || 0).toFixed(2) : Number(cuenta.balance || 0).toFixed(2);
+      conciliacionObservaciones.value = conciliacion?.observaciones || "";
+      actualizarDiferenciaConciliacion();
+      abrirModal(modalConciliacionCuenta);
+    }
+
     async function guardarConciliacionCuenta() {
       try {
+        const esDestino = conciliacionCuentaModo === "destino";
         const payload = {
           caja_id: conciliacionCajaId.value ? Number(conciliacionCajaId.value) : null,
-          cuenta_cobro_id: conciliacionCuentaId.value ? Number(conciliacionCuentaId.value) : null,
           monto_sistema: Number(conciliacionMontoSistema.value || 0),
           monto_real: Number(conciliacionMontoReal.value || 0),
           observaciones: conciliacionObservaciones.value.trim(),
           usuario: usuarioCajaVisual.innerText || "admin"
         };
+        if (esDestino) {
+          payload.cuenta_destino_id = conciliacionCuentaId.value ? Number(conciliacionCuentaId.value) : null;
+        } else {
+          payload.cuenta_cobro_id = conciliacionCuentaId.value ? Number(conciliacionCuentaId.value) : null;
+        }
 
-        const res = await fetch("/caja/conciliaciones/cuentas", {
+        const res = await fetch(esDestino ? "/caja/conciliaciones/cuentas-destino" : "/caja/conciliaciones/cuentas", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
@@ -5234,6 +5569,105 @@
       card.classList.add("visible");
     }
 
+    function renderizarResumenCuentasDestino(cuentas) {
+      const card = document.getElementById("resumenCuentasDestinoCard");
+      const grid = document.getElementById("resumenCuentasDestino");
+      if (!card || !grid) return;
+
+      const items = Array.isArray(cuentas) ? cuentas : [];
+      if (!items.length) {
+        card.classList.remove("visible");
+        grid.innerHTML = "";
+        return;
+      }
+
+      const ordenados = [...items].sort((a, b) => {
+        const aSinCuenta = Boolean(a.sin_cuenta_destino);
+        const bSinCuenta = Boolean(b.sin_cuenta_destino);
+        if (aSinCuenta !== bSinCuenta) return aSinCuenta ? 1 : -1;
+        return Number(b.balance || 0) - Number(a.balance || 0);
+      });
+
+      grid.innerHTML = ordenados.map((cuenta) => {
+        const balance = Number(cuenta.balance || 0);
+        const claseBalance = balance < 0 ? "negativo" : "positivo";
+        const esSinCuenta = Boolean(cuenta.sin_cuenta_destino);
+        const conciliacion = getConciliacionPorCuentaDestino(cuenta);
+        const estado = getConciliacionEstado(conciliacion);
+        const realCuenta = conciliacion ? Number(conciliacion.monto_real || 0) : balance;
+        const diferenciaCuenta = Number((realCuenta - balance).toFixed(2));
+        const key = getCuentaDestinoKey(cuenta);
+        const canales = Array.isArray(cuenta.canales) && cuenta.canales.length
+          ? cuenta.canales.join(" · ")
+          : "Sin canales asignados";
+        const tipo = cuenta.tipo_destino && cuenta.tipo_destino !== "sin_cuenta"
+          ? cuenta.tipo_destino
+          : "sin cuenta";
+        const signoIngresos = Number(cuenta.ingresos || 0) > 0 ? "+" : "";
+        const signoEgresos = Number(cuenta.egresos || 0) > 0 ? "-" : "";
+        return `
+          <div class="cuenta-cobro-item ${esSinCuenta ? "sin-cuenta" : ""}">
+            <div class="cuenta-cobro-top">
+              <div class="cuenta-cobro-title">
+                <strong>${cuenta.cuenta_destino_nombre || "Sin cuenta destino"}</strong>
+                <span class="cuenta-cobro-subtipo"><span>${tipo}</span></span>
+              </div>
+              <span class="cuenta-cobro-balance ${claseBalance}">= ${money(balance)}</span>
+            </div>
+            <div class="cuenta-cobro-values">
+              <div class="cuenta-cobro-metric"><span>Ingresos</span><strong class="positive-text">${signoIngresos}${money(cuenta.ingresos)}</strong></div>
+              <div class="cuenta-cobro-metric"><span>Egresos</span><strong class="negative-text">${signoEgresos}${money(cuenta.egresos)}</strong></div>
+              <div class="cuenta-cobro-metric"><span>Real</span><strong>${money(realCuenta)}</strong></div>
+              <div class="cuenta-cobro-metric"><span>Diferencia</span><strong class="${diferenciaCuenta < 0 ? "negative-text" : "positive-text"}">${money(diferenciaCuenta)}</strong></div>
+            </div>
+            <div class="cuenta-cobro-footer">
+              <span class="cuenta-cobro-movimientos">${canales} · ${Number(cuenta.ventas || 0)} ventas · ${Number(cuenta.pagos || 0)} pagos</span>
+              <span class="cuenta-cobro-status ${esSinCuenta ? "diferencia fuerte" : estado.clase}">${esSinCuenta ? "Sin destino" : estado.texto}</span>
+            </div>
+            <div class="cuenta-cobro-actions">
+              <button type="button" class="button secondary compact" data-conciliar-destino="${key}">Conciliar</button>
+            </div>
+          </div>
+        `;
+      }).join("");
+      grid.querySelectorAll("[data-conciliar-destino]").forEach((button) => {
+        button.addEventListener("click", () => abrirConciliacionCuentaDestino(button.dataset.conciliarDestino));
+      });
+      card.classList.add("visible");
+    }
+
+    async function cargarResumenCuentasDestino(cajaId = null) {
+      const card = document.getElementById("resumenCuentasDestinoCard");
+      try {
+        const url = cajaId
+          ? `/caja/resumen/cuentas-destino?caja_id=${encodeURIComponent(cajaId)}`
+          : "/caja/resumen/cuentas-destino";
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("No se pudo obtener resumen por cuenta destino");
+        const data = await res.json();
+        resumenCuentasDestinoActual = Array.isArray(data.cuentas) ? data.cuentas : [];
+        try {
+          const conciliacionesUrl = cajaId
+            ? `/caja/conciliaciones/cuentas-destino?caja_id=${encodeURIComponent(cajaId)}`
+            : "/caja/conciliaciones/cuentas-destino";
+          const conciliacionesRes = await fetch(conciliacionesUrl);
+          const conciliacionesData = conciliacionesRes.ok ? await conciliacionesRes.json() : { conciliaciones: [] };
+          conciliacionesCuentasDestinoActuales = Array.isArray(conciliacionesData.conciliaciones)
+            ? conciliacionesData.conciliaciones
+            : [];
+        } catch (error) {
+          console.error("Error al cargar conciliaciones por cuenta destino:", error);
+          conciliacionesCuentasDestinoActuales = [];
+        }
+        renderizarResumenCuentasDestino(resumenCuentasDestinoActual);
+      } catch (error) {
+        console.error("Error al cargar resumen por cuenta destino:", error);
+        resumenCuentasDestinoActual = [];
+        conciliacionesCuentasDestinoActuales = [];
+        card?.classList.remove("visible");
+      }
+    }
+
     async function cargarResumenCuentasCobro(cajaId = null) {
       const card = document.getElementById("resumenCuentasCobroCard");
       try {
@@ -5263,6 +5697,8 @@
           console.error("Error al cargar conciliaciones por cuenta:", error);
           conciliacionesCuentasActuales = [];
         }
+        await cargarResumenCuentasDestino(cajaId);
+        renderizarCuentasDigitales();
         renderizarResumenCuentasCobro(resumenCuentasCobroActual);
         actualizarResumenCierre();
       } catch (error) {
@@ -5287,7 +5723,7 @@
         renderizarApertura(data.apertura);
         renderizarResumen(data.resumen);
         renderizarVentas(data.ventas);
-        cargarResumenCuentasCobro(data.apertura?.id || null);
+        await cargarResumenCuentasCobro(data.apertura?.id || null);
       } catch (error) {
         console.error("Error al cargar caja:", error);
         estadoApertura.innerText = "Error al cargar apertura.";
@@ -5363,6 +5799,7 @@
         await cargarCaja();
         await cargarHistorialCierres();
         await cargarHistorialArqueos();
+        limpiarRomaneoVisual();
       } catch (error) {
         console.error("Error al cerrar caja:", error);
         mostrarMensaje("Error al cerrar caja", true);
@@ -5400,18 +5837,49 @@
 
       const cuentas = Array.isArray(arqueo.cuentas_detalle) ? arqueo.cuentas_detalle : [];
       cuentas.forEach((cuenta, index) => {
-        const inputGroup = cuentaInputs[index];
+        const key = getCuentaArqueoKey(cuenta);
+        const inputGroup = cuentaInputs.find((item) => getCuentaArqueoKey({
+          cuenta_destino_id: item.cuentaDestinoId,
+          cuenta_cobro_id: item.cuentaCobroId,
+          sin_cuenta_destino: item.sinCuentaDestino
+        }) === key) || cuentaInputs[index];
         if (!inputGroup) {
           return;
         }
         inputGroup.nombre.value = cuenta.nombre || inputGroup.nombre.value;
         inputGroup.saldoInicial.value = Number(cuenta.saldo_inicial || 0);
         inputGroup.saldoActual.value = Number(cuenta.saldo_actual || 0);
+        inputGroup.manualRealCargado = true;
       });
 
       observacionesArqueo.value = arqueo.observaciones || "";
       arqueoGuardadoId = arqueo.id;
       arqueoPreparadoParaCierre = Number(arqueo.registrado_cierre) === 1;
+      actualizarResumenCierre();
+      actualizarEstadoCierre();
+    }
+
+    function limpiarRomaneoVisual() {
+      denominaciones.forEach((denominacion) => {
+        if (conteoInputs[denominacion]) {
+          conteoInputs[denominacion].value = "0";
+        }
+      });
+
+      cuentaInputs.forEach((cuenta) => {
+        cuenta.saldoActual.value = cuenta.saldoInicial.value || "0";
+      });
+
+      if (saldoFisicoRealManual) {
+        saldoFisicoRealManual.value = "";
+      }
+
+      if (observacionesArqueo) {
+        observacionesArqueo.value = "";
+      }
+
+      arqueoGuardadoId = null;
+      arqueoPreparadoParaCierre = false;
       actualizarResumenCierre();
       actualizarEstadoCierre();
     }
@@ -5654,15 +6122,34 @@
     renderizarCuentasDigitales();
     renderizarArqueosVisuales();
     actualizarGraficoMetodos();
-    window.initKpiVisibility?.({
-      gridSelector: "#tab-resumen .metrics-grid",
-      storageKey: "guernica_kpis_caja",
-      barId: "kpiToggleBarCaja",
-      buttonId: "toggleKpisBtnCaja"
-    });
-    cargarCaja();
-    cargarHistorialCierres();
-    cargarHistorialArqueos();
+    async function inicializarCaja() {
+      await cargarCaja();
+      window.initKpiVisibility?.({
+        gridSelector: "#tab-resumen .metrics-grid",
+        storageKey: "guernica_kpis_caja",
+        barId: "kpiToggleBarCaja",
+        buttonId: "toggleKpisBtnCaja",
+        sensitiveSelectors: [".metric-card .amount-number"]
+      });
+      ubicarBotonVisibilidadCaja();
+
+      const visibilityButton = document.getElementById("toggleKpisBtnCaja");
+      if (visibilityButton?.onclick) {
+        const toggleOriginal = visibilityButton.onclick;
+        visibilityButton.onclick = function () {
+          toggleOriginal.call(this);
+          ajustarBotonVisibilidadCaja();
+        };
+      }
+      ajustarBotonVisibilidadCaja();
+
+      await Promise.all([
+        cargarHistorialCierres(),
+        cargarHistorialArqueos()
+      ]);
+    }
+
+    inicializarCaja();
   </script>
   <script src="/nav-permissions.js?v=6" defer></script>
   <script src="/user-menu.js?v=7" defer></script>
