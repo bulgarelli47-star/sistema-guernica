@@ -220,6 +220,12 @@ async function getAjustesPendientesStock(baseUrl, token, estado = "") {
   return data;
 }
 
+async function crearAjustePendienteStock(baseUrl, token, payload) {
+  const { response, data } = await requestJson(baseUrl, "POST", "/stock/ajustes-pendientes", payload, token);
+  if (!response.ok) throw new Error(`No se pudo crear ajuste pendiente de stock: ${data?.message || response.status}`);
+  return data.ajuste;
+}
+
 async function getVentaDetalle(baseUrl, token, ventaId) {
   const { response, data } = await requestJson(baseUrl, "GET", `/ventas/${ventaId}/detalle`, null, token);
   if (!response.ok) throw new Error(`No se pudo obtener detalle de venta: ${response.status}`);
@@ -660,6 +666,124 @@ async function testAjustePendienteRequiereStockVer() {
         cantidad: 1
       }, colaboradorToken);
       assertEqual(result.response.status, 403, "Usuario sin stock_ver no debe crear ajuste pendiente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAjustesPendientesAprobacionYRechazo() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Revisor",
+        usuario: "colaborador_revisor",
+        password: "colaborador123",
+        confirmar_password: "colaborador123",
+        rol: "colaborador",
+        activo: true
+      }, adminToken);
+      const colaboradorToken = await login(baseUrl, "colaborador_revisor", "colaborador123");
+
+      const ingreso = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "ingreso",
+        cantidad: 5,
+        motivo: "TEST aprobar ingreso"
+      });
+      const aprobarIngreso = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ingreso.id}/aprobar`, {
+        observaciones_admin: "OK ingreso"
+      }, adminToken);
+      if (!aprobarIngreso.response.ok) throw new Error(`Aprobar ingreso fallo: ${aprobarIngreso.data?.message || aprobarIngreso.response.status}`);
+      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, 85, "Admin aprueba ingreso y aumenta stock");
+      assertEqual(aprobarIngreso.data.ajuste.estado === "aprobado" ? 1 : 0, 1, "Aprobar sin cambios debe dejar estado aprobado");
+      if (!aprobarIngreso.data.ajuste.movimiento_stock_id) throw new Error("Aprobar debe guardar movimiento_stock_id");
+      if (!String(aprobarIngreso.data.ajuste.observaciones_admin || "").includes("OK ingreso")) throw new Error("Observaciones admin deben quedar guardadas");
+      const movimientosIngreso = await getMovimientosStock(baseUrl, adminToken, 11);
+      const movIngreso = movimientosIngreso.find((m) => Number(m.id) === Number(aprobarIngreso.data.ajuste.movimiento_stock_id));
+      if (!movIngreso) throw new Error("Aprobar debe crear movimiento en movimientos_stock");
+      assertEqual(movIngreso.tipo_movimiento === "ingreso" ? 1 : 0, 1, "Movimiento aprobado ingreso debe ser ingreso");
+      assertEqual(movIngreso.cantidad, 5, "Movimiento aprobado debe guardar cantidad original");
+
+      const doble = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ingreso.id}/aprobar`, {}, adminToken);
+      assertEqual(doble.response.status, 409, "Aprobar dos veces debe fallar");
+      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, 85, "Aprobar dos veces no debe duplicar stock");
+
+      const egreso = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "egreso",
+        cantidad: 3,
+        motivo: "TEST aprobar egreso"
+      });
+      const aprobarEgreso = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${egreso.id}/aprobar`, {}, adminToken);
+      if (!aprobarEgreso.response.ok) throw new Error(`Aprobar egreso fallo: ${aprobarEgreso.data?.message || aprobarEgreso.response.status}`);
+      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, 82, "Admin aprueba egreso y reduce stock");
+
+      const corregirCantidad = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "ingreso",
+        cantidad: 2,
+        motivo: "TEST corregir cantidad"
+      });
+      const aprobarCantidad = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${corregirCantidad.id}/aprobar`, {
+        cantidad_aprobada: 4,
+        observaciones_admin: "Corrijo cantidad"
+      }, adminToken);
+      if (!aprobarCantidad.response.ok) throw new Error(`Corregir cantidad fallo: ${aprobarCantidad.data?.message || aprobarCantidad.response.status}`);
+      assertEqual(aprobarCantidad.data.ajuste.estado === "corregido" ? 1 : 0, 1, "Cambiar cantidad debe dejar estado corregido");
+      assertEqual(aprobarCantidad.data.ajuste.cantidad_aprobada, 4, "Debe guardar cantidad corregida");
+      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, 86, "Corregir cantidad aplica cantidad corregida");
+
+      const corregirTipo = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "ingreso",
+        cantidad: 6,
+        motivo: "TEST corregir tipo"
+      });
+      const aprobarTipo = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${corregirTipo.id}/aprobar`, {
+        tipo_movimiento_aprobado: "egreso",
+        observaciones_admin: "Era egreso"
+      }, adminToken);
+      if (!aprobarTipo.response.ok) throw new Error(`Corregir tipo fallo: ${aprobarTipo.data?.message || aprobarTipo.response.status}`);
+      assertEqual(aprobarTipo.data.ajuste.estado === "corregido" ? 1 : 0, 1, "Cambiar tipo debe dejar estado corregido");
+      assertEqual(aprobarTipo.data.ajuste.tipo_movimiento_aprobado === "egreso" ? 1 : 0, 1, "Debe guardar tipo corregido");
+      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, 80, "Corregir tipo aplica tipo corregido");
+
+      const rechazo = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "ingreso",
+        cantidad: 9,
+        motivo: "TEST rechazar"
+      });
+      const movimientosAntesRechazo = await getMovimientosStock(baseUrl, adminToken, 11);
+      const rechazar = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${rechazo.id}/rechazar`, {
+        observaciones_admin: "No corresponde"
+      }, adminToken);
+      if (!rechazar.response.ok) throw new Error(`Rechazar fallo: ${rechazar.data?.message || rechazar.response.status}`);
+      assertEqual(rechazar.data.ajuste.estado === "rechazado" ? 1 : 0, 1, "Rechazo debe dejar estado rechazado");
+      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, 80, "Rechazar no cambia stock");
+      const movimientosDespuesRechazo = await getMovimientosStock(baseUrl, adminToken, 11);
+      assertEqual(movimientosDespuesRechazo.length, movimientosAntesRechazo.length, "Rechazar no crea movimiento");
+      if (!String(rechazar.data.ajuste.observaciones_admin || "").includes("No corresponde")) throw new Error("Rechazo debe guardar observaciones admin");
+
+      const rechazarAprobado = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ingreso.id}/rechazar`, {}, adminToken);
+      assertEqual(rechazarAprobado.response.status, 409, "Pendiente aprobado no puede rechazarse despues");
+
+      const pendienteColaborador = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "ingreso",
+        cantidad: 1,
+        motivo: "TEST colaborador no aprueba"
+      });
+      const aprobarColaborador = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${pendienteColaborador.id}/aprobar`, {}, colaboradorToken);
+      assertEqual(aprobarColaborador.response.status, 403, "Colaborador no puede aprobar");
+      const rechazarColaborador = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${pendienteColaborador.id}/rechazar`, {}, colaboradorToken);
+      assertEqual(rechazarColaborador.response.status, 403, "Colaborador no puede rechazar");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -5797,6 +5921,7 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
   await testPermisosColaborador();
   await testAjustesPendientesStockInfraestructura();
   await testAjustePendienteRequiereStockVer();
+  await testAjustesPendientesAprobacionYRechazo();
   await testClientesTipoClienteClasificacion();
   await testClientesHistorialProductosComprados();
   await testClientesDeudaActualizadaComparacionSegura();

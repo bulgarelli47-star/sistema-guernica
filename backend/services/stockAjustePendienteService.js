@@ -1,4 +1,10 @@
 const { allQuery, getQuery, runQuery } = require("../db");
+const {
+  applyStockChange,
+  calcularCostoProductoCompuesto,
+  getComponentesProductoCompuesto,
+  normalizarTipoProducto
+} = require("./stockService");
 
 const TIPOS_MOVIMIENTO_VALIDOS = new Set(["ingreso", "egreso"]);
 const ESTADOS_VALIDOS = new Set(["pendiente", "aprobado", "rechazado", "corregido"]);
@@ -18,6 +24,24 @@ function getNowParts() {
     fecha: now.toISOString().slice(0, 10),
     hora: now.toTimeString().slice(0, 8)
   };
+}
+
+function crearError(message, statusCode = 400) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function aplicarRedondeo(valor, redondeo) {
+  const base = Number(redondeo) || 0;
+  if (base <= 0) return Number(valor) || 0;
+  return Math.ceil((Number(valor) || 0) / base) * base;
+}
+
+function calcularPrecioSugerido(costoFinal, margenPorcentaje, redondeo) {
+  const costo = Number(costoFinal) || 0;
+  const margen = Number(margenPorcentaje) || 0;
+  return Number(aplicarRedondeo(costo * (1 + margen / 100), redondeo).toFixed(2));
 }
 
 async function ensureStockAjustesPendientesSchema() {
@@ -160,9 +184,244 @@ async function listarAjustesPendientes({ estado } = {}) {
   return rows.map(mapAjuste);
 }
 
+async function registrarMovimientoStockAprobado({
+  productoId,
+  tipoMovimiento,
+  cantidad,
+  motivo,
+  proveedorId,
+  usuario
+}) {
+  const producto = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
+  if (!producto) {
+    throw crearError("Producto no encontrado", 404);
+  }
+
+  const esCompuesto = normalizarTipoProducto(producto.tipo) === "compuesto";
+  const esBatch = esCompuesto && !Number(producto.maneja_stock) && Number(producto.rendimiento_receta || 1) > 1;
+  const esStockCalculado = esCompuesto && !Number(producto.maneja_stock) && !esBatch;
+  if (esStockCalculado) {
+    throw crearError("Este producto no posee stock propio. Ajusta sus ingredientes.", 400);
+  }
+
+  const { fecha, hora } = getNowParts();
+  const stockAnterior = Number(producto.stock || 0);
+  const esIngreso = tipoMovimiento === "ingreso";
+  const stockNuevo = esIngreso ? stockAnterior + cantidad : stockAnterior - cantidad;
+  let stockFinal = stockNuevo;
+  let batchesReponer = 0;
+
+  if (esBatch && !esIngreso && stockNuevo <= 0) {
+    const rendimiento = Number(producto.rendimiento_receta);
+    let restante = stockNuevo;
+    while (restante <= 0) {
+      batchesReponer += 1;
+      restante += rendimiento;
+    }
+    stockFinal = restante;
+  }
+
+  const movimiento = await runQuery(
+    `INSERT INTO movimientos_stock
+     (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, proveedor_id, usuario, fecha, hora)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [productoId, tipoMovimiento, cantidad, stockAnterior, stockFinal, motivo, proveedorId, usuario, fecha, hora]
+  );
+  await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockFinal, productoId]);
+
+  if (esBatch && batchesReponer > 0) {
+    const rendimiento = Number(producto.rendimiento_receta);
+    const componentes = await getComponentesProductoCompuesto(productoId);
+    for (const comp of componentes) {
+      const consumo = Number(comp.cantidad || 0) * rendimiento * batchesReponer;
+      if (consumo <= 0) continue;
+      const ing = await getQuery("SELECT stock FROM productos WHERE id = ?", [comp.producto_id]);
+      if (!ing) continue;
+      const nuevoStockIng = Number(ing.stock || 0) - consumo;
+      await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [nuevoStockIng, comp.producto_id]);
+      await runQuery(
+        `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
+         VALUES (?, 'egreso', ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          comp.producto_id,
+          consumo,
+          Number(ing.stock || 0),
+          nuevoStockIng,
+          `Replenishment batch: ${producto.nombre} (${batchesReponer} lote/s)`,
+          usuario,
+          fecha,
+          hora
+        ]
+      );
+    }
+  }
+
+  if (esCompuesto && Number(producto.maneja_stock) && esIngreso) {
+    const componentes = await getComponentesProductoCompuesto(productoId);
+    for (const comp of componentes) {
+      const consumo = cantidad * Number(comp.cantidad);
+      const compProd = await getQuery(
+        "SELECT tipo, maneja_stock, rendimiento_receta FROM productos WHERE id = ?",
+        [comp.producto_id]
+      );
+      const esCompBatch = compProd
+        && normalizarTipoProducto(compProd.tipo) === "compuesto"
+        && !Number(compProd.maneja_stock)
+        && Number(compProd.rendimiento_receta || 1) > 1;
+
+      if (esCompBatch) {
+        await applyStockChange(comp.producto_id, consumo);
+      } else {
+        const ing = await getQuery("SELECT stock FROM productos WHERE id = ?", [comp.producto_id]);
+        if (!ing) continue;
+        const nuevoStockIng = Math.max(0, Number(ing.stock || 0) - consumo);
+        await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [nuevoStockIng, comp.producto_id]);
+        await runQuery(
+          `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
+           VALUES (?, 'egreso', ?, ?, ?, ?, ?, ?, ?)`,
+          [comp.producto_id, consumo, Number(ing.stock || 0), nuevoStockIng, `Consumo receta: ${producto.nombre}`, usuario, fecha, hora]
+        );
+      }
+    }
+  }
+
+  if (esCompuesto) {
+    const categoria = producto.categoria_id
+      ? await getQuery("SELECT margen_porcentaje FROM categorias WHERE id = ?", [producto.categoria_id])
+      : null;
+    const costoCompuesto = await calcularCostoProductoCompuesto(productoId);
+    const sugeridoAnterior = calcularPrecioSugerido(
+      Number(producto.costo_final || producto.precio_compra || 0),
+      Number(categoria?.margen_porcentaje || 0),
+      producto.redondeo
+    );
+    const sugeridoNuevo = calcularPrecioSugerido(
+      costoCompuesto,
+      Number(categoria?.margen_porcentaje || 0),
+      producto.redondeo
+    );
+    const precioActual = Number(producto.precio_venta || 0);
+    const sigueSugerido = precioActual <= 0 || Math.abs(precioActual - sugeridoAnterior) < 0.01;
+    await runQuery(
+      `UPDATE productos
+       SET precio_compra = ?, costo_final = ?, precio_venta = ?
+       WHERE id = ?`,
+      [costoCompuesto, costoCompuesto, sigueSugerido ? sugeridoNuevo : precioActual, productoId]
+    );
+  }
+
+  return {
+    movimiento_stock_id: movimiento.lastID,
+    stock_anterior: stockAnterior,
+    stock_nuevo: stockFinal
+  };
+}
+
+async function aprobarAjustePendiente(id, {
+  usuario,
+  cantidad_aprobada,
+  tipo_movimiento_aprobado,
+  observaciones_admin
+} = {}) {
+  await ensureStockAjustesPendientesSchema();
+
+  await runQuery("BEGIN TRANSACTION");
+  try {
+    const ajuste = await getQuery("SELECT * FROM stock_ajustes_pendientes WHERE id = ?", [Number(id)]);
+    if (!ajuste) throw crearError("Ajuste pendiente no encontrado", 404);
+    if (ajuste.estado !== "pendiente") throw crearError("El ajuste pendiente ya fue revisado", 409);
+
+    const cantidadOriginal = Number(ajuste.cantidad || 0);
+    const tipoOriginal = normalizarTexto(ajuste.tipo_movimiento).toLowerCase();
+    const cantidadAprobada = cantidad_aprobada === undefined || cantidad_aprobada === null || cantidad_aprobada === ""
+      ? cantidadOriginal
+      : Number(cantidad_aprobada);
+    const tipoAprobado = normalizarTexto(tipo_movimiento_aprobado || tipoOriginal).toLowerCase();
+
+    if (!Number.isFinite(cantidadAprobada) || cantidadAprobada <= 0) {
+      throw crearError("Cantidad aprobada invalida", 400);
+    }
+    if (!TIPOS_MOVIMIENTO_VALIDOS.has(tipoAprobado)) {
+      throw crearError("Tipo de movimiento aprobado invalido", 400);
+    }
+
+    const corregido = Math.abs(cantidadAprobada - cantidadOriginal) > 0.0001 || tipoAprobado !== tipoOriginal;
+    const motivo = [
+      "Ajuste pendiente aprobado",
+      ajuste.motivo,
+      observaciones_admin
+    ].map(normalizarTexto).filter(Boolean).join(" | ");
+    const movimiento = await registrarMovimientoStockAprobado({
+      productoId: Number(ajuste.producto_id),
+      tipoMovimiento: tipoAprobado,
+      cantidad: cantidadAprobada,
+      motivo,
+      proveedorId: normalizarId(ajuste.proveedor_id),
+      usuario: normalizarTexto(usuario) || "admin"
+    });
+
+    await runQuery(
+      `UPDATE stock_ajustes_pendientes
+       SET estado = ?, revisado_por = ?, revisado_at = datetime('now'),
+           cantidad_aprobada = ?, tipo_movimiento_aprobado = ?,
+           observaciones_admin = ?, movimiento_stock_id = ?
+       WHERE id = ? AND estado = 'pendiente'`,
+      [
+        corregido ? "corregido" : "aprobado",
+        normalizarTexto(usuario) || "admin",
+        cantidadAprobada,
+        tipoAprobado,
+        normalizarTexto(observaciones_admin),
+        movimiento.movimiento_stock_id,
+        Number(id)
+      ]
+    );
+
+    await runQuery("COMMIT");
+    return obtenerAjustePendiente(id);
+  } catch (error) {
+    try {
+      await runQuery("ROLLBACK");
+    } catch {}
+    throw error;
+  }
+}
+
+async function rechazarAjustePendiente(id, {
+  usuario,
+  observaciones_admin
+} = {}) {
+  await ensureStockAjustesPendientesSchema();
+
+  await runQuery("BEGIN TRANSACTION");
+  try {
+    const ajuste = await getQuery("SELECT * FROM stock_ajustes_pendientes WHERE id = ?", [Number(id)]);
+    if (!ajuste) throw crearError("Ajuste pendiente no encontrado", 404);
+    if (ajuste.estado !== "pendiente") throw crearError("El ajuste pendiente ya fue revisado", 409);
+
+    await runQuery(
+      `UPDATE stock_ajustes_pendientes
+       SET estado = 'rechazado', revisado_por = ?, revisado_at = datetime('now'),
+           observaciones_admin = ?
+       WHERE id = ? AND estado = 'pendiente'`,
+      [normalizarTexto(usuario) || "admin", normalizarTexto(observaciones_admin), Number(id)]
+    );
+
+    await runQuery("COMMIT");
+    return obtenerAjustePendiente(id);
+  } catch (error) {
+    try {
+      await runQuery("ROLLBACK");
+    } catch {}
+    throw error;
+  }
+}
+
 module.exports = {
   ensureStockAjustesPendientesSchema,
   crearAjustePendiente,
   listarAjustesPendientes,
-  obtenerAjustePendiente
+  obtenerAjustePendiente,
+  aprobarAjustePendiente,
+  rechazarAjustePendiente
 };

@@ -128,10 +128,12 @@ const {
   resolverComposicionItemVenta
 } = require("./services/modificadorService");
 const {
+  aprobarAjustePendiente,
   crearAjustePendiente,
   ensureStockAjustesPendientesSchema,
   listarAjustesPendientes,
-  obtenerAjustePendiente
+  obtenerAjustePendiente,
+  rechazarAjustePendiente
 } = require("./services/stockAjustePendienteService");
 
 const app = express();
@@ -2347,6 +2349,7 @@ app.get("/productos/:id/historial", async (req, res) => {
 });
 
 async function puedeGestionarAjustesPendientes(req) {
+  if (normalizarRol(req.usuario?.rol) === "colaborador") return false;
   return puedeRol(req, ROLES.ADMIN_ENCARGADO) || await tienePermisoAccion(req, "stock_ajustar");
 }
 
@@ -2416,6 +2419,48 @@ app.get("/stock/ajustes-pendientes/:id", async (req, res) => {
   } catch (error) {
     logError("Error al obtener ajuste pendiente de stock:", error);
     return res.status(500).json({ message: "Error al obtener ajuste pendiente de stock" });
+  }
+});
+
+app.post("/stock/ajustes-pendientes/:id/aprobar", async (req, res) => {
+  if (!(await puedeGestionarAjustesPendientes(req))) {
+    return res.status(403).json({ message: "No tenes permisos para aprobar ajustes pendientes de stock" });
+  }
+
+  try {
+    const ajuste = await aprobarAjustePendiente(req.params.id, {
+      usuario: req.usuario?.nombre || req.body.usuario || "admin",
+      cantidad_aprobada: req.body.cantidad_aprobada,
+      tipo_movimiento_aprobado: req.body.tipo_movimiento_aprobado,
+      observaciones_admin: req.body.observaciones_admin
+    });
+    return res.json({ message: "Ajuste aprobado", ajuste });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    logError("Error al aprobar ajuste pendiente de stock:", error);
+    return res.status(500).json({ message: "Error al aprobar ajuste pendiente de stock" });
+  }
+});
+
+app.post("/stock/ajustes-pendientes/:id/rechazar", async (req, res) => {
+  if (!(await puedeGestionarAjustesPendientes(req))) {
+    return res.status(403).json({ message: "No tenes permisos para rechazar ajustes pendientes de stock" });
+  }
+
+  try {
+    const ajuste = await rechazarAjustePendiente(req.params.id, {
+      usuario: req.usuario?.nombre || req.body.usuario || "admin",
+      observaciones_admin: req.body.observaciones_admin
+    });
+    return res.json({ message: "Ajuste rechazado", ajuste });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    logError("Error al rechazar ajuste pendiente de stock:", error);
+    return res.status(500).json({ message: "Error al rechazar ajuste pendiente de stock" });
   }
 });
 
