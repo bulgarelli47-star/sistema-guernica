@@ -3601,6 +3601,7 @@
             <input type="number" id="movimientoCajaMonto" class="field" placeholder="Monto" step="0.01" min="0" />
             <input type="text" id="movimientoCajaConcepto" class="field" placeholder="Concepto" />
             <input type="text" id="movimientoCajaUsuario" class="field" placeholder="Usuario" value="admin" />
+            <input type="password" id="movimientoCajaClave" class="field" placeholder="Clave maestra" autocomplete="off" hidden />
           </div>
           <div class="daily-card-header">
             <div class="muted" id="movimientoCajaAyuda">Completa los datos para registrar el movimiento.</div>
@@ -3665,7 +3666,7 @@
     </main>
   </div>
 
-  <script src="/kpi-visibility.js?v=2"></script>
+  <script src="/kpi-visibility.js?v=3"></script>
   <script>
     const toggleNotificaciones = document.getElementById("toggleNotificaciones");
     const notificacionesDropdown = document.getElementById("notificacionesDropdown");
@@ -3766,6 +3767,7 @@
     const movimientoCajaMonto = document.getElementById("movimientoCajaMonto");
     const movimientoCajaConcepto = document.getElementById("movimientoCajaConcepto");
     const movimientoCajaUsuario = document.getElementById("movimientoCajaUsuario");
+    const movimientoCajaClaveInput = document.getElementById("movimientoCajaClave");
     const movimientoCajaAyuda = document.getElementById("movimientoCajaAyuda");
     const confirmarMovimientoCaja = document.getElementById("confirmarMovimientoCaja");
     const modalConciliacionCuenta = document.getElementById("modalConciliacionCuenta");
@@ -4932,6 +4934,8 @@
       movimientoCajaMonto.value = "";
       movimientoCajaConcepto.value = esIngreso ? "Ingreso de dinero" : "Retiro de dinero";
       movimientoCajaUsuario.value = usuarioApertura.value.trim() || aperturaActual?.usuario || "admin";
+      movimientoCajaClaveInput.value = "";
+      movimientoCajaClaveInput.hidden = true;
       abrirModal(modalMovimientoCaja);
       movimientoCajaMonto.focus();
     }
@@ -4947,11 +4951,8 @@
         return;
       }
 
-      const clave = window.prompt("Ingresa la clave maestra para editar el movimiento:");
-      if (!clave) return;
-
       movimientoCajaEditando = movimiento;
-      movimientoCajaClave = clave.trim();
+      movimientoCajaClave = "";
       tipoMovimientoCajaActivo = getMovimientoTipo(movimiento);
       const esIngreso = tipoMovimientoCajaActivo === "ingreso";
       movimientoCajaTitulo.innerText = "Editar movimiento de caja";
@@ -4961,8 +4962,10 @@
       movimientoCajaMonto.value = Number(movimiento.total || movimiento.monto || 0);
       movimientoCajaConcepto.value = movimiento.concepto || movimiento.descripcion || "";
       movimientoCajaUsuario.value = getMovimientoUsuario(movimiento) || "admin";
+      movimientoCajaClaveInput.value = "";
+      movimientoCajaClaveInput.hidden = false;
       abrirModal(modalMovimientoCaja);
-      movimientoCajaMonto.focus();
+      movimientoCajaClaveInput.focus();
     }
 
     async function registrarMovimientoCaja() {
@@ -4974,6 +4977,7 @@
       };
       const esEdicion = Boolean(movimientoCajaEditando);
       if (esEdicion) {
+        movimientoCajaClave = movimientoCajaClaveInput.value.trim();
         payload.clave = movimientoCajaClave;
       }
 
@@ -4986,6 +4990,13 @@
       if (!payload.concepto) {
         mostrarMensaje("El concepto es obligatorio", true);
         mostrarToast("No se pudo registrar: el concepto es obligatorio.", true);
+        return;
+      }
+
+      if (esEdicion && !payload.clave) {
+        mostrarMensaje("La clave maestra es obligatoria para editar", true);
+        mostrarToast("Ingresa la clave maestra para guardar cambios.", true);
+        movimientoCajaClaveInput.focus();
         return;
       }
 
@@ -5009,6 +5020,8 @@
         cerrarModal(modalMovimientoCaja);
         movimientoCajaEditando = null;
         movimientoCajaClave = "";
+        movimientoCajaClaveInput.value = "";
+        movimientoCajaClaveInput.hidden = true;
         mostrarMensaje(data.message || (esEdicion ? "Movimiento actualizado" : "Movimiento registrado"));
         mostrarToast(data.message || (esEdicion ? "Movimiento de caja actualizado." : "Movimiento de caja registrado."));
         await cargarCaja();

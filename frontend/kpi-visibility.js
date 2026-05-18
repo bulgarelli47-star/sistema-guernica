@@ -143,7 +143,7 @@
       if (node.classList.contains("amount-number") || node.classList.contains("amount-value")) return true;
       if (node.classList.contains("money-value") || node.classList.contains("currency-value")) return true;
       const text = String(node.textContent || "").trim();
-      return /[$€£¥]|(?:^|[\s(])-?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})\b/.test(text);
+      return /[$€£¥]|(?:^|[\s(])-?\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\b/.test(text);
     }
 
     function getSensitiveNodes() {
