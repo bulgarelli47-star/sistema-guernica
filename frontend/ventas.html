@@ -676,7 +676,7 @@
     .ticket-panel {
       display: flex;
       flex-direction: column;
-      gap: 7px;
+      gap: 10px;
       height: calc(100vh - var(--header-height) - 48px);
       overflow: hidden;
     }
@@ -714,9 +714,11 @@
     }
 
     .payment-title {
-      margin: 0 0 5px;
+      margin: 0;
       font-size: 13px;
-      line-height: 1.1;
+      line-height: 1.2;
+      color: var(--text);
+      font-weight: 800;
     }
 
     .button {
@@ -904,20 +906,46 @@
 
     .checkout-panel {
       display: grid;
-      gap: 5px;
+      gap: 10px;
       flex: 0 0 auto;
-      background: linear-gradient(180deg, rgba(247, 247, 251, 0) 0%, #ffffff 14%);
-      padding-top: 3px;
+      background: linear-gradient(180deg, rgba(247, 247, 251, 0) 0%, #ffffff 10%);
+      padding-top: 6px;
       margin-top: auto;
     }
 
+    .checkout-section {
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      background: #ffffff;
+      padding: 10px;
+      display: grid;
+      gap: 9px;
+      min-width: 0;
+    }
+
+    .checkout-section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .checkout-section-label {
+      font-size: 11px;
+      font-weight: 800;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
     .summary-box {
-      padding: 6px 8px;
-      border-radius: 10px;
+      padding: 11px 12px;
+      border-radius: 13px;
       background: linear-gradient(180deg, #faf8ff 0%, #ffffff 100%);
       border: 1px solid rgba(109, 40, 217, 0.14);
       display: grid;
-      gap: 2px;
+      gap: 6px;
     }
 
     .summary-line {
@@ -925,53 +953,93 @@
       justify-content: space-between;
       gap: 10px;
       color: var(--muted);
-      font-size: 11px;
+      font-size: 12px;
+      line-height: 1.2;
+      min-width: 0;
+    }
+
+    .summary-line span {
+      min-width: 0;
     }
 
     .summary-line.total {
       color: var(--text);
-      font-size: 14px;
+      font-size: 16px;
       font-weight: 800;
-      padding-top: 3px;
+      padding-top: 7px;
+      margin-top: 2px;
       border-top: 1px solid rgba(109, 40, 217, 0.12);
+      align-items: baseline;
     }
 
     .summary-line strong {
-      font-size: 11px;
+      font-size: 12px;
+      color: var(--text);
+      min-width: 0;
+      text-align: right;
+      overflow-wrap: anywhere;
     }
 
     .summary-line.total strong {
-      font-size: 14px;
+      font-size: 21px;
+      line-height: 1;
+      color: var(--primary);
+      font-variant-numeric: tabular-nums;
+    }
+
+    #ticketRecargoLinea {
+      color: #7c3aed;
+      background: rgba(109, 40, 217, 0.08);
+      border: 1px solid rgba(109, 40, 217, 0.12);
+      border-radius: 9px;
+      padding: 6px 8px;
+      margin-top: 2px;
+    }
+
+    #ticketRecargoLinea strong {
+      color: #6d28d9;
     }
 
     .payment-methods {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      gap: 4px;
+      grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
+      gap: 7px;
     }
 
     .payment-button {
       border: 1px solid var(--border);
-      border-radius: 9px;
+      border-radius: 12px;
       background: #ffffff;
-      padding: 6px 4px;
+      padding: 9px 7px;
       text-align: center;
       cursor: pointer;
       transition: all 0.2s ease;
-      min-height: 36px;
+      min-height: 48px;
+      display: grid;
+      place-items: center;
     }
 
     .payment-button strong {
-      display: block;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
       margin: 0;
-      font-size: 11px;
-      line-height: 1.1;
+      font-size: 12px;
+      line-height: 1.15;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .payment-button .app-icon {
+      flex: 0 0 auto;
     }
 
     .payment-button.active {
-      border-color: rgba(109, 40, 217, 0.22);
+      border-color: rgba(109, 40, 217, 0.42);
       background: var(--primary-soft);
       color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(109, 40, 217, 0.08);
     }
 
     .payment-button:disabled {
@@ -983,13 +1051,13 @@
 
     .payment-fields {
       display: grid;
-      gap: 5px;
+      gap: 9px;
     }
 
     .cash-inline {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 6px;
+      gap: 8px;
       align-items: end;
     }
 
@@ -1011,13 +1079,136 @@
     }
 
     .cash-inline .field {
-      height: 34px;
-      padding: 7px 9px;
-      border-radius: 9px;
+      min-height: 38px;
+      padding: 8px 10px;
+      border-radius: 10px;
     }
 
     .cash-change strong {
       font-size: 13px;
+    }
+
+    .payment-detail-section .field {
+      min-height: 38px;
+      border-radius: 10px;
+      padding: 8px 10px;
+    }
+
+    .ticket-payment-card {
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      background: #ffffff;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .ticket-payment-summary {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .ticket-payment-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.2;
+      min-width: 0;
+    }
+
+    .ticket-payment-row strong {
+      color: var(--text);
+      text-align: right;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .ticket-payment-row.total {
+      padding-top: 6px;
+      border-top: 1px solid var(--border);
+      color: var(--text);
+      font-weight: 800;
+    }
+
+    .ticket-payment-row.total strong {
+      color: var(--primary);
+      font-size: 14px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .point-actions {
+      display: grid;
+      gap: 8px;
+    }
+
+    .point-status-card {
+      border: 1px solid rgba(37, 99, 235, 0.18);
+      border-radius: 12px;
+      background: #eff6ff;
+      color: #1d4ed8;
+      padding: 9px 10px;
+      display: grid;
+      gap: 5px;
+      font-size: 12px;
+      line-height: 1.25;
+    }
+
+    .point-status-card strong {
+      color: #1e3a8a;
+      overflow-wrap: anywhere;
+    }
+
+    .point-status-card .muted {
+      color: #3b82f6;
+    }
+
+    .configure-payment-button {
+      width: 100%;
+      justify-content: center;
+      min-height: 40px;
+    }
+
+    .cobro-modal-card {
+      width: min(620px, 100%);
+    }
+
+    .cobro-modal-body {
+      display: grid;
+      gap: 12px;
+    }
+
+    .cobro-modal-body .checkout-section {
+      padding: 12px;
+    }
+
+    .ticket-actions-final {
+      display: grid;
+      grid-template-columns: minmax(0, 0.78fr) minmax(0, 1.22fr);
+      gap: 8px;
+      align-items: stretch;
+    }
+
+    .ticket-actions-final .button {
+      min-height: 44px;
+      border-radius: 12px;
+      line-height: 1.15;
+    }
+
+    .ticket-actions-final .button.success {
+      font-size: 15px;
+      font-weight: 900;
+      box-shadow: 0 10px 22px rgba(34, 163, 90, 0.18);
+    }
+
+    .ticket-actions-final .button.warning {
+      background: #fff7ed;
+      color: #9a5b00;
+      border: 1px solid rgba(217, 154, 33, 0.35);
+      box-shadow: none;
     }
 
     .ticket-meta {
@@ -1266,8 +1457,16 @@
         padding-top: 20px;
       }
 
-      .payment-methods,
+      .payment-methods {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
       .ticket-row {
+        grid-template-columns: 1fr;
+      }
+
+      .ticket-actions-final,
+      .cash-inline {
         grid-template-columns: 1fr;
       }
 
@@ -1277,6 +1476,12 @@
 
       .ticket-line-total {
         text-align: left;
+      }
+    }
+
+    @media (max-width: 420px) {
+      .payment-methods {
+        grid-template-columns: 1fr;
       }
     }
   </style>
@@ -1481,6 +1686,10 @@
             </div>
 
             <div class="checkout-panel">
+              <section class="checkout-section ticket-total-card">
+                <div class="checkout-section-header">
+                  <span class="checkout-section-label">Resumen</span>
+                </div>
             <div class="summary-box">
               <div class="summary-line">
                 <span>Subtotal</span>
@@ -1499,69 +1708,48 @@
                 <strong>$<span id="ticketTotal">0.00</span></strong>
               </div>
             </div>
+              </section>
 
-            <div>
-              <h3 class="payment-title">Método de pago</h3>
-              <div class="payment-methods" id="paymentButtons">
-                <button type="button" class="payment-button active" data-payment="efectivo">
-                  <strong><span class="app-icon icon-money" aria-hidden="true"></span> Eft</strong>
-                </button>
-                <button type="button" class="payment-button" data-payment="debito">
-                  <strong><span class="app-icon icon-card" aria-hidden="true"></span> Deb</strong>
-                </button>
-                <button type="button" class="payment-button" data-payment="transferencia">
-                  <strong><span class="app-icon icon-bank" aria-hidden="true"></span> Transf</strong>
-                </button>
-                <button type="button" class="payment-button" data-payment="mixto">
-                  <strong><span class="app-icon icon-split" aria-hidden="true"></span> Mixto</strong>
-                </button>
-                <button type="button" class="payment-button" data-payment="cuenta_corriente">
-                  <strong><span class="app-icon icon-account" aria-hidden="true"></span> Cta Cte</strong>
-                </button>
-              </div>
-            </div>
-
-            <div class="payment-fields">
-              <input type="hidden" id="tipoCobroNormal" value="efectivo" />
-              <input type="checkbox" id="esCuentaCorriente" class="hidden" />
-
-                <div id="recibidoWrapper">
-                  <div class="cash-inline">
-                    <div>
-                      <label class="muted" for="montoRecibido">Recibido</label>
-                      <input type="number" id="montoRecibido" class="field" placeholder="Monto recibido" step="0.01" min="0" />
-                    </div>
-                    <div class="cash-field">
-                      <div class="muted">Vuelto</div>
-                      <div class="cash-change">
-                        <strong>$<span id="vueltoCalculado">0.00</span></strong>
-                      </div>
-                    </div>
+              <section class="ticket-payment-card" id="resumenCobroTicket">
+                <div class="checkout-section-header">
+                  <span class="checkout-section-label">Cobro</span>
+                  <button type="button" class="button secondary quick-action" id="abrirConfigCobro">Cambiar método</button>
+                </div>
+                <div class="ticket-payment-summary">
+                  <div class="ticket-payment-row">
+                    <span>Método</span>
+                    <strong id="resumenCobroMetodo">Efectivo</strong>
+                  </div>
+                  <div class="ticket-payment-row">
+                    <span>Cuenta / terminal</span>
+                    <strong id="resumenCobroCuenta">Sin asignar</strong>
+                  </div>
+                  <div class="ticket-payment-row hidden" id="resumenCobroCuotasLinea">
+                    <span>Cuotas</span>
+                    <strong id="resumenCobroCuotas">-</strong>
+                  </div>
+                  <div class="ticket-payment-row hidden" id="resumenCobroRecargoLinea">
+                    <span>Recargo</span>
+                    <strong id="resumenCobroRecargo">$0.00</strong>
+                  </div>
+                  <div class="ticket-payment-row total">
+                    <span>Total final</span>
+                    <strong>$<span id="resumenCobroTotal">0.00</span></strong>
                   </div>
                 </div>
-
-              <div id="montosMixtosNormal" class="hidden">
-                <label class="muted">Cobro mixto</label>
-                <div class="field-grid" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
-                  <input type="number" id="montoEfectivoNormal" class="field" placeholder="Monto efectivo" step="0.01" min="0" />
-                  <input type="number" id="montoDebitoNormal" class="field" placeholder="Monto débito" step="0.01" min="0" />
+                <div class="point-actions hidden" id="pointActionsTicket">
+                  <button type="button" class="button success" id="enviarPointTicket">Enviar a terminal</button>
+                  <div class="point-status-card hidden" id="pointEstadoTicket">
+                    <strong id="pointEstadoTitulo">Intento creado</strong>
+                    <span>Estado: <strong id="pointEstadoValor">pendiente_mp</strong></span>
+                    <span>Referencia: <strong id="pointExternalReference">-</strong></span>
+                    <span>Terminal: <strong id="pointTerminalId">-</strong></span>
+                    <span class="muted">Esto todavía no está cobrado. Esperando confirmación de Mercado Pago Point.</span>
+                  </div>
                 </div>
-              </div>
-              <div id="cuentaCobroVentaWrap" class="hidden">
-                <label class="muted" for="cuentaCobroVenta">Cuenta / terminal</label>
-                <select id="cuentaCobroVenta" class="field">
-                  <option value="">Sin asignar</option>
-                </select>
-              </div>
-              <div id="cuotasVentaWrap" class="hidden">
-                <label class="muted" for="cuotasVenta">Cuotas</label>
-                <select id="cuotasVenta" class="field"></select>
-              </div>
-            </div>
+              </section>
 
-            <div class="divider"></div>
-
-            <div class="inline-actions">
+            <div class="ticket-actions-final">
               <button type="button" class="button warning" id="guardarPendiente">Guardar pendiente</button>
               <button type="button" class="button success" id="registrarVenta">Cobrar</button>
             </div>
@@ -1570,6 +1758,89 @@
         </div>
       </section>
     </main>
+  </div>
+
+  <div class="modal" id="modalCobroVenta">
+    <div class="modal-card cobro-modal-card">
+      <div class="modal-header">
+        <div>
+          <h3>Configurar cobro</h3>
+          <p>Selecciona el método y completa los datos necesarios para cobrar.</p>
+        </div>
+        <button type="button" class="button secondary" id="cerrarConfigCobro">Cerrar</button>
+      </div>
+      <div class="cobro-modal-body">
+        <section class="checkout-section payment-section">
+          <div class="checkout-section-header">
+            <h3 class="payment-title">Método de pago</h3>
+          </div>
+          <div class="payment-methods" id="paymentButtons">
+            <button type="button" class="payment-button active" data-payment="efectivo">
+              <strong><span class="app-icon icon-money" aria-hidden="true"></span> Eft</strong>
+            </button>
+            <button type="button" class="payment-button" data-payment="debito">
+              <strong><span class="app-icon icon-card" aria-hidden="true"></span> Deb</strong>
+            </button>
+            <button type="button" class="payment-button" data-payment="transferencia">
+              <strong><span class="app-icon icon-bank" aria-hidden="true"></span> Transf</strong>
+            </button>
+            <button type="button" class="payment-button" data-payment="mixto">
+              <strong><span class="app-icon icon-split" aria-hidden="true"></span> Mixto</strong>
+            </button>
+            <button type="button" class="payment-button" data-payment="cuenta_corriente">
+              <strong><span class="app-icon icon-account" aria-hidden="true"></span> Cta Cte</strong>
+            </button>
+          </div>
+        </section>
+
+        <section class="checkout-section payment-detail-section">
+          <div class="checkout-section-header">
+            <span class="checkout-section-label">Datos del cobro</span>
+          </div>
+          <div class="payment-fields">
+            <input type="hidden" id="tipoCobroNormal" value="efectivo" />
+            <input type="checkbox" id="esCuentaCorriente" class="hidden" />
+
+            <div id="recibidoWrapper">
+              <div class="cash-inline">
+                <div>
+                  <label class="muted" for="montoRecibido">Recibido</label>
+                  <input type="number" id="montoRecibido" class="field" placeholder="Monto recibido" step="0.01" min="0" />
+                </div>
+                <div class="cash-field">
+                  <div class="muted">Vuelto</div>
+                  <div class="cash-change">
+                    <strong>$<span id="vueltoCalculado">0.00</span></strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div id="montosMixtosNormal" class="hidden">
+              <label class="muted">Cobro mixto</label>
+              <div class="field-grid" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
+                <input type="number" id="montoEfectivoNormal" class="field" placeholder="Monto efectivo" step="0.01" min="0" />
+                <input type="number" id="montoDebitoNormal" class="field" placeholder="Monto débito" step="0.01" min="0" />
+              </div>
+            </div>
+            <div id="cuentaCobroVentaWrap" class="hidden">
+              <label class="muted" for="cuentaCobroVenta">Cuenta / terminal</label>
+              <select id="cuentaCobroVenta" class="field">
+                <option value="">Sin asignar</option>
+              </select>
+            </div>
+            <div id="cuotasVentaWrap" class="hidden">
+              <label class="muted" for="cuotasVenta">Cuotas</label>
+              <select id="cuotasVenta" class="field"></select>
+            </div>
+          </div>
+        </section>
+      </div>
+      <div class="inline-actions">
+        <button type="button" class="button secondary hidden" id="enviarPointModal">Enviar a terminal</button>
+        <button type="button" class="button success" id="confirmarConfigCobro">Listo</button>
+      </div>
+    </div>
   </div>
 
   <div class="modal" id="modalGuardarPendiente">
@@ -1761,6 +2032,24 @@
     const cuotasVenta = document.getElementById("cuotasVenta");
     const cuotasVentaWrap = document.getElementById("cuotasVentaWrap");
     const paymentButtons = document.getElementById("paymentButtons");
+    const modalCobroVenta = document.getElementById("modalCobroVenta");
+    const abrirConfigCobro = document.getElementById("abrirConfigCobro");
+    const cerrarConfigCobro = document.getElementById("cerrarConfigCobro");
+    const confirmarConfigCobro = document.getElementById("confirmarConfigCobro");
+    const resumenCobroMetodo = document.getElementById("resumenCobroMetodo");
+    const resumenCobroCuenta = document.getElementById("resumenCobroCuenta");
+    const resumenCobroCuotasLinea = document.getElementById("resumenCobroCuotasLinea");
+    const resumenCobroCuotas = document.getElementById("resumenCobroCuotas");
+    const resumenCobroRecargoLinea = document.getElementById("resumenCobroRecargoLinea");
+    const resumenCobroRecargo = document.getElementById("resumenCobroRecargo");
+    const resumenCobroTotal = document.getElementById("resumenCobroTotal");
+    const pointActionsTicket = document.getElementById("pointActionsTicket");
+    const enviarPointTicket = document.getElementById("enviarPointTicket");
+    const enviarPointModal = document.getElementById("enviarPointModal");
+    const pointEstadoTicket = document.getElementById("pointEstadoTicket");
+    const pointEstadoValor = document.getElementById("pointEstadoValor");
+    const pointExternalReference = document.getElementById("pointExternalReference");
+    const pointTerminalId = document.getElementById("pointTerminalId");
     const ticketsPendientes = document.getElementById("ticketsPendientes");
     const ticketsAnulados = document.getElementById("ticketsAnulados");
     const montoRecibido = document.getElementById("montoRecibido");
@@ -1821,6 +2110,8 @@
     let productoModificadoresActual = null;
     let modificadoresDisponiblesActuales = [];
     let ticketItemEditandoId = null;
+    let ultimoIntentoPoint = null;
+    let enviandoIntentoPoint = false;
     const modificadoresCache = new Map();
     const CONSUMIDOR_FINAL_ID = "1";
 
@@ -2176,6 +2467,207 @@
       return Number(valor || 0).toFixed(2);
     }
 
+    function getNombreMetodoCobroActual() {
+      if (esCuentaCorriente?.checked || selectedPaymentMode === "cuenta_corriente") {
+        return "Cuenta corriente";
+      }
+
+      const codigo = selectedPaymentMode || tipoCobroNormal?.value || "efectivo";
+      const metodo = tiposPagoVentas.find((tipo) => tipo.codigo === codigo || tipo.codigo === tipoCobroNormal?.value);
+      if (metodo?.nombre) return metodo.nombre;
+
+      const nombresBase = {
+        efectivo: "Efectivo",
+        debito: "Débito",
+        credito: "Crédito",
+        transferencia: "Transferencia",
+        qr: "QR",
+        billetera: "Billetera",
+        mixto: "Mixto"
+      };
+      return nombresBase[codigo] || codigo;
+    }
+
+    function actualizarResumenCobroTicket() {
+      if (!resumenCobroMetodo) return;
+
+      const cuentaCorrienteActiva = esCuentaCorriente?.checked;
+      const esMixto = tipoCobroNormal?.value === "mixto" && !cuentaCorrienteActiva;
+      const cuentaOption = cuentaCobroVenta?.options?.[cuentaCobroVenta.selectedIndex];
+      const cuentaTexto = cuentaCorrienteActiva
+        ? "Cuenta corriente"
+        : esMixto
+          ? "Cobro mixto"
+          : (cuentaOption?.textContent || "Sin asignar");
+      const cuotasTexto = cuotasVenta?.options?.[cuotasVenta.selectedIndex]?.textContent || "";
+      const mostrarCuotas = Boolean(cuotasTexto && cuotasVentaWrap && !cuotasVentaWrap.classList.contains("hidden"));
+      const recargoMonto = Number(recargoVentaActual?.monto || 0);
+
+      resumenCobroMetodo.innerText = getNombreMetodoCobroActual();
+      resumenCobroCuenta.innerText = cuentaTexto;
+      resumenCobroCuotasLinea?.classList.toggle("hidden", !mostrarCuotas);
+      if (resumenCobroCuotas) resumenCobroCuotas.innerText = cuotasTexto || "-";
+      resumenCobroRecargoLinea?.classList.toggle("hidden", recargoMonto <= 0);
+      if (resumenCobroRecargo) resumenCobroRecargo.innerText = `$${formatearNumero(recargoMonto)}`;
+      if (resumenCobroTotal) resumenCobroTotal.innerText = ticketTotal?.innerText || "0.00";
+      actualizarUiMercadoPagoPoint();
+    }
+
+    function getCuentaCobroSeleccionadaOption() {
+      return cuentaCobroVenta?.options?.[cuentaCobroVenta.selectedIndex] || null;
+    }
+
+    function getCuentaCobroSeleccionadaId() {
+      return cuentaCobroVenta?.value ? Number(cuentaCobroVenta.value) : null;
+    }
+
+    function esCuentaMercadoPagoPointSeleccionada() {
+      const option = getCuentaCobroSeleccionadaOption();
+      return String(option?.dataset?.proveedorIntegracion || "").trim().toLowerCase() === "mercadopago_point";
+    }
+
+    function resetIntentoPointVisual() {
+      ultimoIntentoPoint = null;
+      pointEstadoTicket?.classList.add("hidden");
+      if (pointEstadoValor) pointEstadoValor.innerText = "pendiente_mp";
+      if (pointExternalReference) pointExternalReference.innerText = "-";
+      if (pointTerminalId) pointTerminalId.innerText = "-";
+    }
+
+    function renderIntentoPoint(intento) {
+      if (!intento) {
+        pointEstadoTicket?.classList.add("hidden");
+        return;
+      }
+
+      pointEstadoTicket?.classList.remove("hidden");
+      if (pointEstadoValor) pointEstadoValor.innerText = intento.estado || "pendiente_mp";
+      if (pointExternalReference) pointExternalReference.innerText = intento.external_reference || "-";
+      if (pointTerminalId) pointTerminalId.innerText = intento.terminal_id || getCuentaCobroSeleccionadaOption()?.dataset?.terminalId || "-";
+    }
+
+    function actualizarUiMercadoPagoPoint() {
+      const esPoint = esCuentaMercadoPagoPointSeleccionada() && !esCuentaCorriente?.checked;
+      pointActionsTicket?.classList.toggle("hidden", !esPoint);
+      enviarPointModal?.classList.toggle("hidden", !esPoint);
+      if (botonRegistrar) {
+        botonRegistrar.disabled = esPoint;
+        botonRegistrar.title = esPoint ? "Para Mercado Pago Point usá Enviar a terminal. Todavía no marca la venta como cobrada." : "";
+      }
+      if (!esPoint) {
+        pointEstadoTicket?.classList.add("hidden");
+      } else {
+        renderIntentoPoint(ultimoIntentoPoint);
+      }
+    }
+
+    async function enviarIntentoMercadoPagoPoint() {
+      if (!esCuentaMercadoPagoPointSeleccionada()) {
+        mostrarMensaje("Seleccioná una cuenta Mercado Pago Point.", true);
+        abrirModal(modalCobroVenta);
+        return;
+      }
+
+      if (ticket.length === 0) {
+        mostrarMensaje("Agrega al menos un producto al ticket antes de enviar a terminal.", true);
+        return;
+      }
+
+      const montoAEnviar = getTicketTotal();
+      if (montoAEnviar <= 0) {
+        mostrarMensaje("El total debe ser mayor a cero para enviar a terminal.", true);
+        return;
+      }
+
+      const cuentaCobroId = getCuentaCobroSeleccionadaId();
+      if (!cuentaCobroId) {
+        mostrarMensaje("Seleccioná cuenta/terminal para Mercado Pago Point.", true);
+        abrirModal(modalCobroVenta);
+        return;
+      }
+
+      if (ultimoIntentoPoint?.estado === "pendiente_mp") {
+        const crearOtro = window.confirm("Ya hay un intento pendiente. ¿Crear otro intento?");
+        if (!crearOtro) return;
+      }
+
+      enviandoIntentoPoint = true;
+      if (enviarPointTicket) enviarPointTicket.disabled = true;
+      if (enviarPointModal) enviarPointModal.disabled = true;
+      mostrarMensaje("Enviando intento a terminal...");
+
+      try {
+        const res = await fetch("/integraciones/mercadopago-point/intentos", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            cuenta_cobro_id: cuentaCobroId,
+            monto_total: montoAEnviar
+          })
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          mostrarMensaje(data.message || "No se pudo crear el intento Mercado Pago Point", true);
+          return;
+        }
+
+        ultimoIntentoPoint = data.intento;
+        renderIntentoPoint(ultimoIntentoPoint);
+        actualizarUiMercadoPagoPoint();
+        cerrarModal(modalCobroVenta);
+        mostrarMensaje("Enviado a terminal. Esto todavía no está cobrado.", false);
+      } catch (error) {
+        console.error("Error al crear intento Mercado Pago Point:", error);
+        mostrarMensaje("Error al crear intento Mercado Pago Point", true);
+      } finally {
+        enviandoIntentoPoint = false;
+        if (enviarPointTicket) enviarPointTicket.disabled = false;
+        if (enviarPointModal) enviarPointModal.disabled = false;
+      }
+    }
+
+    function requiereCuentaTerminalDigital(cobro = {}) {
+      const tipo = String(cobro.tipo_cobro || tipoCobroNormal?.value || "").trim().toLowerCase();
+      if (!tipo || tipo === "efectivo" || tipo === "cuenta_corriente" || esCuentaCorriente?.checked) return false;
+      if (tipo === "mixto") return Number(cobro.monto_debito || montoDebitoNormal?.value || 0) > 0;
+      return true;
+    }
+
+    function validarCuentaTerminalCobro(cobro = {}, { abrirModalSiFalla = true } = {}) {
+      if (!requiereCuentaTerminalDigital(cobro)) return true;
+      if (cuentaCobroVenta?.value) return true;
+
+      mostrarMensaje("Seleccioná cuenta/terminal para cobros digitales.", true);
+      if (abrirModalSiFalla) {
+        abrirModal(modalCobroVenta);
+        window.setTimeout(() => cuentaCobroVenta?.focus(), 20);
+      }
+      return false;
+    }
+
+    function abrirModalCobroVenta() {
+      actualizarCobroNormalUI();
+      abrirModal(modalCobroVenta);
+    }
+
+    function cerrarModalCobroVenta() {
+      cerrarModal(modalCobroVenta);
+      actualizarResumenCobroTicket();
+    }
+
+    function confirmarModalCobroVenta() {
+      const cobroActual = {
+        tipo_cobro: esCuentaCorriente?.checked ? "cuenta_corriente" : tipoCobroNormal?.value,
+        monto_debito: Number(montoDebitoNormal?.value || 0)
+      };
+      if (!validarCuentaTerminalCobro(cobroActual, { abrirModalSiFalla: false })) {
+        window.setTimeout(() => cuentaCobroVenta?.focus(), 20);
+        return;
+      }
+      cerrarModalCobroVenta();
+    }
+
     function normalizarBusqueda(valor) {
       return String(valor || "")
         .normalize("NFD")
@@ -2401,9 +2893,10 @@
       if (!cuentaCobroVenta || !cuentaCobroVentaWrap) return;
       cuentaCobroVenta.innerHTML = '<option value="">Sin asignar</option>';
       cuentaCobroVentaWrap.classList.add("hidden");
-      if (!tipo || tipo === "mixto" || tipo === "cuenta_corriente") return;
+      if (!tipo || tipo === "cuenta_corriente") return;
+      const tipoCuenta = tipo === "mixto" ? "debito" : tipo;
       try {
-        const res = await fetch(`/cuentas_cobro/tipo/${encodeURIComponent(tipo)}`);
+        const res = await fetch(`/cuentas_cobro/tipo/${encodeURIComponent(tipoCuenta)}`);
         if (!res.ok) throw new Error("fallo");
         const cuentas = await res.json();
         if (!Array.isArray(cuentas) || !cuentas.length) return;
@@ -2411,6 +2904,10 @@
           const opt = document.createElement("option");
           opt.value = cuenta.id;
           opt.textContent = cuenta.nombre;
+          opt.dataset.proveedorIntegracion = cuenta.proveedor_integracion || "";
+          opt.dataset.terminalId = cuenta.terminal_id || "";
+          opt.dataset.storeId = cuenta.store_id || "";
+          opt.dataset.posId = cuenta.pos_id || "";
           cuentaCobroVenta.appendChild(opt);
         });
         cuentaCobroVenta.value = selected ? String(selected) : "";
@@ -2437,7 +2934,7 @@
 
       montosMixtosNormal.classList.toggle("hidden", !esMixto);
       recibidoWrapper.classList.toggle("hidden", !esEfectivo);
-      cuentaCobroVentaWrap?.classList.toggle("hidden", esMixto || cuentaCorrienteActiva || cuentaCobroVenta.options.length <= 1);
+      cuentaCobroVentaWrap?.classList.toggle("hidden", cuentaCorrienteActiva || cuentaCobroVenta.options.length <= 1);
       if (cuotasVenta && cuotasVentaWrap) {
         cuotasVentaWrap.classList.toggle("hidden", cuentaCorrienteActiva || esMixto || cuotasConfig.length === 0);
         const valorActual = cuotasVenta.value;
@@ -2462,6 +2959,7 @@
 
       actualizarVuelto();
       renderizarTicket();
+      actualizarResumenCobroTicket();
     }
 
     function actualizarAccionesTicket() {
@@ -2501,6 +2999,7 @@
       montoRecibido.value = "";
       esCuentaCorriente.checked = false;
       cuentaCobroVenta.value = "";
+      resetIntentoPointVisual();
       actualizarAccionesTicket();
       actualizarCobroNormalUI();
       cargarCuentasCobroVenta(tipoCobroNormal.value);
@@ -2519,6 +3018,7 @@
         ticketTotal.innerText = "0.00";
         recargoVentaActual = { porcentaje: 0, monto: 0, cuotas: null, total: 0 };
         actualizarVuelto();
+        actualizarResumenCobroTicket();
         return;
       }
 
@@ -2597,6 +3097,7 @@
       ticketRecargoLinea.classList.toggle("hidden", recargoVentaActual.monto <= 0);
       ticketTotal.innerText = formatearNumero(recargoVentaActual.total);
       actualizarVuelto();
+      actualizarResumenCobroTicket();
     }
 
     async function agregarAlTicket(producto) {
@@ -3018,7 +3519,7 @@
     function etiquetaMetodoPago(tipo) {
       const nombre = String(tipo.nombre || tipo.codigo || "").trim();
       if (!nombre) return tipo.codigo;
-      return nombre.length > 9 ? nombre.slice(0, 9) : nombre;
+      return nombre.length > 14 ? nombre.slice(0, 14) : nombre;
     }
 
     function renderMetodosPagoVentas() {
@@ -3038,6 +3539,7 @@
           <strong><span class="app-icon icon-account" aria-hidden="true"></span> Cta Cte</strong>
         </button>
       `;
+      actualizarResumenCobroTicket();
     }
 
     async function cargarTiposPagoVentas() {
@@ -3241,6 +3743,11 @@
         return;
       }
 
+      if (esCuentaMercadoPagoPointSeleccionada()) {
+        mostrarMensaje("Para Mercado Pago Point usá Enviar a terminal. Esto no marca la venta como cobrada.", true);
+        return;
+      }
+
       mostrarMensaje("Registrando venta...");
       botonRegistrar.disabled = true;
 
@@ -3276,6 +3783,10 @@
 
           if (!cobro) {
             mostrarMensaje("En cobro mixto, efectivo + débito debe ser igual al total", true);
+            return;
+          }
+
+          if (!validarCuentaTerminalCobro(cobro)) {
             return;
           }
         }
@@ -3444,6 +3955,7 @@
         esCuentaCorriente.checked = false;
         tipoCobroNormal.value = "efectivo";
         cuentaCobroVenta.value = "";
+        resetIntentoPointVisual();
         renderizarTicket();
         actualizarAccionesTicket();
         actualizarCobroNormalUI();
@@ -3463,6 +3975,10 @@
 
         if (!cobro) {
           mostrarMensaje("Datos de cobro inválidos para el pendiente", true);
+          return;
+        }
+
+        if (!validarCuentaTerminalCobro(cobro)) {
           return;
         }
 
@@ -3912,10 +4428,19 @@
       setPaymentMode(button.dataset.payment);
     });
 
+    abrirConfigCobro?.addEventListener("click", abrirModalCobroVenta);
+    cerrarConfigCobro?.addEventListener("click", cerrarModalCobroVenta);
+    confirmarConfigCobro?.addEventListener("click", confirmarModalCobroVenta);
+    enviarPointTicket?.addEventListener("click", enviarIntentoMercadoPagoPoint);
+    enviarPointModal?.addEventListener("click", enviarIntentoMercadoPagoPoint);
     montoEfectivoNormal.addEventListener("input", actualizarVuelto);
     montoDebitoNormal.addEventListener("input", actualizarVuelto);
     montoRecibido.addEventListener("input", actualizarVuelto);
-    cuentaCobroVenta?.addEventListener("change", marcarPendienteEditado);
+    cuentaCobroVenta?.addEventListener("change", () => {
+      resetIntentoPointVisual();
+      actualizarResumenCobroTicket();
+      marcarPendienteEditado();
+    });
     cuotasVenta?.addEventListener("change", () => {
       renderizarTicket();
       actualizarVuelto();
