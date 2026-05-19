@@ -99,7 +99,8 @@ const {
   getCuentasCobro,
   getCuentasCobroPorTipo,
   toggleActivoCuentaCobro,
-  validarCuentaCobroParaTipo
+  validarCuentaCobroParaTipo,
+  validarCuentaCobroVenta
 } = require("./services/cuentaCobroService");
 const {
   actualizarCuentaDestino,
@@ -131,10 +132,18 @@ const {
   aprobarAjustePendiente,
   crearAjustePendiente,
   ensureStockAjustesPendientesSchema,
+  getResumenAjustesPendientes,
   listarAjustesPendientes,
   obtenerAjustePendiente,
+  reconciliarAjustesPendientes,
   rechazarAjustePendiente
 } = require("./services/stockAjustePendienteService");
+const {
+  crearIntentoPoint,
+  ensureMercadoPagoPointSchema,
+  listarIntentosPoint,
+  obtenerIntentoPoint
+} = require("./services/mercadoPagoPointService");
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -2403,6 +2412,37 @@ app.get("/stock/ajustes-pendientes", async (req, res) => {
   }
 });
 
+app.get("/stock/ajustes-pendientes/resumen", async (req, res) => {
+  if (!(await puedeGestionarAjustesPendientes(req))) {
+    return res.status(403).json({ message: "No tenes permisos para consultar resumen de ajustes pendientes" });
+  }
+
+  try {
+    const resumen = await getResumenAjustesPendientes();
+    return res.json(resumen);
+  } catch (error) {
+    logError("Error al obtener resumen de ajustes pendientes:", error);
+    return res.status(500).json({ message: "Error al obtener resumen de ajustes pendientes" });
+  }
+});
+
+app.post("/stock/ajustes-pendientes/reconciliar", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_ver", "No tenes permisos para reconciliar ajustes pendientes"))) return;
+
+  try {
+    const puedeGestionar = await puedeGestionarAjustesPendientes(req);
+    const ajustes = await reconciliarAjustesPendientes({
+      ids: req.body?.ids,
+      usuario: req.usuario?.nombre || "",
+      puedeGestionar
+    });
+    return res.json({ ajustes });
+  } catch (error) {
+    logError("Error al reconciliar ajustes pendientes de stock:", error);
+    return res.status(500).json({ message: "Error al reconciliar ajustes pendientes de stock" });
+  }
+});
+
 app.get("/stock/ajustes-pendientes/:id", async (req, res) => {
   try {
     const ajuste = await obtenerAjustePendiente(req.params.id);
@@ -2874,6 +2914,41 @@ app.patch("/cuentas_cobro/:id/activo", async (req, res) => {
   } catch (error) {
     logError("Error al cambiar estado de cuenta de cobro:", error);
     return res.status(500).json({ message: "Error al cambiar estado" });
+  }
+});
+
+app.post("/integraciones/mercadopago-point/intentos", async (req, res) => {
+  try {
+    const intento = await crearIntentoPoint({
+      cuenta_cobro_id: req.body?.cuenta_cobro_id,
+      monto_total: req.body?.monto_total,
+      venta_id: req.body?.venta_id
+    });
+    return res.json({ message: "Intento Mercado Pago Point creado", intento });
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
+    logError("Error al crear intento Mercado Pago Point:", error);
+    return res.status(500).json({ message: "Error al crear intento Mercado Pago Point" });
+  }
+});
+
+app.get("/integraciones/mercadopago-point/intentos", async (req, res) => {
+  try {
+    return res.json(await listarIntentosPoint({ estado: req.query.estado }));
+  } catch (error) {
+    logError("Error al listar intentos Mercado Pago Point:", error);
+    return res.status(500).json({ message: "Error al listar intentos Mercado Pago Point" });
+  }
+});
+
+app.get("/integraciones/mercadopago-point/intentos/:id", async (req, res) => {
+  try {
+    const intento = await obtenerIntentoPoint(req.params.id);
+    if (!intento) return res.status(404).json({ message: "Intento Mercado Pago Point no encontrado" });
+    return res.json(intento);
+  } catch (error) {
+    logError("Error al obtener intento Mercado Pago Point:", error);
+    return res.status(500).json({ message: "Error al obtener intento Mercado Pago Point" });
   }
 });
 
@@ -3385,7 +3460,7 @@ app.post("/ventas", async (req, res) => {
 
   let cuentaCobroVenta = { cuenta_cobro_id: null };
   if (tipoVenta === "normal" && !esCuentaCorriente) {
-    cuentaCobroVenta = await validarCuentaCobroParaTipo(cuenta_cobro_id, cobro.tipo_cobro);
+    cuentaCobroVenta = await validarCuentaCobroVenta(cuenta_cobro_id, cobro);
     if (!cuentaCobroVenta.ok) {
       return res.status(cuentaCobroVenta.statusCode || 400).json({ message: cuentaCobroVenta.message });
     }
@@ -4989,7 +5064,7 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
       return res.status(400).json({ message: "Datos de cobro invalidos" });
     }
 
-    const cuentaCobro = await validarCuentaCobroParaTipo(req.body.cuenta_cobro_id, cobroReal.tipo_cobro);
+    const cuentaCobro = await validarCuentaCobroVenta(req.body.cuenta_cobro_id, cobroReal);
     if (!cuentaCobro.ok) {
       return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
     }
@@ -5105,13 +5180,18 @@ app.patch("/ventas/:id/cobro", async (req, res) => {
 
     let cuentaCobroFinal = venta.cuenta_cobro_id ?? null;
     if (Object.prototype.hasOwnProperty.call(req.body, "cuenta_cobro_id")) {
-      const cuentaCobro = await validarCuentaCobroParaTipo(req.body.cuenta_cobro_id, cobro.tipo_cobro);
+      const cuentaCobro = await validarCuentaCobroVenta(req.body.cuenta_cobro_id, cobro);
       if (!cuentaCobro.ok) {
         return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
       }
       cuentaCobroFinal = cuentaCobro.cuenta_cobro_id;
     } else if (cuentaCobroFinal) {
-      const cuentaCobro = await validarCuentaCobroParaTipo(cuentaCobroFinal, cobro.tipo_cobro);
+      const cuentaCobro = await validarCuentaCobroVenta(cuentaCobroFinal, cobro);
+      if (!cuentaCobro.ok) {
+        return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
+      }
+    } else {
+      const cuentaCobro = await validarCuentaCobroVenta(cuentaCobroFinal, cobro);
       if (!cuentaCobro.ok) {
         return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
       }
@@ -5690,6 +5770,7 @@ Promise.all([
   ensureModificadoresSchema(),
   ensureRecalculosCuentaCorrienteTable(),
   ensureStockAjustesPendientesSchema(),
+  ensureMercadoPagoPointSchema(),
   ensureProductosSchema(),
   ensureClientesSchema(),
   ensureConfiguracionSchema()

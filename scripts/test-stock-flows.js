@@ -46,6 +46,7 @@ function resetOperationalDataStatements() {
     ["DELETE FROM conciliaciones_cuentas_cobro"],
     ["DELETE FROM caja_movimientos"],
     ["DELETE FROM caja_aperturas"],
+    ["DELETE FROM stock_ajustes_pendientes"],
     ["DELETE FROM pagos_cuenta_corriente"],
     ["DELETE FROM detalle_ventas"],
     ["DELETE FROM ventas"],
@@ -224,6 +225,12 @@ async function crearAjustePendienteStock(baseUrl, token, payload) {
   const { response, data } = await requestJson(baseUrl, "POST", "/stock/ajustes-pendientes", payload, token);
   if (!response.ok) throw new Error(`No se pudo crear ajuste pendiente de stock: ${data?.message || response.status}`);
   return data.ajuste;
+}
+
+async function reconciliarAjustesPendientesStock(baseUrl, token, ids) {
+  const { response, data } = await requestJson(baseUrl, "POST", "/stock/ajustes-pendientes/reconciliar", { ids }, token);
+  if (!response.ok) throw new Error(`No se pudo reconciliar ajustes pendientes de stock: ${data?.message || response.status}`);
+  return data.ajustes;
 }
 
 async function getVentaDetalle(baseUrl, token, ventaId) {
@@ -784,6 +791,99 @@ async function testAjustesPendientesAprobacionYRechazo() {
       assertEqual(aprobarColaborador.response.status, 403, "Colaborador no puede aprobar");
       const rechazarColaborador = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${pendienteColaborador.id}/rechazar`, {}, colaboradorToken);
       assertEqual(rechazarColaborador.response.status, 403, "Colaborador no puede rechazar");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testReconciliarAjustesPendientesStock() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Reconciliar",
+        usuario: "colaborador_reconciliar",
+        password: "colaborador123",
+        confirmar_password: "colaborador123",
+        rol: "colaborador",
+        activo: true
+      }, adminToken);
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Ajeno",
+        usuario: "colaborador_ajeno",
+        password: "colaborador123",
+        confirmar_password: "colaborador123",
+        rol: "colaborador",
+        activo: true
+      }, adminToken);
+
+      const colaboradorToken = await login(baseUrl, "colaborador_reconciliar", "colaborador123");
+      const ajenoToken = await login(baseUrl, "colaborador_ajeno", "colaborador123");
+
+      const pendiente = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "ingreso",
+        cantidad: 1,
+        motivo: "TEST reconciliar pendiente"
+      });
+      const aprobado = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "ingreso",
+        cantidad: 2,
+        motivo: "TEST reconciliar aprobado"
+      });
+      const corregido = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "ingreso",
+        cantidad: 3,
+        motivo: "TEST reconciliar corregido"
+      });
+      const rechazado = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "ingreso",
+        cantidad: 4,
+        motivo: "TEST reconciliar rechazado"
+      });
+      const ajeno = await crearAjustePendienteStock(baseUrl, ajenoToken, {
+        producto_id: 11,
+        tipo_movimiento: "ingreso",
+        cantidad: 5,
+        motivo: "TEST reconciliar ajeno"
+      });
+
+      await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${aprobado.id}/aprobar`, {}, adminToken);
+      await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${corregido.id}/aprobar`, {
+        cantidad_aprobada: 6,
+        observaciones_admin: "Corrijo para reconciliar"
+      }, adminToken);
+      await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${rechazado.id}/rechazar`, {
+        observaciones_admin: "No corresponde reconciliar"
+      }, adminToken);
+
+      const ids = [pendiente.id, aprobado.id, corregido.id, rechazado.id, ajeno.id, 999999];
+      const propios = await reconciliarAjustesPendientesStock(baseUrl, colaboradorToken, ids);
+      const estadosPropios = new Map(propios.map((ajuste) => [Number(ajuste.id), ajuste.estado]));
+
+      assertEqual(estadosPropios.get(pendiente.id) === "pendiente" ? 1 : 0, 1, "Reconciliar debe devolver pendiente propio");
+      assertEqual(estadosPropios.get(aprobado.id) === "aprobado" ? 1 : 0, 1, "Reconciliar debe devolver aprobado propio");
+      assertEqual(estadosPropios.get(corregido.id) === "corregido" ? 1 : 0, 1, "Reconciliar debe devolver corregido propio");
+      assertEqual(estadosPropios.get(rechazado.id) === "rechazado" ? 1 : 0, 1, "Reconciliar debe devolver rechazado propio");
+      if (estadosPropios.has(ajeno.id)) throw new Error("Colaborador no debe reconciliar ajustes de otro usuario");
+      if (estadosPropios.has(999999)) throw new Error("Reconciliar no debe devolver IDs inexistentes");
+
+      const admin = await reconciliarAjustesPendientesStock(baseUrl, adminToken, ids);
+      const estadosAdmin = new Map(admin.map((ajuste) => [Number(ajuste.id), ajuste.estado]));
+      assertEqual(estadosAdmin.get(ajeno.id) === "pendiente" ? 1 : 0, 1, "Admin debe reconciliar ajustes de otros usuarios");
+
+      const locales = propios.map((ajuste) => ({ id: ajuste.id, producto_id: ajuste.producto_id, estado: ajuste.estado }));
+      const localesPendientes = locales.filter((ajuste) => String(ajuste.estado) === "pendiente");
+      assertEqual(localesPendientes.length, 1, "Frontend debe conservar solo pendientes al filtrar la respuesta reconciliada");
+      assertEqual(localesPendientes[0].id, pendiente.id, "Frontend debe conservar el ID pendiente correcto");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -4219,17 +4319,29 @@ async function testVentasAplicanRecargosMetodosPago() {
         usa_recargo: true,
         porcentaje_recargo: 10
       }, token);
+      const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Terminal debito recargo TEST",
+        tipo_pago_codigo: "debito"
+      });
+      const cuentaCredito = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Terminal credito recargo TEST",
+        tipo_pago_codigo: "credito_general_test"
+      });
 
       const efectivo = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({ tipo_cobro: "efectivo" }), token);
       if (!efectivo.response.ok) throw new Error(`Venta efectivo sin recargo fallo: ${efectivo.data?.message || efectivo.response.status}`);
       assertApprox(efectivo.data.total, 200, "Venta efectivo sin recargo conserva total");
 
-      const debito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({ tipo_cobro: "debito" }), token);
+      const debito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "debito",
+        cuenta_cobro_id: cuentaDebito.id
+      }), token);
       if (!debito.response.ok) throw new Error(`Venta debito sin recargo fallo: ${debito.data?.message || debito.response.status}`);
       assertApprox(debito.data.total, 200, "Venta debito sin recargo conserva total");
 
       const credito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "credito_general_test",
+        cuenta_cobro_id: cuentaCredito.id,
         recargo_porcentaje: 99,
         recargo_monto: 999
       }), token);
@@ -4282,9 +4394,18 @@ async function testVentasCuotasYPendientesNoDuplicanRecargo() {
         permite_cuotas: false,
         cuotas_json: JSON.stringify([{ cuotas: 6, recargo: 30 }])
       }, token);
+      const cuentaCreditoCuotas = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Terminal credito cuotas TEST",
+        tipo_pago_codigo: "credito_cuotas_test"
+      });
+      const cuentaCreditoSinCuotas = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Terminal credito sin cuotas TEST",
+        tipo_pago_codigo: "credito_sin_cuotas_test"
+      });
 
       const ventaCuotas = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "credito_cuotas_test",
+        cuenta_cobro_id: cuentaCreditoCuotas.id,
         cuotas: 3
       }), token);
       if (!ventaCuotas.response.ok) throw new Error(`Venta credito cuotas fallo: ${ventaCuotas.data?.message || ventaCuotas.response.status}`);
@@ -4293,6 +4414,7 @@ async function testVentasCuotasYPendientesNoDuplicanRecargo() {
 
       const ventaSinCuotas = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "credito_sin_cuotas_test",
+        cuenta_cobro_id: cuentaCreditoSinCuotas.id,
         cuotas: 6
       }), token);
       if (!ventaSinCuotas.response.ok) throw new Error(`Venta tipo sin cuotas fallo: ${ventaSinCuotas.data?.message || ventaSinCuotas.response.status}`);
@@ -4309,6 +4431,7 @@ async function testVentasCuotasYPendientesNoDuplicanRecargo() {
 
       const cobro = await requestJson(baseUrl, "POST", `/ventas/${pendiente.data.venta_id}/cobrar`, {
         tipo_cobro: "credito_cuotas_test",
+        cuenta_cobro_id: cuentaCreditoCuotas.id,
         cuotas: 3
       }, token);
       if (!cobro.response.ok) throw new Error(`Cobro pendiente con recargo fallo: ${cobro.data?.message || cobro.response.status}`);
@@ -4457,6 +4580,35 @@ async function testCuentasCobroEtapa2PagosYVentas() {
         orden: 30,
         terminal_id: "TERM-TEST"
       });
+      const cuentaTransferencia = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Banco transferencia TEST",
+        tipo_pago_codigo: "transferencia",
+        orden: 31
+      });
+      await requestJson(baseUrl, "POST", "/tipos_pago", { codigo: "credito_digital_test", nombre: "Credito digital TEST", orden: 32 }, token);
+      await requestJson(baseUrl, "POST", "/tipos_pago", { codigo: "qr_digital_test", nombre: "QR digital TEST", orden: 33 }, token);
+      await requestJson(baseUrl, "POST", "/tipos_pago", { codigo: "billetera_digital_test", nombre: "Billetera digital TEST", orden: 34 }, token);
+      const cuentaCredito = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Terminal credito TEST",
+        tipo_pago_codigo: "credito_digital_test",
+        orden: 35
+      });
+      const cuentaQr = await crearCuentaCobro(baseUrl, token, {
+        nombre: "QR TEST",
+        tipo_pago_codigo: "qr_digital_test",
+        orden: 36
+      });
+      const cuentaBilletera = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Billetera TEST",
+        tipo_pago_codigo: "billetera_digital_test",
+        orden: 37
+      });
+      const cuentaDebitoInactiva = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Terminal debito inactiva TEST",
+        tipo_pago_codigo: "debito",
+        orden: 38
+      });
+      await requestJson(baseUrl, "PATCH", `/cuentas_cobro/${cuentaDebitoInactiva.id}/activo`, { activo: false }, token);
 
       const { response: cuentasResponse, data: cuentasEfectivo } = await requestJson(baseUrl, "GET", "/cuentas_cobro/tipo/efectivo", null, token);
       if (!cuentasResponse.ok) throw new Error(`GET /cuentas_cobro/tipo/efectivo fallo: ${cuentasEfectivo?.message || cuentasResponse.status}`);
@@ -4505,6 +4657,89 @@ async function testCuentasCobroEtapa2PagosYVentas() {
       const detalleVentaValida = await getVentaDetalle(baseUrl, token, ventaValida.data.venta_id);
       assertEqual(detalleVentaValida.venta.cuenta_cobro_id, cuentaDebito.id, "Venta con cuenta_cobro_id valida debe quedar guardada");
 
+      const ventaDebitoSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "debito",
+        cuenta_cobro_id: null
+      }), token);
+      if (ventaDebitoSinCuenta.response.ok) throw new Error("Venta debito sin cuenta_cobro_id debe fallar");
+      assertEqual(ventaDebitoSinCuenta.response.status, 400, "Venta debito sin cuenta debe devolver 400");
+
+      const ventaTransferenciaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "transferencia",
+        cuenta_cobro_id: null
+      }), token);
+      if (ventaTransferenciaSinCuenta.response.ok) throw new Error("Venta transferencia sin cuenta_cobro_id debe fallar");
+      assertEqual(ventaTransferenciaSinCuenta.response.status, 400, "Venta transferencia sin cuenta debe devolver 400");
+
+      const ventaCreditoSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "credito_digital_test",
+        cuenta_cobro_id: null
+      }), token);
+      if (ventaCreditoSinCuenta.response.ok) throw new Error("Venta credito sin cuenta_cobro_id debe fallar");
+      assertEqual(ventaCreditoSinCuenta.response.status, 400, "Venta credito sin cuenta debe devolver 400");
+
+      const ventaQrSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "qr_digital_test",
+        cuenta_cobro_id: null
+      }), token);
+      if (ventaQrSinCuenta.response.ok) throw new Error("Venta QR sin cuenta_cobro_id debe fallar");
+      assertEqual(ventaQrSinCuenta.response.status, 400, "Venta QR sin cuenta debe devolver 400");
+
+      const ventaBilleteraSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "billetera_digital_test",
+        cuenta_cobro_id: null
+      }), token);
+      if (ventaBilleteraSinCuenta.response.ok) throw new Error("Venta billetera sin cuenta_cobro_id debe fallar");
+      assertEqual(ventaBilleteraSinCuenta.response.status, 400, "Venta billetera sin cuenta debe devolver 400");
+
+      const ventaCreditoConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "credito_digital_test",
+        cuenta_cobro_id: cuentaCredito.id
+      }), token);
+      if (!ventaCreditoConCuenta.response.ok) throw new Error(`Venta credito con cuenta valida fallo: ${ventaCreditoConCuenta.data?.message || ventaCreditoConCuenta.response.status}`);
+
+      const ventaTransferenciaConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "transferencia",
+        cuenta_cobro_id: cuentaTransferencia.id
+      }), token);
+      if (!ventaTransferenciaConCuenta.response.ok) throw new Error(`Venta transferencia con cuenta valida fallo: ${ventaTransferenciaConCuenta.data?.message || ventaTransferenciaConCuenta.response.status}`);
+
+      const ventaQrConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "qr_digital_test",
+        cuenta_cobro_id: cuentaQr.id
+      }), token);
+      if (!ventaQrConCuenta.response.ok) throw new Error(`Venta QR con cuenta valida fallo: ${ventaQrConCuenta.data?.message || ventaQrConCuenta.response.status}`);
+
+      const ventaBilleteraConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "billetera_digital_test",
+        cuenta_cobro_id: cuentaBilletera.id
+      }), token);
+      if (!ventaBilleteraConCuenta.response.ok) throw new Error(`Venta billetera con cuenta valida fallo: ${ventaBilleteraConCuenta.data?.message || ventaBilleteraConCuenta.response.status}`);
+
+      const ventaDebitoCuentaInactiva = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "debito",
+        cuenta_cobro_id: cuentaDebitoInactiva.id
+      }), token);
+      if (ventaDebitoCuentaInactiva.response.ok) throw new Error("Venta digital con cuenta inactiva debe fallar");
+      assertEqual(ventaDebitoCuentaInactiva.response.status, 400, "Venta digital con cuenta inactiva debe devolver 400");
+
+      const ventaMixtaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "mixto",
+        monto_efectivo: 80,
+        monto_debito: 120,
+        cuenta_cobro_id: null
+      }), token);
+      if (ventaMixtaSinCuenta.response.ok) throw new Error("Venta mixta con parte digital sin cuenta debe fallar");
+      assertEqual(ventaMixtaSinCuenta.response.status, 400, "Venta mixta digital sin cuenta debe devolver 400");
+
+      const ventaMixtaConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "mixto",
+        monto_efectivo: 80,
+        monto_debito: 120,
+        cuenta_cobro_id: cuentaDebito.id
+      }), token);
+      if (!ventaMixtaConCuenta.response.ok) throw new Error(`Venta mixta con cuenta valida fallo: ${ventaMixtaConCuenta.data?.message || ventaMixtaConCuenta.response.status}`);
+
       const ventaTipoIncorrecto = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "efectivo",
         cuenta_cobro_id: cuentaDebito.id
@@ -4519,6 +4754,123 @@ async function testCuentasCobroEtapa2PagosYVentas() {
       if (!ventaLegacy.response.ok) throw new Error(`Venta con cuenta_cobro_id null fallo: ${ventaLegacy.data?.message || ventaLegacy.response.status}`);
       const detalleVentaLegacy = await getVentaDetalle(baseUrl, token, ventaLegacy.data.venta_id);
       assertEqual(detalleVentaLegacy.venta.cuenta_cobro_id || 0, 0, "Venta con cuenta_cobro_id null debe seguir funcionando");
+
+      const cliente = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "Cliente CC cuenta cobro TEST",
+        dni_cuit: "20999999123",
+        telefono: "111",
+        habilita_cuenta_corriente: true
+      }, token);
+      if (!cliente.response.ok) throw new Error(`No se pudo crear cliente CC: ${cliente.data?.message || cliente.response.status}`);
+      const ventaCuentaCorriente = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        es_cuenta_corriente: true,
+        cliente_id: cliente.data.cliente.id,
+        tipo_cobro: undefined,
+        cuenta_cobro_id: null
+      }), token);
+      if (!ventaCuentaCorriente.response.ok) throw new Error(`Venta cuenta corriente sin cuenta fallo: ${ventaCuentaCorriente.data?.message || ventaCuentaCorriente.response.status}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMercadoPagoPointIntentosInfraestructura() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const cuentaDestinoMp = await crearCuentaDestino(baseUrl, token, {
+        nombre: "Mercado Pago Point Destino TEST",
+        tipo_destino: "billetera",
+        orden: 90
+      });
+      const cuentaPoint = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Point Mostrador TEST",
+        tipo_pago_codigo: "debito",
+        proveedor_integracion: "mercadopago_point",
+        terminal_id: "NEWLAND_N950__TEST123",
+        store_id: "STORE-TEST",
+        pos_id: "POS-TEST",
+        cuenta_destino_id: cuentaDestinoMp.id
+      });
+      const cuentaNoPoint = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Debito comun TEST",
+        tipo_pago_codigo: "debito",
+        proveedor_integracion: "interno",
+        terminal_id: "TERM-COMUN"
+      });
+      const cuentaPointSinTerminal = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Point sin terminal TEST",
+        tipo_pago_codigo: "debito",
+        proveedor_integracion: "mercadopago_point",
+        terminal_id: ""
+      });
+
+      const stockAntes = (await getProduct(baseUrl, token, 11)).stock;
+      const resumenAntes = await getCajaResumen(baseUrl, token);
+
+      const crear = await requestJson(baseUrl, "POST", "/integraciones/mercadopago-point/intentos", {
+        cuenta_cobro_id: cuentaPoint.id,
+        monto_total: 321.45
+      }, token);
+      if (!crear.response.ok) throw new Error(`Crear intento Point fallo: ${crear.data?.message || crear.response.status}`);
+      const intento = crear.data.intento;
+      assertEqual(intento.cuenta_cobro_id, cuentaPoint.id, "Intento debe guardar cuenta_cobro_id");
+      assertEqual(intento.cuenta_destino_id, cuentaDestinoMp.id, "Intento debe heredar cuenta_destino_id");
+      assertApprox(intento.monto_total, 321.45, "Intento debe guardar monto_total");
+      if (intento.estado !== "pendiente_mp") throw new Error(`Intento debe iniciar pendiente_mp. Actual=${intento.estado}`);
+      if (!String(intento.external_reference || "").startsWith("MPPOINT-")) throw new Error("Intento debe generar external_reference");
+      if (!intento.idempotency_key) throw new Error("Intento debe generar idempotency_key");
+      if (intento.mp_order_id || intento.mp_payment_id) throw new Error("MP-A no debe guardar ids reales de Mercado Pago");
+
+      const obtenido = await requestJson(baseUrl, "GET", `/integraciones/mercadopago-point/intentos/${intento.id}`, null, token);
+      if (!obtenido.response.ok) throw new Error(`GET intento Point fallo: ${obtenido.data?.message || obtenido.response.status}`);
+      assertEqual(obtenido.data.id, intento.id, "GET intento debe devolver el intento creado");
+
+      const segundo = await requestJson(baseUrl, "POST", "/integraciones/mercadopago-point/intentos", {
+        cuenta_cobro_id: cuentaPoint.id,
+        monto_total: 99
+      }, token);
+      if (!segundo.response.ok) throw new Error(`Crear segundo intento Point fallo: ${segundo.data?.message || segundo.response.status}`);
+      if (segundo.data.intento.external_reference === intento.external_reference) throw new Error("external_reference debe ser unico");
+      if (segundo.data.intento.idempotency_key === intento.idempotency_key) throw new Error("idempotency_key debe ser unico");
+
+      const listado = await requestJson(baseUrl, "GET", "/integraciones/mercadopago-point/intentos?estado=pendiente_mp", null, token);
+      if (!listado.response.ok) throw new Error(`GET listado intentos Point fallo: ${listado.data?.message || listado.response.status}`);
+      if (!Array.isArray(listado.data) || listado.data.length < 2) throw new Error("Listado por estado debe incluir intentos pendientes");
+
+      const intentoNoPoint = await requestJson(baseUrl, "POST", "/integraciones/mercadopago-point/intentos", {
+        cuenta_cobro_id: cuentaNoPoint.id,
+        monto_total: 10
+      }, token);
+      if (intentoNoPoint.response.ok) throw new Error("Cuenta no mercadopago_point debe fallar");
+      assertEqual(intentoNoPoint.response.status, 400, "Cuenta no mercadopago_point debe devolver 400");
+
+      const intentoSinTerminal = await requestJson(baseUrl, "POST", "/integraciones/mercadopago-point/intentos", {
+        cuenta_cobro_id: cuentaPointSinTerminal.id,
+        monto_total: 10
+      }, token);
+      if (intentoSinTerminal.response.ok) throw new Error("Cuenta Point sin terminal_id debe fallar");
+      assertEqual(intentoSinTerminal.response.status, 400, "Cuenta Point sin terminal_id debe devolver 400");
+
+      const intentoMontoInvalido = await requestJson(baseUrl, "POST", "/integraciones/mercadopago-point/intentos", {
+        cuenta_cobro_id: cuentaPoint.id,
+        monto_total: 0
+      }, token);
+      if (intentoMontoInvalido.response.ok) throw new Error("Intento Point con monto 0 debe fallar");
+      assertEqual(intentoMontoInvalido.response.status, 400, "Monto 0 debe devolver 400");
+
+      const ventas = await getVentas(baseUrl, token);
+      if (ventas.length !== 0) throw new Error("Crear intentos Point MP-A no debe crear ni cobrar ventas");
+      assertEqual((await getProduct(baseUrl, token, 11)).stock, stockAntes, "Crear intentos Point no debe tocar stock");
+      const resumenDespues = await getCajaResumen(baseUrl, token);
+      assertEqual(resumenDespues.resumen.total_ventas, resumenAntes.resumen.total_ventas, "Crear intentos Point no debe tocar caja/ventas");
+      assertEqual(resumenDespues.resumen.total_efectivo, resumenAntes.resumen.total_efectivo, "Crear intentos Point no debe tocar caja/efectivo");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -5915,6 +6267,86 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
   }
 }
 
+async function testResumenAjustesPendientes() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Resumen",
+        usuario: "colaborador_resumen",
+        password: "colaborador123",
+        confirmar_password: "colaborador123",
+        rol: "colaborador",
+        activo: true
+      }, adminToken);
+      const colaboradorToken = await login(baseUrl, "colaborador_resumen", "colaborador123");
+
+      // Sin pendientes devuelve 0
+      const { response: r0, data: d0 } = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, adminToken);
+      if (!r0.ok) throw new Error(`Resumen inicial fallo: ${d0?.message || r0.status}`);
+      assertEqual(d0.pendientes, 0, "Sin pendientes, pendientes debe ser 0");
+      assertEqual(d0.aprobados_hoy, 0, "Sin pendientes, aprobados_hoy debe ser 0");
+      assertEqual(d0.rechazados_hoy, 0, "Sin pendientes, rechazados_hoy debe ser 0");
+
+      // Crear ajuste pendiente y verificar que NO modifica stock ni inserta movimiento
+      const productoAntes = await getProduct(baseUrl, adminToken, 11);
+      const movimientosAntes = await getMovimientosStock(baseUrl, adminToken, 11);
+      const ajuste1 = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "ingreso",
+        cantidad: 3,
+        motivo: "TEST resumen pendiente"
+      });
+      const productoDespues = await getProduct(baseUrl, adminToken, 11);
+      assertEqual(productoDespues.stock, productoAntes.stock, "Crear pendiente no debe modificar productos.stock");
+      const movimientosDespues = await getMovimientosStock(baseUrl, adminToken, 11);
+      assertEqual(movimientosDespues.length, movimientosAntes.length, "Crear pendiente no debe insertar movimientos_stock");
+
+      // Resumen debe reflejar 1 pendiente
+      const { response: r1, data: d1 } = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, adminToken);
+      if (!r1.ok) throw new Error(`Resumen tras crear fallo: ${d1?.message || r1.status}`);
+      assertEqual(d1.pendientes, 1, "Debe contar 1 pendiente");
+
+      // Crear segundo ajuste
+      const ajuste2 = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "egreso",
+        cantidad: 1,
+        motivo: "TEST resumen pendiente 2"
+      });
+      const { data: d2 } = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, adminToken);
+      assertEqual(d2.pendientes, 2, "Debe contar 2 pendientes");
+
+      // Aprobar ajuste1 => aprobados_hoy sube
+      await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajuste1.id}/aprobar`, {
+        observaciones_admin: "OK test resumen"
+      }, adminToken);
+      const { data: d3 } = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, adminToken);
+      assertEqual(d3.pendientes, 1, "Pendientes baja a 1 tras aprobar");
+      assertEqual(d3.aprobados_hoy, 1, "aprobados_hoy debe contar el aprobado de hoy");
+
+      // Rechazar ajuste2 => rechazados_hoy sube
+      await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajuste2.id}/rechazar`, {
+        observaciones_admin: "No corresponde test"
+      }, adminToken);
+      const { data: d4 } = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, adminToken);
+      assertEqual(d4.pendientes, 0, "Pendientes baja a 0 tras rechazar");
+      assertEqual(d4.aprobados_hoy, 1, "aprobados_hoy se conserva");
+      assertEqual(d4.rechazados_hoy, 1, "rechazados_hoy debe contar el rechazado de hoy");
+
+      // Colaborador sin permiso no puede consultar el resumen
+      const { response: rForbidden } = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, colaboradorToken);
+      assertEqual(rForbidden.status, 403, "Colaborador no debe consultar resumen de ajustes");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 (async () => {
   await testBatchManual();
   await testBatchComoComponente();
@@ -5922,6 +6354,8 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
   await testAjustesPendientesStockInfraestructura();
   await testAjustePendienteRequiereStockVer();
   await testAjustesPendientesAprobacionYRechazo();
+  await testReconciliarAjustesPendientesStock();
+  await testResumenAjustesPendientes();
   await testClientesTipoClienteClasificacion();
   await testClientesHistorialProductosComprados();
   await testClientesDeudaActualizadaComparacionSegura();
@@ -5990,6 +6424,7 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
   await testTipoPagoGetExcluyeInactivos();
   await testTipoPagoGetTodosIncluyeInactivos();
   await testCuentasCobroEtapa2PagosYVentas();
+  await testMercadoPagoPointIntentosInfraestructura();
   await testCuentasDestinoEtapa3AInfraestructura();
   await testCajaResumenPorCuentaDestino();
   await testConciliacionManualPorCuentaDestino();
