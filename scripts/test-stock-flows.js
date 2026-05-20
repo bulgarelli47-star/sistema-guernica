@@ -337,6 +337,17 @@ async function registrarPago(baseUrl, token, payload) {
 }
 
 async function crearCuentaCobro(baseUrl, token, payload) {
+  const tipoPago = String(payload?.tipo_pago_codigo || "efectivo").toLowerCase();
+  const proveedor = String(payload?.proveedor_integracion || "interno").toLowerCase();
+  const requiereDestino = !Object.prototype.hasOwnProperty.call(payload || {}, "cuenta_destino_id") &&
+    payload?.activo !== false &&
+    (tipoPago !== "efectivo" || proveedor === "mercadopago" || proveedor === "mercadopago_point");
+  const cuentaDestino = requiereDestino
+    ? await crearCuentaDestino(baseUrl, token, {
+        nombre: `Cuenta destino cobro TEST ${Date.now()}${Math.floor(Math.random() * 10000)}`,
+        tipo_destino: tipoPago === "efectivo" ? "efectivo" : "billetera"
+      })
+    : null;
   const result = await requestJson(baseUrl, "POST", "/cuentas_cobro", {
     nombre: `Cuenta cobro TEST ${Date.now()}`,
     tipo_pago_codigo: "efectivo",
@@ -344,6 +355,7 @@ async function crearCuentaCobro(baseUrl, token, payload) {
     proveedor_integracion: "interno",
     activo: true,
     orden: 10,
+    ...(cuentaDestino ? { cuenta_destino_id: cuentaDestino.id } : {}),
     ...payload
   }, token);
 
@@ -4881,6 +4893,105 @@ async function testCuentasCobroEtapa2PagosYVentas() {
   }
 }
 
+async function testConfiguracionCuentasCobroValidacionesOperativas() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const destinoDigital = await crearCuentaDestino(baseUrl, token, {
+        nombre: "TEST destino digital validacion",
+        tipo_destino: "billetera"
+      });
+      const destinoInactivo = await crearCuentaDestino(baseUrl, token, {
+        nombre: "TEST destino inactivo validacion",
+        tipo_destino: "banco"
+      });
+      await requestJson(baseUrl, "PATCH", `/cuentas_destino/${destinoInactivo.id}/activo`, { activo: false }, token);
+
+      const digitalSinDestino = await requestJson(baseUrl, "POST", "/cuentas_cobro", {
+        nombre: "TEST debito sin destino",
+        tipo_pago_codigo: "debito",
+        tipo_cuenta: "terminal",
+        proveedor_integracion: "interno",
+        activo: true
+      }, token);
+      if (digitalSinDestino.response.ok) throw new Error("Crear canal digital sin cuenta_destino_id debe fallar");
+      assertEqual(digitalSinDestino.response.status, 400, "Canal digital sin destino debe devolver 400");
+
+      const digitalValido = await requestJson(baseUrl, "POST", "/cuentas_cobro", {
+        nombre: "TEST debito con destino",
+        tipo_pago_codigo: "debito",
+        tipo_cuenta: "terminal",
+        proveedor_integracion: "interno",
+        cuenta_destino_id: destinoDigital.id,
+        activo: true
+      }, token);
+      if (!digitalValido.response.ok) throw new Error(`Crear canal digital con destino valido fallo: ${digitalValido.data?.message || digitalValido.response.status}`);
+      assertEqual(digitalValido.data.cuenta.cuenta_destino_id, destinoDigital.id, "Canal digital valido debe guardar cuenta_destino_id");
+
+      const pointSinTerminal = await requestJson(baseUrl, "POST", "/cuentas_cobro", {
+        nombre: "TEST Point sin terminal",
+        tipo_pago_codigo: "debito",
+        tipo_cuenta: "terminal",
+        proveedor_integracion: "mercadopago_point",
+        cuenta_destino_id: destinoDigital.id,
+        activo: true
+      }, token);
+      if (pointSinTerminal.response.ok) throw new Error("Crear canal mercadopago_point sin terminal_id debe fallar");
+      assertEqual(pointSinTerminal.response.status, 400, "Point sin terminal debe devolver 400");
+
+      const pointValido = await requestJson(baseUrl, "POST", "/cuentas_cobro", {
+        nombre: "TEST Point sin store pos",
+        tipo_pago_codigo: "debito",
+        tipo_cuenta: "terminal",
+        proveedor_integracion: "mercadopago_point",
+        terminal_id: "POINT-TEST",
+        cuenta_destino_id: destinoDigital.id,
+        activo: true
+      }, token);
+      if (!pointValido.response.ok) throw new Error(`Crear Point con terminal y sin store/pos debe pasar: ${pointValido.data?.message || pointValido.response.status}`);
+
+      const efectivoInterno = await requestJson(baseUrl, "POST", "/cuentas_cobro", {
+        nombre: "TEST efectivo interno sin terminal",
+        tipo_pago_codigo: "efectivo",
+        tipo_cuenta: "caja",
+        proveedor_integracion: "interno",
+        activo: true
+      }, token);
+      if (!efectivoInterno.response.ok) throw new Error(`Crear canal efectivo interno sin terminal debe pasar: ${efectivoInterno.data?.message || efectivoInterno.response.status}`);
+
+      const digitalDestinoInactivo = await requestJson(baseUrl, "POST", "/cuentas_cobro", {
+        nombre: "TEST debito destino inactivo",
+        tipo_pago_codigo: "debito",
+        tipo_cuenta: "terminal",
+        proveedor_integracion: "interno",
+        cuenta_destino_id: destinoInactivo.id,
+        activo: true
+      }, token);
+      if (digitalDestinoInactivo.response.ok) throw new Error("Crear canal digital con cuenta destino inactiva debe fallar");
+      assertEqual(digitalDestinoInactivo.response.status, 400, "Destino inactivo debe devolver 400");
+
+      await runSql(
+        dbPath,
+        `INSERT INTO cuentas_cobro
+         (nombre, tipo_pago_codigo, tipo_cuenta, proveedor_integracion, activo, orden, terminal_id, store_id, pos_id, cuenta_destino_id, created_at, updated_at)
+         VALUES (?, 'debito', 'terminal', 'interno', 1, 999, '0', '0', '0', NULL, datetime('now'), datetime('now'))`,
+        ["TEST legacy sin destino no migrar"]
+      );
+      const cuentas = await requestJson(baseUrl, "GET", "/cuentas_cobro?todos=1", null, token);
+      if (!cuentas.response.ok) throw new Error(`GET cuentas_cobro fallo: ${cuentas.data?.message || cuentas.response.status}`);
+      const legacy = cuentas.data.find((cuenta) => cuenta.nombre === "TEST legacy sin destino no migrar");
+      if (!legacy) throw new Error("Cuenta legacy insertada debe seguir existiendo");
+      assertEqual(legacy.cuenta_destino_id || 0, 0, "Cuenta legacy no debe migrarse automaticamente");
+      assertEqual(legacy.terminal_id, "0", "Valor legacy terminal_id=0 no debe borrarse automaticamente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testMercadoPagoPointIntentosInfraestructura() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -4910,12 +5021,14 @@ async function testMercadoPagoPointIntentosInfraestructura() {
         proveedor_integracion: "interno",
         terminal_id: "TERM-COMUN"
       });
-      const cuentaPointSinTerminal = await crearCuentaCobro(baseUrl, token, {
-        nombre: "Point sin terminal TEST",
-        tipo_pago_codigo: "debito",
-        proveedor_integracion: "mercadopago_point",
-        terminal_id: ""
-      });
+      const cuentaPointSinTerminalInsert = await runSql(
+        dbPath,
+        `INSERT INTO cuentas_cobro
+         (nombre, tipo_pago_codigo, tipo_cuenta, proveedor_integracion, activo, orden, terminal_id, cuenta_destino_id, created_at, updated_at)
+         VALUES (?, 'debito', 'terminal', 'mercadopago_point', 1, 99, '', ?, datetime('now'), datetime('now'))`,
+        ["Point sin terminal TEST", cuentaDestinoMp.id]
+      );
+      const cuentaPointSinTerminal = { id: cuentaPointSinTerminalInsert.lastID };
 
       const stockAntes = (await getProduct(baseUrl, token, 11)).stock;
       const resumenAntes = await getCajaResumen(baseUrl, token);
@@ -6530,6 +6643,7 @@ async function testResumenAjustesPendientes() {
   await testTipoPagoGetExcluyeInactivos();
   await testTipoPagoGetTodosIncluyeInactivos();
   await testCuentasCobroEtapa2PagosYVentas();
+  await testConfiguracionCuentasCobroValidacionesOperativas();
   await testMercadoPagoPointIntentosInfraestructura();
   await testCuentasDestinoEtapa3AInfraestructura();
   await testCajaResumenPorCuentaDestino();

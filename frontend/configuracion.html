@@ -166,6 +166,7 @@
         </div>
       </div>
       <div class="notice" style="margin-top:12px">Por ahora cada canal sigue asociado a un método de cobro por compatibilidad. Próxima etapa: separar cuenta destino real.</div>
+      <div id="ccAdvertencias" class="notice hidden" style="margin-top:8px"></div>
       <p id="ccMensaje" style="min-height:20px;font-weight:700;margin:10px 0 0;font-size:13px"></p>
       <div class="dialog-actions">
         <button class="button ghost" id="cancelarCuentaCobro" type="button">Cancelar</button>
@@ -623,7 +624,7 @@
           <td>${tipo?.nombre || c.tipo_pago_codigo || "-"}</td>
           <td>${TIPOS_CUENTA_LABELS[normalizarTipoCuentaCanal(c.tipo_cuenta)] || c.tipo_cuenta || "-"}</td>
           <td>${c.cuenta_destino_nombre || "Sin cuenta destino"}</td>
-          <td>${c.alias || c.terminal_id || "-"}</td>
+          <td>${c.alias || textoConfigurable(c.terminal_id)}</td>
           <td>${Number(c.orden) || 0}</td>
           <td>${pill}</td>
           <td style="white-space:nowrap">
@@ -668,6 +669,76 @@
       return tipo ? "otro" : "terminal";
     }
 
+    function normalizarIntegracionCanal(valor = "") {
+      return String(valor || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+    }
+
+    function valorConfigurable(valor = "") {
+      const texto = String(valor ?? "").trim();
+      return texto === "0" ? "" : texto;
+    }
+
+    function textoConfigurable(valor = "") {
+      return valorConfigurable(valor) || "Sin configurar";
+    }
+
+    function esTipoPagoDigitalConfig(codigo = "") {
+      const tipo = String(codigo || "").toLowerCase();
+      if (!tipo || tipo === "efectivo" || tipo === "cuenta_corriente") return false;
+      if (["debito", "credito", "transferencia", "qr", "billetera", "mercado_pago"].includes(tipo)) return true;
+      const config = tiposPagoActuales.find(t => String(t.codigo) === tipo);
+      return Number(config?.impacta_digital || 0) === 1;
+    }
+
+    function cuentaDestinoActiva(id) {
+      if (!id) return null;
+      return cuentasDestinoActuales.find(c => String(c.id) === String(id) && Number(c.activo) === 1) || null;
+    }
+
+    function validarCuentaCobroPayload(payload) {
+      const errores = [];
+      const advertencias = [];
+      const proveedor = normalizarIntegracionCanal(payload.proveedor_integracion);
+      const tipoCuenta = normalizarTipoCuentaCanal(payload.tipo_cuenta);
+      const esDigital = esTipoPagoDigitalConfig(payload.tipo_pago_codigo);
+      const proveedorExigeDestino = proveedor === "mercadopago_point" || proveedor === "mercadopago";
+
+      if (payload.activo && (esDigital || proveedorExigeDestino) && !cuentaDestinoActiva(payload.cuenta_destino_id)) {
+        errores.push("Este canal impacta dinero digital; requiere cuenta destino activa.");
+      }
+
+      if (payload.activo && proveedor === "mercadopago_point" && !payload.terminal_id) {
+        errores.push("Mercado Pago Point requiere Terminal ID.");
+      }
+
+      if (proveedor === "mercadopago_point" && (!payload.store_id || !payload.pos_id)) {
+        advertencias.push("Canal incompleto para integracion automatica: Store ID y POS ID son recomendados.");
+      }
+
+      if (proveedor === "mercadopago" && !payload.alias && !payload.cbu_cvu) {
+        advertencias.push("Mercado Pago deberia tener alias o CVU para identificar la cuenta.");
+      }
+
+      if (["terminal", "qr", "billetera"].includes(tipoCuenta) && proveedor && proveedor !== "interno" && !payload.external_id && proveedor !== "mercadopago_point") {
+        advertencias.push("Este canal usa una integracion externa; revisa que tenga identificador operativo.");
+      }
+
+      ["terminal_id", "store_id", "pos_id"].forEach((campo) => {
+        if (String($(campo === "terminal_id" ? "ccTerminalId" : campo === "store_id" ? "ccStoreId" : "ccPosId")?.value || "").trim() === "0") {
+          advertencias.push("Los valores 0 se consideran sin configurar; al guardar se limpian.");
+        }
+      });
+
+      return { errores, advertencias };
+    }
+
+    function renderAdvertenciasCuentaCobro(advertencias = []) {
+      const box = $("ccAdvertencias");
+      if (!box) return;
+      box.classList.toggle("hidden", advertencias.length === 0);
+      box.innerHTML = advertencias.length ? advertencias.map(a => `<div>${a}</div>`).join("") : "";
+    }
+
     function actualizarCamposCuentaCobro() {
       const tipo = normalizarTipoCuentaCanal($("ccTipoCuenta")?.value);
       const visibles = {
@@ -702,41 +773,60 @@
       $("ccProveedorIntegracion").value = cuenta?.proveedor_integracion || "interno";
       $("ccAlias").value = cuenta?.alias || "";
       $("ccCbuCvu").value = cuenta?.cbu_cvu || "";
-      $("ccExternalId").value = cuenta?.external_id || "";
-      $("ccTerminalId").value = cuenta?.terminal_id || "";
-      $("ccStoreId").value = cuenta?.store_id || "";
-      $("ccPosId").value = cuenta?.pos_id || "";
+      $("ccExternalId").value = valorConfigurable(cuenta?.external_id);
+      $("ccTerminalId").value = valorConfigurable(cuenta?.terminal_id);
+      $("ccStoreId").value = valorConfigurable(cuenta?.store_id);
+      $("ccPosId").value = valorConfigurable(cuenta?.pos_id);
       $("ccMetadataJson").value = cuenta?.metadata_json || "";
       $("ccOrden").value = Number(cuenta?.orden) || 50;
       $("ccActivo").value = Number(cuenta?.activo ?? 1) === 1 ? "1" : "0";
       $("ccMensaje").textContent = "";
+      const advertenciasLegacy = ["external_id", "terminal_id", "store_id", "pos_id"].some(campo => String(cuenta?.[campo] ?? "").trim() === "0")
+        ? ["Los valores 0 se muestran como Sin configurar; al guardar este canal se limpian."]
+        : [];
+      renderAdvertenciasCuentaCobro(advertenciasLegacy);
       actualizarCamposCuentaCobro();
       abrirModal($("modalCuentaCobro"));
       $("ccNombre").focus();
     }
 
-    async function guardarCuentaCobro() {
-      const ccMsg = $("ccMensaje");
+    function leerPayloadCuentaCobro() {
       const tipoCuentaSeleccionado = $("ccTipoCuenta").value;
-      const payload = {
+      return {
         nombre: $("ccNombre").value.trim(),
         tipo_pago_codigo: $("ccTipoPago").value,
         tipo_cuenta: cuentaCobroEditandoId && cuentaCobroTipoOriginal && tipoCuentaSeleccionado === cuentaCobroTipoVisualOriginal
           ? cuentaCobroTipoOriginal
           : tipoCuentaSeleccionado,
         cuenta_destino_id: $("ccCuentaDestino").value ? Number($("ccCuentaDestino").value) : null,
-        proveedor_integracion: $("ccProveedorIntegracion").value.trim(),
+        proveedor_integracion: normalizarIntegracionCanal($("ccProveedorIntegracion").value || "interno"),
         alias: $("ccAlias").value.trim(),
         cbu_cvu: $("ccCbuCvu").value.trim(),
-        external_id: $("ccExternalId").value.trim(),
-        terminal_id: $("ccTerminalId").value.trim(),
-        store_id: $("ccStoreId").value.trim(),
-        pos_id: $("ccPosId").value.trim(),
+        external_id: valorConfigurable($("ccExternalId").value),
+        terminal_id: valorConfigurable($("ccTerminalId").value),
+        store_id: valorConfigurable($("ccStoreId").value),
+        pos_id: valorConfigurable($("ccPosId").value),
         metadata_json: $("ccMetadataJson").value.trim() || null,
         orden: Number($("ccOrden").value) || 0,
         activo: $("ccActivo").value === "1"
       };
+    }
+
+    function refrescarValidacionCuentaCobro() {
+      renderAdvertenciasCuentaCobro(validarCuentaCobroPayload(leerPayloadCuentaCobro()).advertencias);
+    }
+
+    async function guardarCuentaCobro() {
+      const ccMsg = $("ccMensaje");
+      const payload = leerPayloadCuentaCobro();
       if (!payload.nombre) { ccMsg.style.color = "var(--danger)"; ccMsg.textContent = "El nombre es obligatorio"; return; }
+      const validacion = validarCuentaCobroPayload(payload);
+      renderAdvertenciasCuentaCobro(validacion.advertencias);
+      if (validacion.errores.length) {
+        ccMsg.style.color = "var(--danger)";
+        ccMsg.textContent = validacion.errores[0];
+        return;
+      }
       const btn = $("guardarCuentaCobroBtn");
       btn.disabled = true;
       try {
@@ -797,8 +887,12 @@
     $("cerrarModalCuentaCobro").onclick = () => cerrarModal($("modalCuentaCobro"));
     $("cancelarCuentaCobro").onclick = () => cerrarModal($("modalCuentaCobro"));
     $("guardarCuentaCobroBtn").onclick = guardarCuentaCobro;
-    $("ccTipoCuenta").addEventListener("input", actualizarCamposCuentaCobro);
-    $("ccTipoCuenta").addEventListener("change", actualizarCamposCuentaCobro);
+    $("ccTipoCuenta").addEventListener("input", () => { actualizarCamposCuentaCobro(); refrescarValidacionCuentaCobro(); });
+    $("ccTipoCuenta").addEventListener("change", () => { actualizarCamposCuentaCobro(); refrescarValidacionCuentaCobro(); });
+    ["ccTipoPago", "ccCuentaDestino", "ccProveedorIntegracion", "ccAlias", "ccCbuCvu", "ccExternalId", "ccTerminalId", "ccStoreId", "ccPosId", "ccActivo"].forEach((id) => {
+      $(id)?.addEventListener("input", refrescarValidacionCuentaCobro);
+      $(id)?.addEventListener("change", refrescarValidacionCuentaCobro);
+    });
     $("modalCuentaCobro").addEventListener("click", e => { if (e.target === $("modalCuentaCobro")) cerrarModal($("modalCuentaCobro")); });
     $("modalCuentaDestino").addEventListener("click", e => { if (e.target === $("modalCuentaDestino")) cerrarModal($("modalCuentaDestino")); });
     // Ampliar el botón Recargar para que también refresque tipos de pago

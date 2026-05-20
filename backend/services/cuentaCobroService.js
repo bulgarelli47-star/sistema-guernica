@@ -13,6 +13,11 @@ function normalizarActivo(valor, fallback = 1) {
   return valor === false || valor === 0 || valor === "0" ? 0 : 1;
 }
 
+function normalizarCampoIntegracion(valor) {
+  const texto = normalizarTexto(valor);
+  return texto === "0" ? "" : texto;
+}
+
 function normalizarPayload(payload = {}) {
   const cuentaDestinoId = payload.cuenta_destino_id === undefined || payload.cuenta_destino_id === null || payload.cuenta_destino_id === ""
     ? null
@@ -21,15 +26,15 @@ function normalizarPayload(payload = {}) {
     nombre: normalizarTexto(payload.nombre),
     tipo_pago_codigo: normalizarCodigo(payload.tipo_pago_codigo),
     tipo_cuenta: normalizarTexto(payload.tipo_cuenta || "interna").toLowerCase(),
-    proveedor_integracion: normalizarTexto(payload.proveedor_integracion || ""),
+    proveedor_integracion: normalizarCodigo(payload.proveedor_integracion || ""),
     activo: normalizarActivo(payload.activo, 1),
     orden: Number(payload.orden) || 0,
     alias: normalizarTexto(payload.alias),
     cbu_cvu: normalizarTexto(payload.cbu_cvu),
-    external_id: normalizarTexto(payload.external_id),
-    terminal_id: normalizarTexto(payload.terminal_id),
-    store_id: normalizarTexto(payload.store_id),
-    pos_id: normalizarTexto(payload.pos_id),
+    external_id: normalizarCampoIntegracion(payload.external_id),
+    terminal_id: normalizarCampoIntegracion(payload.terminal_id),
+    store_id: normalizarCampoIntegracion(payload.store_id),
+    pos_id: normalizarCampoIntegracion(payload.pos_id),
     cuenta_destino_id: cuentaDestinoId,
     metadata_json: payload.metadata_json == null
       ? null
@@ -45,6 +50,53 @@ function validarPayloadCuenta(data) {
   if (!/^[a-z0-9_]+$/.test(data.tipo_pago_codigo)) {
     return "El tipo de pago solo puede tener letras, numeros y guiones bajos";
   }
+  return null;
+}
+
+const TIPOS_DIGITALES_EXPLICITOS = new Set([
+  "debito",
+  "credito",
+  "transferencia",
+  "qr",
+  "billetera",
+  "mercado_pago"
+]);
+
+async function tipoPagoImpactaDigital(tipoPagoCodigo) {
+  const tipo = normalizarCodigo(tipoPagoCodigo);
+  if (!tipo || tipo === "efectivo" || tipo === "cuenta_corriente") return false;
+  if (TIPOS_DIGITALES_EXPLICITOS.has(tipo)) return true;
+
+  const row = await getQuery(
+    "SELECT impacta_digital FROM tipos_pago WHERE codigo = ? LIMIT 1",
+    [tipo]
+  );
+  return Number(row?.impacta_digital || 0) === 1;
+}
+
+async function validarConfiguracionCuentaCobro(data) {
+  if (Number(data.activo) !== 1) return null;
+
+  const impactaDigital = await tipoPagoImpactaDigital(data.tipo_pago_codigo);
+  const proveedorExigeDestino = data.proveedor_integracion === "mercadopago_point" || data.proveedor_integracion === "mercadopago";
+  if (impactaDigital || proveedorExigeDestino) {
+    if (!data.cuenta_destino_id) {
+      return "Este canal impacta dinero digital; requiere cuenta destino activa.";
+    }
+
+    const cuentaDestino = await getQuery(
+      "SELECT id, activo FROM cuentas_destino WHERE id = ?",
+      [data.cuenta_destino_id]
+    );
+    if (!cuentaDestino || Number(cuentaDestino.activo) !== 1) {
+      return "La cuenta destino del canal debe existir y estar activa.";
+    }
+  }
+
+  if (data.proveedor_integracion === "mercadopago_point" && !data.terminal_id) {
+    return "Mercado Pago Point requiere Terminal ID.";
+  }
+
   return null;
 }
 
@@ -83,6 +135,12 @@ async function crearCuentaCobro(payload) {
     err.statusCode = 400;
     throw err;
   }
+  const errorConfig = await validarConfiguracionCuentaCobro(data);
+  if (errorConfig) {
+    const err = new Error(errorConfig);
+    err.statusCode = 400;
+    throw err;
+  }
 
   const result = await runQuery(
     `INSERT INTO cuentas_cobro
@@ -115,6 +173,12 @@ async function actualizarCuentaCobro(id, payload) {
   const error = validarPayloadCuenta(data);
   if (error) {
     const err = new Error(error);
+    err.statusCode = 400;
+    throw err;
+  }
+  const errorConfig = await validarConfiguracionCuentaCobro(data);
+  if (errorConfig) {
+    const err = new Error(errorConfig);
     err.statusCode = 400;
     throw err;
   }
@@ -188,27 +252,6 @@ function requiereCuentaCobroDigital(tipoPagoCodigo, cobro = {}) {
 function tipoCuentaCobroCompatible(tipoPagoCodigo) {
   const tipo = normalizarCodigo(tipoPagoCodigo);
   return tipo === "mixto" ? "debito" : tipo;
-}
-
-const TIPOS_DIGITALES_EXPLICITOS = new Set([
-  "debito",
-  "credito",
-  "transferencia",
-  "qr",
-  "billetera",
-  "mercado_pago"
-]);
-
-async function tipoPagoImpactaDigital(tipoPagoCodigo) {
-  const tipo = normalizarCodigo(tipoPagoCodigo);
-  if (!tipo || tipo === "efectivo" || tipo === "cuenta_corriente") return false;
-  if (TIPOS_DIGITALES_EXPLICITOS.has(tipo)) return true;
-
-  const row = await getQuery(
-    "SELECT impacta_digital FROM tipos_pago WHERE codigo = ? LIMIT 1",
-    [tipo]
-  );
-  return Number(row?.impacta_digital || 0) === 1;
 }
 
 async function validarCuentaCobroVenta(cuentaCobroId, cobro = {}) {
