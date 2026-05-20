@@ -2451,6 +2451,41 @@
       padding: 22px;
     }
 
+    /* ── Fórmula efectivo arqueo ───────────────────────────────── */
+    .audit-formula-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px; padding: 8px 0 4px; }
+    .audit-formula-item { display: flex; flex-direction: column; gap: 2px; text-align: center; }
+    .audit-formula-item small { font-size: 10px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+    .audit-formula-item strong { font-size: 15px; font-weight: 800; }
+    .audit-formula-resultado strong { color: var(--primary); font-size: 17px; }
+    .audit-formula-op { font-size: 18px; font-weight: 700; color: var(--muted); padding-bottom: 2px; align-self: flex-end; }
+    /* ── Saldos iniciales en apertura ─────────────────────────── */
+    .saldos-apertura-section { display: grid; gap: 8px; }
+    .saldos-apertura-section > .section-note { font-size: 12px; color: var(--muted); }
+    .saldo-inicial-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: start; border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: #fafafe; }
+    .saldo-inicial-nombre strong { display: block; font-size: 13px; }
+    .saldo-inicial-nombre span { font-size: 11px; }
+    .saldo-inicial-row input { width: 130px; min-width: 0; }
+    /* ── Toggle arrastre + contexto ───────────────────────────── */
+    .concil-movimiento-context { font-size: 12px; color: var(--muted); padding: 6px 10px; background: #f8fafc; border-radius: 10px; border: 1px solid var(--border); }
+    .concil-cierre-toggle { width: 100%; text-align: left; border: 1px dashed var(--border); border-radius: 10px; background: #fafafe; color: var(--muted); padding: 8px 12px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+    .concil-cierre-toggle:hover { background: var(--primary-soft); color: var(--primary); border-color: var(--primary); }
+    .concil-cierre-toggle .toggle-icon { transition: transform .2s; font-style: normal; }
+    .concil-cierre-toggle.open .toggle-icon { transform: rotate(90deg); }
+    .concil-cierre-body { display: grid; gap: 12px; padding-top: 4px; }
+    .concil-efectivo-nota { font-size: 12px; color: var(--muted); padding: 6px 10px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .concil-efectivo-nota button { border: 0; background: transparent; color: #92400e; font-size: 12px; font-weight: 700; cursor: pointer; text-decoration: underline; padding: 0; }
+    /* ── Saldos operativos por cuenta destino ─────────────────── */
+    .concil-destino-section { display: grid; gap: 12px; }
+    .concil-sep { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+    .concil-sep::before,.concil-sep::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+    .concil-saldo-arrastrado { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border-radius: 12px; border: 1px solid rgba(109,40,217,.2); background: var(--primary-soft); }
+    .concil-saldo-arrastrado span { font-size: 13px; color: var(--primary); font-weight: 700; }
+    .concil-saldo-arrastrado strong { font-size: 18px; color: var(--primary); }
+    .concil-saldo-hint { font-size: 11px; color: var(--muted); margin-top: 3px; display: block; }
+    .cuenta-cobro-saldos { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 0 2px; border-top: 1px dashed var(--border); margin-top: 4px; }
+    .cuenta-cobro-saldo-item { font-size: 11px; background: #f0e5ff; color: #5b21b6; border-radius: 8px; padding: 2px 8px; font-weight: 700; }
+    /* ─────────────────────────────────────────────────────────── */
+
     @media (max-width: 1280px) {
       .top-grid,
       .section-grid {
@@ -3216,6 +3251,13 @@
             <div class="field-grid">
               <input type="text" id="usuarioApertura" class="field" placeholder="Usuario" value="admin" />
             </div>
+
+            <div id="saldosInicialesSection" class="saldos-apertura-section" hidden>
+              <div class="concil-sep"><span>Saldos iniciales por cuenta</span></div>
+              <p class="section-note">Si hubo turno anterior, los saldos arrastrados se pre-cargaron. Podés corregirlos o dejar en 0.</p>
+              <div id="saldosInicialesGrid"></div>
+            </div>
+
             <button type="button" class="button success" id="abrirCaja">Abrir caja</button>
           </article>
 
@@ -3488,26 +3530,23 @@
           </article>
 
           <article class="card audit-card">
-            <h3>Control bancario / electronico</h3>
-            <p class="muted">El sistema agrupa por cuenta destino real. El efectivo se controla aparte con romaneo.</p>
-            <div class="system-expected-card">
-              <span>Segun sistema (esperado)</span>
+            <h3>Cuentas digitales / bancarias</h3>
+            <p class="muted">Cada cuenta se concilia individualmente. El efectivo se controla aparte con el romaneo.</p>
+            <div class="system-expected-card" id="arqueoSistemaLegacyWrap">
+              <span class="muted">Movimientos brutos del turno (sin saldo inicial)</span>
               <div class="audit-mini-grid">
-                <div><small>Debito / credito</small><strong>$<span id="arqueoSistemaDebito">0.00</span></strong></div>
+                <div><small>Débito / crédito</small><strong>$<span id="arqueoSistemaDebito">0.00</span></strong></div>
                 <div><small>Transferencia</small><strong>$<span id="arqueoSistemaTransferencia">0.00</span></strong></div>
                 <div><small>Mixtas</small><strong><span id="arqueoSistemaMixtas">0</span></strong></div>
               </div>
             </div>
-            <div class="accounts-card">
-              <strong>Segun cuentas destino</strong>
-              <div class="accounts-table" id="cuentasDigitalesBody"></div>
-            </div>
+            <div class="accounts-table" id="cuentasDigitalesBody"></div>
             <div class="audit-result-line">
-              <span>Recaudacion digital real</span>
+              <span>Total saldo real en cuentas</span>
               <strong id="arqueoDigitalReal">$0.00</strong>
             </div>
             <div class="audit-result-line">
-              <span>Diferencia de saldos</span>
+              <span>Diferencia (real − esperado final)</span>
               <strong id="arqueoDiferenciaDigital">$0.00</strong>
             </div>
             <div class="audit-status" id="arqueoDiferenciaDigitalEstado"><span aria-hidden="true">&#10003;</span><span>Sobra</span></div>
@@ -3515,22 +3554,35 @@
 
           <article class="card audit-card">
             <h3>Resultado de arqueo</h3>
+
             <div class="audit-result-section">
-              <strong>Efectivo (fisico)</strong>
-              <div class="audit-mini-grid">
-                <div><small>Esperado</small><strong>$<span id="resultadoEfectivoEsperado">0.00</span></strong></div>
-                <div><small>Contado</small><strong>$<span id="resultadoEfectivoContado">0.00</span></strong></div>
+              <strong>Efectivo</strong>
+              <div class="audit-formula-row">
+                <span class="audit-formula-item"><small>Saldo inicial</small><strong id="arqueoEfectivoInicialDisplay">$0.00</strong></span>
+                <span class="audit-formula-op">+</span>
+                <span class="audit-formula-item"><small>Ventas efectivo</small><strong id="arqueoEfectivoIngresosDisplay">$0.00</strong></span>
+                <span class="audit-formula-op">−</span>
+                <span class="audit-formula-item"><small>Pagos efectivo</small><strong id="arqueoEfectivoEgresosDisplay">$0.00</strong></span>
+                <span class="audit-formula-op">=</span>
+                <span class="audit-formula-item audit-formula-resultado"><small>Esperado final</small><strong>$<span id="resultadoEfectivoEsperado">0.00</span></strong></span>
+              </div>
+              <div class="audit-mini-grid" style="margin-top: 8px">
+                <div><small>Romaneo / real</small><strong>$<span id="resultadoEfectivoContado">0.00</span></strong></div>
                 <div><small>Diferencia</small><strong id="resultadoDiferenciaEfectivo">$0.00</strong></div>
               </div>
+              <small id="arqueoEfectivoSinInicialNota" class="concil-saldo-hint" hidden>Sin saldo inicial — esperado usa solo movimientos del turno.</small>
             </div>
+
             <div class="audit-result-section">
-              <strong>Medios electronicos</strong>
+              <strong>Cuentas digitales / bancarias</strong>
               <div class="audit-mini-grid">
-                <div><small>Esperado</small><strong>$<span id="resultadoDigitalEsperado">0.00</span></strong></div>
-                <div><small>Recaudacion real</small><strong>$<span id="resultadoDigitalReal">0.00</span></strong></div>
+                <div><small>Esperado final <span class="muted">(ini + mov.)</span></small><strong>$<span id="resultadoDigitalEsperado">0.00</span></strong></div>
+                <div><small>Total real en cuentas</small><strong>$<span id="resultadoDigitalReal">0.00</span></strong></div>
                 <div><small>Diferencia</small><strong id="resultadoDiferenciaDigital">$0.00</strong></div>
               </div>
+              <small id="arqueoDigitalSinInicialNota" class="concil-saldo-hint" hidden>Sin saldo inicial — esperado usa solo movimientos del turno.</small>
             </div>
+
             <label>Observaciones
               <textarea class="field" id="observacionesArqueo" placeholder="Observaciones del control"></textarea>
             </label>
@@ -3695,15 +3747,15 @@
           <input type="hidden" id="conciliacionCuentaId" />
           <div class="field-grid">
             <label>
-              <span>Esperado por sistema</span>
+              <span id="conciliacionMontoSistemaLabel">Esperado por sistema</span>
               <input type="number" id="conciliacionMontoSistema" class="field" step="0.01" readonly />
             </label>
             <label>
-              <span>Real conciliado</span>
+              <span id="conciliacionMontoRealLabel">Real conciliado</span>
               <input type="number" id="conciliacionMontoReal" class="field" step="0.01" />
             </label>
             <label>
-              <span>Diferencia</span>
+              <span id="conciliacionDiferenciaLabel">Diferencia</span>
               <input type="number" id="conciliacionDiferencia" class="field" step="0.01" readonly />
             </label>
             <label>
@@ -3711,6 +3763,63 @@
               <input type="text" id="conciliacionObservaciones" class="field" placeholder="Opcional" />
             </label>
           </div>
+
+          <div id="conciliacionDestinoSection" class="concil-destino-section" hidden>
+            <div class="concil-sep"><span>Saldos de cuenta</span></div>
+
+            <div class="field-grid two">
+              <label>
+                <span>Saldo inicial <small>(al abrir este turno)</small></span>
+                <input type="number" id="conciliacionSaldoInicial" class="field" step="0.01" min="0" placeholder="0.00" />
+                <small class="concil-saldo-hint" id="conciliacionSaldoInicialHint"></small>
+              </label>
+              <div></div>
+            </div>
+            <div class="field-grid">
+              <label>
+                <span>+ Ingresos del sistema</span>
+                <input type="number" id="conciliacionIngresosDestino" class="field" step="0.01" readonly />
+              </label>
+              <label>
+                <span>− Egresos del sistema</span>
+                <input type="number" id="conciliacionEgresosDestino" class="field" step="0.01" readonly />
+              </label>
+              <label>
+                <span>= Saldo esperado final</span>
+                <input type="number" id="conciliacionSaldoEsperado" class="field" step="0.01" readonly />
+              </label>
+            </div>
+            <small id="conciliacionSinSaldoInicialNota" class="concil-saldo-hint" hidden>
+              Sin saldo inicial — el saldo esperado es solo el movimiento del turno.
+            </small>
+
+            <button type="button" id="toggleCierreSection" class="concil-cierre-toggle">
+              <em class="toggle-icon">&#9654;</em>
+              <span>Definir qué pasa con el saldo al cerrar</span>
+            </button>
+            <div id="conciliacionCierreBody" class="concil-cierre-body" hidden>
+              <div class="field-grid two">
+                <label>
+                  <span>¿Qué hacemos con el saldo?</span>
+                  <select id="conciliacionDecisionCierre" class="field">
+                    <option value="">Sin decisión por ahora</option>
+                    <option value="arrastrar">Arrastrar todo al próximo turno</option>
+                    <option value="retirar">Retirar un monto</option>
+                    <option value="fijar">Fijar saldo inicial del próximo turno</option>
+                  </select>
+                </label>
+                <label id="conciliacionMontoRetiroWrap" hidden>
+                  <span>Monto a retirar</span>
+                  <input type="number" id="conciliacionMontoRetiro" class="field" step="0.01" min="0" placeholder="0.00" />
+                </label>
+              </div>
+              <div class="concil-saldo-arrastrado">
+                <span>Saldo a arrastrar al próximo turno</span>
+                <strong id="conciliacionSaldoArrastradoDisplay">$0.00</strong>
+              </div>
+            </div>
+          </div>
+
           <div class="daily-card-header">
             <div class="muted">Esperado viene del sistema; real es el control manual. No modifica movimientos ni cierres.</div>
             <button type="button" class="button success" id="guardarConciliacionCuenta">Guardar conciliacion</button>
@@ -3852,10 +3961,24 @@
     const conciliacionCajaId = document.getElementById("conciliacionCajaId");
     const conciliacionCuentaId = document.getElementById("conciliacionCuentaId");
     const conciliacionMontoSistema = document.getElementById("conciliacionMontoSistema");
+    const conciliacionMontoSistemaLabel = document.getElementById("conciliacionMontoSistemaLabel");
     const conciliacionMontoReal = document.getElementById("conciliacionMontoReal");
     const conciliacionDiferencia = document.getElementById("conciliacionDiferencia");
     const conciliacionObservaciones = document.getElementById("conciliacionObservaciones");
     const guardarConciliacionCuentaBtn = document.getElementById("guardarConciliacionCuenta");
+    const conciliacionDestinoSection = document.getElementById("conciliacionDestinoSection");
+    const conciliacionSaldoInicial = document.getElementById("conciliacionSaldoInicial");
+    const conciliacionSaldoInicialHint = document.getElementById("conciliacionSaldoInicialHint");
+    const conciliacionSaldoEsperado = document.getElementById("conciliacionSaldoEsperado");
+    const conciliacionIngresosDestino = document.getElementById("conciliacionIngresosDestino");
+    const conciliacionEgresosDestino = document.getElementById("conciliacionEgresosDestino");
+    const conciliacionSinSaldoInicialNota = document.getElementById("conciliacionSinSaldoInicialNota");
+    const conciliacionMontoRealLabel = document.getElementById("conciliacionMontoRealLabel");
+    const conciliacionDiferenciaLabel = document.getElementById("conciliacionDiferenciaLabel");
+    const conciliacionDecisionCierre = document.getElementById("conciliacionDecisionCierre");
+    const conciliacionMontoRetiroWrap = document.getElementById("conciliacionMontoRetiroWrap");
+    const conciliacionMontoRetiro = document.getElementById("conciliacionMontoRetiro");
+    const conciliacionSaldoArrastradoDisplay = document.getElementById("conciliacionSaldoArrastradoDisplay");
     const toastCaja = document.getElementById("toastCaja");
     const filtroGraficoMetodos = document.getElementById("filtroGraficoMetodos");
     const graficoMetodosPago = document.getElementById("graficoMetodosPago");
@@ -3883,6 +4006,10 @@
     const arqueoSistemaDebito = document.getElementById("arqueoSistemaDebito");
     const arqueoSistemaTransferencia = document.getElementById("arqueoSistemaTransferencia");
     const arqueoSistemaMixtas = document.getElementById("arqueoSistemaMixtas");
+    const arqueoSistemaLegacyWrap = document.getElementById("arqueoSistemaLegacyWrap");
+    const arqueoEfectivoInicialDisplay = document.getElementById("arqueoEfectivoInicialDisplay");
+    const arqueoEfectivoIngresosDisplay = document.getElementById("arqueoEfectivoIngresosDisplay");
+    const arqueoEfectivoEgresosDisplay = document.getElementById("arqueoEfectivoEgresosDisplay");
     const cuentasDigitalesBody = document.getElementById("cuentasDigitalesBody");
     const arqueoDigitalReal = document.getElementById("arqueoDigitalReal");
     const arqueoDiferenciaDigital = document.getElementById("arqueoDiferenciaDigital");
@@ -3953,6 +4080,7 @@
     let conciliacionesCuentasActuales = [];
     let conciliacionesCuentasDestinoActuales = [];
     let conciliacionCuentaModo = "cobro";
+    let saldosInicialesCargando = false;
     let cuentasCobroCatalogo = [];
     let tipoMovimientoCajaActivo = "ingreso";
     let movimientoCajaEditando = null;
@@ -4106,11 +4234,17 @@
       else actions.prepend(bar);
     }
 
+    function calcularEfectivoSaldoInicial() {
+      // Efectivo se controla con monto_apertura + romaneo, NO con conciliacion de cuenta destino.
+      // La conciliacion de "Caja efectivo" es para arrastre al cierre, no para el saldo inicial operativo.
+      return Number(aperturaActual?.monto_apertura || 0);
+    }
+
     function calcularEfectivoEsperado() {
-      const apertura = Number(aperturaActual?.monto_apertura || 0);
+      const saldoInicial = calcularEfectivoSaldoInicial();
       const efectivo = Number(resumenActual?.total_efectivo || 0);
       const pagosEfectivo = Number(resumenActual?.total_pagos_efectivo || 0);
-      return Number((apertura + efectivo - pagosEfectivo).toFixed(2));
+      return Number((saldoInicial + efectivo - pagosEfectivo).toFixed(2));
     }
 
     function calcularConteoDesglose() {
@@ -4372,7 +4506,7 @@
             tipo_destino: cuenta.tipo_destino || "otro",
             canales: Array.isArray(cuenta.canales) ? cuenta.canales : [],
             sin_cuenta_destino: Boolean(cuenta.sin_cuenta_destino),
-            saldo_inicial: 0,
+            saldo_inicial: conciliacion ? Number(conciliacion.saldo_inicial || 0) : 0,
             saldo_actual: conciliacion ? Number(conciliacion.monto_real || 0) : sistema,
             monto_sistema: sistema,
             bloqueada: true,
@@ -4435,15 +4569,21 @@
     }
 
     function calcularDigitalReal() {
+      // Suma los saldos reales totales (no variación neta) para comparar contra esperado total.
+      // La variación neta (saldo_actual - saldo_inicial) sigue visible por fila en la tabla de cuentas.
       return Number(getCuentasDigitales()
-        .reduce((acc, cuenta) => acc + Number(cuenta.saldo_actual || 0) - Number(cuenta.saldo_inicial || 0), 0)
+        .reduce((acc, cuenta) => acc + Number(cuenta.saldo_actual || 0), 0)
         .toFixed(2));
     }
 
     function calcularDigitalEsperado() {
       if (tieneResumenPorCuentaDestino()) {
         return Number(getResumenCuentasDestinoDigital()
-          .reduce((acc, cuenta) => acc + Number(cuenta.balance || 0), 0)
+          .reduce((acc, cuenta) => {
+            const conciliacion = getConciliacionPorCuentaDestino(cuenta);
+            const saldoInicial = conciliacion ? Number(conciliacion.saldo_inicial || 0) : 0;
+            return acc + saldoInicial + Number(cuenta.balance || 0);
+          }, 0)
           .toFixed(2));
       }
 
@@ -4538,8 +4678,8 @@
         row.innerHTML = `
           <label class="account-name-field"><span>Cuenta</span><input type="text" class="field" value="${cuenta.nombre}" ${readonlyCuenta} />${cuenta.ejeDestino ? `<small class="account-channel-hint">${cuenta.tipo_destino || "otro"} · ${canales}</small>` : ""}</label>
           <label><span>Saldo inicial</span><input type="number" class="field" value="${cuenta.saldo_inicial}" step="0.01" ${readonlyInicial} /></label>
-          <label><span>Saldo actual</span><input type="number" class="field" value="${cuenta.saldo_actual}" step="0.01" /></label>
-          <label><span>Recaudacion real</span><input type="text" class="field" value="$0.00" disabled /></label>
+          <label><span>Saldo real (en cuenta)</span><input type="number" class="field" value="${cuenta.saldo_actual}" step="0.01" /></label>
+          <label><span>Dif. neta</span><input type="text" class="field" value="$0.00" disabled /></label>
           <span class="account-diff-pill pendiente">Pendiente</span>
         `;
         const [nombre, saldoInicial, saldoActual, recaudacion] = row.querySelectorAll("input");
@@ -4642,6 +4782,36 @@
       resultadoDigitalEsperado.innerText = formatearNumero(digitalEsperado);
       resultadoDigitalReal.innerText = formatearNumero(digitalReal);
       setSignedValue(resultadoDiferenciaDigital, diferenciaDigital);
+
+      // Fórmula efectivo (Etapa 4 — breakdown visual)
+      const iniEfectivo = calcularEfectivoSaldoInicial();
+      const ingresosEfectivo = Number(resumenActual?.total_efectivo || 0);
+      const egresosEfectivo = Number(resumenActual?.total_pagos_efectivo || 0);
+      if (arqueoEfectivoInicialDisplay) arqueoEfectivoInicialDisplay.textContent = money(iniEfectivo);
+      if (arqueoEfectivoIngresosDisplay) arqueoEfectivoIngresosDisplay.textContent = money(ingresosEfectivo);
+      if (arqueoEfectivoEgresosDisplay) arqueoEfectivoEgresosDisplay.textContent = money(egresosEfectivo);
+
+      // Ocultar mini-grid legacy cuando hay datos por cuenta destino
+      if (arqueoSistemaLegacyWrap) arqueoSistemaLegacyWrap.hidden = tieneResumenPorCuentaDestino();
+
+      // Notas de "sin saldo inicial" en Arqueos
+      const tieneSaldoInicialEfectivo = (() => {
+        const ce = Array.isArray(resumenCuentasDestinoActual)
+          ? resumenCuentasDestinoActual.find((c) => String(c.tipo_destino || "").toLowerCase() === "efectivo")
+          : null;
+        const conc = ce ? getConciliacionPorCuentaDestino(ce) : null;
+        return (conc && Number(conc.saldo_inicial || 0) > 0) || Number(aperturaActual?.monto_apertura || 0) > 0;
+      })();
+      const notaEfectivo = document.getElementById("arqueoEfectivoSinInicialNota");
+      if (notaEfectivo) notaEfectivo.hidden = tieneSaldoInicialEfectivo;
+
+      const tieneSaldoInicialDigital = tieneResumenPorCuentaDestino() &&
+        getResumenCuentasDestinoDigital().some((c) => {
+          const conc = getConciliacionPorCuentaDestino(c);
+          return conc && Number(conc.saldo_inicial || 0) > 0;
+        });
+      const notaDigital = document.getElementById("arqueoDigitalSinInicialNota");
+      if (notaDigital) notaDigital.hidden = tieneSaldoInicialDigital;
       arqueoDigitalReal.innerText = money(digitalReal);
       setSignedValue(arqueoDiferenciaDigital, diferenciaDigital);
       arqueoDiferenciaDigitalEstado.classList.toggle("negative", diferenciaDigital < 0);
@@ -4714,6 +4884,7 @@
         botonIngresarDineroVisual.disabled = true;
         botonRetirarDineroVisual.disabled = true;
         actualizarEstadoCierre();
+        cargarSaldosIniciales();
         return;
       }
 
@@ -4743,6 +4914,7 @@
         botonIngresarDineroVisual.disabled = true;
         botonRetirarDineroVisual.disabled = true;
         actualizarEstadoCierre();
+        cargarSaldosIniciales();
         return;
       }
 
@@ -4765,6 +4937,8 @@
       botonIngresarDineroVisual.disabled = false;
       botonRetirarDineroVisual.disabled = false;
       actualizarEstadoCierre();
+      const saldosSection = document.getElementById("saldosInicialesSection");
+      if (saldosSection) saldosSection.hidden = true;
     }
 
     function renderizarResumen(resumen) {
@@ -5666,8 +5840,33 @@
     function actualizarDiferenciaConciliacion() {
       const sistema = Number(conciliacionMontoSistema?.value || 0);
       const real = Number(conciliacionMontoReal?.value || 0);
-      if (conciliacionDiferencia) {
-        conciliacionDiferencia.value = (real - sistema).toFixed(2);
+
+      if (conciliacionCuentaModo === "destino") {
+        const inicio = Number(conciliacionSaldoInicial?.value || 0);
+        const esperado = Number((inicio + sistema).toFixed(2));
+        if (conciliacionSaldoEsperado) conciliacionSaldoEsperado.value = esperado.toFixed(2);
+        if (conciliacionDiferencia) conciliacionDiferencia.value = (real - esperado).toFixed(2);
+        actualizarSaldoArrastrado(real);
+      } else {
+        if (conciliacionDiferencia) conciliacionDiferencia.value = (real - sistema).toFixed(2);
+      }
+    }
+
+    function actualizarSaldoArrastrado(real) {
+      if (!conciliacionSaldoArrastradoDisplay) return;
+      const decision = conciliacionDecisionCierre?.value || "";
+      let arrastrado = 0;
+      if (decision === "arrastrar") {
+        arrastrado = real;
+      } else if (decision === "retirar") {
+        const retiro = Number(conciliacionMontoRetiro?.value || 0);
+        arrastrado = Math.max(0, Number((real - retiro).toFixed(2)));
+      } else if (decision === "fijar") {
+        arrastrado = Number(conciliacionSaldoInicial?.value || 0);
+      }
+      conciliacionSaldoArrastradoDisplay.textContent = money(arrastrado);
+      if (conciliacionMontoRetiroWrap) {
+        conciliacionMontoRetiroWrap.hidden = decision !== "retirar";
       }
     }
 
@@ -5682,8 +5881,12 @@
       conciliacionCajaId.value = cajaResumenCuentasActual?.id || aperturaActual?.id || "";
       conciliacionCuentaId.value = cuenta.cuenta_cobro_id == null ? "" : cuenta.cuenta_cobro_id;
       conciliacionMontoSistema.value = Number(cuenta.balance || 0).toFixed(2);
+      if (conciliacionMontoSistemaLabel) conciliacionMontoSistemaLabel.textContent = "Esperado por sistema";
+      if (conciliacionMontoRealLabel) conciliacionMontoRealLabel.textContent = "Real conciliado";
+      if (conciliacionDiferenciaLabel) conciliacionDiferenciaLabel.textContent = "Diferencia";
       conciliacionMontoReal.value = conciliacion ? Number(conciliacion.monto_real || 0).toFixed(2) : Number(cuenta.balance || 0).toFixed(2);
       conciliacionObservaciones.value = conciliacion?.observaciones || "";
+      if (conciliacionDestinoSection) conciliacionDestinoSection.hidden = true;
       actualizarDiferenciaConciliacion();
       abrirModal(modalConciliacionCuenta);
     }
@@ -5698,11 +5901,59 @@
       conciliacionCuentaTitulo.innerText = esSinCuenta ? "Conciliar anomalia: Movimientos sin asignacion" : `Conciliar ${cuenta.cuenta_destino_nombre || "Sin cuenta destino"}`;
       conciliacionCajaId.value = cajaResumenCuentasActual?.id || aperturaActual?.id || "";
       conciliacionCuentaId.value = cuenta.cuenta_destino_id == null ? "" : cuenta.cuenta_destino_id;
+      const ingresosVal = Number(cuenta.ingresos || 0);
+      const egresosVal = Number(cuenta.egresos || 0);
       conciliacionMontoSistema.value = Number(cuenta.balance || 0).toFixed(2);
+      if (conciliacionMontoSistemaLabel) conciliacionMontoSistemaLabel.textContent = "Movimiento neto (ingresos − egresos)";
+      if (conciliacionIngresosDestino) conciliacionIngresosDestino.value = ingresosVal.toFixed(2);
+      if (conciliacionEgresosDestino) conciliacionEgresosDestino.value = egresosVal.toFixed(2);
+      if (conciliacionMontoRealLabel) conciliacionMontoRealLabel.textContent = "Saldo real de la cuenta";
+      if (conciliacionDiferenciaLabel) conciliacionDiferenciaLabel.textContent = "Diferencia (real − esperado final)";
+
       conciliacionMontoReal.value = conciliacion ? Number(conciliacion.monto_real || 0).toFixed(2) : Number(cuenta.balance || 0).toFixed(2);
       conciliacionObservaciones.value = conciliacion?.observaciones || "";
+
+      if (conciliacionDestinoSection) conciliacionDestinoSection.hidden = false;
+
+      // Toggle de cierre: abrir automáticamente si ya hay decision guardada
+      const cierreBody = document.getElementById("conciliacionCierreBody");
+      const toggleBtn = document.getElementById("toggleCierreSection");
+      const tieneDecision = Boolean(conciliacion?.decision_cierre);
+      if (cierreBody) cierreBody.hidden = !tieneDecision;
+      if (toggleBtn) toggleBtn.classList.toggle("open", tieneDecision);
+
+      if (conciliacionDecisionCierre) conciliacionDecisionCierre.value = conciliacion?.decision_cierre || "";
+      if (conciliacionMontoRetiro) conciliacionMontoRetiro.value = Number(conciliacion?.monto_retiro || 0).toFixed(2);
+      if (conciliacionMontoRetiroWrap) conciliacionMontoRetiroWrap.hidden = (conciliacion?.decision_cierre || "") !== "retirar";
+
+      // Saldo inicial: usar el de la conciliacion existente, o último saldo arrastrado, o 0
+      const saldoInicialGuardado = conciliacion ? Number(conciliacion.saldo_inicial || 0) : null;
+      if (conciliacionSaldoInicial) conciliacionSaldoInicial.value = saldoInicialGuardado !== null ? saldoInicialGuardado.toFixed(2) : "0.00";
+      if (conciliacionSaldoInicialHint) conciliacionSaldoInicialHint.textContent = "";
+      if (conciliacionSinSaldoInicialNota) conciliacionSinSaldoInicialNota.hidden = (saldoInicialGuardado !== null && saldoInicialGuardado > 0);
+
       actualizarDiferenciaConciliacion();
       abrirModal(modalConciliacionCuenta);
+
+      // Cargar último saldo arrastrado como sugerencia si no hay conciliacion previa
+      if (saldoInicialGuardado === null || saldoInicialGuardado === 0) {
+        const cuentaDestinoId = cuenta.cuenta_destino_id;
+        if (cuentaDestinoId != null) {
+          fetch(`/caja/ultimo-saldo-arrastrado?cuenta_destino_id=${encodeURIComponent(cuentaDestinoId)}`)
+            .then((r) => r.ok ? r.json() : null)
+            .catch(() => null)
+            .then((data) => {
+              const saldo = data?.saldo;
+              if (saldo && Number(saldo.saldo_arrastrado) > 0) {
+                if (conciliacionSaldoInicial && !Number(conciliacionSaldoInicial.value)) {
+                  conciliacionSaldoInicial.value = Number(saldo.saldo_arrastrado).toFixed(2);
+                  if (conciliacionSaldoInicialHint) conciliacionSaldoInicialHint.textContent = `Sugerido del turno anterior (${saldo.decision_cierre || "arrastrado"})`;
+                  actualizarDiferenciaConciliacion();
+                }
+              }
+            });
+        }
+      }
     }
 
     function renderLegacyAnomalyNote(tipo) {
@@ -5729,6 +5980,10 @@
         };
         if (esDestino) {
           payload.cuenta_destino_id = conciliacionCuentaId.value ? Number(conciliacionCuentaId.value) : null;
+          payload.saldo_inicial = Number(conciliacionSaldoInicial?.value || 0);
+          const decision = conciliacionDecisionCierre?.value || "";
+          if (decision) payload.decision_cierre = decision;
+          if (decision === "retirar") payload.monto_retiro = Number(conciliacionMontoRetiro?.value || 0);
         } else {
           payload.cuenta_cobro_id = conciliacionCuentaId.value ? Number(conciliacionCuentaId.value) : null;
         }
@@ -5840,7 +6095,9 @@
         const conciliacion = getConciliacionPorCuentaDestino(cuenta);
         const estado = getConciliacionEstado(conciliacion);
         const realCuenta = conciliacion ? Number(conciliacion.monto_real || 0) : balance;
-        const diferenciaCuenta = Number((realCuenta - balance).toFixed(2));
+        const saldoInicialCuenta = conciliacion ? Number(conciliacion.saldo_inicial || 0) : 0;
+        const saldoEsperadoFinal = Number((saldoInicialCuenta + balance).toFixed(2));
+        const diferenciaCuenta = Number((realCuenta - saldoEsperadoFinal).toFixed(2));
         const key = getCuentaDestinoKey(cuenta);
         const canales = Array.isArray(cuenta.canales) && cuenta.canales.length
           ? cuenta.canales.join(" · ")
@@ -5861,9 +6118,11 @@
               <span class="cuenta-cobro-balance ${claseBalance}">= ${money(balance)}</span>
             </div>
             ${esSinCuenta ? renderLegacyAnomalyNote("destino") : ""}
+            ${cuenta.tipo_destino === "efectivo" ? `<div class="concil-efectivo-nota"><span>El saldo real de efectivo se controla con el romaneo de billetes.</span><button type="button" data-ir-arqueos>Ver Arqueos</button></div>` : ""}
             <div class="cuenta-cobro-values">
               <div class="cuenta-cobro-metric"><span>Ingresos</span><strong class="positive-text">${signoIngresos}${money(cuenta.ingresos)}</strong></div>
               <div class="cuenta-cobro-metric"><span>Egresos</span><strong class="negative-text">${signoEgresos}${money(cuenta.egresos)}</strong></div>
+              <div class="cuenta-cobro-metric"><span>Esperado final</span><strong>${money(saldoEsperadoFinal)}${saldoInicialCuenta > 0 ? `<small style="font-size:10px;font-weight:400;display:block;color:var(--muted)">ini ${money(saldoInicialCuenta)}</small>` : ""}</strong></div>
               <div class="cuenta-cobro-metric"><span>Real</span><strong>${money(realCuenta)}</strong></div>
               <div class="cuenta-cobro-metric"><span>Diferencia</span><strong class="${diferenciaCuenta < 0 ? "negative-text" : "positive-text"}">${money(diferenciaCuenta)}</strong></div>
             </div>
@@ -5871,6 +6130,12 @@
               <span class="cuenta-cobro-movimientos">${canales} · ${Number(cuenta.ventas || 0)} ventas · ${Number(cuenta.pagos || 0)} pagos</span>
               <span class="cuenta-cobro-status ${esSinCuenta ? "anomalia" : estado.clase}">${esSinCuenta ? "Anomalia legacy" : estado.texto}</span>
             </div>
+            ${conciliacion && (Number(conciliacion.saldo_inicial) > 0 || conciliacion.decision_cierre) ? `
+            <div class="cuenta-cobro-saldos">
+              ${Number(conciliacion.saldo_inicial) > 0 ? `<span class="cuenta-cobro-saldo-item">Inicial: ${money(conciliacion.saldo_inicial)}</span>` : ""}
+              ${Number(conciliacion.saldo_arrastrado) > 0 ? `<span class="cuenta-cobro-saldo-item">Arrastrar: ${money(conciliacion.saldo_arrastrado)}</span>` : ""}
+              ${conciliacion.decision_cierre ? `<span class="cuenta-cobro-saldo-item">${conciliacion.decision_cierre}</span>` : ""}
+            </div>` : ""}
             <div class="cuenta-cobro-actions">
               <button type="button" class="button secondary compact" data-conciliar-destino="${key}">Conciliar</button>
             </div>
@@ -5879,6 +6144,9 @@
       }).join("");
       grid.querySelectorAll("[data-conciliar-destino]").forEach((button) => {
         button.addEventListener("click", () => abrirConciliacionCuentaDestino(button.dataset.conciliarDestino));
+      });
+      grid.querySelectorAll("[data-ir-arqueos]").forEach((btn) => {
+        btn.addEventListener("click", () => document.querySelector('[data-tab="arqueos"]')?.click());
       });
       card.classList.add("visible");
       aplicarMascaraCajaANuevosMontos();
@@ -5980,6 +6248,67 @@
       }
     }
 
+    async function cargarSaldosIniciales() {
+      const section = document.getElementById("saldosInicialesSection");
+      const grid = document.getElementById("saldosInicialesGrid");
+      if (!section || !grid || saldosInicialesCargando) return;
+      saldosInicialesCargando = true;
+      try {
+        const res = await fetch("/cuentas_destino");
+        if (!res.ok) throw new Error("No se pudo cargar cuentas destino");
+        const cuentas = await res.json();
+        if (!Array.isArray(cuentas) || !cuentas.length) { section.hidden = true; return; }
+
+        const listasConSaldo = await Promise.all(cuentas.map(async (c) => {
+          try {
+            const r = await fetch(`/caja/ultimo-saldo-arrastrado?cuenta_destino_id=${c.id}`);
+            const d = r.ok ? await r.json() : null;
+            return { ...c, saldo_sugerido: Number(d?.saldo?.saldo_arrastrado || 0), decision_sugerida: d?.saldo?.decision_cierre || null };
+          } catch { return { ...c, saldo_sugerido: 0, decision_sugerida: null }; }
+        }));
+
+        grid.innerHTML = listasConSaldo.map((c) => `
+          <label class="saldo-inicial-row">
+            <div class="saldo-inicial-nombre">
+              <strong>${c.nombre}</strong>
+              <span class="muted">${c.tipo_destino || ""}</span>
+              ${c.saldo_sugerido > 0 ? `<small class="concil-saldo-hint">Del turno anterior${c.decision_sugerida ? ` (${c.decision_sugerida})` : ""}</small>` : ""}
+            </div>
+            <input type="number" class="field" step="0.01" min="0" placeholder="0.00"
+              value="${c.saldo_sugerido > 0 ? Number(c.saldo_sugerido).toFixed(2) : ""}"
+              data-saldo-inicial-cuenta="${c.id}" />
+          </label>`).join("");
+
+        section.hidden = false;
+      } catch (err) {
+        console.error("Error al cargar saldos iniciales:", err);
+        if (section) section.hidden = true;
+      } finally {
+        saldosInicialesCargando = false;
+      }
+    }
+
+    async function guardarSaldosInicialesApertura(nuevaCajaId) {
+      const inputs = [...document.querySelectorAll("[data-saldo-inicial-cuenta]")];
+      await Promise.all(inputs.map(async (input) => {
+        const cuentaId = Number(input.dataset.saldoInicialCuenta);
+        const saldo = Number(input.value || 0);
+        if (!cuentaId || saldo <= 0) return;
+        return fetch("/caja/conciliaciones/cuentas-destino", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            caja_id: nuevaCajaId,
+            cuenta_destino_id: cuentaId,
+            saldo_inicial: saldo,
+            monto_sistema: 0,
+            monto_real: saldo,
+            observaciones: "Saldo inicial cargado en apertura"
+          })
+        }).catch((e) => console.warn("No se pudo guardar saldo inicial para cuenta", cuentaId, e));
+      }));
+    }
+
     async function abrirCaja() {
       const payload = {
         usuario: usuarioApertura.value.trim() || "admin"
@@ -6000,6 +6329,10 @@
           return;
         }
         mostrarMensaje(data.message || "Caja abierta");
+        const nuevaCajaId = data.apertura?.id;
+        if (nuevaCajaId) await guardarSaldosInicialesApertura(nuevaCajaId);
+        const saldosSection = document.getElementById("saldosInicialesSection");
+        if (saldosSection) saldosSection.hidden = true;
         await cargarCaja();
         await cargarHistorialArqueos();
       } catch (error) {
@@ -6286,6 +6619,20 @@
     });
 
     conciliacionMontoReal.addEventListener("input", actualizarDiferenciaConciliacion);
+    document.getElementById("toggleCierreSection")?.addEventListener("click", () => {
+      const cierreBody = document.getElementById("conciliacionCierreBody");
+      const toggleBtn = document.getElementById("toggleCierreSection");
+      const opening = cierreBody ? cierreBody.hidden : false;
+      if (cierreBody) cierreBody.hidden = !opening;
+      if (toggleBtn) toggleBtn.classList.toggle("open", opening);
+    });
+    conciliacionSaldoInicial?.addEventListener("input", actualizarDiferenciaConciliacion);
+    conciliacionDecisionCierre?.addEventListener("change", () => {
+      actualizarSaldoArrastrado(Number(conciliacionMontoReal?.value || 0));
+    });
+    conciliacionMontoRetiro?.addEventListener("input", () => {
+      actualizarSaldoArrastrado(Number(conciliacionMontoReal?.value || 0));
+    });
     guardarConciliacionCuentaBtn.addEventListener("click", guardarConciliacionCuenta);
 
     botonGuardarArqueo.addEventListener("click", guardarArqueo);

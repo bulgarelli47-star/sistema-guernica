@@ -46,6 +46,7 @@ const {
   getUltimaCajaRegistrada,
   guardarConciliacionCuentaCobro,
   guardarConciliacionCuentaDestino,
+  getUltimoSaldoArrastradoPorCuenta,
   mapCajaArqueo,
   parseJsonOrFallback
 } = require("./services/cajaService");
@@ -4067,6 +4068,10 @@ app.post("/caja/conciliaciones/cuentas-destino", async (req, res) => {
       cuentaDestinoId: req.body.cuenta_destino_id,
       montoSistema: req.body.monto_sistema,
       montoReal: req.body.monto_real,
+      saldoInicial: req.body.saldo_inicial,
+      decisionCierre: req.body.decision_cierre,
+      montoRetiro: req.body.monto_retiro,
+      saldoArrastrado: req.body.saldo_arrastrado,
       observaciones: req.body.observaciones,
       usuario: req.body.usuario || req.usuario?.nombre || req.usuario?.usuario || "admin",
       fecha,
@@ -4077,6 +4082,19 @@ app.post("/caja/conciliaciones/cuentas-destino", async (req, res) => {
   } catch (error) {
     logError("Error al guardar conciliacion por cuenta destino:", error);
     return res.status(error.statusCode || 500).json({ message: error.message || "Error al guardar conciliacion por cuenta destino" });
+  }
+});
+
+app.get("/caja/ultimo-saldo-arrastrado", async (req, res) => {
+  try {
+    const cuentaDestinoId = req.query.cuenta_destino_id != null && req.query.cuenta_destino_id !== ""
+      ? Number(req.query.cuenta_destino_id)
+      : null;
+    const saldo = await getUltimoSaldoArrastradoPorCuenta(cuentaDestinoId);
+    return res.json({ saldo });
+  } catch (error) {
+    logError("Error al obtener ultimo saldo arrastrado:", error);
+    return res.status(error.statusCode || 500).json({ message: error.message || "Error al obtener ultimo saldo arrastrado" });
   }
 });
 

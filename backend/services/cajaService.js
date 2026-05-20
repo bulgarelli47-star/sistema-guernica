@@ -95,6 +95,10 @@ async function ensureConciliacionesCuentasDestinoTable() {
     ON conciliaciones_cuentas_destino(caja_id)
     WHERE cuenta_destino_id IS NULL
   `);
+  await ensureColumn("conciliaciones_cuentas_destino", "saldo_inicial", "REAL NOT NULL DEFAULT 0");
+  await ensureColumn("conciliaciones_cuentas_destino", "decision_cierre", "TEXT");
+  await ensureColumn("conciliaciones_cuentas_destino", "monto_retiro", "REAL NOT NULL DEFAULT 0");
+  await ensureColumn("conciliaciones_cuentas_destino", "saldo_arrastrado", "REAL NOT NULL DEFAULT 0");
 }
 
 async function getCajaAperturaHoy(fecha) {
@@ -606,11 +610,17 @@ async function getConciliacionesCuentaDestino({ cajaId } = {}) {
   );
 }
 
+const DECISIONES_CIERRE_VALIDAS = new Set(["arrastrar", "retirar", "fijar"]);
+
 async function guardarConciliacionCuentaDestino({
   cajaId,
   cuentaDestinoId = null,
   montoSistema = 0,
   montoReal = 0,
+  saldoInicial = 0,
+  decisionCierre = null,
+  montoRetiro = 0,
+  saldoArrastrado: saldoArrastradoParam = 0,
   observaciones = "",
   usuario = "admin",
   fecha,
@@ -631,10 +641,37 @@ async function guardarConciliacionCuentaDestino({
     throw error;
   }
 
+  const inicio = Number(Number(saldoInicial || 0).toFixed(2));
   const sistema = Number(Number(montoSistema || 0).toFixed(2));
   const real = Number(Number(montoReal || 0).toFixed(2));
-  const diferencia = Number((real - sistema).toFixed(2));
+  const retiro = Number(Number(montoRetiro || 0).toFixed(2));
+  // diferencia = monto_real - saldo_esperado; saldo_esperado = saldo_inicial + monto_sistema
+  // cuando saldo_inicial=0 (legacy), equivale al cálculo anterior
+  const saldoEsperado = Number((inicio + sistema).toFixed(2));
+  const diferencia = Number((real - saldoEsperado).toFixed(2));
   const estado = Math.abs(diferencia) < 0.01 ? "conciliado" : "diferencia";
+
+  const decision = decisionCierre ? String(decisionCierre).trim().toLowerCase() : null;
+  if (decision !== null && !DECISIONES_CIERRE_VALIDAS.has(decision)) {
+    const error = new Error("decision_cierre debe ser: arrastrar, retirar, fijar o null");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  let arrastrado = 0;
+  if (decision === "arrastrar") {
+    arrastrado = real;
+  } else if (decision === "retirar") {
+    if (retiro > real) {
+      const error = new Error("monto_retiro no puede superar monto_real");
+      error.statusCode = 400;
+      throw error;
+    }
+    arrastrado = Number((real - retiro).toFixed(2));
+  } else if (decision === "fijar") {
+    arrastrado = Number(Number(saldoArrastradoParam || 0).toFixed(2));
+  }
+
   const obs = String(observaciones || "").trim();
   const user = String(usuario || "admin").trim() || "admin";
   const fechaFinal = fecha || new Date().toISOString().slice(0, 10);
@@ -653,20 +690,53 @@ async function guardarConciliacionCuentaDestino({
   if (existente) {
     await runQuery(
       `UPDATE conciliaciones_cuentas_destino
-       SET monto_sistema = ?, monto_real = ?, diferencia = ?, estado = ?, observaciones = ?, fecha = ?, hora = ?, usuario = ?
+       SET monto_sistema = ?, monto_real = ?, saldo_inicial = ?, diferencia = ?, estado = ?,
+           decision_cierre = ?, monto_retiro = ?, saldo_arrastrado = ?,
+           observaciones = ?, fecha = ?, hora = ?, usuario = ?
        WHERE id = ?`,
-      [sistema, real, diferencia, estado, obs, fechaFinal, horaFinal, user, existente.id]
+      [sistema, real, inicio, diferencia, estado, decision, retiro, arrastrado, obs, fechaFinal, horaFinal, user, existente.id]
     );
     return getQuery("SELECT * FROM conciliaciones_cuentas_destino WHERE id = ?", [existente.id]);
   }
 
   const result = await runQuery(
     `INSERT INTO conciliaciones_cuentas_destino
-     (caja_id, cuenta_destino_id, monto_sistema, monto_real, diferencia, estado, observaciones, fecha, hora, usuario)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [caja, cuenta, sistema, real, diferencia, estado, obs, fechaFinal, horaFinal, user]
+     (caja_id, cuenta_destino_id, monto_sistema, monto_real, saldo_inicial, diferencia, estado,
+      decision_cierre, monto_retiro, saldo_arrastrado, observaciones, fecha, hora, usuario)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [caja, cuenta, sistema, real, inicio, diferencia, estado, decision, retiro, arrastrado, obs, fechaFinal, horaFinal, user]
   );
   return getQuery("SELECT * FROM conciliaciones_cuentas_destino WHERE id = ?", [result.lastID]);
+}
+
+async function getUltimoSaldoArrastradoPorCuenta(cuentaDestinoId) {
+  await ensureConciliacionesCuentasDestinoTable();
+  const cuenta = cuentaDestinoId === null || cuentaDestinoId === undefined || cuentaDestinoId === ""
+    ? null
+    : Number(cuentaDestinoId);
+
+  const row = cuenta == null
+    ? await getQuery(
+        `SELECT ccd.saldo_arrastrado, ccd.decision_cierre
+         FROM conciliaciones_cuentas_destino ccd
+         JOIN caja_aperturas ca ON ca.id = ccd.caja_id
+         WHERE ccd.cuenta_destino_id IS NULL AND ca.estado = 'cerrada'
+         ORDER BY ca.id DESC LIMIT 1`
+      )
+    : await getQuery(
+        `SELECT ccd.saldo_arrastrado, ccd.decision_cierre
+         FROM conciliaciones_cuentas_destino ccd
+         JOIN caja_aperturas ca ON ca.id = ccd.caja_id
+         WHERE ccd.cuenta_destino_id = ? AND ca.estado = 'cerrada'
+         ORDER BY ca.id DESC LIMIT 1`,
+        [cuenta]
+      );
+
+  if (!row) return null;
+  return {
+    saldo_arrastrado: Number(row.saldo_arrastrado || 0),
+    decision_cierre: row.decision_cierre || null
+  };
 }
 
 function buildCajaResumen(ventas) {
@@ -895,6 +965,7 @@ module.exports = {
   getResumenPorCuentaDestino,
   guardarConciliacionCuentaCobro,
   guardarConciliacionCuentaDestino,
+  getUltimoSaldoArrastradoPorCuenta,
   mapCajaArqueo,
   parseJsonOrFallback
 };
