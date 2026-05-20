@@ -1653,6 +1653,10 @@ async function testPagoMixtoGuardaMontosYCaja() {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
+      const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
+        nombre: "TEST cuenta debito pago mixto",
+        tipo_pago_codigo: "debito"
+      });
 
       const pago = await registrarPago(baseUrl, token, {
         proveedor_id: proveedor.id,
@@ -1661,7 +1665,8 @@ async function testPagoMixtoGuardaMontosYCaja() {
         tipo_pago: "mixto",
         monto_efectivo: 200,
         monto_debito: 300,
-        estado: "registrado"
+        estado: "registrado",
+        cuenta_cobro_id: cuentaDebito.id
       });
 
       assertEqual(pago.monto_total, 500, "El pago mixto debe guardar monto_total");
@@ -1692,13 +1697,18 @@ async function testPagoCalculaIvaCreditoFiscal() {
         tipo_comprobante: "factura_a",
         iva_alicuota: 21
       });
+      const cuentaTransferencia = await crearCuentaCobro(baseUrl, token, {
+        nombre: "TEST cuenta transferencia IVA",
+        tipo_pago_codigo: "transferencia"
+      });
 
       const pago = await registrarPago(baseUrl, token, {
         proveedor_id: proveedor.id,
         concepto: "TEST IVA credito fiscal",
         monto_total: 1210,
         tipo_pago: "transferencia",
-        estado: "registrado"
+        estado: "registrado",
+        cuenta_cobro_id: cuentaTransferencia.id
       });
 
       assertApprox(pago.iva_credito_fiscal, 210, "El pago debe calcular IVA credito fiscal segun logica actual");
@@ -1787,13 +1797,18 @@ async function testTipoPagoDebitoPrevioTiposPago() {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
+      const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
+        nombre: "TEST cuenta debito previo",
+        tipo_pago_codigo: "debito"
+      });
 
       const pago = await registrarPago(baseUrl, token, {
         proveedor_id: proveedor.id,
         concepto: "TEST tipo_pago debito previo",
         monto_total: 230,
         tipo_pago: "debito",
-        estado: "registrado"
+        estado: "registrado",
+        cuenta_cobro_id: cuentaDebito.id
       });
 
       if (pago.tipo_pago !== "debito") {
@@ -1821,13 +1836,18 @@ async function testTipoPagoTransferenciaPrevioTiposPago() {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
+      const cuentaTransferencia = await crearCuentaCobro(baseUrl, token, {
+        nombre: "TEST cuenta transferencia previo",
+        tipo_pago_codigo: "transferencia"
+      });
 
       const pago = await registrarPago(baseUrl, token, {
         proveedor_id: proveedor.id,
         concepto: "TEST tipo_pago transferencia previo",
         monto_total: 340,
         tipo_pago: "transferencia",
-        estado: "registrado"
+        estado: "registrado",
+        cuenta_cobro_id: cuentaTransferencia.id
       });
 
       if (pago.tipo_pago !== "transferencia") {
@@ -1855,6 +1875,10 @@ async function testTipoPagoMixtoPrevioTiposPago() {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
+      const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
+        nombre: "TEST cuenta debito mixto previo",
+        tipo_pago_codigo: "debito"
+      });
 
       const pago = await registrarPago(baseUrl, token, {
         proveedor_id: proveedor.id,
@@ -1863,7 +1887,8 @@ async function testTipoPagoMixtoPrevioTiposPago() {
         tipo_pago: "mixto",
         monto_efectivo: 150,
         monto_debito: 300,
-        estado: "registrado"
+        estado: "registrado",
+        cuenta_cobro_id: cuentaDebito.id
       });
 
       if (pago.tipo_pago !== "mixto") {
@@ -1919,6 +1944,14 @@ async function testCierreConservaTipoPagoStringEnPagosSnapshot() {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
+      const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
+        nombre: "TEST cuenta snapshot debito",
+        tipo_pago_codigo: "debito"
+      });
+      const cuentaTransferencia = await crearCuentaCobro(baseUrl, token, {
+        nombre: "TEST cuenta snapshot transferencia",
+        tipo_pago_codigo: "transferencia"
+      });
 
       await registrarPago(baseUrl, token, {
         proveedor_id: proveedor.id,
@@ -1932,14 +1965,16 @@ async function testCierreConservaTipoPagoStringEnPagosSnapshot() {
         concepto: "TEST snapshot debito",
         monto_total: 200,
         tipo_pago: "debito",
-        estado: "registrado"
+        estado: "registrado",
+        cuenta_cobro_id: cuentaDebito.id
       });
       await registrarPago(baseUrl, token, {
         proveedor_id: proveedor.id,
         concepto: "TEST snapshot transferencia",
         monto_total: 300,
         tipo_pago: "transferencia",
-        estado: "registrado"
+        estado: "registrado",
+        cuenta_cobro_id: cuentaTransferencia.id
       });
 
       const cierre = await cerrarCaja(baseUrl, token, 900, 900, 0);
@@ -4032,7 +4067,11 @@ async function testProveedoresPagosCalculaIvaSoloRegistrados() {
       });
 
       // Pago registrado: monto 1210 → IVA = 1210 × 21 / 121 ≈ 210
-      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST IVA registrado", monto_total: 1210, tipo_pago: "transferencia", estado: "registrado" });
+      const cuentaTransferencia = await crearCuentaCobro(baseUrl, token, {
+        nombre: "TEST cuenta transferencia proveedor IVA",
+        tipo_pago_codigo: "transferencia"
+      });
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST IVA registrado", monto_total: 1210, tipo_pago: "transferencia", estado: "registrado", cuenta_cobro_id: cuentaTransferencia.id });
       // Pago pendiente: servidor almacena iva_credito_fiscal = 0 para pendientes
       await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST IVA pendiente", monto_total: 2420, tipo_pago: "efectivo", estado: "pendiente" });
 
@@ -4648,6 +4687,73 @@ async function testCuentasCobroEtapa2PagosYVentas() {
         cuenta_cobro_id: null
       });
       assertEqual(pagoLegacy.cuenta_cobro_id || 0, 0, "Pago con cuenta_cobro_id null debe seguir funcionando");
+
+      const pagoDebitoSinCuenta = await requestJson(baseUrl, "POST", "/pagos", {
+        proveedor_id: proveedor.id,
+        concepto: "TEST pago debito sin cuenta",
+        monto_total: 75,
+        tipo_pago: "debito",
+        estado: "registrado",
+        cuenta_cobro_id: null
+      }, token);
+      if (pagoDebitoSinCuenta.response.ok) throw new Error("Pago debito sin cuenta_cobro_id debe fallar");
+      assertEqual(pagoDebitoSinCuenta.response.status, 400, "Pago debito sin cuenta debe devolver 400");
+
+      const pagoTransferenciaSinCuenta = await requestJson(baseUrl, "POST", "/pagos", {
+        proveedor_id: proveedor.id,
+        concepto: "TEST pago transferencia sin cuenta",
+        monto_total: 80,
+        tipo_pago: "transferencia",
+        estado: "registrado",
+        cuenta_cobro_id: null
+      }, token);
+      if (pagoTransferenciaSinCuenta.response.ok) throw new Error("Pago transferencia sin cuenta_cobro_id debe fallar");
+      assertEqual(pagoTransferenciaSinCuenta.response.status, 400, "Pago transferencia sin cuenta debe devolver 400");
+
+      const pagoCreditoSinCuenta = await requestJson(baseUrl, "POST", "/pagos", {
+        proveedor_id: proveedor.id,
+        concepto: "TEST pago credito sin cuenta",
+        monto_total: 85,
+        tipo_pago: "credito_digital_test",
+        estado: "registrado",
+        cuenta_cobro_id: null
+      }, token);
+      if (pagoCreditoSinCuenta.response.ok) throw new Error("Pago credito digital sin cuenta_cobro_id debe fallar");
+      assertEqual(pagoCreditoSinCuenta.response.status, 400, "Pago credito digital sin cuenta debe devolver 400");
+
+      const pagoDigitalConCuenta = await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "TEST pago debito con cuenta",
+        monto_total: 95,
+        tipo_pago: "debito",
+        estado: "registrado",
+        cuenta_cobro_id: cuentaDebito.id
+      });
+      assertEqual(pagoDigitalConCuenta.cuenta_cobro_id, cuentaDebito.id, "Pago digital con cuenta valida debe quedar guardado");
+
+      const pagoDigitalCuentaInactiva = await requestJson(baseUrl, "POST", "/pagos", {
+        proveedor_id: proveedor.id,
+        concepto: "TEST pago debito cuenta inactiva",
+        monto_total: 65,
+        tipo_pago: "debito",
+        estado: "registrado",
+        cuenta_cobro_id: cuentaDebitoInactiva.id
+      }, token);
+      if (pagoDigitalCuentaInactiva.response.ok) throw new Error("Pago digital con cuenta inactiva debe fallar");
+      assertEqual(pagoDigitalCuentaInactiva.response.status, 400, "Pago digital con cuenta inactiva debe devolver 400");
+
+      const pagoMixtoSinCuenta = await requestJson(baseUrl, "POST", "/pagos", {
+        proveedor_id: proveedor.id,
+        concepto: "TEST pago mixto sin cuenta",
+        monto_total: 100,
+        tipo_pago: "mixto",
+        monto_efectivo: 40,
+        monto_debito: 60,
+        estado: "registrado",
+        cuenta_cobro_id: null
+      }, token);
+      if (pagoMixtoSinCuenta.response.ok) throw new Error("Pago mixto con parte digital sin cuenta_cobro_id debe fallar");
+      assertEqual(pagoMixtoSinCuenta.response.status, 400, "Pago mixto sin cuenta debe devolver 400");
 
       const ventaValida = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "debito",

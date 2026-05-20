@@ -178,11 +178,81 @@ async function validarCuentaCobroParaTipo(cuentaCobroId, tipoPagoCodigo) {
   return { ok: true, cuenta_cobro_id: id, cuenta };
 }
 
+function requiereCuentaCobroDigital(tipoPagoCodigo, cobro = {}) {
+  const tipo = normalizarCodigo(tipoPagoCodigo);
+  if (!tipo || tipo === "efectivo" || tipo === "cuenta_corriente") return false;
+  if (tipo === "mixto") return Number(cobro.monto_debito || 0) > 0;
+  return true;
+}
+
+function tipoCuentaCobroCompatible(tipoPagoCodigo) {
+  const tipo = normalizarCodigo(tipoPagoCodigo);
+  return tipo === "mixto" ? "debito" : tipo;
+}
+
+const TIPOS_DIGITALES_EXPLICITOS = new Set([
+  "debito",
+  "credito",
+  "transferencia",
+  "qr",
+  "billetera",
+  "mercado_pago"
+]);
+
+async function tipoPagoImpactaDigital(tipoPagoCodigo) {
+  const tipo = normalizarCodigo(tipoPagoCodigo);
+  if (!tipo || tipo === "efectivo" || tipo === "cuenta_corriente") return false;
+  if (TIPOS_DIGITALES_EXPLICITOS.has(tipo)) return true;
+
+  const row = await getQuery(
+    "SELECT impacta_digital FROM tipos_pago WHERE codigo = ? LIMIT 1",
+    [tipo]
+  );
+  return Number(row?.impacta_digital || 0) === 1;
+}
+
+async function validarCuentaCobroVenta(cuentaCobroId, cobro = {}) {
+  const tipo = normalizarCodigo(cobro.tipo_cobro);
+  const requiereCuenta = requiereCuentaCobroDigital(tipo, cobro);
+
+  if (requiereCuenta && (cuentaCobroId === undefined || cuentaCobroId === null || cuentaCobroId === "")) {
+    return {
+      ok: false,
+      statusCode: 400,
+      message: "Selecciona cuenta/terminal para cobros digitales"
+    };
+  }
+
+  return validarCuentaCobroParaTipo(cuentaCobroId, tipoCuentaCobroCompatible(tipo));
+}
+
+async function validarCuentaCobroPago(cuentaCobroId, cobro = {}, { estado = "registrado" } = {}) {
+  const tipo = normalizarCodigo(cobro.tipo_cobro || cobro.tipo_pago);
+  const estaPendiente = normalizarCodigo(estado) === "pendiente";
+  const tieneParteDigital = tipo === "mixto"
+    ? Number(cobro.monto_debito || 0) > 0
+    : await tipoPagoImpactaDigital(tipo);
+
+  if (!estaPendiente && tieneParteDigital && (cuentaCobroId === undefined || cuentaCobroId === null || cuentaCobroId === "")) {
+    return {
+      ok: false,
+      statusCode: 400,
+      message: "Selecciona cuenta/terminal para registrar pagos digitales."
+    };
+  }
+
+  return validarCuentaCobroParaTipo(cuentaCobroId, tipoCuentaCobroCompatible(tipo));
+}
+
 module.exports = {
   getCuentasCobro,
   getCuentasCobroPorTipo,
   crearCuentaCobro,
   actualizarCuentaCobro,
   toggleActivoCuentaCobro,
-  validarCuentaCobroParaTipo
+  validarCuentaCobroParaTipo,
+  validarCuentaCobroPago,
+  validarCuentaCobroVenta,
+  requiereCuentaCobroDigital,
+  tipoCuentaCobroCompatible
 };

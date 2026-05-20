@@ -99,6 +99,7 @@ const {
   getCuentasCobro,
   getCuentasCobroPorTipo,
   toggleActivoCuentaCobro,
+  validarCuentaCobroPago,
   validarCuentaCobroParaTipo,
   validarCuentaCobroVenta
 } = require("./services/cuentaCobroService");
@@ -140,10 +141,30 @@ const {
 } = require("./services/stockAjustePendienteService");
 const {
   crearIntentoPoint,
+  crearOrdenPointDiagnostico,
   ensureMercadoPagoPointSchema,
   listarIntentosPoint,
+  listarTerminalesPoint,
   obtenerIntentoPoint
 } = require("./services/mercadoPagoPointService");
+
+// Cargar variables de .env local si existe (sin dependencia dotenv)
+{
+  const envFile = path.join(__dirname, "..", ".env");
+  if (fs.existsSync(envFile)) {
+    fs.readFileSync(envFile, "utf8")
+      .split(/\r?\n/)
+      .forEach((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) return;
+        const eq = trimmed.indexOf("=");
+        if (eq < 1) return;
+        const key = trimmed.slice(0, eq).trim();
+        const val = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
+        if (key && !(key in process.env)) process.env[key] = val;
+      });
+  }
+}
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -2952,6 +2973,55 @@ app.get("/integraciones/mercadopago-point/intentos/:id", async (req, res) => {
   }
 });
 
+app.get("/integraciones/mercadopago-point/debug/terminales", async (req, res) => {
+  const token = process.env.MERCADOPAGO_ACCESS_TOKEN;
+  if (!token || !token.trim()) {
+    return res.json({
+      ok: false,
+      origen: "config",
+      message: "MERCADOPAGO_ACCESS_TOKEN no configurado. Creá un archivo .env en la raíz del proyecto con esa variable."
+    });
+  }
+  try {
+    const store_id = String(req.query.store_id || "").trim() || undefined;
+    const pos_id = String(req.query.pos_id || "").trim() || undefined;
+    const resultado = await listarTerminalesPoint(token.trim(), { store_id, pos_id });
+    return res.json({ ok: true, ...resultado });
+  } catch (error) {
+    logError("Error diagnóstico terminales MP Point:", error);
+    return res.json({
+      ok: false,
+      origen: "mercadopago",
+      message: error.message || "Error al consultar terminales Mercado Pago Point"
+    });
+  }
+});
+
+app.post("/integraciones/mercadopago-point/debug/test-orden", async (req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  try {
+    const token = process.env.MERCADOPAGO_ACCESS_TOKEN;
+    if (!token || !token.trim()) {
+      return res.json({ ok: false, origen: "config", message: "MERCADOPAGO_ACCESS_TOKEN no configurado en .env" });
+    }
+    const terminal_id = String(req.body?.terminal_id || "").trim();
+    if (!terminal_id) {
+      return res.json({ ok: false, origen: "validacion", message: "terminal_id es requerido" });
+    }
+    const monto = Number(req.body?.monto || 0);
+    if (monto <= 0) {
+      return res.json({ ok: false, origen: "validacion", message: "monto debe ser mayor a 0" });
+    }
+    const store_id = String(req.body?.store_id || "").trim() || undefined;
+    const pos_id = String(req.body?.pos_id || "").trim() || undefined;
+    const resultado = await crearOrdenPointDiagnostico(token.trim(), { terminal_id, monto, store_id, pos_id });
+    return res.json({ ok: true, ...resultado });
+  } catch (error) {
+    logError("Error diagnóstico orden MP Point:", error);
+    return res.json({ ok: false, origen: "server", message: error.message || "Error al crear orden de diagnóstico" });
+  }
+});
+
 app.post("/tipos_pago", async (req, res) => {
   const nombre = String(req.body.nombre || "").trim();
   const codigo = String(req.body.codigo || "").trim().toLowerCase().replace(/\s+/g, "_");
@@ -3117,7 +3187,7 @@ app.post("/pagos", async (req, res) => {
     const requiereCaja = estadoPago !== "pendiente";
     const cajaActiva = requiereCaja ? await getCajaAbiertaActual() : null;
     const ivaCreditoFiscal = estadoPago === "pendiente" ? 0 : calcularIvaCreditoFiscal(montoTotal, proveedorPago);
-    const cuentaCobro = await validarCuentaCobroParaTipo(cuentaCobroId, cobro.tipo_cobro);
+    const cuentaCobro = await validarCuentaCobroPago(cuentaCobroId, cobro, { estado: estadoPago });
 
     if (!cuentaCobro.ok) {
       return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
@@ -3205,13 +3275,19 @@ app.put("/pagos/:id", async (req, res) => {
     const tipoPagoFinal = String(tipo_pago ?? pago.tipo_pago ?? "").trim().toLowerCase();
     let cuentaCobroFinal = pago.cuenta_cobro_id ?? null;
     if (Object.prototype.hasOwnProperty.call(req.body, "cuenta_cobro_id")) {
-      const cuentaCobro = await validarCuentaCobroParaTipo(cuenta_cobro_id, tipoPagoFinal);
+      const cuentaCobro = await validarCuentaCobroPago(cuenta_cobro_id, {
+        tipo_cobro: tipoPagoFinal,
+        monto_debito: monto_debito != null ? Number(monto_debito) : Number(pago.monto_debito) || 0
+      }, { estado: pago.estado });
       if (!cuentaCobro.ok) {
         return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
       }
       cuentaCobroFinal = cuentaCobro.cuenta_cobro_id;
     } else if (cuentaCobroFinal) {
-      const cuentaCobro = await validarCuentaCobroParaTipo(cuentaCobroFinal, tipoPagoFinal);
+      const cuentaCobro = await validarCuentaCobroPago(cuentaCobroFinal, {
+        tipo_cobro: tipoPagoFinal,
+        monto_debito: monto_debito != null ? Number(monto_debito) : Number(pago.monto_debito) || 0
+      }, { estado: pago.estado });
       if (!cuentaCobro.ok) {
         return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
       }
@@ -5756,6 +5832,21 @@ app.put("/configuracion", async (req, res) => {
 
     logError("Error al guardar configuracion:", error);
     return res.status(500).json({ message: "Error al guardar configuracion" });
+  }
+});
+
+// Handler 404 para rutas no encontradas — siempre JSON
+app.use((req, res) => {
+  res.status(404).json({ ok: false, message: `Ruta no encontrada: ${req.method} ${req.path}` });
+});
+
+// Handler global de errores no controlados — siempre JSON, nunca HTML
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, _next) => {
+  logError("Error no controlado en request", err);
+  if (!res.headersSent) {
+    res.setHeader("Content-Type", "application/json");
+    res.status(500).json({ ok: false, origen: "server", message: err.message || "Error interno del servidor" });
   }
 });
 

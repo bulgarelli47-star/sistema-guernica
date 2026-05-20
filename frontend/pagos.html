@@ -1040,9 +1040,10 @@
       cuentaCobroPago.innerHTML = '<option value="">Sin asignar</option>';
       cuentaCobroPagoWrap.classList.add("hidden");
       cuentasCobroPagoActuales = [];
-      if (!metodo || metodo === "mixto") return;
+      if (!metodo) return;
+      const tipoCuenta = metodo === "mixto" ? "debito" : metodo;
       try {
-        const res = await fetch(`/cuentas_cobro/tipo/${encodeURIComponent(metodo)}`);
+        const res = await fetch(`/cuentas_cobro/tipo/${encodeURIComponent(tipoCuenta)}`);
         if (!res.ok) throw new Error("fallo");
         const cuentas = await res.json();
         if (!Array.isArray(cuentas) || !cuentas.length) return;
@@ -1302,6 +1303,14 @@
       }
     }
 
+    function requiereCuentaCobroPagoDigital(payload) {
+      if (!payload || payload.estado === "pendiente") return false;
+      const tipo = String(payload.tipo_pago || "").toLowerCase();
+      if (!tipo || tipo === "efectivo" || tipo === "cuenta_corriente") return false;
+      if (tipo === "mixto") return Number(payload.monto_debito || 0) > 0;
+      return true;
+    }
+
     async function guardarPago() {
       const payload = {
         proveedor_id: proveedor.value ? Number(proveedor.value) : null,
@@ -1339,6 +1348,11 @@
           mostrarMensaje("En pago mixto, efectivo + digital debe ser igual al importe", true);
           return;
         }
+      }
+
+      if (requiereCuentaCobroPagoDigital(payload) && !payload.cuenta_cobro_id) {
+        mostrarMensaje("Seleccioná cuenta/terminal para registrar pagos digitales.", true);
+        return;
       }
 
       botonGuardarPago.disabled = true;
