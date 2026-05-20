@@ -4479,6 +4479,74 @@ async function testVentasAplicanRecargosMetodosPago() {
   }
 }
 
+async function testRecargoPersistenteEnVentas() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 0);
+
+      await requestJson(baseUrl, "POST", "/tipos_pago", {
+        codigo: "credito_persist_test",
+        nombre: "Credito persistencia TEST",
+        orden: 57,
+        usa_recargo: true,
+        porcentaje_recargo: 10
+      }, token);
+      const cuentaCredito = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Terminal persist TEST",
+        tipo_pago_codigo: "credito_persist_test"
+      });
+
+      // Test 1: venta efectivo sin recargo guarda 0/0
+      const ventaEfectivo = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({ tipo_cobro: "efectivo" }), token);
+      if (!ventaEfectivo.response.ok) throw new Error(`Venta efectivo persist fallo: ${ventaEfectivo.data?.message}`);
+      const detalleEfectivo = await getVentaDetalle(baseUrl, token, ventaEfectivo.data.venta_id);
+      assertApprox(detalleEfectivo.venta.recargo_porcentaje, 0, "persist: venta efectivo guarda recargo_porcentaje=0");
+      assertApprox(detalleEfectivo.venta.recargo_monto, 0, "persist: venta efectivo guarda recargo_monto=0");
+      assertApprox(detalleEfectivo.venta.total, 200, "persist: total efectivo no cambia");
+
+      // Test 2: venta con recargo guarda porcentaje y monto
+      const ventaCredito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "credito_persist_test",
+        cuenta_cobro_id: cuentaCredito.id
+      }), token);
+      if (!ventaCredito.response.ok) throw new Error(`Venta credito persist fallo: ${ventaCredito.data?.message}`);
+      const detalleCredito = await getVentaDetalle(baseUrl, token, ventaCredito.data.venta_id);
+      assertApprox(detalleCredito.venta.recargo_porcentaje, 10, "persist: venta credito guarda recargo_porcentaje=10");
+      assertApprox(detalleCredito.venta.recargo_monto, 20, "persist: venta credito guarda recargo_monto=20");
+      assertApprox(detalleCredito.venta.total, 220, "persist: total credito incluye recargo");
+
+      // Test 3: pendiente se crea sin recargo
+      const pendiente = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo: "pendiente",
+        identificador_pendiente: "Mesa persist TEST"
+      }), token);
+      if (!pendiente.response.ok) throw new Error(`Pendiente persist fallo: ${pendiente.data?.message}`);
+      const detallePend = await getVentaDetalle(baseUrl, token, pendiente.data.venta_id);
+      assertApprox(detallePend.venta.recargo_porcentaje, 0, "persist: pendiente sin recargo hasta cobrar");
+      assertApprox(detallePend.venta.recargo_monto, 0, "persist: pendiente monto_recargo=0 hasta cobrar");
+
+      // Test 4: cobrar pendiente guarda recargo en ese momento
+      await requestJson(baseUrl, "POST", `/ventas/${pendiente.data.venta_id}/cobrar`, {
+        tipo_cobro: "credito_persist_test",
+        cuenta_cobro_id: cuentaCredito.id
+      }, token);
+      const detalleCobrado = await getVentaDetalle(baseUrl, token, pendiente.data.venta_id);
+      assertApprox(detalleCobrado.venta.recargo_porcentaje, 10, "persist: cobrar pendiente guarda recargo_porcentaje");
+      assertApprox(detalleCobrado.venta.recargo_monto, 20, "persist: cobrar pendiente guarda recargo_monto=20");
+      assertApprox(detalleCobrado.venta.total, 220, "persist: total cobrado incluye recargo");
+
+      // Test 5: recargo no se duplica — total es subtotal + recargo una sola vez
+      assertApprox(detalleCobrado.venta.total, 200 + detalleCobrado.venta.recargo_monto, "persist: total = subtotal + recargo_monto sin duplicar");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testVentasCuotasYPendientesNoDuplicanRecargo() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -7030,6 +7098,7 @@ async function testResumenAjustesPendientes() {
   await testTiposPagoRecargosYCuotasCrud();
   await testVentasAplicanRecargosMetodosPago();
   await testVentasCuotasYPendientesNoDuplicanRecargo();
+  await testRecargoPersistenteEnVentas();
   await testTipoPagoDesactiva();
   await testTipoPagoReactiva();
   await testTipoPagoGetExcluyeInactivos();

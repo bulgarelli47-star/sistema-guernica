@@ -371,6 +371,8 @@ async function ensureTiposPagoSchema() {
 async function ensureCuentasCobroSchema() {
   await ensureColumn("pagos", "cuenta_cobro_id", "INTEGER");
   await ensureColumn("ventas", "cuenta_cobro_id", "INTEGER");
+  await ensureColumn("ventas", "recargo_porcentaje", "REAL NOT NULL DEFAULT 0");
+  await ensureColumn("ventas", "recargo_monto", "REAL NOT NULL DEFAULT 0");
   await runQuery(`
     CREATE TABLE IF NOT EXISTS cuentas_destino (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3577,8 +3579,8 @@ app.post("/ventas", async (req, res) => {
     // metodo_pago es alias legacy de tipo_cobro — ambos reciben el mismo valor
     const venta = await runQuery(
       `INSERT INTO ventas
-      (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id, cuenta_cobro_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id, cuenta_cobro_id, recargo_porcentaje, recargo_monto)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         fecha,
         hora,
@@ -3595,7 +3597,9 @@ app.post("/ventas", async (req, res) => {
         esCuentaCorriente ? 1 : 0,
         esCuentaCorriente ? total : 0,
         tipoVenta === "normal" ? cajaActiva.id : null,
-        cuentaCobroVenta.cuenta_cobro_id
+        cuentaCobroVenta.cuenta_cobro_id,
+        recargoVenta.porcentaje_recargo,
+        recargoVenta.recargo_monto
       ]
     );
 
@@ -5167,7 +5171,7 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
 
     await runQuery(
       `UPDATE ventas
-       SET estado = 'cobrada', total = ?, metodo_pago = ?, tipo_cobro = ?, monto_efectivo = ?, monto_debito = ?, caja_id = ?, cuenta_cobro_id = ?
+       SET estado = 'cobrada', total = ?, metodo_pago = ?, tipo_cobro = ?, monto_efectivo = ?, monto_debito = ?, caja_id = ?, cuenta_cobro_id = ?, recargo_porcentaje = ?, recargo_monto = ?
        WHERE id = ?`,
       [
         recargo.total,
@@ -5177,6 +5181,8 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
         cobroReal.monto_debito,
         cajaActiva.id,
         cuentaCobro.cuenta_cobro_id,
+        recargo.porcentaje_recargo,
+        recargo.recargo_monto,
         ventaId
       ]
     );
