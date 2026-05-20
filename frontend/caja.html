@@ -355,21 +355,33 @@
     }
 
     #kpiToggleBarCaja {
-      min-height: 30px;
+      min-height: 42px;
       margin: 0;
       width: auto;
       justify-content: flex-end;
       flex: 0 0 auto;
-      align-self: flex-end;
+      align-self: center;
       padding: 0;
     }
 
     #toggleKpisBtnCaja.kpi-visibility-button {
-      width: 34px;
-      height: 34px;
-      min-width: 34px;
+      width: 42px;
+      height: 42px;
+      min-width: 42px;
+      min-height: 42px;
       padding: 0;
       gap: 0;
+      border-color: rgba(255, 255, 255, 0.18);
+      background: rgba(255, 255, 255, 0.08);
+      color: #ffffff;
+      border-radius: 999px;
+      box-shadow: none;
+    }
+
+    #toggleKpisBtnCaja.kpi-visibility-button:hover {
+      border-color: rgba(255, 255, 255, 0.34);
+      background: rgba(255, 255, 255, 0.16);
+      color: #ffffff;
     }
 
     #toggleKpisBtnCaja .kpi-visibility-text {
@@ -794,9 +806,9 @@
     }
 
     .cuenta-cobro-item.sin-cuenta {
-      background: #fbfbfd;
+      background: #fffafa;
+      border-color: rgba(224, 82, 82, 0.35);
       border-style: dashed;
-      opacity: 0.78;
     }
 
     .cuenta-cobro-top {
@@ -921,6 +933,29 @@
     .cuenta-cobro-status.pendiente {
       background: #eef1f7;
       color: var(--muted);
+    }
+
+    .cuenta-cobro-status.anomalia {
+      background: rgba(224, 82, 82, 0.12);
+      color: var(--danger);
+    }
+
+    .legacy-warning {
+      border: 1px solid rgba(217, 154, 33, 0.24);
+      border-radius: 10px;
+      background: #fff8ec;
+      color: #7a4d12;
+      padding: 8px 9px;
+      font-size: 11px;
+      font-weight: 800;
+      line-height: 1.3;
+      display: grid;
+      gap: 2px;
+    }
+
+    .legacy-warning strong {
+      color: var(--danger);
+      font-size: 11px;
     }
 
     .cuenta-cobro-actions {
@@ -1711,6 +1746,31 @@
       min-height: 42px;
     }
 
+    .stock-pending-notice {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: #fffbeb;
+      border: 1px solid #f0c040;
+      color: #6b4800;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .stock-pending-notice-icon {
+      flex: 0 0 auto;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+
+    .stock-pending-notice-body {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
     /* Compact closure tab cards: keep content-driven sizing without affecting other modules. */
     #tab-apertura-cierre .card {
       padding: 12px;
@@ -1985,6 +2045,11 @@
       align-items: center;
       gap: 8px;
       flex-wrap: wrap;
+    }
+
+    .history-actions .field-inline {
+      width: min(260px, 100%);
+      min-height: 34px;
     }
 
     .daily-card-header {
@@ -2524,9 +2589,9 @@
     }
 
     .cuenta-cobro-item.sin-cuenta {
-      opacity: .78;
+      border-color: rgba(224, 82, 82, .35);
       border-style: dashed;
-      background: #fbfbfe;
+      background: #fffafa;
     }
 
     .status-conciliacion.conciliado,
@@ -2751,6 +2816,7 @@
             </div>
           </div>
         </div>
+        <div id="kpiVisibilityMount"></div>
         <div class="chip">Ayuda</div>
         <div class="user-box">
           <div class="avatar">JP</div>
@@ -2834,7 +2900,7 @@
               <div class="metric-icon" aria-hidden="true">&#128091;</div>
             </div>
             <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="efectivoEsperado">0.00</span></strong>
-            <small>Efectivo teórico actual</small>
+            <small>Efectivo fisico esperado</small>
           </div>
           <div class="metric-card kpi-diferencia">
             <div class="metric-head">
@@ -2842,7 +2908,7 @@
               <div class="metric-icon" aria-hidden="true">&#9878;</div>
             </div>
             <strong class="amount-value"><span class="currency-symbol">$</span><span class="amount-number" id="diferenciaCaja">0.00</span></strong>
-            <small>Comparación con arqueo</small>
+            <small>Contra arqueo o romaneo</small>
           </div>
         </div>
 
@@ -2850,7 +2916,7 @@
           <div class="section-header">
             <div>
               <h3>Resumen por cuenta destino</h3>
-              <small>Ingresos, egresos y balance agrupados por cuenta real.</small>
+              <small>Dinero agrupado por cuenta real. Sin destino indica dato legacy o sin asignacion.</small>
             </div>
           </div>
           <div class="cuentas-cobro-grid" id="resumenCuentasDestino"></div>
@@ -2862,7 +2928,7 @@
             <div class="section-header">
               <div>
                 <h3>Resumen por cuenta / terminal</h3>
-                <small>Solo para auditoría: ingresos, egresos y balance por canal heredado.</small>
+                <small>Solo auditoria por canal heredado; no usar como cuenta real.</small>
               </div>
             </div>
             <div class="cuentas-cobro-grid" id="resumenCuentasCobro"></div>
@@ -3196,7 +3262,7 @@
                 </div>
               </div>
             </div>
-            <div class="summary-note"><span class="info-icon" aria-hidden="true">i</span><span>Estos valores son estimados en base a los movimientos desde el ultimo cierre. Al cerrar caja se contrastara el efectivo con el romaneo realizado.</span></div>
+            <div class="summary-note"><span class="info-icon" aria-hidden="true">i</span><span>Estos valores salen de movimientos que impactan caja. El efectivo se controla con romaneo; los medios digitales se revisan por cuenta destino.</span></div>
           </article>
         </div>
 
@@ -3212,18 +3278,25 @@
           <article class="card close-cash-card">
             <div>
               <h3 style="margin: 0;">Cerrar caja</h3>
-              <div class="muted">Al cerrar caja se registrara el cierre de turno y no podras realizar mas movimientos en dicha caja.</div>
+              <div class="muted">Cierra el turno operativo. El efectivo fisico se compara con romaneo y lo digital queda explicado por cuenta destino.</div>
+            </div>
+            <div id="avisoAjustesPendientes" class="stock-pending-notice" hidden>
+              <span class="stock-pending-notice-icon" aria-hidden="true">&#9888;</span>
+              <div class="stock-pending-notice-body">
+                <span id="avisoAjustesPendientesTexto"></span>
+                <a href="/productos.html" class="button secondary compact" style="width:fit-content;">Ver pendientes</a>
+              </div>
             </div>
             <div class="close-cash-layout">
               <div>
                 <div class="close-cash-totals">
-                  <div class="mini-card"><span>Total ingresos</span><strong class="amount-value close-number success-text"><span class="currency-symbol">$</span><span id="cierreIngresos">0.00</span></strong></div>
+                  <div class="mini-card"><span>Ingresos que impactan caja</span><strong class="amount-value close-number success-text"><span class="currency-symbol">$</span><span id="cierreIngresos">0.00</span></strong></div>
                   <div class="counted-box">
                     <span class="muted">Efectivo contado (romaneo)</span>
                     <strong class="amount-value close-number"><span class="currency-symbol">$</span><span id="efectivoContado">0.00</span></strong>
                   </div>
-                  <div class="mini-card"><span>Total egresos</span><strong class="amount-value close-number danger-text"><span class="currency-symbol">$</span><span id="cierreEgresos">0.00</span></strong></div>
-                  <div class="mini-card"><span>Efectivo esperado</span><strong class="amount-value close-number"><span class="currency-symbol">$</span><span id="efectivoEsperadoCopia">0.00</span></strong></div>
+                  <div class="mini-card"><span>Egresos registrados</span><strong class="amount-value close-number danger-text"><span class="currency-symbol">$</span><span id="cierreEgresos">0.00</span></strong></div>
+                  <div class="mini-card"><span>Efectivo fisico esperado</span><strong class="amount-value close-number"><span class="currency-symbol">$</span><span id="efectivoEsperadoCopia">0.00</span></strong></div>
                 </div>
                 <div class="close-bottom-grid">
                   <div class="difference-box">
@@ -3233,21 +3306,21 @@
                   </div>
                   <div class="close-button-box">
                     <button type="button" class="button danger" id="cerrarCaja">Cerrar caja</button>
-                    <div class="close-help">Se cerrara la caja y se generara el cierre de turno.</div>
+                    <div class="close-help">Genera el cierre con los importes actuales; no corrige movimientos.</div>
                   </div>
                 </div>
                 <div class="closure-real-panel">
                   <div class="closure-real-head">
-                    <strong>Dinero esperado vs dinero real</strong>
-                    <span>Control operativo: no corrige ventas, pagos ni conciliaciones.</span>
+                    <strong>Control operativo: esperado vs real</strong>
+                    <span>Esperado es sistema; real es conteo o conciliacion manual. No modifica ventas ni pagos.</span>
                   </div>
                   <div class="closure-real-grid">
                     <div class="closure-real-card">
-                      <span>Efectivo esperado</span>
+                      <span>Efectivo fisico esperado</span>
                       <strong id="cierreEfectivoEsperadoReal">$0.00</strong>
                     </div>
                     <div class="closure-real-card">
-                      <span>Efectivo real</span>
+                      <span>Efectivo fisico contado</span>
                       <strong id="cierreEfectivoRealContado">$0.00</strong>
                     </div>
                     <div class="closure-real-card">
@@ -3255,11 +3328,11 @@
                       <strong id="cierreDiferenciaEfectivoReal">$0.00</strong>
                     </div>
                     <div class="closure-real-card">
-                      <span>Cuentas esperadas</span>
+                      <span>Digital segun sistema</span>
                       <strong id="cierreDigitalEsperadoReal">$0.00</strong>
                     </div>
                     <div class="closure-real-card">
-                      <span>Cuentas reales</span>
+                      <span>Digital conciliado / real</span>
                       <strong id="cierreDigitalRealContado">$0.00</strong>
                     </div>
                     <div class="closure-real-card">
@@ -3293,6 +3366,7 @@
               <div class="muted">Historial de cierres registrados.</div>
             </div>
             <div class="history-actions">
+              <input type="search" class="field-inline" id="filtroCierresHistoricos" placeholder="Fecha, usuario o estado">
               <button type="button" class="button secondary compact" id="filtrarCierresHistoricos">Filtrar</button>
               <button type="button" class="button secondary compact" id="exportarCierresHistoricos">Exportar</button>
             </div>
@@ -3475,6 +3549,7 @@
               <div class="muted">Controles guardados para la caja actual.</div>
             </div>
             <div class="history-actions">
+              <input type="search" class="field-inline" id="filtroArqueosHistoricos" placeholder="Fecha, usuario, estado u observaciones">
               <button type="button" class="button secondary compact" id="filtrarArqueosHistoricos">Filtrar</button>
               <button type="button" class="button secondary compact" id="exportarArqueosHistoricos">Exportar</button>
             </div>
@@ -3620,11 +3695,11 @@
           <input type="hidden" id="conciliacionCuentaId" />
           <div class="field-grid">
             <label>
-              <span>Monto sistema</span>
+              <span>Esperado por sistema</span>
               <input type="number" id="conciliacionMontoSistema" class="field" step="0.01" readonly />
             </label>
             <label>
-              <span>Monto real</span>
+              <span>Real conciliado</span>
               <input type="number" id="conciliacionMontoReal" class="field" step="0.01" />
             </label>
             <label>
@@ -3637,7 +3712,7 @@
             </label>
           </div>
           <div class="daily-card-header">
-            <div class="muted">La conciliacion registra el control manual, no modifica movimientos ni cierres.</div>
+            <div class="muted">Esperado viene del sistema; real es el control manual. No modifica movimientos ni cierres.</div>
             <button type="button" class="button success" id="guardarConciliacionCuenta">Guardar conciliacion</button>
           </div>
         </div>
@@ -3666,7 +3741,7 @@
     </main>
   </div>
 
-  <script src="/kpi-visibility.js?v=3"></script>
+  <script src="/kpi-visibility.js?v=6"></script>
   <script>
     const toggleNotificaciones = document.getElementById("toggleNotificaciones");
     const notificacionesDropdown = document.getElementById("notificacionesDropdown");
@@ -3756,6 +3831,7 @@
     const cierresPageInfo = document.getElementById("cierresPageInfo");
     const cierresPagination = document.getElementById("cierresPagination");
     const cierresPageSize = document.getElementById("cierresPageSize");
+    const filtroCierresHistoricos = document.getElementById("filtroCierresHistoricos");
     const botonFiltrarCierresHistoricos = document.getElementById("filtrarCierresHistoricos");
     const botonExportarCierresHistoricos = document.getElementById("exportarCierresHistoricos");
     const modalDetalleCierre = document.getElementById("modalDetalleCierre");
@@ -3825,6 +3901,7 @@
     const arqueosPageInfo = document.getElementById("arqueosPageInfo");
     const arqueosPagination = document.getElementById("arqueosPagination");
     const arqueosPageSize = document.getElementById("arqueosPageSize");
+    const filtroArqueosHistoricos = document.getElementById("filtroArqueosHistoricos");
     const botonFiltrarArqueosHistoricos = document.getElementById("filtrarArqueosHistoricos");
     const botonExportarArqueosHistoricos = document.getElementById("exportarArqueosHistoricos");
     const modalDetalleArqueo = document.getElementById("modalDetalleArqueo");
@@ -4010,18 +4087,23 @@
       }
 
       const oculto = button.classList.contains("is-hidden");
-      button.title = oculto ? "Oculto" : "Visible";
-      button.setAttribute("aria-label", oculto ? "Oculto" : "Visible");
+      button.title = oculto ? "Mostrar montos" : "Ocultar montos";
+      button.setAttribute("aria-label", oculto ? "Mostrar montos" : "Ocultar montos");
     }
 
     function ubicarBotonVisibilidadCaja() {
       const bar = document.getElementById("kpiToggleBarCaja");
-      const tabsCard = document.querySelector(".top-grid > .card");
-      if (!bar || !tabsCard || bar.parentElement === tabsCard) {
+      if (window.mountKpiVisibility?.(bar)) {
         return;
       }
 
-      tabsCard.appendChild(bar);
+      const actions = document.querySelector(".top-actions");
+      const ayuda = [...document.querySelectorAll(".top-actions > .chip")].find((el) => el.textContent.trim() === "Ayuda");
+      if (!bar || !actions || bar.parentElement === actions) {
+        return;
+      }
+      if (ayuda) actions.insertBefore(bar, ayuda);
+      else actions.prepend(bar);
     }
 
     function calcularEfectivoEsperado() {
@@ -5260,6 +5342,9 @@
       cierresActuales = Array.isArray(cierres) ? cierres : [];
       cierresPaginaActual = 1;
       cierresFiltroTexto = "";
+      if (filtroCierresHistoricos) {
+        filtroCierresHistoricos.value = "";
+      }
       renderizarTablaCierresHistoricos();
 
       if (!historialCierres) {
@@ -5430,6 +5515,10 @@
     function renderizarHistorialArqueos(arqueos) {
       arqueosActuales = Array.isArray(arqueos) ? arqueos : [];
       arqueosPaginaActual = 1;
+      arqueosFiltroTexto = "";
+      if (filtroArqueosHistoricos) {
+        filtroArqueosHistoricos.value = "";
+      }
       const ultimo = arqueosActuales[0];
       arqueoGuardadoId = ultimo?.id || null;
       arqueoPreparadoParaCierre = Number(ultimo?.registrado_cierre) === 1;
@@ -5588,7 +5677,8 @@
 
       conciliacionCuentaModo = "cobro";
       const conciliacion = getConciliacionPorCuenta(cuenta);
-      conciliacionCuentaTitulo.innerText = `Conciliar ${cuenta.cuenta_nombre || "Sin cuenta"}`;
+      const esSinCuenta = getCuentaCobroKey(cuenta) === "sin-cuenta";
+      conciliacionCuentaTitulo.innerText = esSinCuenta ? "Conciliar anomalia: Sin cuenta asignada" : `Conciliar ${cuenta.cuenta_nombre || "Sin cuenta"}`;
       conciliacionCajaId.value = cajaResumenCuentasActual?.id || aperturaActual?.id || "";
       conciliacionCuentaId.value = cuenta.cuenta_cobro_id == null ? "" : cuenta.cuenta_cobro_id;
       conciliacionMontoSistema.value = Number(cuenta.balance || 0).toFixed(2);
@@ -5604,7 +5694,8 @@
 
       conciliacionCuentaModo = "destino";
       const conciliacion = getConciliacionPorCuentaDestino(cuenta);
-      conciliacionCuentaTitulo.innerText = `Conciliar ${cuenta.cuenta_destino_nombre || "Sin cuenta destino"}`;
+      const esSinCuenta = Boolean(cuenta.sin_cuenta_destino);
+      conciliacionCuentaTitulo.innerText = esSinCuenta ? "Conciliar anomalia: Movimientos sin asignacion" : `Conciliar ${cuenta.cuenta_destino_nombre || "Sin cuenta destino"}`;
       conciliacionCajaId.value = cajaResumenCuentasActual?.id || aperturaActual?.id || "";
       conciliacionCuentaId.value = cuenta.cuenta_destino_id == null ? "" : cuenta.cuenta_destino_id;
       conciliacionMontoSistema.value = Number(cuenta.balance || 0).toFixed(2);
@@ -5612,6 +5703,18 @@
       conciliacionObservaciones.value = conciliacion?.observaciones || "";
       actualizarDiferenciaConciliacion();
       abrirModal(modalConciliacionCuenta);
+    }
+
+    function renderLegacyAnomalyNote(tipo) {
+      const detalle = tipo === "destino"
+        ? "Revisar origen: venta, pago o canal anterior sin cuenta destino."
+        : "Revisar origen: venta o pago anterior sin cuenta/terminal.";
+      return `
+        <div class="legacy-warning">
+          <strong>Movimiento legacy o sin asignacion.</strong>
+          <span>${detalle}</span>
+        </div>
+      `;
     }
 
     async function guardarConciliacionCuenta() {
@@ -5682,11 +5785,12 @@
           <div class="cuenta-cobro-item ${esSinCuenta ? "sin-cuenta" : ""}">
             <div class="cuenta-cobro-top">
               <div class="cuenta-cobro-title">
-                <strong>${cuenta.cuenta_nombre || "Sin cuenta"}</strong>
+                <strong>${esSinCuenta ? "Sin cuenta asignada" : (cuenta.cuenta_nombre || "Sin cuenta")}</strong>
                 <span class="cuenta-cobro-subtipo">${subtipo}</span>
               </div>
               <span class="cuenta-cobro-balance ${claseBalance}">= ${money(balance)}</span>
             </div>
+            ${esSinCuenta ? renderLegacyAnomalyNote("cobro") : ""}
             <div class="cuenta-cobro-values">
               <div class="cuenta-cobro-metric"><span>Ingresos</span><strong class="positive-text">${signoIngresos}${money(cuenta.ingresos)}</strong></div>
               <div class="cuenta-cobro-metric"><span>Egresos</span><strong class="negative-text">${signoEgresos}${money(cuenta.egresos)}</strong></div>
@@ -5695,7 +5799,7 @@
             </div>
             <div class="cuenta-cobro-footer">
               <span class="cuenta-cobro-movimientos">${Number(cuenta.ventas || 0)} ventas · ${Number(cuenta.pagos || 0)} pagos</span>
-              <span class="cuenta-cobro-status ${estado.clase}">${estado.texto}</span>
+              <span class="cuenta-cobro-status ${esSinCuenta ? "anomalia" : estado.clase}">${esSinCuenta ? "Anomalia legacy" : estado.texto}</span>
             </div>
             <div class="cuenta-cobro-actions">
               <button type="button" class="button secondary compact" data-conciliar-cuenta="${key}">Conciliar</button>
@@ -5756,6 +5860,7 @@
               </div>
               <span class="cuenta-cobro-balance ${claseBalance}">= ${money(balance)}</span>
             </div>
+            ${esSinCuenta ? renderLegacyAnomalyNote("destino") : ""}
             <div class="cuenta-cobro-values">
               <div class="cuenta-cobro-metric"><span>Ingresos</span><strong class="positive-text">${signoIngresos}${money(cuenta.ingresos)}</strong></div>
               <div class="cuenta-cobro-metric"><span>Egresos</span><strong class="negative-text">${signoEgresos}${money(cuenta.egresos)}</strong></div>
@@ -5764,7 +5869,7 @@
             </div>
             <div class="cuenta-cobro-footer">
               <span class="cuenta-cobro-movimientos">${canales} · ${Number(cuenta.ventas || 0)} ventas · ${Number(cuenta.pagos || 0)} pagos</span>
-              <span class="cuenta-cobro-status ${esSinCuenta ? "diferencia fuerte" : estado.clase}">${esSinCuenta ? "Sin destino" : estado.texto}</span>
+              <span class="cuenta-cobro-status ${esSinCuenta ? "anomalia" : estado.clase}">${esSinCuenta ? "Anomalia legacy" : estado.texto}</span>
             </div>
             <div class="cuenta-cobro-actions">
               <button type="button" class="button secondary compact" data-conciliar-destino="${key}">Conciliar</button>
@@ -6222,26 +6327,34 @@
       renderizarTablaArqueosHistoricos();
     });
 
-    botonFiltrarArqueosHistoricos.addEventListener("click", function () {
-      const filtro = window.prompt("Filtrar arqueos por fecha, usuario, estado u observaciones. Dejar vacio para limpiar filtro.", arqueosFiltroTexto);
-      if (filtro === null) {
-        return;
-      }
-      arqueosFiltroTexto = filtro.trim().toLowerCase();
+    function aplicarFiltroArqueosHistoricos() {
+      arqueosFiltroTexto = String(filtroArqueosHistoricos?.value || "").trim().toLowerCase();
       arqueosPaginaActual = 1;
       renderizarTablaArqueosHistoricos();
+    }
+
+    botonFiltrarArqueosHistoricos.addEventListener("click", aplicarFiltroArqueosHistoricos);
+
+    filtroArqueosHistoricos?.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        aplicarFiltroArqueosHistoricos();
+      }
     });
 
     botonExportarArqueosHistoricos.addEventListener("click", exportarArqueosHistoricos);
 
-    botonFiltrarCierresHistoricos.addEventListener("click", function () {
-      const filtro = window.prompt("Filtrar cierres por fecha, usuario o estado. Dejar vacio para limpiar filtro.", cierresFiltroTexto);
-      if (filtro === null) {
-        return;
-      }
-      cierresFiltroTexto = filtro.trim().toLowerCase();
+    function aplicarFiltroCierresHistoricos() {
+      cierresFiltroTexto = String(filtroCierresHistoricos?.value || "").trim().toLowerCase();
       cierresPaginaActual = 1;
       renderizarTablaCierresHistoricos();
+    }
+
+    botonFiltrarCierresHistoricos.addEventListener("click", aplicarFiltroCierresHistoricos);
+
+    filtroCierresHistoricos?.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        aplicarFiltroCierresHistoricos();
+      }
     });
 
     botonExportarCierresHistoricos.addEventListener("click", exportarCierresHistoricos);
@@ -6265,6 +6378,26 @@
     renderizarCuentasDigitales();
     renderizarArqueosVisuales();
     actualizarGraficoMetodos();
+    async function cargarAvisoAjustesPendientes() {
+      const aviso = document.getElementById("avisoAjustesPendientes");
+      const texto = document.getElementById("avisoAjustesPendientesTexto");
+      if (!aviso || !texto) return;
+      try {
+        const res = await fetch("/stock/ajustes-pendientes/resumen");
+        if (!res.ok) { aviso.hidden = true; return; }
+        const data = await res.json();
+        const pendientes = Number(data.pendientes || 0);
+        if (pendientes > 0) {
+          texto.textContent = `Hay ${pendientes} ajuste${pendientes !== 1 ? "s" : ""} de stock pendiente${pendientes !== 1 ? "s" : ""} de revision.`;
+          aviso.hidden = false;
+        } else {
+          aviso.hidden = true;
+        }
+      } catch {
+        aviso.hidden = true;
+      }
+    }
+
     async function inicializarCaja() {
       await cargarCaja();
       window.initKpiVisibility?.({
@@ -6299,7 +6432,8 @@
 
       await Promise.all([
         cargarHistorialCierres(),
-        cargarHistorialArqueos()
+        cargarHistorialArqueos(),
+        cargarAvisoAjustesPendientes()
       ]);
     }
 
