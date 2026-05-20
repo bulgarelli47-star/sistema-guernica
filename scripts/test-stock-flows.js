@@ -2573,6 +2573,61 @@ async function testResumenReporteRespetaFiltroFechas() {
   }
 }
 
+async function testReporteStockValorizaSoloStockFisico() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const sufijo = Date.now().toString().slice(-8);
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST Reporte Stock ${sufijo}`);
+
+      const fisicoId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Stock Fisico ${sufijo}`,
+        codigo: `RSF-${sufijo}`,
+        categoria: `TEST Reporte Stock ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 10,
+        costo_final: 10,
+        precio_venta: 20,
+        stock: 5,
+        maneja_stock: true,
+        tipo: "simple"
+      });
+
+      const rendimientoId = await crearProductoCompuesto(baseUrl, token, {
+        nombre: `TEST Rendimiento Sin Stock ${sufijo}`,
+        categoria: `TEST Reporte Stock ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        rendimiento_receta: 10,
+        maneja_stock: false,
+        componentes: [],
+        costos_extra: []
+      });
+
+      await runSql(dbPath, "UPDATE productos SET stock = 999, precio_compra = 100, costo_final = 100, maneja_stock = 0, rendimiento_receta = 10 WHERE id = ?", [rendimientoId]);
+
+      const { response, data } = await requestJson(baseUrl, "GET", `/reportes/stock?categoria=${categoriaId}`, null, token);
+      if (!response.ok) throw new Error(`GET /reportes/stock fallo: ${data?.message || response.status}`);
+
+      assertApprox(data.resumen.stock_valorizado_fisico, 50, "Stock valorizado fisico debe sumar solo productos con maneja_stock=1");
+      assertApprox(data.resumen.stock_valorizado_estimado, 50, "Compat stock_valorizado_estimado debe representar capital fisico");
+      assertApprox(data.resumen.valor_rendimiento_estimado, 99900, "Productos sin stock real deben ir a estimaciones por rendimiento");
+
+      const fisico = data.productos.find((producto) => Number(producto.producto_id) === Number(fisicoId));
+      const rendimiento = data.productos.find((producto) => Number(producto.producto_id) === Number(rendimientoId));
+      if (!fisico || !rendimiento) throw new Error("Reporte stock debe incluir ambos productos de prueba");
+      assertApprox(fisico.stock_valorizado_fisico, 50, "Producto fisico debe tener valorizacion fisica");
+      assertApprox(rendimiento.stock_valorizado_fisico, 0, "Producto sin stock real no debe tener valorizacion fisica");
+      assertApprox(rendimiento.valor_rendimiento_estimado, 99900, "Producto sin stock real debe quedar como estimacion separada");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testMovimientoManualRegistraStockAnteriorYNuevo() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -6612,6 +6667,7 @@ async function testResumenAjustesPendientes() {
   await testResumenReporteCalculaBalanceGeneral();
   await testResumenReporteCalculaTicketPromedio();
   await testResumenReporteRespetaFiltroFechas();
+  await testReporteStockValorizaSoloStockFisico();
   await testProductosMasVendidosDevuelveClaves();
   await testProductosMasVendidosExcluyeVentasAnuladas();
   await testProductosMasVendidosOrdenaPorCantidad();

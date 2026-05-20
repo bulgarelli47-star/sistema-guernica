@@ -896,6 +896,7 @@ function estadoStockProducto(producto) {
 function mapReporteStockProducto(row) {
   const tipo = String(row.tipo || "simple").toLowerCase();
   const manejaStock = Number(row.maneja_stock || 0) === 1 ? 1 : 0;
+  const rendimientoReceta = Math.max(1, Number(row.rendimiento_receta || 1));
   const stockFisico = round2(row.stock);
   const consumoUnidad = Number(row.consumo_unidad || 0);
   const esFraccionado = Number(row.usa_costos_varios || 0) === 1 && manejaStock === 1;
@@ -911,8 +912,11 @@ function mapReporteStockProducto(row) {
   }
 
   const costoBase = Number(row.costo_final || row.precio_compra || 0);
-  const stockValorizado = manejaStock === 1 && costoBase > 0
+  const stockValorizadoFisico = manejaStock === 1 && costoBase > 0
     ? round2(stockFisico * costoBase)
+    : 0;
+  const valorRendimientoEstimado = manejaStock !== 1 && costoBase > 0
+    ? round2(Math.max(0, stockFisico) * costoBase)
     : 0;
   const producto = {
     producto_id: Number(row.id),
@@ -923,6 +927,7 @@ function mapReporteStockProducto(row) {
     tipo,
     es_combo: Number(row.es_combo || 0),
     maneja_stock: manejaStock,
+    rendimiento_receta: rendimientoReceta,
     activo: Number(row.activo || 0),
     unidad_medida: row.unidad_medida || "unidad",
     stock_fisico: stockFisico,
@@ -930,7 +935,10 @@ function mapReporteStockProducto(row) {
     stock_minimo: round2(row.stock_minimo),
     costo_base_estimado: round2(costoBase),
     costo_fuente: Number(row.costo_final || 0) > 0 ? "costo_final" : Number(row.precio_compra || 0) > 0 ? "precio_compra" : "sin_costo",
-    stock_valorizado_estimado: stockValorizado,
+    stock_valorizado_fisico: stockValorizadoFisico,
+    stock_valorizado_estimado: stockValorizadoFisico,
+    valor_rendimiento_estimado: valorRendimientoEstimado,
+    valorizacion_excluida_motivo: manejaStock === 1 ? null : "sin_stock_fisico",
     items_vendidos: round2(row.items_vendidos),
     movimientos: Number(row.movimientos || 0)
   };
@@ -1017,6 +1025,7 @@ async function getReporteStock({
        p.tipo,
        p.es_combo,
        p.maneja_stock,
+       p.rendimiento_receta,
        p.activo,
        p.unidad_medida,
        p.stock,
@@ -1078,6 +1087,8 @@ async function getReporteStock({
         sin_stock: 0,
         stock_negativo: 0,
         stock_valorizado_estimado: 0,
+        stock_valorizado_fisico: 0,
+        valor_rendimiento_estimado: 0,
         items_vendidos: 0
       });
     }
@@ -1086,7 +1097,9 @@ async function getReporteStock({
     if (producto.estado_stock === "bajo_stock") categoriaItem.bajo_stock += 1;
     if (producto.estado_stock === "sin_stock") categoriaItem.sin_stock += 1;
     if (producto.estado_stock === "stock_negativo") categoriaItem.stock_negativo += 1;
-    categoriaItem.stock_valorizado_estimado = round2(categoriaItem.stock_valorizado_estimado + producto.stock_valorizado_estimado);
+    categoriaItem.stock_valorizado_estimado = round2(categoriaItem.stock_valorizado_estimado + producto.stock_valorizado_fisico);
+    categoriaItem.stock_valorizado_fisico = round2((categoriaItem.stock_valorizado_fisico || 0) + producto.stock_valorizado_fisico);
+    categoriaItem.valor_rendimiento_estimado = round2((categoriaItem.valor_rendimiento_estimado || 0) + producto.valor_rendimiento_estimado);
     categoriaItem.items_vendidos = round2(categoriaItem.items_vendidos + producto.items_vendidos);
   }
 
@@ -1130,7 +1143,9 @@ async function getReporteStock({
       sin_stock: productos.filter((producto) => producto.estado_stock === "sin_stock").length,
       stock_negativo: productos.filter((producto) => producto.estado_stock === "stock_negativo").length,
       categorias: porCategoriaMap.size,
-      stock_valorizado_estimado: round2(productos.reduce((acc, producto) => acc + producto.stock_valorizado_estimado, 0)),
+      stock_valorizado_fisico: round2(productos.reduce((acc, producto) => acc + producto.stock_valorizado_fisico, 0)),
+      stock_valorizado_estimado: round2(productos.reduce((acc, producto) => acc + producto.stock_valorizado_fisico, 0)),
+      valor_rendimiento_estimado: round2(productos.reduce((acc, producto) => acc + producto.valor_rendimiento_estimado, 0)),
       items_vendidos: round2(productos.reduce((acc, producto) => acc + producto.items_vendidos, 0))
     },
     alertas,
@@ -1138,6 +1153,8 @@ async function getReporteStock({
       .map((item) => ({
         ...item,
         stock_valorizado_estimado: round2(item.stock_valorizado_estimado),
+        stock_valorizado_fisico: round2(item.stock_valorizado_fisico || item.stock_valorizado_estimado),
+        valor_rendimiento_estimado: round2(item.valor_rendimiento_estimado || 0),
         items_vendidos: round2(item.items_vendidos)
       }))
       .sort((a, b) => b.stock_valorizado_estimado - a.stock_valorizado_estimado),
