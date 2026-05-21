@@ -177,6 +177,16 @@
       border-radius: 10px;
       font-size: 13px;
     }
+    .report-main-panel .toolbar .button:not(#actualizar) {
+      min-height: 30px;
+      padding: 6px 9px;
+      border-radius: 9px;
+      font-size: 12px;
+      opacity: .82;
+    }
+    .report-main-panel .toolbar .button:not(#actualizar):hover {
+      opacity: 1;
+    }
     .section-head, .toolbar {
       display: flex;
       justify-content: space-between;
@@ -337,6 +347,21 @@
     .module-kpi > div:last-child { min-width:0; }
     .module-kpi strong,.module-kpi small { display:block; overflow:hidden; text-overflow:ellipsis; }
     .module-kpi small { color:var(--muted); margin-top:2px; }
+    .module-export-context {
+      margin-top: 12px;
+      border: 1px solid rgba(109,40,217,.16);
+      border-radius: 14px;
+      padding: 10px 12px;
+      background: #fbf9ff;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .module-export-context strong { display: block; font-size: 13px; }
+    .module-export-context span { color: var(--muted); font-size: 12px; }
+    .module-export-context .button { min-height: 32px; padding: 6px 10px; font-size: 12px; }
     .export-only-panel { display: none; }
     section.report-block-title { display: none; }
     .report-guidance-text { padding: 14px 18px 4px; color: var(--muted); font-size: 14px; text-align: center; }
@@ -358,6 +383,32 @@
       font-weight: 700;
     }
     .kpi-charts-row { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin-top:6px; }
+    .visual-placeholder-panel {
+      border: 1px dashed var(--border);
+      border-radius: 16px;
+      padding: 14px 16px;
+      background: #fafafa;
+      display: grid;
+      gap: 8px;
+    }
+    .visual-placeholder-panel h3 {
+      margin: 0;
+      font-size: 15px;
+    }
+    .visual-placeholder-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .visual-placeholder-item {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
     .kpi-chart-card { background:#fff; border:1px solid var(--border); border-radius:18px; padding:24px 22px 20px; display:flex; flex-direction:column; gap:16px; box-shadow:var(--shadow); min-width:0; }
     .kpi-chart-top { display:flex; flex-direction:column; gap:4px; }
     .kpi-chart-meta { display:flex; flex-direction:column; gap:3px; }
@@ -853,12 +904,30 @@
       <section class="kpis lineal" id="kpis"></section>
       <section class="card report-nav-panel">
         <div class="report-block-title">
-          <div><h2>Navegación por módulo</h2><p>Elegí un módulo para actualizar el reporte seleccionado.</p></div>
+          <div><h2>Navegación por módulo</h2><p>Elegí un módulo para actualizar el reporte y dejar lista su exportación.</p></div>
         </div>
         <div class="module-kpis" id="moduleKpis"></div>
+        <div class="module-export-context" id="moduleExportContext">
+          <div>
+            <strong id="moduleExportTitle">Exportación preparada</strong>
+            <span id="moduleExportHelp">Seleccioná un módulo para preparar Excel rápido y Exportar.</span>
+          </div>
+          <button class="button secondary" id="moduleExportOpen" type="button">Configurar exportación</button>
+        </div>
       </section>
       <p class="report-guidance-text" id="moduloActualAyuda">Seleccioná un módulo y un período. Para ver el reporte completo, usá <strong>Exportar</strong>.</p>
       <div class="kpi-charts-row" id="kpiChartsRow"></div>
+      <section class="visual-placeholder-panel" aria-label="Visualizaciones futuras">
+        <div>
+          <h3>Visualizaciones del módulo</h3>
+          <p class="muted" id="visualizacionesModuloTexto">Espacio preparado para gráficos del módulo seleccionado.</p>
+        </div>
+        <div class="visual-placeholder-grid">
+          <div class="visual-placeholder-item">Torta por método de pago</div>
+          <div class="visual-placeholder-item">Barras por categoría</div>
+          <div class="visual-placeholder-item">Línea de ventas por día</div>
+        </div>
+      </section>
 
       <section class="card export-only-panel report-insights-panel">
         <div class="report-block-title">
@@ -1610,9 +1679,18 @@
         button.onclick = () => {
           state.modulo = button.dataset.modulo;
           $("moduloFiltro").value = state.modulo;
+          prepararExportacionModuloActual();
           render();
         };
       });
+    }
+
+    function prepararExportacionModuloActual() {
+      if ($("exportModulo")) $("exportModulo").value = state.modulo;
+      if ($("exportDesde")) $("exportDesde").value = $("desde").value;
+      if ($("exportHasta")) $("exportHasta").value = $("hasta").value;
+      renderContenidoExportacion();
+      actualizarNombreArchivo();
     }
 
     function renderVentasPorDia() {
@@ -2181,6 +2259,9 @@
       if (ayudaModulo) {
         ayudaModulo.innerHTML = `Módulo activo: <strong>${label}</strong>. Excel rápido descarga su tabla de detalle; Exportar permite armar PDF o Excel con secciones.`;
       }
+      if ($("moduleExportTitle")) $("moduleExportTitle").textContent = `Exportación preparada: ${label}`;
+      if ($("moduleExportHelp")) $("moduleExportHelp").textContent = `Excel rápido descargará la tabla de ${label}. Exportar abrirá opciones para este módulo y período.`;
+      if ($("visualizacionesModuloTexto")) $("visualizacionesModuloTexto").textContent = `Preparado para incorporar visualizaciones de ${label} sin cambiar los datos del reporte.`;
       $("tituloReporteSeleccionado").textContent = meta.titulo;
       $("descripcionReporteSeleccionado").textContent = meta.descripcion;
       renderInsightsModulo();
@@ -2567,6 +2648,7 @@
     $("exportarRapido").onclick = exportarRapidoExcel;
     $("abrirExportacionFinal").onclick = () => abrirExportacion();
     $("exportarRapidoFinal").onclick = exportarRapidoExcel;
+    $("moduleExportOpen").onclick = () => abrirExportacion("excel", state.modulo);
     $("cerrarExportacion").onclick = () => $("modalExportacion").classList.remove("open");
     $("cancelarExportacion").onclick = () => $("modalExportacion").classList.remove("open");
     $("modalExportacion").onclick = (event) => { if (event.target.id === "modalExportacion") $("modalExportacion").classList.remove("open"); };
@@ -2582,7 +2664,7 @@
       render();
       if (id !== "comparacion") { cargarResumenBackend(); cargarReporteVentasBackend(); cargarReporteCajaBackend(); cargarReporteStockBackend(); cargarReporteCuentasCorrientesBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); cargarVentasPorDiaBackend(); cargarCuentasCobroBackend(); }
     }));
-    $("moduloFiltro").onchange = () => { state.modulo = $("moduloFiltro").value; render(); };
+    $("moduloFiltro").onchange = () => { state.modulo = $("moduloFiltro").value; prepararExportacionModuloActual(); render(); };
     setRange("30");
     cargarDatos();
   </script>

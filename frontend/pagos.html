@@ -321,7 +321,7 @@
 
     .kpi-grid {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(12, minmax(0, 1fr));
       gap: 12px;
     }
 
@@ -333,6 +333,15 @@
       display: grid;
       gap: 8px;
       min-width: 0;
+    }
+
+    .kpi-grid .kpi:nth-child(-n + 3) {
+      grid-column: span 4;
+    }
+
+    .kpi-grid .kpi:nth-child(n + 4) {
+      grid-column: span 3;
+      min-height: 104px;
     }
 
     .kpi span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
@@ -606,6 +615,7 @@
 
     @media (max-width: 1100px) {
       .layout, .kpi-grid { grid-template-columns: 1fr; }
+      .kpi-grid .kpi { grid-column: auto !important; }
       .form-grid { grid-template-columns: 1fr; }
       .payment-row,
       .payment-row.two { grid-template-columns: 1fr; }
