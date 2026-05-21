@@ -3542,13 +3542,13 @@
             <span class="stock-pending-notice-icon" aria-hidden="true">&#9888;</span>
             <div class="stock-pending-notice-body">
               <div class="stock-pending-count" id="avisoAjustesPendientesNumero">0</div>
-              <strong>Diferencias de stock pendientes</strong>
+              <strong>Hay diferencias operativas pendientes de resoluci&oacute;n.</strong>
               <span id="avisoAjustesPendientesTexto"></span>
               <ul class="stock-pending-checklist" aria-label="Pasos para resolver ajustes pendientes">
-                <li>Revisar ajuste pendiente</li>
-                <li>Definir si corresponde cobrar</li>
-                <li>Definir si corresponde cuenta corriente</li>
-                <li>Aprobar / corregir / rechazar</li>
+                <li>Cobrar si corresponde</li>
+                <li>Pasar a cuenta corriente si corresponde</li>
+                <li>Ajustar stock</li>
+                <li>P&eacute;rdida interna / rechazo</li>
               </ul>
               <div class="stock-pending-actions">
                 <a href="/productos.html" class="button secondary compact" style="width:fit-content;">Ir a Stock</a>
@@ -7210,7 +7210,7 @@
         const pendientes = Number(data.pendientes || 0);
         if (pendientes > 0) {
           if (numero) numero.textContent = String(pendientes);
-          texto.textContent = `Hay ${pendientes} ajuste${pendientes !== 1 ? "s" : ""} pendiente${pendientes !== 1 ? "s" : ""} antes del cierre. Revisá cada caso y definí si corresponde cobrar, ajustar stock, pasar a cuenta corriente o rechazar.`;
+          texto.textContent = `${pendientes} ajuste${pendientes !== 1 ? "s" : ""} pendiente${pendientes !== 1 ? "s" : ""}: requiere${pendientes !== 1 ? "n" : ""} cobro, cuenta corriente, ajuste de stock, perdida interna o rechazo.`;
           aviso.hidden = false;
         } else {
           aviso.hidden = true;
