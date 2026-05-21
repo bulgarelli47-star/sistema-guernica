@@ -138,7 +138,8 @@ const {
   listarAjustesPendientes,
   obtenerAjustePendiente,
   reconciliarAjustesPendientes,
-  rechazarAjustePendiente
+  rechazarAjustePendiente,
+  resolverAjustePendienteConVenta
 } = require("./services/stockAjustePendienteService");
 const {
   crearIntentoPoint,
@@ -2525,6 +2526,27 @@ app.post("/stock/ajustes-pendientes/:id/rechazar", async (req, res) => {
     }
     logError("Error al rechazar ajuste pendiente de stock:", error);
     return res.status(500).json({ message: "Error al rechazar ajuste pendiente de stock" });
+  }
+});
+
+app.post("/stock/ajustes-pendientes/:id/resolver", async (req, res) => {
+  if (!(await puedeGestionarAjustesPendientes(req))) {
+    return res.status(403).json({ message: "No tenes permisos para resolver ajustes pendientes de stock" });
+  }
+
+  try {
+    const ajuste = await resolverAjustePendienteConVenta(req.params.id, {
+      venta_id: req.body.venta_id,
+      tipo_resolucion: req.body.tipo_resolucion,
+      usuario: req.usuario?.nombre || req.body.usuario || "admin"
+    });
+    return res.json({ message: "Ajuste vinculado a venta", ajuste });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    logError("Error al resolver ajuste pendiente de stock:", error);
+    return res.status(500).json({ message: "Error al resolver ajuste pendiente de stock" });
   }
 });
 

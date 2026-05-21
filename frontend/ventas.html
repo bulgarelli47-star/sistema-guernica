@@ -2201,6 +2201,34 @@
       mostrarMensaje("Resolucion del ajuste cancelada. El ticket no se modifico automaticamente.");
     }
 
+    async function resolverAjusteStockConVenta(ventaId) {
+      const ctx = leerContextoResolucionAjusteStock();
+      if (!ctx || !ctx.ajuste_id || !ventaId) return true;
+      const tipoResolucion = ctx.modo === "cuenta_corriente" ? "cuenta_corriente" : "cobrar";
+      try {
+        const res = await fetch(`/stock/ajustes-pendientes/${ctx.ajuste_id}/resolver`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            venta_id: Number(ventaId),
+            tipo_resolucion: tipoResolucion,
+            usuario: "admin"
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          mostrarMensaje(data.message || "La venta se registro, pero no se pudo vincular el ajuste pendiente.", true);
+          return false;
+        }
+        guardarContextoResolucionAjusteStock(null);
+        return true;
+      } catch (error) {
+        console.error("Error al vincular ajuste pendiente:", error);
+        mostrarMensaje("La venta se registro, pero no se pudo vincular el ajuste pendiente.", true);
+        return false;
+      }
+    }
+
     function mostrarMensaje(texto, esError = false, opciones = {}) {
       const textoNormalizado = String(texto || "").toLowerCase();
       const debeNotificar = [
@@ -3953,9 +3981,13 @@
 
         const ticketImpresion = crearSnapshotTicket(data.venta_id, cobro);
         cerrarModal(modalCobroVenta);
-        guardarContextoResolucionAjusteStock(null);
+        const ajusteVinculado = await resolverAjusteStockConVenta(data.venta_id);
         resetTicketEditor();
-        mostrarMensaje(data.message || "Venta registrada", false, { ticket: ticketImpresion });
+        mostrarMensaje(
+          ajusteVinculado ? (data.message || "Venta registrada") : "Venta registrada. Quedo pendiente vincular el ajuste.",
+          !ajusteVinculado,
+          ajusteVinculado ? { ticket: ticketImpresion } : {}
+        );
         await cargarProductos();
         await cargarPendientes();
       } catch (error) {
@@ -4137,7 +4169,6 @@
           : null;
 
         if (currentPendingId === ventaId) {
-          guardarContextoResolucionAjusteStock(null);
           resetTicketEditor();
         }
 

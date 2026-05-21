@@ -8,6 +8,7 @@ const {
 
 const TIPOS_MOVIMIENTO_VALIDOS = new Set(["ingreso", "egreso"]);
 const ESTADOS_VALIDOS = new Set(["pendiente", "aprobado", "rechazado", "corregido"]);
+const TIPOS_RESOLUCION_VALIDOS = new Set(["cobrar", "cuenta_corriente", "ajuste_stock", "perdida_interna", "rechazado"]);
 
 function normalizarTexto(valor) {
   return String(valor || "").trim();
@@ -30,6 +31,14 @@ function crearError(message, statusCode = 400) {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
+}
+
+async function ensureColumnStockAjustesPendientes(columnName, definition) {
+  const columns = await allQuery("PRAGMA table_info(stock_ajustes_pendientes)");
+  const exists = columns.some((column) => column.name === columnName);
+  if (!exists) {
+    await runQuery(`ALTER TABLE stock_ajustes_pendientes ADD COLUMN ${columnName} ${definition}`);
+  }
 }
 
 function aplicarRedondeo(valor, redondeo) {
@@ -67,9 +76,20 @@ async function ensureStockAjustesPendientesSchema() {
       tipo_movimiento_aprobado TEXT,
       observaciones_admin TEXT,
       movimiento_stock_id INTEGER,
-      caja_id INTEGER
+      caja_id INTEGER,
+      venta_id INTEGER,
+      tipo_resolucion TEXT,
+      fecha_resolucion TEXT,
+      hora_resolucion TEXT,
+      resuelto_por TEXT
     )
   `);
+
+  await ensureColumnStockAjustesPendientes("venta_id", "INTEGER");
+  await ensureColumnStockAjustesPendientes("tipo_resolucion", "TEXT");
+  await ensureColumnStockAjustesPendientes("fecha_resolucion", "TEXT");
+  await ensureColumnStockAjustesPendientes("hora_resolucion", "TEXT");
+  await ensureColumnStockAjustesPendientes("resuelto_por", "TEXT");
 
   await runQuery("CREATE INDEX IF NOT EXISTS idx_stock_ajustes_pendientes_estado ON stock_ajustes_pendientes(estado)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_stock_ajustes_pendientes_producto ON stock_ajustes_pendientes(producto_id)");
@@ -86,7 +106,8 @@ function mapAjuste(row) {
     stock_actual_snapshot: Number(row.stock_actual_snapshot || 0),
     cantidad_aprobada: row.cantidad_aprobada === null || row.cantidad_aprobada === undefined ? null : Number(row.cantidad_aprobada),
     movimiento_stock_id: row.movimiento_stock_id === null || row.movimiento_stock_id === undefined ? null : Number(row.movimiento_stock_id),
-    caja_id: row.caja_id === null || row.caja_id === undefined ? null : Number(row.caja_id)
+    caja_id: row.caja_id === null || row.caja_id === undefined ? null : Number(row.caja_id),
+    venta_id: row.venta_id === null || row.venta_id === undefined ? null : Number(row.venta_id)
   };
 }
 
@@ -182,6 +203,39 @@ async function listarAjustesPendientes({ estado } = {}) {
     filtrarEstado ? [estadoNormalizado] : []
   );
   return rows.map(mapAjuste);
+}
+
+async function reconciliarAjustesPendientes({ ids = [], usuario, puedeGestionar = false } = {}) {
+  await ensureStockAjustesPendientesSchema();
+  const idsNormalizados = [...new Set((Array.isArray(ids) ? ids : [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id) && id > 0))]
+    .slice(0, 80);
+
+  if (!idsNormalizados.length) {
+    return [];
+  }
+
+  const params = [...idsNormalizados];
+  const where = [`sap.id IN (${idsNormalizados.map(() => "?").join(",")})`];
+  if (!puedeGestionar) {
+    where.push("trim(COALESCE(sap.solicitado_por, '')) = trim(?)");
+    params.push(normalizarTexto(usuario));
+  }
+
+  const rows = await allQuery(
+    `SELECT sap.id, sap.estado, sap.producto_id
+     FROM stock_ajustes_pendientes sap
+     WHERE ${where.join(" AND ")}
+     ORDER BY sap.id DESC`,
+    params
+  );
+
+  return rows.map((row) => ({
+    id: Number(row.id),
+    estado: row.estado,
+    producto_id: Number(row.producto_id)
+  }));
 }
 
 async function registrarMovimientoStockAprobado({
@@ -417,11 +471,89 @@ async function rechazarAjustePendiente(id, {
   }
 }
 
+async function resolverAjustePendienteConVenta(id, {
+  venta_id,
+  tipo_resolucion,
+  usuario
+} = {}) {
+  await ensureStockAjustesPendientesSchema();
+
+  const ajusteId = Number(id);
+  const ventaId = normalizarId(venta_id);
+  const tipoResolucion = normalizarTexto(tipo_resolucion).toLowerCase();
+
+  if (!ventaId) {
+    throw crearError("Venta invalida", 400);
+  }
+
+  if (!TIPOS_RESOLUCION_VALIDOS.has(tipoResolucion)) {
+    throw crearError("Tipo de resolucion invalido", 400);
+  }
+
+  await runQuery("BEGIN TRANSACTION");
+  try {
+    const ajuste = await getQuery("SELECT * FROM stock_ajustes_pendientes WHERE id = ?", [ajusteId]);
+    if (!ajuste) throw crearError("Ajuste pendiente no encontrado", 404);
+    if (ajuste.estado !== "pendiente") throw crearError("El ajuste pendiente ya fue revisado", 409);
+    if (ajuste.venta_id) throw crearError("El ajuste pendiente ya tiene una venta vinculada", 409);
+
+    const venta = await getQuery("SELECT id FROM ventas WHERE id = ?", [ventaId]);
+    if (!venta) throw crearError("Venta no encontrada", 404);
+
+    const { fecha, hora } = getNowParts();
+    await runQuery(
+      `UPDATE stock_ajustes_pendientes
+       SET venta_id = ?, tipo_resolucion = ?, fecha_resolucion = ?, hora_resolucion = ?, resuelto_por = ?
+       WHERE id = ? AND estado = 'pendiente' AND venta_id IS NULL`,
+      [
+        ventaId,
+        tipoResolucion,
+        fecha,
+        hora,
+        normalizarTexto(usuario) || "admin",
+        ajusteId
+      ]
+    );
+
+    await runQuery("COMMIT");
+    return obtenerAjustePendiente(ajusteId);
+  } catch (error) {
+    try {
+      await runQuery("ROLLBACK");
+    } catch {}
+    throw error;
+  }
+}
+
+async function getResumenAjustesPendientes() {
+  await ensureStockAjustesPendientesSchema();
+  const hoy = new Date().toISOString().slice(0, 10);
+  const [rowPendientes, rowAprobados, rowRechazados] = await Promise.all([
+    getQuery("SELECT COUNT(*) AS total FROM stock_ajustes_pendientes WHERE estado = 'pendiente'"),
+    getQuery(
+      "SELECT COUNT(*) AS total FROM stock_ajustes_pendientes WHERE estado IN ('aprobado', 'corregido') AND date(revisado_at) = ?",
+      [hoy]
+    ),
+    getQuery(
+      "SELECT COUNT(*) AS total FROM stock_ajustes_pendientes WHERE estado = 'rechazado' AND date(revisado_at) = ?",
+      [hoy]
+    )
+  ]);
+  return {
+    pendientes: Number(rowPendientes?.total || 0),
+    aprobados_hoy: Number(rowAprobados?.total || 0),
+    rechazados_hoy: Number(rowRechazados?.total || 0)
+  };
+}
+
 module.exports = {
   ensureStockAjustesPendientesSchema,
   crearAjustePendiente,
   listarAjustesPendientes,
+  reconciliarAjustesPendientes,
   obtenerAjustePendiente,
   aprobarAjustePendiente,
-  rechazarAjustePendiente
+  rechazarAjustePendiente,
+  resolverAjustePendienteConVenta,
+  getResumenAjustesPendientes
 };

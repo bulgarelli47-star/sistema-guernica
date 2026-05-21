@@ -909,6 +909,92 @@ async function testReconciliarAjustesPendientesStock() {
   }
 }
 
+async function testResolverAjustePendienteConVenta() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Resolver",
+        usuario: "colaborador_resolver",
+        password: "colaborador123",
+        confirmar_password: "colaborador123",
+        rol: "colaborador",
+        activo: true
+      }, adminToken);
+      const colaboradorToken = await login(baseUrl, "colaborador_resolver", "colaborador123");
+      const clienteCC = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "Cliente Resolver CC",
+        dni_cuit: `resolver-${Date.now()}`,
+        tipo_cliente: "cliente",
+        habilita_cuenta_corriente: true,
+        activo: true
+      }, adminToken);
+      if (!clienteCC.response.ok) throw new Error(`No se pudo crear cliente CC resolver: ${clienteCC.data?.message || clienteCC.response.status}`);
+      await abrirCaja(baseUrl, adminToken, 1000);
+
+      const ajusteCobrar = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "egreso",
+        cantidad: 2,
+        motivo: "TEST resolver cobrar"
+      });
+      const ventaCobrar = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), adminToken);
+      if (!ventaCobrar.response.ok) throw new Error(`Venta normal para resolver fallo: ${ventaCobrar.data?.message || ventaCobrar.response.status}`);
+      const movimientosAntesResolver = await getMovimientosStock(baseUrl, adminToken, 11);
+      const resolverCobrar = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajusteCobrar.id}/resolver`, {
+        venta_id: ventaCobrar.data.venta_id,
+        tipo_resolucion: "cobrar",
+        usuario: "admin"
+      }, adminToken);
+      if (!resolverCobrar.response.ok) throw new Error(`Resolver ajuste cobrar fallo: ${resolverCobrar.data?.message || resolverCobrar.response.status}`);
+      assertEqual(resolverCobrar.data.ajuste.venta_id, ventaCobrar.data.venta_id, "Resolver debe guardar venta_id");
+      if (resolverCobrar.data.ajuste.tipo_resolucion !== "cobrar") throw new Error("Resolver debe guardar tipo_resolucion cobrar");
+      if (resolverCobrar.data.ajuste.estado !== "pendiente") throw new Error("Resolver no debe cambiar estado persistido del ajuste");
+      const movimientosDespuesResolver = await getMovimientosStock(baseUrl, adminToken, 11);
+      assertEqual(movimientosDespuesResolver.length, movimientosAntesResolver.length, "Resolver ajuste no debe insertar movimientos_stock");
+
+      const dobleResolver = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajusteCobrar.id}/resolver`, {
+        venta_id: ventaCobrar.data.venta_id,
+        tipo_resolucion: "cobrar"
+      }, adminToken);
+      assertEqual(dobleResolver.response.status, 409, "Resolver dos veces debe fallar");
+
+      const ajusteCuenta = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "egreso",
+        cantidad: 1,
+        motivo: "TEST resolver cuenta corriente"
+      });
+      const ventaCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        es_cuenta_corriente: true,
+        cliente_id: clienteCC.data.cliente.id
+      }), adminToken);
+      if (!ventaCuenta.response.ok) throw new Error(`Venta cuenta corriente para resolver fallo: ${ventaCuenta.data?.message || ventaCuenta.response.status}`);
+      const resolverCuenta = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajusteCuenta.id}/resolver`, {
+        venta_id: ventaCuenta.data.venta_id,
+        tipo_resolucion: "cuenta_corriente",
+        usuario: "admin"
+      }, adminToken);
+      if (!resolverCuenta.response.ok) throw new Error(`Resolver ajuste cuenta corriente fallo: ${resolverCuenta.data?.message || resolverCuenta.response.status}`);
+      assertEqual(resolverCuenta.data.ajuste.venta_id, ventaCuenta.data.venta_id, "Resolver CC debe guardar venta_id");
+      if (resolverCuenta.data.ajuste.tipo_resolucion !== "cuenta_corriente") throw new Error("Resolver debe guardar tipo_resolucion cuenta_corriente");
+
+      const rechazarResuelto = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajusteCobrar.id}/rechazar`, {
+        observaciones_admin: "Rechazo administrativo posterior"
+      }, adminToken);
+      if (!rechazarResuelto.response.ok) throw new Error(`Rechazar ajuste resuelto por venta debe seguir funcionando: ${rechazarResuelto.data?.message || rechazarResuelto.response.status}`);
+      if (rechazarResuelto.data.ajuste.estado !== "rechazado") throw new Error("Rechazar debe conservar flujo administrativo existente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testClientesTipoClienteClasificacion() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -7033,6 +7119,7 @@ async function testResumenAjustesPendientes() {
   await testAjustePendienteRequiereStockVer();
   await testAjustesPendientesAprobacionYRechazo();
   await testReconciliarAjustesPendientesStock();
+  await testResolverAjustePendienteConVenta();
   await testResumenAjustesPendientes();
   await testClientesTipoClienteClasificacion();
   await testClientesHistorialProductosComprados();
