@@ -1228,6 +1228,35 @@
       margin-top: 2px;
     }
 
+    .stock-resolution-banner {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(217, 154, 33, 0.35);
+      background: #fff8e8;
+      color: var(--text);
+    }
+
+    .stock-resolution-banner strong {
+      display: block;
+      font-size: 14px;
+    }
+
+    .stock-resolution-banner span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .stock-resolution-banner-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+
     .hidden {
       display: none !important;
     }
@@ -1677,6 +1706,17 @@
               placeholder="Mesa 4 / Barra Juan / Pedido 12"
             />
 
+            <div class="stock-resolution-banner hidden" id="ajusteStockResolucionBanner">
+              <div>
+                <strong id="ajusteStockResolucionTitulo">Resolviendo ajuste pendiente</strong>
+                <span id="ajusteStockResolucionDetalle"></span>
+              </div>
+              <div class="stock-resolution-banner-actions">
+                <span>La venta todav&iacute;a no est&aacute; registrada. Al confirmar, resolv&eacute;s manualmente el ajuste.</span>
+                <button type="button" class="button secondary quick-action" id="cancelarResolucionAjuste">Cancelar resoluci&oacute;n</button>
+              </div>
+            </div>
+
             <div class="ticket-table" id="ticketLista"></div>
             <div class="ticket-empty" id="ticketVacio">Todavía no hay productos agregados.</div>
 
@@ -1710,7 +1750,7 @@
             </div>
               </section>
 
-              <section class="ticket-payment-card" id="resumenCobroTicket">
+              <section class="ticket-payment-card hidden" id="resumenCobroTicket">
                 <div class="checkout-section-header">
                   <span class="checkout-section-label">Cobro</span>
                   <button type="button" class="button secondary quick-action" id="abrirConfigCobro">Cambiar método</button>
@@ -1838,7 +1878,7 @@
       </div>
       <div class="inline-actions">
         <button type="button" class="button secondary hidden" id="enviarPointModal">Enviar a terminal</button>
-        <button type="button" class="button success" id="confirmarConfigCobro">Listo</button>
+        <button type="button" class="button success" id="confirmarConfigCobro">Confirmar cobro</button>
       </div>
     </div>
   </div>
@@ -2017,6 +2057,10 @@
     const verTodosProductos = document.getElementById("verTodosProductos");
     const ticketLista = document.getElementById("ticketLista");
     const ticketVacio = document.getElementById("ticketVacio");
+    const ajusteStockResolucionBanner = document.getElementById("ajusteStockResolucionBanner");
+    const ajusteStockResolucionTitulo = document.getElementById("ajusteStockResolucionTitulo");
+    const ajusteStockResolucionDetalle = document.getElementById("ajusteStockResolucionDetalle");
+    const cancelarResolucionAjuste = document.getElementById("cancelarResolucionAjuste");
     const ticketSubtotal = document.getElementById("ticketSubtotal");
     const ticketDescuento = document.getElementById("ticketDescuento");
     const ticketRecargoLinea = document.getElementById("ticketRecargoLinea");
@@ -2112,12 +2156,50 @@
     let ticketItemEditandoId = null;
     let ultimoIntentoPoint = null;
     let enviandoIntentoPoint = false;
+    let ajusteStockResolucionContexto = null;
+    const AJUSTE_STOCK_RESOLUCION_KEY = "guernicaResolverAjusteStock";
     const modificadoresCache = new Map();
     const CONSUMIDOR_FINAL_ID = "1";
 
     function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[raw]||raw}
     function permisosAcciones(){const raw=configVentas?.permisos_acciones_roles||{};if(typeof raw==="string"){try{return JSON.parse(raw)}catch{return {}}}return raw||{}}
     function puedeAccion(accion){const rol=rolActual();const permisos=permisosAcciones();const valor=permisos?.[accion]?.[rol];if(valor!==undefined)return valor===true||valor==="true"||valor===1||valor==="1";if(rol==="admin")return true;if(rol==="encargado")return !["usuarios","configuracion"].includes(accion);return ["ver_stock","caja","editar_ticket"].includes(accion)}
+
+    function leerContextoResolucionAjusteStock() {
+      try {
+        const ctx = JSON.parse(sessionStorage.getItem(AJUSTE_STOCK_RESOLUCION_KEY) || "null");
+        return ctx && ctx.origen === "ajuste_stock" && ctx.ajuste_id ? ctx : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function guardarContextoResolucionAjusteStock(ctx) {
+      ajusteStockResolucionContexto = ctx || null;
+      try {
+        if (ctx) sessionStorage.setItem(AJUSTE_STOCK_RESOLUCION_KEY, JSON.stringify(ctx));
+        else sessionStorage.removeItem(AJUSTE_STOCK_RESOLUCION_KEY);
+      } catch {}
+      renderBannerResolucionAjusteStock();
+    }
+
+    function renderBannerResolucionAjusteStock() {
+      const ctx = ajusteStockResolucionContexto || leerContextoResolucionAjusteStock();
+      ajusteStockResolucionContexto = ctx;
+      if (!ajusteStockResolucionBanner) return;
+      ajusteStockResolucionBanner.classList.toggle("hidden", !ctx);
+      if (!ctx) return;
+      const modo = ctx.modo === "cuenta_corriente" ? "Cuenta corriente" : "Cobrar";
+      if (ajusteStockResolucionTitulo) ajusteStockResolucionTitulo.innerText = `Resolviendo ajuste pendiente #${ctx.ajuste_id}`;
+      if (ajusteStockResolucionDetalle) {
+        ajusteStockResolucionDetalle.innerText = `Producto: ${ctx.producto_nombre || `ID ${ctx.producto_id}`} | Cantidad: ${formatearNumero(ctx.cantidad)} | Modo: ${modo}`;
+      }
+    }
+
+    function cancelarResolucionAjusteStock() {
+      guardarContextoResolucionAjusteStock(null);
+      mostrarMensaje("Resolucion del ajuste cancelada. El ticket no se modifico automaticamente.");
+    }
 
     function mostrarMensaje(texto, esError = false, opciones = {}) {
       const textoNormalizado = String(texto || "").toLowerCase();
@@ -2489,8 +2571,6 @@
     }
 
     function actualizarResumenCobroTicket() {
-      if (!resumenCobroMetodo) return;
-
       const cuentaCorrienteActiva = esCuentaCorriente?.checked;
       const esMixto = tipoCobroNormal?.value === "mixto" && !cuentaCorrienteActiva;
       const cuentaOption = cuentaCobroVenta?.options?.[cuentaCobroVenta.selectedIndex];
@@ -2503,8 +2583,8 @@
       const mostrarCuotas = Boolean(cuotasTexto && cuotasVentaWrap && !cuotasVentaWrap.classList.contains("hidden"));
       const recargoMonto = Number(recargoVentaActual?.monto || 0);
 
-      resumenCobroMetodo.innerText = getNombreMetodoCobroActual();
-      resumenCobroCuenta.innerText = cuentaTexto;
+      if (resumenCobroMetodo) resumenCobroMetodo.innerText = getNombreMetodoCobroActual();
+      if (resumenCobroCuenta) resumenCobroCuenta.innerText = cuentaTexto;
       resumenCobroCuotasLinea?.classList.toggle("hidden", !mostrarCuotas);
       if (resumenCobroCuotas) resumenCobroCuotas.innerText = cuotasTexto || "-";
       resumenCobroRecargoLinea?.classList.toggle("hidden", recargoMonto <= 0);
@@ -2550,9 +2630,13 @@
       const esPoint = esCuentaMercadoPagoPointSeleccionada() && !esCuentaCorriente?.checked;
       pointActionsTicket?.classList.toggle("hidden", !esPoint);
       enviarPointModal?.classList.toggle("hidden", !esPoint);
+      if (confirmarConfigCobro) {
+        confirmarConfigCobro.disabled = esPoint;
+        confirmarConfigCobro.title = esPoint ? "Para Mercado Pago Point usa Enviar a terminal. Todavia no marca la venta como cobrada." : "";
+      }
       if (botonRegistrar) {
-        botonRegistrar.disabled = esPoint;
-        botonRegistrar.title = esPoint ? "Para Mercado Pago Point usá Enviar a terminal. Todavía no marca la venta como cobrada." : "";
+        botonRegistrar.disabled = false;
+        botonRegistrar.title = "Configurar y confirmar cobro";
       }
       if (!esPoint) {
         pointEstadoTicket?.classList.add("hidden");
@@ -2649,6 +2733,9 @@
     function abrirModalCobroVenta() {
       actualizarCobroNormalUI();
       abrirModal(modalCobroVenta);
+      window.setTimeout(() => {
+        modalCobroVenta?.querySelector(".payment-button.active:not(:disabled), .payment-button:not(:disabled), .field:not(:disabled), button:not(:disabled)")?.focus();
+      }, 20);
     }
 
     function cerrarModalCobroVenta() {
@@ -3119,6 +3206,40 @@
       agregarProductoConModificadores(producto, []);
     }
 
+    function aplicarContextoResolucionAjusteStock() {
+      const ctx = leerContextoResolucionAjusteStock();
+      ajusteStockResolucionContexto = ctx;
+      renderBannerResolucionAjusteStock();
+      if (!ctx || ctx.aplicado) return;
+
+      const producto = productosCargados.find((item) => Number(item.id) === Number(ctx.producto_id));
+      if (!producto) {
+        mostrarMensaje(`No se encontro el producto del ajuste #${ctx.ajuste_id} en ventas.`, true);
+        return;
+      }
+
+      const cantidad = Math.max(0.01, Number(ctx.cantidad || 0));
+      const existente = ticket.find((linea) => Number(linea.producto_id) === Number(producto.id) && !tieneModificadoresItem(linea));
+      if (existente) {
+        existente.cantidad = Number((Number(existente.cantidad || 0) + cantidad).toFixed(2));
+        if (!existente.imagen_url && producto.imagen_url) existente.imagen_url = producto.imagen_url;
+      } else {
+        const item = buildTicketItem(producto, []);
+        item.cantidad = cantidad;
+        ticket.push(item);
+      }
+
+      if (ctx.modo === "cuenta_corriente") {
+        setPaymentMode("cuenta_corriente");
+      }
+
+      ctx.aplicado = true;
+      guardarContextoResolucionAjusteStock(ctx);
+      marcarPendienteEditado();
+      renderizarTicket();
+      mostrarMensaje(`Ajuste pendiente #${ctx.ajuste_id} precargado en ventas. Confirmalo manualmente.`);
+    }
+
     function agregarProductoManual() {
       const nombre = manualNombre.value.trim();
       const precio = Number(manualPrecio.value);
@@ -3569,6 +3690,7 @@
 
         renderCategoryPills();
         filtrarProductos();
+        aplicarContextoResolucionAjusteStock();
       } catch (error) {
         console.error("Error al cargar productos:", error);
         productosMasVendidos.innerHTML = '<div class="empty-state">Error al cargar productos.</div>';
@@ -3750,6 +3872,7 @@
 
       mostrarMensaje("Registrando venta...");
       botonRegistrar.disabled = true;
+      if (confirmarConfigCobro) confirmarConfigCobro.disabled = true;
 
       try {
         const total = getTicketTotal();
@@ -3829,6 +3952,8 @@
         }
 
         const ticketImpresion = crearSnapshotTicket(data.venta_id, cobro);
+        cerrarModal(modalCobroVenta);
+        guardarContextoResolucionAjusteStock(null);
         resetTicketEditor();
         mostrarMensaje(data.message || "Venta registrada", false, { ticket: ticketImpresion });
         await cargarProductos();
@@ -3838,6 +3963,8 @@
         mostrarMensaje("Error al conectar con el servidor", true);
       } finally {
         botonRegistrar.disabled = false;
+        if (confirmarConfigCobro) confirmarConfigCobro.disabled = false;
+        actualizarUiMercadoPagoPoint();
       }
     }
 
@@ -4010,9 +4137,11 @@
           : null;
 
         if (currentPendingId === ventaId) {
+          guardarContextoResolucionAjusteStock(null);
           resetTicketEditor();
         }
 
+        cerrarModal(modalCobroVenta);
         cerrarModal(modalPendientes);
         mostrarMensaje(data.message || "Ticket pendiente cobrado", false, ticketImpresion ? { ticket: ticketImpresion } : {});
         await cargarPendientes();
@@ -4274,6 +4403,10 @@
       guardarPendiente();
     });
 
+    if (cancelarResolucionAjuste) {
+      cancelarResolucionAjuste.addEventListener("click", cancelarResolucionAjusteStock);
+    }
+
     cerrarModalGuardar.addEventListener("click", function () {
       cerrarModal(modalGuardarPendiente);
     });
@@ -4283,7 +4416,7 @@
     });
 
     botonRegistrar.addEventListener("click", function () {
-      registrarVenta();
+      abrirModalCobroVenta();
     });
 
     botonNuevoTicket.addEventListener("click", function () {
@@ -4430,9 +4563,12 @@
 
     abrirConfigCobro?.addEventListener("click", abrirModalCobroVenta);
     cerrarConfigCobro?.addEventListener("click", cerrarModalCobroVenta);
-    confirmarConfigCobro?.addEventListener("click", confirmarModalCobroVenta);
+    confirmarConfigCobro?.addEventListener("click", registrarVenta);
     enviarPointTicket?.addEventListener("click", enviarIntentoMercadoPagoPoint);
     enviarPointModal?.addEventListener("click", enviarIntentoMercadoPagoPoint);
+    modalCobroVenta?.addEventListener("click", function (event) {
+      if (event.target === modalCobroVenta) cerrarModalCobroVenta();
+    });
     montoEfectivoNormal.addEventListener("input", actualizarVuelto);
     montoDebitoNormal.addEventListener("input", actualizarVuelto);
     montoRecibido.addEventListener("input", actualizarVuelto);
