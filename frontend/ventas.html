@@ -931,6 +931,17 @@
       min-width: 0;
     }
 
+    .account-type-warning {
+      border: 1px solid rgba(217, 154, 33, .35);
+      background: rgba(217, 154, 33, .1);
+      color: #7c4a03;
+      border-radius: 10px;
+      padding: 9px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+
     .checkout-section-label {
       font-size: 11px;
       font-weight: 800;
@@ -1789,6 +1800,10 @@
                 </div>
               </section>
 
+              <div class="account-type-warning hidden" id="clienteTipoCuentaAdvertencia">
+                Esta cuenta no es cliente comercial. Revisá impacto operativo antes de confirmar.
+              </div>
+
             <div class="ticket-actions-final">
               <button type="button" class="button warning" id="guardarPendiente">Guardar pendiente</button>
               <button type="button" class="button success" id="registrarVenta">Cobrar</button>
@@ -2041,6 +2056,7 @@
     const manualCantidad = document.getElementById("manualCantidad");
     const identificadorPendiente = document.getElementById("identificadorPendiente");
     const clienteVenta = document.getElementById("clienteVenta");
+    const clienteTipoCuentaAdvertencia = document.getElementById("clienteTipoCuentaAdvertencia");
     const botonAgregarManual = document.getElementById("agregarManual");
     const botonGuardarPendiente = document.getElementById("guardarPendiente");
     const botonRegistrar = document.getElementById("registrarVenta");
@@ -2558,9 +2574,14 @@
       const esConsumidorFinal = !clienteId || clienteId === CONSUMIDOR_FINAL_ID;
       const nombreCliente = esConsumidorFinal
         ? "Consumidor Final"
-        : option?.textContent || "Cliente seleccionado";
-      clienteResumen.innerText = nombreCliente;
-      ticketTitle.innerText = nombreCliente;
+        : option?.dataset?.nombreCliente || option?.textContent || "Cliente seleccionado";
+      const tipoCuenta = !esConsumidorFinal ? tipoCuentaCorrienteLabel(option?.dataset?.tipoCuentaCorriente) : "";
+      const tipoComercial = !esConsumidorFinal ? tipoClienteComercialLabel(option?.dataset?.tipoCliente) : "";
+      const etiquetaCliente = tipoCuenta ? `${nombreCliente} - Comercial: ${tipoComercial} - Operativa: ${tipoCuenta}` : nombreCliente;
+      clienteResumen.innerText = etiquetaCliente;
+      ticketTitle.innerText = etiquetaCliente;
+      const tipoCuentaRaw = String(option?.dataset?.tipoCuentaCorriente || "cliente").trim().toLowerCase();
+      clienteTipoCuentaAdvertencia?.classList.toggle("hidden", esConsumidorFinal || tipoCuentaRaw === "cliente");
     }
 
     function abrirClienteSelector() {
@@ -2575,6 +2596,47 @@
 
     function formatearNumero(valor) {
       return Number(valor || 0).toFixed(2);
+    }
+
+    function tipoCuentaCorrienteLabel(valor) {
+      const labels = { cliente: "Cliente", personal: "Personal", interna: "Interna", produccion: "Producción", cortesia: "Cortesía" };
+      return labels[String(valor || "cliente").trim().toLowerCase()] || "Cliente";
+    }
+
+    function tipoClienteComercialLabel(valor) {
+      const labels = { cliente: "Cliente", colaborador: "Colaborador", "dueño": "Dueño", negocio: "Negocio" };
+      return labels[String(valor || "cliente").trim().toLowerCase()] || "Cliente";
+    }
+
+    function tipoCuentaCorrienteSeleccionada() {
+      const option = clienteVenta?.options?.[clienteVenta.selectedIndex];
+      const tipo = String(option?.dataset?.tipoCuentaCorriente || "cliente").trim().toLowerCase();
+      return ["cliente", "personal", "interna", "produccion", "cortesia"].includes(tipo) ? tipo : "cliente";
+    }
+
+    function mensajeConfirmacionCuentaCorriente(tipo) {
+      const secundarios = {
+        interna: "El consumo interno normalmente no debería impactar como cobranza comercial.",
+        produccion: "Producción debería migrar a flujo productivo en etapas futuras.",
+        cortesia: "Las cortesías normalmente representan gasto comercial y no cobranza."
+      };
+      return `Esta cuenta no representa deuda comercial de cliente. Confirmá que querés usar el flujo general de cuenta corriente.\n\n${secundarios[tipo] || ""}`;
+    }
+
+    function confirmarCuentaCorrientePorTipo() {
+      if (!esCuentaCorriente?.checked) return true;
+      const tipo = tipoCuentaCorrienteSeleccionada();
+      if (tipo === "cliente") return true;
+      if (tipo === "personal") {
+        mostrarMensaje("Cuenta asignada a personal. Revisá si corresponde consumo interno o descuento.", false);
+        return true;
+      }
+      return confirm(mensajeConfirmacionCuentaCorriente(tipo));
+    }
+
+    function registrarVentaConConfirmacionCuenta() {
+      if (!confirmarCuentaCorrientePorTipo()) return;
+      registrarVenta();
     }
 
     function getNombreMetodoCobroActual() {
@@ -3746,8 +3808,13 @@
             return;
           }
           const option = document.createElement("option");
+          const tipoCuenta = tipoCuentaCorrienteLabel(cliente.tipo_cuenta_corriente);
+          const tipoComercial = tipoClienteComercialLabel(cliente.tipo_cliente);
           option.value = cliente.id;
-          option.textContent = cliente.nombre;
+          option.dataset.tipoCuentaCorriente = cliente.tipo_cuenta_corriente || "cliente";
+          option.dataset.tipoCliente = cliente.tipo_cliente || "cliente";
+          option.dataset.nombreCliente = cliente.nombre || "";
+          option.textContent = `${cliente.nombre} - Comercial: ${tipoComercial} - Operativa: ${tipoCuenta}`;
           clienteVenta.appendChild(option);
           clienteVentaModal.appendChild(option.cloneNode(true));
         });
@@ -4396,6 +4463,9 @@
       if (mode === "cuenta_corriente") {
         esCuentaCorriente.checked = true;
         tipoCobroNormal.value = "efectivo";
+        if (tipoCuentaCorrienteSeleccionada() === "personal") {
+          mostrarMensaje("Cuenta asignada a personal. Revisá si corresponde consumo interno o descuento.", false);
+        }
       } else if (mode === "transferencia") {
         esCuentaCorriente.checked = false;
         tipoCobroNormal.value = "transferencia";
@@ -4594,7 +4664,7 @@
 
     abrirConfigCobro?.addEventListener("click", abrirModalCobroVenta);
     cerrarConfigCobro?.addEventListener("click", cerrarModalCobroVenta);
-    confirmarConfigCobro?.addEventListener("click", registrarVenta);
+    confirmarConfigCobro?.addEventListener("click", registrarVentaConConfirmacionCuenta);
     enviarPointTicket?.addEventListener("click", enviarIntentoMercadoPagoPoint);
     enviarPointModal?.addEventListener("click", enviarIntentoMercadoPagoPoint);
     modalCobroVenta?.addEventListener("click", function (event) {
