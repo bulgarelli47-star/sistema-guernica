@@ -2304,8 +2304,43 @@
       gap: 8px;
     }
 
-    .cash-audit-summary .audit-mini-grid {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+    .cash-audit-flow {
+      display: grid;
+      gap: 7px;
+    }
+
+    .cash-audit-line {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      background: #fff;
+    }
+
+    .cash-audit-line small {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    .cash-audit-line strong {
+      font-size: 15px;
+      text-align: right;
+    }
+
+    .cash-audit-line.secondary {
+      background: #f8fafc;
+      border-style: dashed;
+    }
+
+    .cash-audit-line.secondary strong {
+      color: var(--muted);
+      font-size: 13px;
     }
 
     .cash-audit-summary .button {
@@ -2454,31 +2489,51 @@
       font-size: 14px;
     }
 
+    .audit-result-section .audit-mini-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .accounts-table {
       display: grid;
       gap: 6px;
-      overflow-x: auto;
     }
 
     .accounts-row {
       display: grid;
-      grid-template-columns: minmax(150px, 1.15fr) repeat(6, minmax(90px, .72fr)) auto auto;
-      gap: 6px;
-      align-items: end;
-      min-width: 980px;
+      grid-template-columns: minmax(150px, 1.4fr) repeat(3, minmax(82px, .8fr)) auto auto;
+      gap: 8px;
+      align-items: center;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      background: #ffffff;
     }
 
     .accounts-row.sin-cuenta-destino {
       opacity: .82;
       border: 1px dashed rgba(217, 154, 33, .45);
-      border-radius: 12px;
-      padding: 6px;
       background: rgba(217, 154, 33, .06);
     }
 
-    .account-name-field {
+    .account-name-field,
+    .account-row-name,
+    .account-row-metric {
       display: grid;
       gap: 4px;
+    }
+
+    .account-row-name strong,
+    .account-row-metric strong {
+      font-size: 13px;
+    }
+
+    .account-row-metric span,
+    .account-row-name span {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .04em;
     }
 
     .account-channel-hint {
@@ -2522,6 +2577,25 @@
       align-self: end;
       display: flex;
       justify-content: flex-end;
+    }
+
+    .account-row-actions .button {
+      min-height: 34px;
+      white-space: nowrap;
+    }
+
+    .accounts-empty-state {
+      padding: 10px 12px;
+      border: 1px dashed var(--border);
+      border-radius: 11px;
+      color: var(--muted);
+      background: #ffffff;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .account-row-hidden-fields {
+      display: none;
     }
 
     .accounts-row .field {
@@ -2671,6 +2745,13 @@
       padding: 22px;
     }
 
+    .audit-result-note {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
     /* ── Fórmula efectivo arqueo ───────────────────────────────── */
     .audit-formula-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px; padding: 8px 0 4px; }
     .audit-formula-item { display: flex; flex-direction: column; gap: 2px; text-align: center; }
@@ -2678,6 +2759,38 @@
     .audit-formula-item strong { font-size: 15px; font-weight: 800; }
     .audit-formula-resultado strong { color: var(--primary); font-size: 17px; }
     .audit-formula-op { font-size: 18px; font-weight: 700; color: var(--muted); padding-bottom: 2px; align-self: flex-end; }
+    .audit-formula-secondary {
+      margin-top: 4px;
+      padding: 6px 8px;
+      border: 1px dashed var(--border);
+      border-radius: 10px;
+      background: #f8fafc;
+      opacity: .86;
+    }
+    .audit-formula-secondary .audit-formula-item strong {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .audit-formula-secondary .audit-formula-op {
+      font-size: 13px;
+      padding-bottom: 1px;
+    }
+
+    .audit-technical-detail {
+      margin-top: 4px;
+    }
+
+    .audit-technical-detail summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      list-style-position: inside;
+    }
+
+    .audit-technical-detail[open] summary {
+      margin-bottom: 6px;
+    }
     /* ── Saldos iniciales en apertura ─────────────────────────── */
     .saldos-apertura-section { display: grid; gap: 8px; }
     .saldos-apertura-section > .section-note { font-size: 12px; color: var(--muted); }
@@ -3804,28 +3917,21 @@
           <article class="card audit-card">
             <h3>A) Efectivo físico</h3>
             <div class="cash-audit-summary">
-              <div class="audit-mini-grid">
-                <div><small>Saldo inicial</small><strong id="arqueoEfectivoPanelInicial">$0.00</strong></div>
-                <div><small>Esperado sistema</small><strong id="arqueoEfectivoPanelEsperado">$0.00</strong></div>
-                <div><small>Contado / real</small><strong id="arqueoEfectivoPanelContado">$0.00</strong></div>
-                <div><small>Diferencia</small><strong id="arqueoEfectivoPanelDiferencia">$0.00</strong></div>
+              <div class="cash-audit-flow">
+                <div class="cash-audit-line"><small>Saldo inicial</small><strong id="arqueoEfectivoPanelInicial">$0.00</strong></div>
+                <div class="cash-audit-line"><small>Contado / real</small><strong id="arqueoEfectivoPanelContado">$0.00</strong></div>
+                <div class="cash-audit-line"><small>Diferencia</small><strong id="arqueoEfectivoPanelDiferencia">$0.00</strong></div>
+                <div class="cash-audit-line"><small>Estado</small><span class="account-diff-pill pendiente" id="arqueoEfectivoPanelEstado">Pendiente de arqueo</span></div>
+                <div class="cash-audit-line secondary"><small>Esperado por sistema</small><strong id="arqueoEfectivoPanelEsperado">$0.00</strong></div>
               </div>
               <p class="muted">El romaneo por billetes se carga en el modal para mantener este panel operativo.</p>
-              <button type="button" class="button secondary" id="abrirArqueoEfectivo">Arqueo efectivo</button>
+              <button type="button" class="button secondary" id="abrirArqueoEfectivo">Abrir arqueo efectivo</button>
             </div>
           </article>
 
           <article class="card audit-card">
             <h3>B) Cuentas digitales</h3>
             <p class="muted">Cada cuenta se concilia individualmente. El efectivo se controla aparte con el romaneo.</p>
-            <div class="system-expected-card" id="arqueoSistemaLegacyWrap">
-              <span class="muted">Movimientos brutos del turno (sin saldo inicial)</span>
-              <div class="audit-mini-grid">
-                <div><small>Débito / crédito</small><strong>$<span id="arqueoSistemaDebito">0.00</span></strong></div>
-                <div><small>Transferencia</small><strong>$<span id="arqueoSistemaTransferencia">0.00</span></strong></div>
-                <div><small>Mixtas</small><strong><span id="arqueoSistemaMixtas">0</span></strong></div>
-              </div>
-            </div>
             <div class="accounts-table" id="cuentasDigitalesBody"></div>
             <div class="audit-result-line">
               <span>Total saldo real en cuentas</span>
@@ -3836,6 +3942,17 @@
               <strong id="arqueoDiferenciaDigital">$0.00</strong>
             </div>
             <div class="audit-status" id="arqueoDiferenciaDigitalEstado"><span aria-hidden="true">&#10003;</span><span>Sobra</span></div>
+            <details class="audit-technical-detail" id="arqueoSistemaLegacyWrap">
+              <summary>Ver movimientos brutos del turno</summary>
+              <div class="system-expected-card">
+                <span class="muted">Movimientos brutos del turno (sin saldo inicial)</span>
+                <div class="audit-mini-grid">
+                  <div><small>Débito / crédito</small><strong>$<span id="arqueoSistemaDebito">0.00</span></strong></div>
+                  <div><small>Transferencia</small><strong>$<span id="arqueoSistemaTransferencia">0.00</span></strong></div>
+                  <div><small>Mixtas</small><strong><span id="arqueoSistemaMixtas">0</span></strong></div>
+                </div>
+              </div>
+            </details>
           </article>
 
           <article class="card audit-card">
@@ -3843,29 +3960,37 @@
 
             <div class="audit-result-section">
               <strong>Efectivo</strong>
-              <div class="audit-formula-row">
-                <span class="audit-formula-item"><small>Saldo inicial</small><strong id="arqueoEfectivoInicialDisplay">$0.00</strong></span>
-                <span class="audit-formula-op">+</span>
-                <span class="audit-formula-item"><small>Ventas efectivo</small><strong id="arqueoEfectivoIngresosDisplay">$0.00</strong></span>
-                <span class="audit-formula-op">−</span>
-                <span class="audit-formula-item"><small>Pagos efectivo</small><strong id="arqueoEfectivoEgresosDisplay">$0.00</strong></span>
-                <span class="audit-formula-op">=</span>
-                <span class="audit-formula-item audit-formula-resultado"><small>Esperado final</small><strong>$<span id="resultadoEfectivoEsperado">0.00</span></strong></span>
-              </div>
-              <div class="audit-mini-grid" style="margin-top: 8px">
+              <div class="audit-mini-grid">
+                <div><small>Esperado por sistema</small><strong>$<span id="resultadoEfectivoEsperado">0.00</span></strong></div>
                 <div class="real-loaded-card is-pending" id="resultadoEfectivoRealCard"><small>Real cargado</small><strong>$<span id="resultadoEfectivoContado">0.00</span></strong><small id="resultadoEfectivoPendienteEstado" class="concil-saldo-hint">Pendiente de arqueo</small></div>
                 <div><small>Diferencia</small><strong id="resultadoDiferenciaEfectivo">$0.00</strong></div>
+                <div><small>Estado</small><span class="account-diff-pill pendiente" id="resultadoEfectivoEstado">Pendiente de arqueo</span></div>
               </div>
+              <p class="audit-result-note">El arqueo físico se carga desde Abrir arqueo efectivo. El detalle de saldo inicial, ventas y pagos queda como detalle técnico.</p>
+              <details class="audit-technical-detail">
+                <summary>Ver detalle técnico</summary>
+                <div class="audit-formula-row audit-formula-secondary" aria-label="Detalle del calculo de efectivo esperado">
+                  <span class="audit-formula-item"><small>Saldo inicial</small><strong id="arqueoEfectivoInicialDisplay">$0.00</strong></span>
+                  <span class="audit-formula-op">+</span>
+                  <span class="audit-formula-item"><small>Ventas efectivo</small><strong id="arqueoEfectivoIngresosDisplay">$0.00</strong></span>
+                  <span class="audit-formula-op">−</span>
+                  <span class="audit-formula-item"><small>Pagos efectivo</small><strong id="arqueoEfectivoEgresosDisplay">$0.00</strong></span>
+                  <span class="audit-formula-op">=</span>
+                  <span class="audit-formula-item audit-formula-resultado"><small>Esperado</small><strong>ver arriba</strong></span>
+                </div>
+              </details>
               <small id="arqueoEfectivoSinInicialNota" class="concil-saldo-hint" hidden>Sin saldo inicial — esperado usa solo movimientos del turno.</small>
             </div>
 
             <div class="audit-result-section">
               <strong>Cuentas digitales / bancarias</strong>
               <div class="audit-mini-grid">
-                <div><small>Esperado final <span class="muted">(ini + mov.)</span></small><strong>$<span id="resultadoDigitalEsperado">0.00</span></strong></div>
-                <div><small>Total real en cuentas</small><strong>$<span id="resultadoDigitalReal">0.00</span></strong></div>
+                <div><small>Esperado final</small><strong>$<span id="resultadoDigitalEsperado">0.00</span></strong></div>
+                <div><small>Real conciliado</small><strong>$<span id="resultadoDigitalReal">0.00</span></strong></div>
                 <div><small>Diferencia</small><strong id="resultadoDiferenciaDigital">$0.00</strong></div>
+                <div><small>Estado</small><span class="account-diff-pill pendiente" id="resultadoDigitalEstado">Pendiente</span></div>
               </div>
+              <p class="audit-result-note">Cada cuenta se corrige desde el boton Conciliar.</p>
               <small id="arqueoDigitalSinInicialNota" class="concil-saldo-hint" hidden>Sin saldo inicial — esperado usa solo movimientos del turno.</small>
             </div>
           </article>
@@ -4339,6 +4464,7 @@
     const arqueoEfectivoPanelEsperado = document.getElementById("arqueoEfectivoPanelEsperado");
     const arqueoEfectivoPanelContado = document.getElementById("arqueoEfectivoPanelContado");
     const arqueoEfectivoPanelDiferencia = document.getElementById("arqueoEfectivoPanelDiferencia");
+    const arqueoEfectivoPanelEstado = document.getElementById("arqueoEfectivoPanelEstado");
     const modalArqueoSaldoInicial = document.getElementById("modalArqueoSaldoInicial");
     const modalArqueoVentasEfectivo = document.getElementById("modalArqueoVentasEfectivo");
     const modalArqueoPagosEfectivo = document.getElementById("modalArqueoPagosEfectivo");
@@ -4357,9 +4483,11 @@
     const resultadoEfectivoContado = document.getElementById("resultadoEfectivoContado");
     const resultadoEfectivoPendienteEstado = document.getElementById("resultadoEfectivoPendienteEstado");
     const resultadoDiferenciaEfectivo = document.getElementById("resultadoDiferenciaEfectivo");
+    const resultadoEfectivoEstado = document.getElementById("resultadoEfectivoEstado");
     const resultadoDigitalEsperado = document.getElementById("resultadoDigitalEsperado");
     const resultadoDigitalReal = document.getElementById("resultadoDigitalReal");
     const resultadoDiferenciaDigital = document.getElementById("resultadoDiferenciaDigital");
+    const resultadoDigitalEstado = document.getElementById("resultadoDigitalEstado");
     const observacionesArqueo = document.getElementById("observacionesArqueo");
     const botonGuardarArqueo = document.getElementById("guardarArqueoVisual");
     const botonEditarArqueo = document.getElementById("editarArqueoVisual");
@@ -5041,7 +5169,11 @@
     function renderizarCuentasDigitales() {
       cuentasDigitalesBody.innerHTML = "";
       cuentaInputs.length = 0;
-      getCuentasArqueoBase().forEach((cuenta) => {
+      const cuentasBase = getCuentasArqueoBase();
+      if (!cuentasBase.length) {
+        cuentasDigitalesBody.innerHTML = '<div class="accounts-empty-state">No hay cuentas digitales con movimiento para conciliar.</div>';
+      }
+      cuentasBase.forEach((cuenta) => {
         const row = document.createElement("div");
         row.className = `accounts-row ${cuenta.sin_cuenta_destino ? "sin-cuenta-destino" : ""}`;
         const readonlyCuenta = cuenta.bloqueada ? "readonly" : "";
@@ -5055,15 +5187,25 @@
           ? getCuentaDestinoKey({ cuenta_destino_id: cuenta.cuenta_destino_id, sin_cuenta_destino: cuenta.sin_cuenta_destino })
           : "";
         row.innerHTML = `
-          <label class="account-name-field"><span>Cuenta</span><input type="text" class="field" value="${cuenta.nombre}" ${readonlyCuenta} />${cuenta.ejeDestino ? `<small class="account-channel-hint">${cuenta.tipo_destino || "otro"} · ${canales}</small>` : ""}</label>
-          <label><span>Saldo inicial</span><input type="number" class="field" value="${cuenta.saldo_inicial}" step="0.01" ${readonlyInicial} /></label>
-          <label><span>Ingresos</span><input type="number" class="field" value="${Number(cuenta.ingresos || 0).toFixed(2)}" step="0.01" readonly /></label>
-          <label><span>Egresos</span><input type="number" class="field" value="${Number(cuenta.egresos || 0).toFixed(2)}" step="0.01" readonly /></label>
-          <label><span>Saldo esperado</span><input type="number" class="field" value="${saldoEsperado.toFixed(2)}" step="0.01" readonly /></label>
-          <label><span>Saldo real (en cuenta)</span><input type="number" class="field" value="${cuenta.saldo_actual}" step="0.01" /></label>
-          <label><span>Diferencia</span><input type="text" class="field" value="${money(diferenciaInicial)}" disabled /></label>
+          <div class="account-row-name">
+            <span>Cuenta / billetera</span>
+            <strong data-account-display="nombre">${cuenta.nombre}</strong>
+            ${cuenta.ejeDestino ? `<small class="account-channel-hint">${cuenta.tipo_destino || "otro"} · ${canales}</small>` : ""}
+          </div>
+          <div class="account-row-metric"><span>Esperado</span><strong data-account-display="esperado">${money(saldoEsperado)}</strong></div>
+          <div class="account-row-metric"><span>Real</span><strong data-account-display="real">${money(cuenta.saldo_actual)}</strong></div>
+          <div class="account-row-metric"><span>Diferencia</span><strong data-account-display="diferencia" class="${diferenciaInicial < 0 ? "negative-text" : "positive-text"}">${money(diferenciaInicial)}</strong></div>
           <span class="account-diff-pill pendiente">Pendiente</span>
           <span class="account-row-actions">${cuenta.ejeDestino ? `<button type="button" class="button secondary compact" data-conciliar-digital="${destinoKey}">Conciliar</button>` : ""}</span>
+          <span class="account-row-hidden-fields" aria-hidden="true">
+            <input type="text" class="field" value="${cuenta.nombre}" ${readonlyCuenta} />
+            <input type="number" class="field" value="${cuenta.saldo_inicial}" step="0.01" ${readonlyInicial} />
+            <input type="number" class="field" value="${Number(cuenta.ingresos || 0).toFixed(2)}" step="0.01" readonly />
+            <input type="number" class="field" value="${Number(cuenta.egresos || 0).toFixed(2)}" step="0.01" readonly />
+            <input type="number" class="field" value="${saldoEsperado.toFixed(2)}" step="0.01" readonly />
+            <input type="number" class="field" value="${cuenta.saldo_actual}" step="0.01" />
+            <input type="text" class="field" value="${money(diferenciaInicial)}" disabled />
+          </span>
         `;
         const [nombre, saldoInicial, ingresosInput, egresosInput, saldoEsperadoInput, saldoActual, diferenciaInput] = row.querySelectorAll("input");
         const estado = row.querySelector(".account-diff-pill");
@@ -5084,7 +5226,11 @@
           saldoInicial,
           saldoActual,
           diferenciaInput,
-          estado
+          estado,
+          nombreDisplay: row.querySelector('[data-account-display="nombre"]'),
+          esperadoDisplay: row.querySelector('[data-account-display="esperado"]'),
+          realDisplay: row.querySelector('[data-account-display="real"]'),
+          diferenciaDisplay: row.querySelector('[data-account-display="diferencia"]')
         };
         cuentaInputs.push(item);
         [nombre, saldoInicial, saldoActual].forEach((input) => {
@@ -5114,6 +5260,14 @@
         const diferencia = Number((Number(cuenta.saldoActual.value || 0) - saldoEsperado).toFixed(2));
         if (cuenta.saldoEsperadoInput) cuenta.saldoEsperadoInput.value = saldoEsperado.toFixed(2);
         if (cuenta.diferenciaInput) cuenta.diferenciaInput.value = money(diferencia);
+        if (cuenta.nombreDisplay) cuenta.nombreDisplay.textContent = cuenta.nombre.value.trim() || "Cuenta";
+        if (cuenta.esperadoDisplay) cuenta.esperadoDisplay.textContent = money(saldoEsperado);
+        if (cuenta.realDisplay) cuenta.realDisplay.textContent = money(Number(cuenta.saldoActual.value || 0));
+        if (cuenta.diferenciaDisplay) {
+          cuenta.diferenciaDisplay.textContent = money(diferencia);
+          cuenta.diferenciaDisplay.classList.toggle("positive-text", diferencia >= 0);
+          cuenta.diferenciaDisplay.classList.toggle("negative-text", diferencia < 0);
+        }
         if (cuenta.estado) {
           cuenta.estado.className = "account-diff-pill";
           if (cuenta.sinCuentaDestino) {
@@ -5234,10 +5388,26 @@
         resultadoEfectivoPendienteEstado.hidden = arqueoCargado;
       }
       if (resultadoEfectivoRealCard) resultadoEfectivoRealCard.classList.toggle("is-pending", !arqueoCargado);
+      if (arqueoEfectivoPanelEstado) {
+        arqueoEfectivoPanelEstado.className = `account-diff-pill ${arqueoCargado ? "conciliado" : "pendiente"}`;
+        arqueoEfectivoPanelEstado.textContent = arqueoCargado ? "Arqueo cargado" : "Pendiente de arqueo";
+      }
+      if (resultadoEfectivoEstado) {
+        resultadoEfectivoEstado.className = `account-diff-pill ${arqueoCargado ? (Math.abs(diferencia) < 0.01 ? "conciliado" : "diferencia") : "pendiente"}`;
+        resultadoEfectivoEstado.textContent = arqueoCargado
+          ? (Math.abs(diferencia) < 0.01 ? "Cuadra" : (diferencia < 0 ? "Falta" : "Sobra"))
+          : "Pendiente de arqueo";
+      }
       setSignedValue(resultadoDiferenciaEfectivo, diferencia);
       resultadoDigitalEsperado.innerText = formatearNumero(digitalEsperado);
       resultadoDigitalReal.innerText = formatearNumero(digitalReal);
       setSignedValue(resultadoDiferenciaDigital, diferenciaDigital);
+      if (resultadoDigitalEstado) {
+        resultadoDigitalEstado.className = `account-diff-pill ${Math.abs(diferenciaDigital) < 0.01 ? "conciliado" : "diferencia"}`;
+        resultadoDigitalEstado.textContent = Math.abs(diferenciaDigital) < 0.01
+          ? "Cuadra"
+          : (diferenciaDigital < 0 ? "Falta" : "Sobra");
+      }
 
       // Fórmula efectivo (Etapa 4 — breakdown visual)
       const iniEfectivo = calcularEfectivoSaldoInicial();
