@@ -1567,7 +1567,7 @@
           <div class="avatar">JP</div>
           <div>
             <strong>Juan Perez</strong>
-            <small>Administrador</small>
+            <small>Dueño</small>
           </div>
           <span class="app-icon icon-chevron" aria-hidden="true"></span>
         </div>
@@ -1805,7 +1805,7 @@
               </div>
 
             <div class="ticket-actions-final">
-              <button type="button" class="button warning" id="guardarPendiente">Guardar pendiente</button>
+              <button type="button" class="button warning" id="guardarPendiente">Guardar como pendiente</button>
               <button type="button" class="button success" id="registrarVenta">Cobrar</button>
             </div>
             </div>
@@ -3145,7 +3145,7 @@
           ? "Guardar y cobrar"
           : "Cobrar pendiente"
         : "Cobrar";
-      botonGuardarPendiente.innerText = currentPendingId ? "Guardar cambios" : "Guardar pendiente (F5)";
+      botonGuardarPendiente.innerText = currentPendingId ? "Guardar cambios" : "Guardar como pendiente";
     }
 
     function marcarPendienteEditado() {

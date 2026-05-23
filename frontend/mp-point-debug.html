@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Diagnóstico MP Point - Sistema Guernica</title>
+  <style>
+    :root{--header-height:88px;--sidebar-width:270px;--bg:#f7f7fb;--surface:#fff;--header:#16052e;--text:#111827;--muted:#6b7280;--border:#e5e7eb;--primary:#6d28d9;--primary-soft:#f0e5ff;--success:#22a35a;--danger:#e05252;--warning:#d99a21;--shadow:0 12px 30px rgba(31,11,63,.08);--radius:18px}
+    *{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#fbfaff 0%,var(--bg) 100%);color:var(--text);font-family:"Segoe UI",Tahoma,Geneva,Verdana,sans-serif}button,input,select,textarea{font:inherit}button{cursor:pointer}
+    .site-header{position:fixed;inset:0 0 auto 0;z-index:30;min-height:var(--header-height);background:var(--header);box-shadow:var(--shadow)}.topbar{min-height:var(--header-height);display:flex;justify-content:space-between;align-items:center;gap:16px;color:#fff;padding:18px 28px}.topbar-left,.brand-block{display:flex;align-items:center;gap:16px;min-width:0}.logo-mark{width:54px;height:54px;border-radius:18px;display:grid;place-items:center;background:linear-gradient(135deg,#2b0b53 0%,#7c3aed 100%);font-size:28px;font-weight:900}.logo-text strong{display:block;letter-spacing:.08em}.logo-text small,.topbar-title p{color:rgba(255,255,255,.78)}.topbar-divider{width:1px;height:42px;background:rgba(255,255,255,.16)}.topbar-title h1{margin:0;font-size:26px}.topbar-title p{margin:6px 0 0}.top-actions{display:flex;align-items:center;gap:10px}
+    .app-shell{max-width:860px;margin:0 auto;padding:calc(var(--header-height) + 28px) 24px 40px}
+    .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:24px;display:grid;gap:18px}
+    h2{margin:0;font-size:20px}h3{margin:0;font-size:15px}p{margin:0}.muted{color:var(--muted)}
+    .button{border:0;border-radius:12px;padding:10px 20px;background:var(--primary);color:#fff;font-weight:800;min-height:42px;font-size:15px}.button:disabled{opacity:.6;cursor:not-allowed}.button.secondary{background:#eef2ff;color:#3730a3}
+    .notice{border:1px solid #fde68a;background:#fffbeb;color:#92400e;border-radius:14px;padding:12px 16px;font-size:14px;font-weight:600}
+    .alert-danger{border:1px solid #fca5a5;background:#fef2f2;color:#991b1b;border-radius:14px;padding:12px 16px;font-size:14px;font-weight:600}
+    .alert-ok{border:1px solid #6ee7b7;background:#f0fdf4;color:#166534;border-radius:14px;padding:12px 16px;font-size:14px;font-weight:600}
+    #resultados{display:none}
+    .terminal-card{border:1px solid var(--border);border-radius:14px;padding:14px 16px;background:#fafafa;display:grid;gap:6px}
+    .terminal-card strong{font-size:15px}.terminal-row{display:flex;gap:8px;font-size:13px}.terminal-label{color:var(--muted);min-width:100px;font-weight:700}.badge{display:inline-block;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700;background:#e5e7eb;color:#374151}.badge.available{background:#d1fae5;color:#065f46}.badge.busy{background:#fde68a;color:#92400e}.badge.offline{background:#fee2e2;color:#991b1b}
+    .terminals-grid{display:grid;gap:10px}
+    pre{background:#f1f5f9;border:1px solid var(--border);border-radius:12px;padding:14px;font-size:12px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0}
+    .filter-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}.filter-row label{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:700}.filter-row label span small{font-weight:400;font-size:11px}.filter-row input{width:100%;border:1px solid var(--border);border-radius:12px;padding:9px 12px;color:var(--text);background:#fff;outline:none;font-size:14px}.filter-row input:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(109,40,217,.12)}
+    .variants-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.variants-label{font-size:12px;font-weight:700;color:var(--muted)}.btn-variant{border:1px solid var(--border);border-radius:8px;background:#fff;color:var(--primary);font-size:12px;font-weight:700;padding:4px 10px;cursor:pointer}.btn-variant:hover{background:var(--primary-soft)}
+    .hint-text{font-size:12px;color:var(--muted);margin:0;line-height:1.5}
+    .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    @media(max-width:600px){.app-shell{padding-top:calc(var(--header-height) + 16px)}.card{padding:16px}}
+  </style>
+  <link rel="stylesheet" href="/nav-icons.css?v=6" />
+  <link rel="stylesheet" href="/user-menu.css?v=4" />
+  <script src="/auth-interceptor.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="topbar">
+      <div class="topbar-left">
+        <div class="brand-block">
+          <div class="logo-mark">G</div>
+          <div class="logo-text"><strong>GUERNICA</strong><small>Sistema de gestión</small></div>
+        </div>
+        <div class="topbar-divider"></div>
+        <div class="topbar-title">
+          <h1>Diagnóstico MP Point</h1>
+          <p>Verificación de terminales Mercado Pago Point</p>
+        </div>
+      </div>
+      <div class="top-actions" id="userMenuContainer"></div>
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <div class="card">
+      <div>
+        <h2>Terminales Mercado Pago Point</h2>
+        <p class="muted">Consulta local — el access token nunca se expone en el navegador.</p>
+      </div>
+
+      <div class="notice">
+        Necesitás tener configurado <code>MERCADOPAGO_ACCESS_TOKEN</code> en el archivo <code>.env</code> de la raíz del proyecto antes de consultar.
+      </div>
+
+      <div class="filter-row">
+        <label>
+          <span>store_id <small>(opcional)</small></span>
+          <input type="text" id="inputStoreId" placeholder="Ej: 123456789" autocomplete="off" />
+        </label>
+        <label>
+          <span>pos_id <small>(opcional)</small></span>
+          <input type="text" id="inputPosId" placeholder="Ej: 987654321" autocomplete="off" />
+        </label>
+      </div>
+
+      <div class="actions">
+        <button class="button" id="btnConsultar">Consultar terminales</button>
+        <button class="button secondary" id="btnLimpiar" style="display:none">Limpiar</button>
+        <span id="estadoCarga" class="muted" style="font-size:14px"></span>
+      </div>
+
+      <div id="mensajeError" class="alert-danger" style="display:none"></div>
+
+      <div id="resultados">
+        <div id="mensajeOk" class="alert-ok" style="display:none"></div>
+        <div class="terminals-grid" id="terminalesGrid"></div>
+        <details open style="margin-top:10px">
+          <summary style="cursor:pointer;color:var(--muted);font-size:13px;font-weight:700;margin-bottom:6px">Raw MP response (/terminals/v1/list)</summary>
+          <pre id="jsonRaw"></pre>
+        </details>
+      </div>
+    </div>
+
+    <div class="card">
+      <div>
+        <h2>Probar terminal manualmente</h2>
+        <p class="muted">Crea una orden de diagnóstico usando el serial de la terminal. No registra venta, no impacta caja.</p>
+      </div>
+
+      <div class="filter-row">
+        <label>
+          <span>terminal_id <small>(probar variantes — ver sugerencias abajo)</small></span>
+          <input type="text" id="inputTerminalId" placeholder="Ej: SMARTPOS__1491130316" autocomplete="off" />
+        </label>
+        <label>
+          <span>monto <small>(monto mínimo de prueba)</small></span>
+          <input type="number" id="inputMonto" value="100" min="1" step="1" />
+        </label>
+      </div>
+
+      <div class="variants-row">
+        <span class="variants-label">Variantes a probar:</span>
+        <button type="button" class="btn-variant" data-val="SMARTPOS__1491130316">SMARTPOS__1491130316</button>
+        <button type="button" class="btn-variant" data-val="SMARTPOS1491130316">SMARTPOS1491130316</button>
+        <button type="button" class="btn-variant" data-val="1491130316">1491130316</button>
+      </div>
+      <p class="hint-text">El formato esperado por MP es <code>FABRICANTE__SERIAL</code> (doble guión bajo). El serial crudo no pasa validación. Una vez que <code>/terminals/v1/list</code> devuelva la terminal, usar el <code>id</code> exacto que retorne.</p>
+
+      <div class="filter-row">
+        <label>
+          <span>store_id <small>(opcional)</small></span>
+          <input type="text" id="inputStoreId2" placeholder="Ej: 33963388" autocomplete="off" />
+        </label>
+        <label>
+          <span>pos_id <small>(opcional)</small></span>
+          <input type="text" id="inputPosId2" placeholder="Ej: 132183009" autocomplete="off" />
+        </label>
+      </div>
+
+      <div class="actions">
+        <button class="button" id="btnTestOrden">Probar terminal</button>
+        <button class="button secondary" id="btnLimpiarOrden" style="display:none">Limpiar</button>
+        <span id="estadoOrden" class="muted" style="font-size:14px"></span>
+      </div>
+
+      <div id="mensajeOrdenError" class="alert-danger" style="display:none"></div>
+      <div id="resultadosOrden" style="display:none">
+        <div id="mensajeOrdenOk" class="alert-ok" style="display:none"></div>
+        <details open style="margin-top:4px">
+          <summary style="cursor:pointer;color:var(--muted);font-size:13px;font-weight:700;margin-bottom:6px">Raw /point/integration-api/devices/{id}/payment-intents</summary>
+          <pre id="jsonOrdenPaymentIntents"></pre>
+        </details>
+        <details open style="margin-top:10px">
+          <summary style="cursor:pointer;color:var(--muted);font-size:13px;font-weight:700;margin-bottom:6px">Raw /v1/orders (type: point)</summary>
+          <pre id="jsonOrdenV1Orders"></pre>
+        </details>
+      </div>
+    </div>
+
+    <p style="text-align:center;color:var(--muted);font-size:12px;margin-top:18px">
+      Esta página es solo para diagnóstico local. No modifica datos productivos.
+    </p>
+  </div>
+
+  <script src="/user-menu.js?v=7" defer></script>
+  <script>
+    const btnConsultar = document.getElementById("btnConsultar");
+    const btnLimpiar = document.getElementById("btnLimpiar");
+    const estadoCarga = document.getElementById("estadoCarga");
+    const mensajeError = document.getElementById("mensajeError");
+    const resultados = document.getElementById("resultados");
+    const mensajeOk = document.getElementById("mensajeOk");
+    const terminalesGrid = document.getElementById("terminalesGrid");
+    const jsonRaw = document.getElementById("jsonRaw");
+    const inputStoreId = document.getElementById("inputStoreId");
+    const inputPosId = document.getElementById("inputPosId");
+    const inputTerminalId = document.getElementById("inputTerminalId");
+    const inputMonto = document.getElementById("inputMonto");
+    const inputStoreId2 = document.getElementById("inputStoreId2");
+    const inputPosId2 = document.getElementById("inputPosId2");
+    const btnTestOrden = document.getElementById("btnTestOrden");
+    const btnLimpiarOrden = document.getElementById("btnLimpiarOrden");
+    const estadoOrden = document.getElementById("estadoOrden");
+    const mensajeOrdenError = document.getElementById("mensajeOrdenError");
+    const resultadosOrden = document.getElementById("resultadosOrden");
+    const mensajeOrdenOk = document.getElementById("mensajeOrdenOk");
+    const jsonOrdenPaymentIntents = document.getElementById("jsonOrdenPaymentIntents");
+    const jsonOrdenV1Orders = document.getElementById("jsonOrdenV1Orders");
+
+    async function leerRespuesta(res) {
+      const text = await res.text();
+      try {
+        return { data: JSON.parse(text), raw: text, esJson: true };
+      } catch {
+        return { data: null, raw: text, esJson: false };
+      }
+    }
+
+    function limpiar() {
+      mensajeError.style.display = "none";
+      resultados.style.display = "none";
+      mensajeOk.style.display = "none";
+      terminalesGrid.innerHTML = "";
+      jsonRaw.textContent = "";
+      estadoCarga.textContent = "";
+      btnLimpiar.style.display = "none";
+    }
+
+    function badgeEstado(estado) {
+      if (!estado) return '<span class="badge">-</span>';
+      const s = String(estado).toUpperCase();
+      const cls = s === "AVAILABLE" ? "available" : s === "BUSY" ? "busy" : s.includes("OFF") ? "offline" : "";
+      return `<span class="badge ${cls}">${estado}</span>`;
+    }
+
+    function badgeMode(mode) {
+      if (!mode) return '<span class="badge">-</span>';
+      const m = String(mode).toUpperCase();
+      const cls = m === "PDV" ? "available" : m === "STANDALONE" ? "offline" : "";
+      const label = m === "PDV" ? "PDV (integración API)" : m === "STANDALONE" ? "STANDALONE (sin API)" : mode;
+      return `<span class="badge ${cls}">${label}</span>`;
+    }
+
+    function renderTerminal(t, index) {
+      return `
+        <div class="terminal-card">
+          <strong>Terminal ${index + 1}</strong>
+          <div class="terminal-row"><span class="terminal-label">terminal_id</span><code>${t.terminal_id || "-"}</code></div>
+          <div class="terminal-row"><span class="terminal-label">store_id</span><span>${t.store_id || "-"}</span></div>
+          <div class="terminal-row"><span class="terminal-label">pos_id</span><span>${t.pos_id != null ? t.pos_id : "-"}</span></div>
+          <div class="terminal-row"><span class="terminal-label">nombre</span><span>${t.nombre || "-"}</span></div>
+          <div class="terminal-row"><span class="terminal-label">estado</span>${badgeEstado(t.estado)}</div>
+          <div class="terminal-row"><span class="terminal-label">modo</span>${badgeMode(t.operating_mode)}</div>
+        </div>`;
+    }
+
+    function limpiarOrden() {
+      mensajeOrdenError.style.display = "none";
+      resultadosOrden.style.display = "none";
+      mensajeOrdenOk.style.display = "none";
+      jsonOrdenPaymentIntents.textContent = "";
+      jsonOrdenV1Orders.textContent = "";
+      estadoOrden.textContent = "";
+        btnLimpiarOrden.style.display = "none";
+    }
+
+    btnLimpiar.addEventListener("click", limpiar);
+
+    btnConsultar.addEventListener("click", async () => {
+      limpiar();
+      btnConsultar.disabled = true;
+      estadoCarga.textContent = "Consultando...";
+
+      try {
+        const qs = new URLSearchParams();
+        const storeId = inputStoreId.value.trim();
+        const posId = inputPosId.value.trim();
+        if (storeId) qs.set("store_id", storeId);
+        if (posId) qs.set("pos_id", posId);
+        const url = "/integraciones/mercadopago-point/debug/terminales" + (qs.toString() ? "?" + qs.toString() : "");
+        const res = await fetch(url);
+        const { data, raw, esJson } = await leerRespuesta(res);
+
+        jsonRaw.textContent = esJson ? JSON.stringify(data, null, 2) : raw;
+        btnLimpiar.style.display = "inline-block";
+
+        if (!esJson) {
+          mensajeError.textContent = `HTTP ${res.status} — respuesta no es JSON. Ver raw abajo.`;
+          mensajeError.style.display = "block";
+          resultados.style.display = "block";
+          return;
+        }
+
+        if (!data.ok) {
+          mensajeError.textContent = data.message || "Error desconocido";
+          mensajeError.style.display = "block";
+          resultados.style.display = "block";
+          return;
+        }
+
+        resultados.style.display = "block";
+        const terminales = Array.isArray(data.terminales) ? data.terminales : [];
+
+        if (terminales.length === 0) {
+          mensajeOk.textContent = data.mensaje || "No hay terminales Point registradas en esta cuenta.";
+          mensajeOk.style.display = "block";
+        } else {
+          mensajeOk.textContent = `${terminales.length} terminal${terminales.length > 1 ? "es" : ""} encontrada${terminales.length > 1 ? "s" : ""}.`;
+          mensajeOk.style.display = "block";
+          terminalesGrid.innerHTML = terminales.map(renderTerminal).join("");
+        }
+
+        estadoCarga.textContent = "";
+      } catch (err) {
+        mensajeError.textContent = "Error de conexión: " + err.message;
+        mensajeError.style.display = "block";
+        btnLimpiar.style.display = "inline-block";
+      } finally {
+        btnConsultar.disabled = false;
+        estadoCarga.textContent = "";
+      }
+    });
+    document.querySelectorAll(".btn-variant").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        inputTerminalId.value = btn.dataset.val;
+        inputTerminalId.focus();
+      });
+    });
+
+    btnLimpiarOrden.addEventListener("click", limpiarOrden);
+
+    btnTestOrden.addEventListener("click", async () => {
+      limpiarOrden();
+      const terminal_id = inputTerminalId.value.trim();
+      const monto = Number(inputMonto.value) || 0;
+      if (!terminal_id) {
+        mensajeOrdenError.textContent = "Ingresá el terminal_id (serial de la terminal).";
+        mensajeOrdenError.style.display = "block";
+        return;
+      }
+      if (monto <= 0) {
+        mensajeOrdenError.textContent = "El monto debe ser mayor a 0.";
+        mensajeOrdenError.style.display = "block";
+        return;
+      }
+
+      btnTestOrden.disabled = true;
+      estadoOrden.textContent = "Enviando a Mercado Pago...";
+
+      try {
+        const body = { terminal_id, monto };
+        const store2 = inputStoreId2.value.trim();
+        const pos2 = inputPosId2.value.trim();
+        if (store2) body.store_id = store2;
+        if (pos2) body.pos_id = pos2;
+
+        const res = await fetch("/integraciones/mercadopago-point/debug/test-orden", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        const { data, raw, esJson } = await leerRespuesta(res);
+
+        resultadosOrden.style.display = "block";
+        btnLimpiarOrden.style.display = "inline-block";
+
+        if (!esJson) {
+          mensajeOrdenError.textContent = `HTTP ${res.status} — respuesta no es JSON.`;
+          mensajeOrdenError.style.display = "block";
+          jsonOrdenPaymentIntents.textContent = raw;
+          return;
+        }
+
+        if (!data.ok) {
+          mensajeOrdenError.textContent = data.message || "Error desconocido";
+          mensajeOrdenError.style.display = "block";
+          jsonOrdenPaymentIntents.textContent = JSON.stringify(data, null, 2);
+          return;
+        }
+
+        mensajeOrdenOk.textContent = `Respuesta recibida — external_reference: ${data.external_reference || "-"}`;
+        mensajeOrdenOk.style.display = "block";
+        jsonOrdenPaymentIntents.textContent = JSON.stringify(data.payment_intents, null, 2);
+        jsonOrdenV1Orders.textContent = JSON.stringify(data.v1_orders, null, 2);
+      } catch (err) {
+        mensajeOrdenError.textContent = "Error de conexión: " + err.message;
+        mensajeOrdenError.style.display = "block";
+        btnLimpiarOrden.style.display = "inline-block";
+      } finally {
+        btnTestOrden.disabled = false;
+        estadoOrden.textContent = "";
+      }
+    });
+  </script>
+</body>
+</html>

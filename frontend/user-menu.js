@@ -28,7 +28,7 @@
   }
 
   function roleLabel(value) {
-    if (!value) return "Administrador";
+    if (!value) return "Dueño";
     const normalized = String(value).trim().toLowerCase().replace(/\s+/g, "_");
     const canonical = { operador: "colaborador", caja: "colaborador", cajero: "colaborador" }[normalized] || normalized;
     return { admin: "Dueño", encargado: "Encargado", colaborador: "Colaborador" }[canonical]
@@ -79,7 +79,7 @@
     menu.innerHTML = `
       <div class="user-menu-header">
         <strong>${user?.nombre || currentName || "Juan Perez"}</strong>
-        <span>${roleLabel(user?.rol || currentRole || "Administrador")}</span>
+        <span>${roleLabel(user?.rol || currentRole || "Dueño")}</span>
         <small>Sucursal Central</small>
       </div>
       <div class="user-menu-section">
@@ -105,7 +105,7 @@
     const currentName = nameNode?.textContent.trim();
     const currentRole = roleNode?.textContent.trim();
     const displayName = user?.nombre || currentName || "Juan Perez";
-    const displayRole = roleLabel(user?.rol || currentRole || "Administrador");
+    const displayRole = roleLabel(user?.rol || currentRole || "Dueño");
 
     if (nameNode) nameNode.textContent = displayName;
     if (roleNode) roleNode.textContent = displayRole;
@@ -119,6 +119,7 @@
         avatar.textContent = initials(displayName);
       }
     }
+    box.querySelector(".icon-chevron")?.remove();
 
     const host = document.createElement("div");
     host.className = "user-menu-host";

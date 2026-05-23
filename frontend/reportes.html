@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
@@ -170,7 +170,7 @@
       margin-top: 1px;
       font-size: 11px;
     }
-    .report-main-panel .toolbar { gap: 8px; }
+    .report-main-panel .toolbar { display: none; gap: 8px; }
     .report-main-panel .button {
       min-height: 34px;
       padding: 7px 10px;
@@ -222,6 +222,7 @@
       gap: 3px;
     }
     .report-main-panel .filters label:last-of-type { flex-basis: 150px; }
+    .report-main-panel .filters .module-filter-field { display: none; }
     .report-main-panel input,
     .report-main-panel select {
       min-height: 30px;
@@ -348,18 +349,14 @@
     .module-kpi strong,.module-kpi small { display:block; overflow:hidden; text-overflow:ellipsis; }
     .module-kpi small { color:var(--muted); margin-top:2px; }
     .export-only-panel { display: none; }
+    #kpis,
+    #kpiChartsRow { display: none !important; }
     section.report-block-title { display: none; }
     .report-guidance-text { padding: 14px 18px 4px; color: var(--muted); font-size: 14px; text-align: center; }
-    .export-help-strip {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 10px;
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.35;
-    }
-    .export-help-strip span,
+    .report-selected-panel { padding: 16px; }
+    .report-selected-panel .section-head { align-items: center; }
+    .report-selected-panel h2 { font-size: 18px; }
+    .report-selected-panel p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
     .export-format-help {
       border: 1px solid var(--border);
       border-radius: 999px;
@@ -788,7 +785,7 @@
         <div class="chip">Ayuda</div>
         <div class="user-box">
           <div class="avatar">JP</div>
-          <div><strong>Juan Perez</strong><small>Administrador</small></div>
+          <div><strong>Juan Perez</strong><small>Dueño</small></div>
           <span class="app-icon icon-chevron" aria-hidden="true"></span>
         </div>
       </div>
@@ -817,24 +814,19 @@
       <section class="card report-main-panel">
         <div class="section-head">
           <div>
-            <h2>Filtros y exportación</h2>
+            <h2>Filtros</h2>
             <p class="message" id="mensaje">Cargando datos del periodo...</p>
           </div>
           <div class="toolbar">
             <button class="button secondary" id="actualizar" type="button" title="Recargar datos del periodo seleccionado">Actualizar</button>
-            <button class="button success" id="exportarRapido" type="button" title="Descarga la tabla de detalle del módulo actual">Excel rápido</button>
-            <button class="button" id="abrirExportacion" type="button" title="Elegir módulo, formato y contenido del reporte">Exportar</button>
+            <button class="button ghost" id="exportarRapido" type="button" title="Descarga la tabla de detalle del módulo actual">Excel rápido</button>
+            <button class="button ghost" id="abrirExportacion" type="button" title="Elegir módulo, formato y contenido del reporte">Exportar</button>
           </div>
-        </div>
-        <div class="export-help-strip" aria-label="Ayuda de exportación">
-          <span>Excel rápido descarga la tabla visible del módulo actual.</span>
-          <span>Exportar permite elegir contenido, módulo y formato.</span>
-          <span>PDF usa la impresión del navegador.</span>
         </div>
         <div class="filters">
           <label>Desde<input id="desde" type="date"></label>
           <label>Hasta<input id="hasta" type="date"></label>
-          <label>Módulo
+          <label class="module-filter-field">Módulo
             <select id="moduloFiltro">
               <option value="generales">Generales</option>
               <option value="ventas">Ventas</option>
@@ -863,16 +855,24 @@
       <section class="kpis lineal" id="kpis"></section>
       <section class="card report-nav-panel">
         <div class="report-block-title">
-          <div><h2>Navegación por módulo</h2><p>Elegí un módulo para ver y exportar su reporte.</p></div>
+          <div><h2>Exportar por módulo</h2><p>Elegí una card para configurar el reporte.</p></div>
         </div>
         <div class="module-kpis" id="moduleKpis"></div>
       </section>
-      <p class="report-guidance-text" id="moduloActualAyuda">Seleccioná un módulo y un período. Para ver el reporte completo, usá <strong>Exportar</strong>.</p>
+      <section class="card report-selected-panel">
+        <div class="section-head">
+          <div>
+            <h2 id="moduloSeleccionadoTitulo">Reporte seleccionado</h2>
+            <p id="moduloActualAyuda">Seleccioná un módulo para configurar su exportación.</p>
+          </div>
+          <button class="button" id="configurarExportacionModulo" type="button">Configurar exportación</button>
+        </div>
+      </section>
       <div class="kpi-charts-row" id="kpiChartsRow"></div>
 
       <section class="card export-only-panel report-insights-panel">
         <div class="report-block-title">
-          <div><h2 id="tituloReporteSeleccionado">Reporte seleccionado</h2><p id="descripcionReporteSeleccionado">Lecturas visuales del módulo y del rango actual.</p></div>
+          <div><h2 id="tituloReporteSeleccionado">Visualizaciones</h2><p id="descripcionReporteSeleccionado">Lecturas visuales del módulo y del rango actual.</p></div>
         </div>
         <div class="panel insight-panel">
           <h3>Lectura rápida</h3>
@@ -1037,7 +1037,7 @@
     const insightsPorModulo = {
       generales: [
         ["Resultado neto", "Balance", { texto: "Diferencia entre ventas y egresos del período." }],
-        ["Capital en stock", "Stock valorizado físico", { texto: "Valorización de productos con stock real." }],
+        ["Capital en stock", "Stock físico valorizado", { texto: "Valorización de productos con stock real." }],
         ["Exposición clientes", "Deuda clientes", { texto: "Saldo pendiente registrado en cuentas corrientes." }]
       ],
       ventas: [
@@ -1056,8 +1056,8 @@
         ["Catálogo activo", "Productos activos", { texto: "Productos disponibles para operar." }],
         ["Alerta de reposición", "Bajo stock", { texto: "Productos en mínimo o por debajo." }],
         ["Sin existencia", "Sin stock", { ocultarSiCero: true, texto: "Productos con stock físico agotado." }],
-        ["Valor inventario", "Stock valorizado físico", { texto: "Capital físico: solo productos que manejan stock real." }],
-        ["Rendimiento separado", "Estimaciones por rendimiento", { ocultarSiCero: true, texto: "Valores aproximados no incluidos en el capital de stock." }]
+        ["Valor inventario", "Stock físico valorizado", { texto: "Capital físico: solo productos que manejan stock real." }],
+        ["Estimación operativa", "Valor estimado por receta/rendimiento", { ocultarSiCero: true, texto: "Valores aproximados no incluidos en el inventario físico." }]
       ],
       "cuentas-corrientes": [
         ["Clientes con saldo", "Con deuda", { texto: "Clientes que mantienen deuda abierta." }],
@@ -1084,7 +1084,7 @@
       generales: ["Resumen general", "Detalle por módulo", "KPIs principales", "Comparativa"],
       ventas: ["Resumen general", "Detalle de ventas", "Métodos de pago", "Productos vendidos"],
       caja: ["Movimientos de caja", "Cierres de caja", "Arqueos", "Ingresos / egresos"],
-      stock: ["Stock actual", "Movimientos de stock", "Productos bajo stock", "Stock valorizado físico"],
+      stock: ["Stock actual", "Movimientos de stock", "Productos bajo stock", "Stock físico valorizado"],
       "cuentas-corrientes": ["Clientes con deuda", "Detalle de movimientos", "Cobros recibidos", "Clientes excedidos"],
       "proveedores-pagos": ["Pagos realizados", "Saldos pendientes", "Compras del periodo", "Detalle por proveedor"]
     };
@@ -1368,7 +1368,17 @@
     }
 
     function costoStockProducto(producto) {
+      const costoUnitario = n(producto?.costo_unitario_fisico || producto?.costo_consumo_unitario);
+      if (productoManejaStockReal(producto) && costoUnitario > 0) return costoUnitario;
       return n(producto?.costo_final || producto?.precio_compra);
+    }
+
+    function fuenteValorizacionFisica(producto) {
+      if (producto?.descripcion_valorizacion_fisica) return producto.descripcion_valorizacion_fisica;
+      const costoUnitario = n(producto?.costo_unitario_fisico || producto?.costo_consumo_unitario);
+      return productoManejaStockReal(producto) && costoUnitario > 0
+        ? "Valorizado por unidad física"
+        : "Valorizado por costo del producto";
     }
 
     function stockValorizadoFisicoLocal(productos = state.productos) {
@@ -1431,7 +1441,9 @@
       return `<div style="display:flex;align-items:center;gap:6px;font-size:12px"><span style="width:10px;height:10px;border-radius:3px;background:${color};flex-shrink:0"></span><span style="color:var(--muted);flex:1">${label}</span><strong>${value}</strong></div>`;
     }
 
-    function barRows(rows, emptyText = "No hay datos suficientes para este gráfico", formatter = money) {
+    const emptyGraphText = "Sin datos suficientes para graficar este módulo.";
+
+    function barRows(rows, emptyText = emptyGraphText, formatter = money) {
       const validRows = rows.filter(([, value]) => Number(value) > 0);
       if (!validRows.length) return `<div class="empty">${emptyText}</div>`;
       const max = Math.max(1, ...validRows.map(([, value]) => Number(value)));
@@ -1440,7 +1452,7 @@
       `).join("");
     }
 
-    function visualList(rows, emptyText = "No hay datos suficientes para este gráfico") {
+    function visualList(rows, emptyText = emptyGraphText) {
       const validRows = rows.filter((row) => row && row.value !== undefined && !(row.hideZero && valorCero(row.value)));
       if (!validRows.length) return `<div class="empty">${emptyText}</div>`;
       return validRows.map((row) => `
@@ -1448,7 +1460,7 @@
       `).join("");
     }
 
-    function visualSummary(rows, emptyText = "No hay datos suficientes para este gráfico") {
+    function visualSummary(rows, emptyText = emptyGraphText) {
       const validRows = rows.filter((row) => row && row.value !== undefined && !(row.hideZero && valorCero(row.value)));
       if (!validRows.length) return `<div class="empty">${emptyText}</div>`;
       return validRows.map((row) => `<div class="summary-box"><span>${row.label}</span><strong>${row.value}</strong></div>`).join("");
@@ -1610,8 +1622,11 @@
     }
 
     function renderModuleKpis() {
-      const data = Object.fromEntries(resumenModulo());
       $("moduleKpis").innerHTML = modulos.map(([id, label]) => {
+        const moduloActual = state.modulo;
+        state.modulo = id;
+        const data = Object.fromEntries(resumenModulo());
+        state.modulo = moduloActual;
         const value = id === "generales" ? (data.Balance || data.Ventas || "-") :
           id === "ventas" ? (data["Total vendido"] || "-") :
           id === "caja" ? (data["Balance caja"] || "-") :
@@ -1827,14 +1842,14 @@
         ? [
             ["Productos activos", Number(resumenStock.productos_activos || 0)],
             ["Bajo stock", Number(resumenStock.bajo_stock || 0)],
-            ["Stock valorizado físico", money(resumenStock.stock_valorizado_fisico ?? resumenStock.stock_valorizado_estimado)],
-            ["Estimaciones por rendimiento", money(resumenStock.valor_rendimiento_estimado)],
+            ["Stock físico valorizado", money(resumenStock.stock_valorizado_fisico ?? resumenStock.stock_valorizado_estimado)],
+            ["Valor estimado por receta/rendimiento", money(resumenStock.valor_rendimiento_estimado)],
             ["Items vendidos", Number(resumenStock.items_vendidos || 0)],
             ["Categorias", Number(resumenStock.categorias || 0)],
             ["Sin stock", Number(resumenStock.sin_stock || 0)],
             ["Stock negativo", Number(resumenStock.stock_negativo || 0)]
           ]
-        : [["Productos activos", state.productos.filter((p) => Number(p.activo) !== 0).length], ["Bajo stock", bajoStock], ["Stock valorizado físico", money(stockValorizadoFisico)], ["Estimaciones por rendimiento", money(estimacionRendimiento)], ["Items vendidos", detalle.reduce((acc, d) => acc + n(d.cantidad), 0)], ["Categorias", new Set(state.productos.map((p) => p.categoria || p.categoria_nombre).filter(Boolean)).size], ["Sin stock", state.productos.filter((p) => n(p.maneja_stock) && n(p.stock) <= 0).length]];
+        : [["Productos activos", state.productos.filter((p) => Number(p.activo) !== 0).length], ["Bajo stock", bajoStock], ["Stock físico valorizado", money(stockValorizadoFisico)], ["Valor estimado por receta/rendimiento", money(estimacionRendimiento)], ["Items vendidos", detalle.reduce((acc, d) => acc + n(d.cantidad), 0)], ["Categorias", new Set(state.productos.map((p) => p.categoria || p.categoria_nombre).filter(Boolean)).size], ["Sin stock", state.productos.filter((p) => n(p.maneja_stock) && n(p.stock) <= 0).length]];
       const cuentasResumen = reporteCuentas
         ? [
             ["Clientes", Number(resumenCuentas.clientes_total || 0)],
@@ -1846,7 +1861,7 @@
           ]
         : [["Clientes", state.clientes.length], ["Con deuda", state.clientes.filter((c) => n(c.deuda_actual) > 0).length], ["Deuda total", money(deudaTotal)], ["Excedidos", state.clientes.filter((c) => n(c.limite_credito) > 0 && n(c.deuda_actual) > n(c.limite_credito)).length], ["Cobrado período", money(state.clientes.reduce((acc, c) => acc + n(c.cobrado_hoy), 0))], ["Inactivos", state.clientes.filter((c) => Number(c.activo) === 0).length]];
       const map = {
-        generales: [["Ventas", money(totalVentas)], ["Egresos", money(totalPagos)], ["Balance", money(base.balance)], ["Stock valorizado físico", money(stockValorizadoFisico)], ["Deuda clientes", money(deudaTotal)], ["Operaciones", base.cantidadVentas + base.cantidadPagos]],
+        generales: [["Ventas", money(totalVentas)], ["Egresos", money(totalPagos)], ["Balance", money(base.balance)], ["Stock físico valorizado", money(stockValorizadoFisico)], ["Deuda clientes", money(deudaTotal)], ["Operaciones", base.cantidadVentas + base.cantidadPagos]],
         ventas: ventasResumen,
         caja: cajaResumen,
         stock: stockResumen,
@@ -1901,14 +1916,15 @@
           ].slice(0, 40)
         },
         stock: {
-          head: ["Codigo", "Producto", "Stock", "Minimo", "Valorizado"],
+          head: ["Codigo", "Producto", "Stock", "Minimo", "Stock físico valorizado", "Fuente"],
           rows: productosStock ? productosStock.slice(0, 40).map((p) => [
             p.codigo || `#${p.producto_id}`,
             p.nombre,
             p.stock_vendible == null ? n(p.stock_fisico) : n(p.stock_vendible),
             n(p.stock_minimo),
-            money(p.stock_valorizado_fisico ?? p.stock_valorizado_estimado)
-          ]) : state.productos.slice(0, 40).map((p) => [p.codigo || `#${p.id}`, p.nombre, n(p.stock), n(p.stock_minimo), money(n(p.stock) * n(p.precio_compra || p.precio_venta))])
+            money(p.stock_valorizado_fisico ?? p.stock_valorizado_estimado),
+            fuenteValorizacionFisica(p)
+          ]) : state.productos.slice(0, 40).map((p) => [p.codigo || `#${p.id}`, p.nombre, n(p.stock), n(p.stock_minimo), money(n(p.stock) * costoStockProducto(p)), fuenteValorizacionFisica(p)])
         },
         "cuentas-corrientes": {
           head: ["Cliente", "DNI/CUIT", "Deuda", "Limite", "Estado"],
@@ -2080,11 +2096,11 @@
         const deudaTotalGenerales = cuentasBackend ? n(cuentasBackend.deuda_total) : deudaTotal;
         setVisualPanel(1, "Ingresos vs egresos", barRows(
           [["Ventas", totalVentas], ["Pagos", totalPagos]],
-          "No hay ventas ni pagos para comparar en este período."
+          emptyGraphText
         ), "chart-bars");
         setVisualPanel(2, "Exposición operativa", visualSummary([
           { label: "Balance", value: money(totalVentas - totalPagos) },
-          { label: "Stock valorizado físico", value: money(stockValorizadoGenerales), hideZero: true },
+          { label: "Stock físico valorizado", value: money(stockValorizadoGenerales), hideZero: true },
           { label: "Deuda clientes", value: money(deudaTotalGenerales), hideZero: true }
         ]), "summary-grid");
         return;
@@ -2095,14 +2111,14 @@
         const totalVendido = state.reporteVentasBackend ? Number(resumenVentas.total_vendido || 0) : totalVentas;
         const operaciones = state.reporteVentasBackend ? Number(resumenVentas.operaciones || 0) : ventas.length;
         const ticketPromedio = state.reporteVentasBackend ? Number(resumenVentas.ticket_promedio || 0) : (ventas.length ? totalVentas / ventas.length : 0);
-        setVisualPanel(1, "Evolución diaria", barRows(ventasPorDiaRows(), "No hay ventas por día para graficar."), "chart-bars");
-        setVisualPanel(2, "Ranking de productos", visualList(productosMasVendidosRows(), "No hay productos vendidos para rankear."), "list");
-        setVisualPanel(3, "Distribución por método", visualList(metodosPagoRows(), "No hay métodos de pago registrados."), "list");
+        setVisualPanel(1, "Evolución diaria", barRows(ventasPorDiaRows(), emptyGraphText), "chart-bars");
+        setVisualPanel(2, "Ranking de productos", visualList(productosMasVendidosRows(), emptyGraphText), "list");
+        setVisualPanel(3, "Distribución por método", visualList(metodosPagoRows(), emptyGraphText), "list");
         setVisualPanel(4, "Resumen de ventas", visualSummary([
           { label: "Total vendido", value: money(totalVendido), hideZero: true },
           { label: "Operaciones", value: operaciones, hideZero: true },
           { label: "Ticket promedio", value: money(ticketPromedio), hideZero: true }
-        ], "No hay ventas registradas en el período."), "summary-grid");
+        ], emptyGraphText), "summary-grid");
         return;
       }
 
@@ -2111,20 +2127,20 @@
         if (cajaBackend) {
           setVisualPanel(1, "Ingresos vs egresos", barRows(
             [["Ingresos", Number(cajaBackend.ingresos || 0)], ["Egresos", Number(cajaBackend.egresos || 0)]],
-            "No hay movimientos de caja suficientes para comparar."
+            emptyGraphText
           ), "chart-bars");
           setVisualPanel(2, "Resultado de caja", visualSummary([
             { label: "Balance caja", value: money(cajaBackend.balance) },
             { label: "IVA a favor", value: money(cajaBackend.iva_credito_fiscal), hideZero: true },
             { label: "Pagos registrados", value: Number(cajaBackend.pagos_registrados || 0), hideZero: true }
           ]), "summary-grid");
-          setVisualPanel(3, "Ingresos por método", visualList(metodosCajaRows("ingreso"), "No hay ingresos por método para mostrar."), "list");
-          setVisualPanel(4, "Egresos por método", visualList(metodosCajaRows("egreso"), "No hay egresos por método para mostrar."), "list");
+          setVisualPanel(3, "Ingresos por método", visualList(metodosCajaRows("ingreso"), emptyGraphText), "list");
+          setVisualPanel(4, "Egresos por método", visualList(metodosCajaRows("egreso"), emptyGraphText), "list");
           return;
         }
         setVisualPanel(1, "Ingresos vs egresos", barRows(
           [["Ingresos", totalVentas], ["Egresos", totalPagos]],
-          "No hay movimientos de caja suficientes para comparar."
+          emptyGraphText
         ), "chart-bars");
         setVisualPanel(2, "Resultado de caja", visualSummary([
           { label: "Balance caja", value: money(totalVentas - totalPagos) },
@@ -2137,12 +2153,13 @@
         if (stockBackend) {
           setVisualPanel(1, "Alertas de reposición", barRows(
             [["Bajo stock", Number(stockBackend.bajo_stock || 0)], ["Sin stock", Number(stockBackend.sin_stock || 0)], ["Stock negativo", Number(stockBackend.stock_negativo || 0)]],
-            "No hay alertas de stock en el período.",
+            emptyGraphText,
             (value) => String(value)
           ), "chart-bars");
-          setVisualPanel(2, "Inventario valorizado", visualSummary([
-            { label: "Stock valorizado físico", value: money(stockBackend.stock_valorizado_fisico ?? stockBackend.stock_valorizado_estimado), hideZero: true },
-            { label: "Estimaciones por rendimiento", value: money(stockBackend.valor_rendimiento_estimado), hideZero: true },
+          setVisualPanel(2, "Valorización separada", visualSummary([
+            { label: "Stock físico valorizado", value: money(stockBackend.stock_valorizado_fisico ?? stockBackend.stock_valorizado_estimado), hideZero: true },
+            { label: "Valor estimado por receta/rendimiento", value: money(stockBackend.valor_rendimiento_estimado), hideZero: true },
+            { label: "Nota", value: "La estimación no forma parte del inventario físico. Los fraccionables se valorizan por unidad física desde backend." },
             { label: "Items vendidos", value: Number(stockBackend.items_vendidos || 0), hideZero: true },
             { label: "Categorías", value: Number(stockBackend.categorias || 0), hideZero: true }
           ]), "summary-grid");
@@ -2150,12 +2167,13 @@
         }
         setVisualPanel(1, "Alertas de reposición", barRows(
           [["Bajo stock", bajoStock.length], ["Sin stock", sinStock.length]],
-          "No hay alertas de stock en el período.",
+          emptyGraphText,
           (value) => String(value)
         ), "chart-bars");
-        setVisualPanel(2, "Inventario valorizado", visualSummary([
-          { label: "Stock valorizado físico", value: money(stockValorizadoFisico), hideZero: true },
-          { label: "Estimaciones por rendimiento", value: money(estimacionRendimiento), hideZero: true },
+        setVisualPanel(2, "Valorización separada", visualSummary([
+          { label: "Stock físico valorizado", value: money(stockValorizadoFisico), hideZero: true },
+          { label: "Valor estimado por receta/rendimiento", value: money(estimacionRendimiento), hideZero: true },
+          { label: "Nota", value: "La estimación no forma parte del inventario físico. Valorización física calculada desde backend cuando está disponible." },
           { label: "Items vendidos", value: detalle.reduce((acc, d) => acc + n(d.cantidad), 0), hideZero: true }
         ]), "summary-grid");
         return;
@@ -2165,7 +2183,7 @@
         if (cuentasBackend) {
           setVisualPanel(1, "Clientes con seguimiento", barRows(
             [["Con deuda", Number(cuentasBackend.clientes_con_deuda || 0)], ["Excedidos", Number(cuentasBackend.clientes_excedidos || 0)]],
-            "No hay clientes con deuda o límite excedido para comparar.",
+            emptyGraphText,
             (value) => String(value)
           ), "chart-bars");
           setVisualPanel(2, "Situación de deuda", visualSummary([
@@ -2177,7 +2195,7 @@
         }
         setVisualPanel(1, "Clientes con seguimiento", barRows(
           [["Con deuda", clientesConDeuda.length], ["Excedidos", clientesExcedidos.length]],
-          "No hay clientes con deuda o límite excedido para comparar.",
+          emptyGraphText,
           (value) => String(value)
         ), "chart-bars");
         setVisualPanel(2, "Situación de deuda", visualSummary([
@@ -2194,7 +2212,7 @@
         const saldoPendiente = _ppbRsm ? Number(_ppbRsm.total_pendiente || 0) : state.proveedores.reduce((acc, proveedor) => acc + n(proveedor.saldo_pendiente), 0);
         setVisualPanel(1, "Pagado vs pendiente", barRows(
           [["Pagado", totalPagado], ["Pendiente", saldoPendiente]],
-          "No hay pagos o saldos pendientes para comparar."
+          emptyGraphText
         ), "chart-bars");
         setVisualPanel(2, "Fiscal y compras", visualSummary([
           { label: "IVA crédito fiscal", value: resumen.get("IVA a favor"), hideZero: true },
@@ -2207,11 +2225,15 @@
       const label = modulos.find(([id]) => id === state.modulo)?.[1] || "Generales";
       const meta = moduloMeta[state.modulo] || moduloMeta.generales;
       const ayudaModulo = $("moduloActualAyuda");
-      if (ayudaModulo) {
-        ayudaModulo.innerHTML = `Módulo activo: <strong>${label}</strong>. Excel rápido descarga su tabla de detalle; Exportar permite armar PDF o Excel con secciones.`;
+      const tituloSeleccionado = $("moduloSeleccionadoTitulo");
+      if (tituloSeleccionado) {
+        tituloSeleccionado.textContent = label;
       }
-      $("tituloReporteSeleccionado").textContent = meta.titulo;
-      $("descripcionReporteSeleccionado").textContent = meta.descripcion;
+      if (ayudaModulo) {
+        ayudaModulo.textContent = `${meta.descripcion} Configurá PDF o Excel desde el modal exportable.`;
+      }
+      $("tituloReporteSeleccionado").textContent = "Visualizaciones";
+      $("descripcionReporteSeleccionado").textContent = `${meta.titulo}. ${meta.descripcion}`;
       renderInsightsModulo();
       $("tituloModulo").textContent = `${meta.titulo}: detalle exportable`;
       $("subtituloModulo").textContent = `${label}. Periodo ${$("desde").value} al ${$("hasta").value}. Esta tabla es la base para Excel rápido y Exportar.`;
@@ -2596,6 +2618,7 @@
     $("exportarRapido").onclick = exportarRapidoExcel;
     $("abrirExportacionFinal").onclick = () => abrirExportacion();
     $("exportarRapidoFinal").onclick = exportarRapidoExcel;
+    $("configurarExportacionModulo").onclick = () => abrirExportacion("excel", state.modulo);
     $("cerrarExportacion").onclick = () => $("modalExportacion").classList.remove("open");
     $("cancelarExportacion").onclick = () => $("modalExportacion").classList.remove("open");
     $("modalExportacion").onclick = (event) => { if (event.target.id === "modalExportacion") $("modalExportacion").classList.remove("open"); };
