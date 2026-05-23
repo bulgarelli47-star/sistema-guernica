@@ -349,6 +349,17 @@
     .module-kpi strong,.module-kpi small { display:block; overflow:hidden; text-overflow:ellipsis; }
     .module-kpi small { color:var(--muted); margin-top:2px; }
     .export-only-panel { display: none; }
+    body.vista-reducida [aria-label="Resumen ejecutivo"],
+    body.vista-reducida #kpis,
+    body.vista-reducida #kpiChartsRow {
+      display: none !important;
+    }
+    body.vista-reducida .module-kpis {
+      grid-template-columns: minmax(260px, 420px);
+    }
+    body.vista-reducida .module-kpi {
+      min-height: 96px;
+    }
     #kpis,
     #kpiChartsRow { display: none !important; }
     section.report-block-title { display: none; }
@@ -1090,6 +1101,16 @@
     };
     const state = { ventas: [], detalle: [], productos: [], clientes: [], pagos: [], proveedores: [], config: {}, modulo: "generales", resumenBackend: null, reporteVentasBackend: null, reporteCajaBackend: null, reporteStockBackend: null, reporteCuentasCorrientesBackend: null, proveedoresPagosBackend: null, cuentasCobroBackend: null, ventasPorDiaBackend: null, productosMasVendidos: null };
 
+    function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[raw]||raw}
+    function normalizarVistaOperativa(valor){const v=String(valor??"").replace(/^"+|"+$/g,"").trim().toLowerCase();if(["complejo","completa"].includes(v))return "completa";if(["simple","reducida"].includes(v))return "reducida";return ""}
+    function getVistaOperativa(rol,cfg=state.config){const key=String(rol||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");const canonical={administrador:"admin",dueno:"admin",dueño:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[key]||key;if(canonical==="admin")return "completa";const directa=normalizarVistaOperativa(cfg?.[`vista_operativa_${canonical}`]);if(directa)return directa;const legacy=normalizarVistaOperativa(cfg?.[`dashboard_tipo_${canonical}`]);if(legacy)return legacy;return canonical==="colaborador"?"reducida":"completa"}
+    function esVistaReducida(){return getVistaOperativa(rolActual(),state.config)==="reducida"}
+    function modulosVisibles(){return esVistaReducida()?modulos.filter(([id])=>id==="ventas"):modulos}
+    function moduloDisponible(id){return modulosVisibles().some(([modulo])=>modulo===id)}
+    function moduloPermitido(id){return moduloDisponible(id)?id:(modulosVisibles()[0]?.[0]||"generales")}
+    function actualizarOpcionesModuloSelect(select){if(!select)return;const visibles=new Set(modulosVisibles().map(([id])=>id));[...select.options].forEach((option)=>{const permitido=visibles.has(option.value);option.hidden=!permitido;option.disabled=!permitido});select.value=moduloPermitido(select.value)}
+    function aplicarVistaOperativaReportes(){document.body.classList.toggle("vista-reducida",esVistaReducida());state.modulo=moduloPermitido(state.modulo);actualizarOpcionesModuloSelect($("moduloFiltro"));actualizarOpcionesModuloSelect($("exportModulo"))}
+
     function setMessage(text, type = "") {
       $("mensaje").className = `message ${type}`;
       $("mensaje").textContent = text;
@@ -1611,7 +1632,7 @@
     }
 
     function renderTabs() {
-      $("tabs").innerHTML = modulos.map(([id, label]) => `<button class="tab ${state.modulo === id ? "active" : ""}" data-modulo="${id}" type="button">${label}</button>`).join("");
+      $("tabs").innerHTML = modulosVisibles().map(([id, label]) => `<button class="tab ${state.modulo === id ? "active" : ""}" data-modulo="${id}" type="button">${label}</button>`).join("");
       document.querySelectorAll(".tab").forEach((button) => {
         button.onclick = () => {
           state.modulo = button.dataset.modulo;
@@ -1622,7 +1643,7 @@
     }
 
     function renderModuleKpis() {
-      $("moduleKpis").innerHTML = modulos.map(([id, label]) => {
+      $("moduleKpis").innerHTML = modulosVisibles().map(([id, label]) => {
         const moduloActual = state.modulo;
         state.modulo = id;
         const data = Object.fromEntries(resumenModulo());
@@ -2244,6 +2265,7 @@
     }
 
     function render() {
+      aplicarVistaOperativaReportes();
       if (!$("desde").value || !$("hasta").value) {
         setMessage("Seleccione un rango de fechas para generar reportes.", "error");
         return;
@@ -2275,7 +2297,7 @@
 
     function abrirExportacion(formato = "excel", modulo = state.modulo) {
       const saved = JSON.parse(localStorage.getItem("reportesExportacion") || "{}");
-      $("exportModulo").value = modulo || saved.modulo || state.modulo;
+      $("exportModulo").value = moduloPermitido(modulo || saved.modulo || state.modulo);
       $("exportFormato").value = formato || saved.formato || state.config.reporte_formato_default || "excel";
       $("exportDesde").value = $("desde").value;
       $("exportHasta").value = $("hasta").value;
@@ -2484,6 +2506,7 @@
       if ($("exportDesde").value > $("exportHasta").value) return setExportMessage("La fecha desde no puede superar la fecha hasta.", "error");
 
       const modulo  = $("exportModulo").value;
+      if (!moduloDisponible(modulo)) return setExportMessage("Este modulo no esta disponible en vista reducida.", "error");
       const formato = $("exportFormato").value;
       const desde   = $("exportDesde").value;
       const hasta   = $("exportHasta").value;
@@ -2543,6 +2566,7 @@
     function exportarRapidoExcel() {
       if (!$("desde").value || !$("hasta").value) return setMessage("Debe indicar rango de fechas para exportar.", "error");
       if ($("desde").value > $("hasta").value) return setMessage("La fecha desde no puede superar la fecha hasta.", "error");
+      if (!moduloDisponible(state.modulo)) state.modulo = moduloPermitido(state.modulo);
       const detalle = detalleModulo();
       if (!detalle.rows.length) return setMessage("No hay datos para exportar en el módulo actual.", "error");
       const botones = [$("exportarRapido"), $("exportarRapidoFinal")];
@@ -2598,6 +2622,7 @@
           fetchJson("/configuracion", { config: {} })
         ]);
         Object.assign(state, { ventas, detalle, productos, clientes, pagos, proveedores, config: configData.config || {} });
+        aplicarVistaOperativaReportes();
         render();
         cargarResumenBackend();
         cargarReporteVentasBackend();
@@ -2623,7 +2648,7 @@
     $("cancelarExportacion").onclick = () => $("modalExportacion").classList.remove("open");
     $("modalExportacion").onclick = (event) => { if (event.target.id === "modalExportacion") $("modalExportacion").classList.remove("open"); };
     $("confirmarExportacion").onclick = confirmarExportacion;
-    $("exportModulo").onchange = () => { renderContenidoExportacion(); actualizarNombreArchivo(); };
+    $("exportModulo").onchange = () => { $("exportModulo").value = moduloPermitido($("exportModulo").value); renderContenidoExportacion(); actualizarNombreArchivo(); };
     $("exportFormato").addEventListener("change", () => {
       actualizarNombreArchivo();
       setExportMessage(`Formato seleccionado. ${exportFormatHelpText($("exportFormato").value)}`);
@@ -2634,7 +2659,7 @@
       render();
       if (id !== "comparacion") { cargarResumenBackend(); cargarReporteVentasBackend(); cargarReporteCajaBackend(); cargarReporteStockBackend(); cargarReporteCuentasCorrientesBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); cargarVentasPorDiaBackend(); cargarCuentasCobroBackend(); }
     }));
-    $("moduloFiltro").onchange = () => { state.modulo = $("moduloFiltro").value; render(); };
+    $("moduloFiltro").onchange = () => { state.modulo = moduloPermitido($("moduloFiltro").value); $("moduloFiltro").value = state.modulo; render(); };
     setRange("30");
     cargarDatos();
   </script>
