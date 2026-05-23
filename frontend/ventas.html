@@ -1239,6 +1239,19 @@
       margin-top: 2px;
     }
 
+    body.vista-reducida #toggleManual,
+    body.vista-reducida #manualPanel,
+    body.vista-reducida #nuevoTicket,
+    body.vista-reducida .ticket-edit-extras,
+    body.vista-reducida #modalPendientes .support-card:nth-child(2),
+    body.vista-reducida #modalAnularClave {
+      display: none !important;
+    }
+
+    body.vista-reducida .ticket-actions {
+      justify-content: flex-end;
+    }
+
     .stock-resolution-banner {
       display: grid;
       gap: 8px;
@@ -2178,6 +2191,10 @@
     const CONSUMIDOR_FINAL_ID = "1";
 
     function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[raw]||raw}
+    function normalizarVistaOperativa(valor){const v=String(valor??"").replace(/^"+|"+$/g,"").trim().toLowerCase();if(["complejo","completa"].includes(v))return "completa";if(["simple","reducida"].includes(v))return "reducida";return ""}
+    function getVistaOperativa(rol,cfg=configVentas){const key=String(rol||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");const canonical={administrador:"admin",dueno:"admin",dueño:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[key]||key;if(canonical==="admin")return "completa";const directa=normalizarVistaOperativa(cfg?.[`vista_operativa_${canonical}`]);if(directa)return directa;const legacy=normalizarVistaOperativa(cfg?.[`dashboard_tipo_${canonical}`]);if(legacy)return legacy;return canonical==="colaborador"?"reducida":"completa"}
+    function esVistaReducida(){return getVistaOperativa(rolActual(),configVentas)==="reducida"}
+    function aplicarVistaOperativaVentas(){document.body.classList.toggle("vista-reducida",esVistaReducida())}
     function permisosAcciones(){const raw=configVentas?.permisos_acciones_roles||{};if(typeof raw==="string"){try{return JSON.parse(raw)}catch{return {}}}return raw||{}}
     function puedeAccion(accion){const rol=rolActual();const permisos=permisosAcciones();const valor=permisos?.[accion]?.[rol];if(valor!==undefined)return valor===true||valor==="true"||valor===1||valor==="1";if(rol==="admin")return true;if(rol==="encargado")return !["usuarios","configuracion"].includes(accion);return ["ver_stock","caja","editar_ticket"].includes(accion)}
 
@@ -3709,6 +3726,7 @@
         const res = await fetch("/configuracion");
         const data = res.ok ? await res.json() : { config: {} };
         configVentas = data.config || {};
+        aplicarVistaOperativaVentas();
         if (Array.isArray(productosCargados) && productosCargados.length) {
           renderCategoryPills();
           filtrarProductos();
@@ -3716,6 +3734,7 @@
       } catch (error) {
         console.error("Error al cargar configuracion de ventas:", error);
         configVentas = {};
+        aplicarVistaOperativaVentas();
       }
     }
 
@@ -4326,7 +4345,7 @@
       lista.forEach((venta) => {
         const bloque = document.createElement("div");
         bloque.className = "pending-card";
-        const botonAnularHtml = puedeAccion("anular_ticket")
+        const botonAnularHtml = puedeAccion("anular_ticket") && !esVistaReducida()
           ? '<button type="button" class="button danger" data-anular-pendiente>Anular</button>'
           : '';
         bloque.innerHTML = `
