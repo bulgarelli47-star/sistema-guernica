@@ -9,6 +9,7 @@ const {
   getConfiguracionGlobal,
   parsearConfigValor,
   requirePermiso,
+  sanitizarConfiguracionParaRol,
   serializarConfigValor,
   tienePermisoAccion
 } = require("./services/configService");
@@ -482,6 +483,7 @@ async function ensureClientesSchema() {
   await ensureColumn("clientes", "dni_cuit", "TEXT");
   await ensureColumn("clientes", "tipo_persona", "TEXT NOT NULL DEFAULT 'fisica'");
   await ensureColumn("clientes", "tipo_cliente", "TEXT NOT NULL DEFAULT 'cliente'");
+  await ensureColumn("clientes", "tipo_cuenta_corriente", "TEXT NOT NULL DEFAULT 'cliente'");
   await ensureColumn("clientes", "email", "TEXT");
   await ensureColumn("clientes", "contacto", "TEXT");
   await ensureColumn("clientes", "localidad", "TEXT");
@@ -1200,7 +1202,10 @@ app.post("/productos", async (req, res) => {
       categoriaData?.margen_porcentaje || 0,
       redondeo
     );
-    const codigoFinal = String(codigo || "").trim() || await generarCodigoProducto(Number(categoria_id));
+    const configGlobal = await getConfiguracionGlobal();
+    const codigoManual = String(codigo || "").trim();
+    const codigoAutomaticoActivo = configGlobal.stock_codigo_automatico !== false;
+    const codigoFinal = codigoManual || (codigoAutomaticoActivo ? await generarCodigoProducto(Number(categoria_id)) : "");
 
     if (codigoFinal) {
       const codDuplicado = await getQuery(
@@ -1747,7 +1752,10 @@ app.post("/productos_compuestos", async (req, res) => {
       categoriaData?.margen_porcentaje || 0,
       redondeo
     );
-    const codigoFinal = String(codigo || "").trim() || await generarCodigoProducto(Number(categoria_id));
+    const configGlobal = await getConfiguracionGlobal();
+    const codigoManual = String(codigo || "").trim();
+    const codigoAutomaticoActivo = configGlobal.stock_codigo_automatico !== false;
+    const codigoFinal = codigoManual || (codigoAutomaticoActivo ? await generarCodigoProducto(Number(categoria_id)) : "");
 
     await runQuery("BEGIN TRANSACTION");
     const result = await runQuery(
@@ -4872,15 +4880,16 @@ app.post("/clientes", async (req, res) => {
 
     const result = await runQuery(
       `INSERT INTO clientes
-       (nombre, dni_cuit, tipo_persona, tipo_cliente, telefono, email, contacto, direccion, localidad, codigo_postal,
+       (nombre, dni_cuit, tipo_persona, tipo_cliente, tipo_cuenta_corriente, telefono, email, contacto, direccion, localidad, codigo_postal,
         alias, observaciones, notas, foto_url, limite_fiado, dias_vencimiento, dia_vencimiento_fijo, moneda,
         habilita_cuenta_corriente, activo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         clienteData.nombre,
         clienteData.dni_cuit,
         clienteData.tipo_persona,
         clienteData.tipo_cliente,
+        clienteData.tipo_cuenta_corriente,
         clienteData.telefono,
         clienteData.email,
         clienteData.contacto,
@@ -4929,7 +4938,7 @@ app.put("/clientes/:id", async (req, res) => {
     }
     await runQuery(
       `UPDATE clientes
-       SET nombre = ?, dni_cuit = ?, tipo_persona = ?, tipo_cliente = ?, telefono = ?, email = ?, contacto = ?,
+       SET nombre = ?, dni_cuit = ?, tipo_persona = ?, tipo_cliente = ?, tipo_cuenta_corriente = ?, telefono = ?, email = ?, contacto = ?,
            direccion = ?, localidad = ?, codigo_postal = ?, alias = ?, observaciones = ?, notas = ?, foto_url = ?,
            limite_fiado = ?, dias_vencimiento = ?, dia_vencimiento_fijo = ?, moneda = ?,
            habilita_cuenta_corriente = ?, activo = ?
@@ -4939,6 +4948,7 @@ app.put("/clientes/:id", async (req, res) => {
         clienteData.dni_cuit,
         clienteData.tipo_persona,
         clienteData.tipo_cliente,
+        clienteData.tipo_cuenta_corriente,
         clienteData.telefono,
         clienteData.email,
         clienteData.contacto,
@@ -5453,6 +5463,25 @@ const REPORTES_MODULOS = new Set([
   "proveedores-pagos"
 ]);
 
+const REPORTES_OPERATIVOS = new Set([
+  "ventas",
+  "ventas-por-dia",
+  "productos-mas-vendidos"
+]);
+
+function puedeAccederReporte(req, modulo) {
+  const rol = normalizarRol(req.usuario?.rol);
+  if (rol === "admin") return true;
+  if (rol === "encargado" || rol === "colaborador") return REPORTES_OPERATIVOS.has(modulo);
+  return false;
+}
+
+function asegurarAccesoReporte(req, res, modulo) {
+  if (puedeAccederReporte(req, modulo)) return true;
+  res.status(403).json({ message: "No tenes permisos para acceder a este reporte" });
+  return false;
+}
+
 function normalizarFormatoReporte(formato) {
   return formato === "pdf" ? "pdf" : "xlsx";
 }
@@ -5589,6 +5618,7 @@ function mapearFilasExport(modulo, datos) {
 }
 
 app.get("/reportes/resumen", async (req, res) => {
+  if (!asegurarAccesoReporte(req, res, "generales")) return;
   const { desde = null, hasta = null } = req.query;
   try {
     return res.json(await getResumenReportes({ desde, hasta }));
@@ -5599,6 +5629,7 @@ app.get("/reportes/resumen", async (req, res) => {
 });
 
 app.get("/reportes/ventas", async (req, res) => {
+  if (!asegurarAccesoReporte(req, res, "ventas")) return;
   const { desde = null, hasta = null, estado = null } = req.query;
   try {
     return res.json(await getReporteVentas({ desde, hasta, estado }));
@@ -5609,6 +5640,7 @@ app.get("/reportes/ventas", async (req, res) => {
 });
 
 app.get("/reportes/caja", async (req, res) => {
+  if (!asegurarAccesoReporte(req, res, "caja")) return;
   const {
     desde = null,
     hasta = null,
@@ -5632,6 +5664,7 @@ app.get("/reportes/caja", async (req, res) => {
 });
 
 app.get("/reportes/stock", async (req, res) => {
+  if (!asegurarAccesoReporte(req, res, "stock")) return;
   const {
     categoria = null,
     bajo_stock = null,
@@ -5661,6 +5694,7 @@ app.get("/reportes/stock", async (req, res) => {
 });
 
 app.get("/reportes/cuentas-corrientes", async (req, res) => {
+  if (!asegurarAccesoReporte(req, res, "cuentas-corrientes")) return;
   const {
     desde = null,
     hasta = null,
@@ -5684,6 +5718,7 @@ app.get("/reportes/cuentas-corrientes", async (req, res) => {
 });
 
 app.get("/reportes/productos-mas-vendidos", async (req, res) => {
+  if (!asegurarAccesoReporte(req, res, "productos-mas-vendidos")) return;
   const { desde = null, hasta = null, limite = 20 } = req.query;
   try {
     return res.json(await getProductosMasVendidos({ desde, hasta, limite }));
@@ -5694,6 +5729,7 @@ app.get("/reportes/productos-mas-vendidos", async (req, res) => {
 });
 
 app.get("/reportes/proveedores-pagos", async (req, res) => {
+  if (!asegurarAccesoReporte(req, res, "proveedores-pagos")) return;
   const { desde = null, hasta = null, proveedor_id = null, estado = null, activo = null } = req.query;
   try {
     return res.json(await getResumenProveedoresPagos({ desde, hasta, proveedor_id, estado, activo }));
@@ -5704,6 +5740,7 @@ app.get("/reportes/proveedores-pagos", async (req, res) => {
 });
 
 app.get("/reportes/ventas-por-dia", async (req, res) => {
+  if (!asegurarAccesoReporte(req, res, "ventas-por-dia")) return;
   const { desde = null, hasta = null } = req.query;
   try {
     return res.json(await getVentasPorDia({ desde, hasta }));
@@ -5714,6 +5751,7 @@ app.get("/reportes/ventas-por-dia", async (req, res) => {
 });
 
 app.get("/reportes/cuentas-cobro", async (req, res) => {
+  if (!asegurarAccesoReporte(req, res, "cuentas-cobro")) return;
   const { desde = null, hasta = null } = req.query;
   try {
     return res.json(await getResumenCuentasCobro({ desde, hasta }));
@@ -5729,6 +5767,7 @@ app.get("/reportes/exportar", async (req, res) => {
   if (!REPORTES_MODULOS.has(modulo)) {
     return res.status(400).json({ message: "Modulo de reporte invalido" });
   }
+  if (!asegurarAccesoReporte(req, res, modulo)) return;
 
   const formatoNorm = formato === "csv" ? "csv" : "excel";
   const ext = formatoNorm === "csv" ? "csv" : "xls";
@@ -5777,6 +5816,7 @@ app.get("/reportes/:modulo", async (req, res) => {
   if (!REPORTES_MODULOS.has(modulo)) {
     return res.status(404).json({ message: "Modulo de reporte no disponible" });
   }
+  if (!asegurarAccesoReporte(req, res, modulo)) return;
 
   const { desde = null, hasta = null, comparacion = "periodo_anterior" } = req.query;
 
@@ -5799,6 +5839,7 @@ app.post("/reportes/exportar", async (req, res) => {
   if (!REPORTES_MODULOS.has(modulo)) {
     return res.status(400).json({ message: "Modulo de reporte invalido" });
   }
+  if (!asegurarAccesoReporte(req, res, modulo)) return;
 
   if (!desde || !hasta) {
     return res.status(400).json({ message: "Debe indicar rango de fechas" });
@@ -5817,11 +5858,14 @@ app.post("/reportes/exportar", async (req, res) => {
 
 app.get("/configuracion", async (req, res) => {
   try {
-    const config = await getConfiguracionGlobal();
+    const configCompleta = await getConfiguracionGlobal();
+    const config = sanitizarConfiguracionParaRol(configCompleta, req.usuario?.rol);
     return res.json({
       config,
       schema: Object.fromEntries(
-        Object.entries(CONFIGURACION_DEFAULTS).map(([clave, item]) => [clave, item.seccion])
+        Object.entries(CONFIGURACION_DEFAULTS)
+          .filter(([clave]) => Object.prototype.hasOwnProperty.call(config, clave))
+          .map(([clave, item]) => [clave, item.seccion])
       )
     });
   } catch (error) {

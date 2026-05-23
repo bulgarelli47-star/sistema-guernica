@@ -515,7 +515,7 @@ async function testBatchComoComponente() {
     await prepareDb(dbPath, [
       ["UPDATE productos SET stock = 5000 WHERE id IN (3, 6)"],
       ["UPDATE productos SET stock = 1 WHERE id IN (4, 7)"],
-      ["UPDATE productos SET stock = 71 WHERE id = 9"]
+      ["UPDATE productos SET stock = 71, maneja_stock = 1 WHERE id = 9"]
     ]);
 
     await withServer(dbPath, async (baseUrl) => {
@@ -549,6 +549,9 @@ async function testPermisosColaborador() {
       if (!configAdmin.data?.config?.permisos_acciones_roles?.caja?.colaborador) {
         throw new Error("La configuracion debe exponer permisos para rol colaborador");
       }
+      if (!configAdmin.data?.config?.autorizacion_clave_maestra) {
+        throw new Error("Admin debe recibir configuracion sensible completa");
+      }
       await requestJson(baseUrl, "POST", "/usuarios", {
         nombre: "Colaborador Test",
         usuario: "colaborador_test",
@@ -559,6 +562,18 @@ async function testPermisosColaborador() {
       }, adminToken);
 
       const colaboradorToken = await login(baseUrl, "colaborador_test", "colaborador123");
+      const configColaborador = await requestJson(baseUrl, "GET", "/configuracion", null, colaboradorToken);
+      if (!configColaborador.response.ok) throw new Error("El colaborador debe poder leer configuracion sanitizada");
+      if (configColaborador.data?.config?.autorizacion_clave_maestra !== undefined) {
+        throw new Error("Configuracion sanitizada no debe exponer clave maestra a colaborador");
+      }
+      if (configColaborador.data?.config?.permisos_acciones_roles !== undefined) {
+        throw new Error("Configuracion sanitizada no debe exponer matriz de permisos a colaborador");
+      }
+      if (configColaborador.data?.config?.dashboard_tipo_colaborador === undefined) {
+        throw new Error("Configuracion sanitizada debe conservar dashboard_tipo_colaborador");
+      }
+
       const lecturaProductos = await requestJson(baseUrl, "GET", "/productos", null, colaboradorToken);
       if (!lecturaProductos.response.ok) throw new Error("El colaborador debe poder leer productos");
 
@@ -577,6 +592,21 @@ async function testPermisosColaborador() {
         ticket_nombre: "No autorizado"
       }, colaboradorToken);
       assertEqual(config.response.status, 403, "El colaborador no debe modificar configuracion");
+
+      const reporteVentas = await requestJson(baseUrl, "GET", "/reportes/ventas", null, colaboradorToken);
+      if (!reporteVentas.response.ok) throw new Error("El colaborador debe poder acceder al reporte operativo de ventas");
+
+      const reporteStock = await requestJson(baseUrl, "GET", "/reportes/stock", null, colaboradorToken);
+      assertEqual(reporteStock.response.status, 403, "El colaborador no debe acceder al reporte sensible de stock");
+
+      const reporteProveedores = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, colaboradorToken);
+      assertEqual(reporteProveedores.response.status, 403, "El colaborador no debe acceder al reporte sensible de proveedores/pagos");
+
+      const exportStock = await requestJson(baseUrl, "GET", "/reportes/exportar?modulo=stock&desde=2026-01-01&hasta=2026-01-31", null, colaboradorToken);
+      assertEqual(exportStock.response.status, 403, "El colaborador no debe exportar reportes sensibles");
+
+      const reporteStockAdmin = await requestJson(baseUrl, "GET", "/reportes/stock", null, adminToken);
+      if (!reporteStockAdmin.response.ok) throw new Error("Admin debe acceder al reporte sensible de stock");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -1007,23 +1037,28 @@ async function testClientesTipoClienteClasificacion() {
         nombre: "Cliente Tipo Negocio",
         dni_cuit: `TCN-${sufijo}`,
         tipo_cliente: "negocio",
+        tipo_cuenta_corriente: "personal",
         tipo_persona: "fisica",
         habilita_cuenta_corriente: true,
         activo: true
       }, token);
       if (!negocio.response.ok) throw new Error(`Crear cliente negocio fallo: ${negocio.data?.message || negocio.response.status}`);
       if (negocio.data.cliente.tipo_cliente !== "negocio") throw new Error(`El alta debe guardar tipo_cliente negocio. Actual=${negocio.data.cliente.tipo_cliente}`);
+      if (negocio.data.cliente.tipo_cuenta_corriente !== "personal") throw new Error(`El alta debe guardar tipo_cuenta_corriente personal. Actual=${negocio.data.cliente.tipo_cuenta_corriente}`);
 
       const detalleNegocio = await requestJson(baseUrl, "GET", `/clientes/${negocio.data.cliente.id}`, null, token);
       if (!detalleNegocio.response.ok) throw new Error(`GET /clientes/:id fallo: ${detalleNegocio.data?.message || detalleNegocio.response.status}`);
       if (detalleNegocio.data.tipo_cliente !== "negocio") throw new Error(`GET /clientes/:id debe devolver tipo_cliente. Actual=${detalleNegocio.data.tipo_cliente}`);
+      if (detalleNegocio.data.tipo_cuenta_corriente !== "personal") throw new Error(`GET /clientes/:id debe devolver tipo_cuenta_corriente. Actual=${detalleNegocio.data.tipo_cuenta_corriente}`);
 
       const actualizado = await requestJson(baseUrl, "PUT", `/clientes/${negocio.data.cliente.id}`, {
         ...detalleNegocio.data,
-        tipo_cliente: "colaborador"
+        tipo_cliente: "colaborador",
+        tipo_cuenta_corriente: "cortesia"
       }, token);
       if (!actualizado.response.ok) throw new Error(`Editar cliente tipo colaborador fallo: ${actualizado.data?.message || actualizado.response.status}`);
       if (actualizado.data.cliente.tipo_cliente !== "colaborador") throw new Error(`La edicion debe guardar tipo_cliente colaborador. Actual=${actualizado.data.cliente.tipo_cliente}`);
+      if (actualizado.data.cliente.tipo_cuenta_corriente !== "cortesia") throw new Error(`La edicion debe guardar tipo_cuenta_corriente cortesia. Actual=${actualizado.data.cliente.tipo_cuenta_corriente}`);
 
       const sinTipo = await requestJson(baseUrl, "POST", "/clientes", {
         nombre: "Cliente Sin Tipo",
@@ -1034,22 +1069,26 @@ async function testClientesTipoClienteClasificacion() {
       }, token);
       if (!sinTipo.response.ok) throw new Error(`Crear cliente sin tipo_cliente fallo: ${sinTipo.data?.message || sinTipo.response.status}`);
       if (sinTipo.data.cliente.tipo_cliente !== "cliente") throw new Error(`Cliente sin tipo_cliente debe quedar como cliente. Actual=${sinTipo.data.cliente.tipo_cliente}`);
+      if (sinTipo.data.cliente.tipo_cuenta_corriente !== "cliente") throw new Error(`Cliente sin tipo_cuenta_corriente debe quedar como cliente. Actual=${sinTipo.data.cliente.tipo_cuenta_corriente}`);
 
       const invalido = await requestJson(baseUrl, "POST", "/clientes", {
         nombre: "Cliente Tipo Invalido",
         dni_cuit: `TCI-${sufijo}`,
         tipo_cliente: "vip",
+        tipo_cuenta_corriente: "externa",
         tipo_persona: "fisica",
         habilita_cuenta_corriente: true,
         activo: true
       }, token);
       if (!invalido.response.ok) throw new Error(`Crear cliente con tipo invalido fallo: ${invalido.data?.message || invalido.response.status}`);
       if (invalido.data.cliente.tipo_cliente !== "cliente") throw new Error(`Tipo_cliente invalido debe normalizarse a cliente. Actual=${invalido.data.cliente.tipo_cliente}`);
+      if (invalido.data.cliente.tipo_cuenta_corriente !== "cliente") throw new Error(`Tipo_cuenta_corriente invalido debe normalizarse a cliente. Actual=${invalido.data.cliente.tipo_cuenta_corriente}`);
 
       const listado = await requestJson(baseUrl, "GET", "/clientes?include_inactive=1", null, token);
       if (!listado.response.ok) throw new Error(`GET /clientes fallo: ${listado.data?.message || listado.response.status}`);
       const listadoActualizado = listado.data.find((cliente) => Number(cliente.id) === Number(negocio.data.cliente.id));
       if (listadoActualizado.tipo_cliente !== "colaborador") throw new Error(`GET /clientes debe devolver tipo_cliente actualizado. Actual=${listadoActualizado.tipo_cliente}`);
+      if (listadoActualizado.tipo_cuenta_corriente !== "cortesia") throw new Error(`GET /clientes debe devolver tipo_cuenta_corriente actualizado. Actual=${listadoActualizado.tipo_cuenta_corriente}`);
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -2689,6 +2728,28 @@ async function testReporteStockValorizaSoloStockFisico() {
         tipo: "simple"
       });
 
+      const fraccionableId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Cafe Fraccionable ${sufijo}`,
+        codigo: `RCF-${sufijo}`,
+        categoria: `TEST Reporte Stock ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 737.5,
+        costo_final: 892.38,
+        precio_venta: 2400,
+        stock: 875,
+        maneja_stock: true,
+        tipo: "simple",
+        unidad_medida: "fraccionado_gr",
+        usa_costos_varios: true,
+        costos_insumos: [{
+          nombre: "Fraccion cafe",
+          costo_total: 59000,
+          cantidad_rinde: 1000,
+          unidad: "gr",
+          cantidad_usada: 12.5
+        }]
+      });
+
       const rendimientoId = await crearProductoCompuesto(baseUrl, token, {
         nombre: `TEST Rendimiento Sin Stock ${sufijo}`,
         categoria: `TEST Reporte Stock ${sufijo}`,
@@ -2705,16 +2766,81 @@ async function testReporteStockValorizaSoloStockFisico() {
       const { response, data } = await requestJson(baseUrl, "GET", `/reportes/stock?categoria=${categoriaId}`, null, token);
       if (!response.ok) throw new Error(`GET /reportes/stock fallo: ${data?.message || response.status}`);
 
-      assertApprox(data.resumen.stock_valorizado_fisico, 50, "Stock valorizado fisico debe sumar solo productos con maneja_stock=1");
-      assertApprox(data.resumen.stock_valorizado_estimado, 50, "Compat stock_valorizado_estimado debe representar capital fisico");
+      assertApprox(data.resumen.stock_valorizado_fisico, 51675, "Stock valorizado fisico debe sumar stock normal y fraccionable por costo_unitario");
+      assertApprox(data.resumen.stock_valorizado_estimado, 51675, "Compat stock_valorizado_estimado debe representar capital fisico");
       assertApprox(data.resumen.valor_rendimiento_estimado, 99900, "Productos sin stock real deben ir a estimaciones por rendimiento");
 
       const fisico = data.productos.find((producto) => Number(producto.producto_id) === Number(fisicoId));
+      const fraccionable = data.productos.find((producto) => Number(producto.producto_id) === Number(fraccionableId));
       const rendimiento = data.productos.find((producto) => Number(producto.producto_id) === Number(rendimientoId));
-      if (!fisico || !rendimiento) throw new Error("Reporte stock debe incluir ambos productos de prueba");
+      if (!fisico || !fraccionable || !rendimiento) throw new Error("Reporte stock debe incluir los productos de prueba");
       assertApprox(fisico.stock_valorizado_fisico, 50, "Producto fisico debe tener valorizacion fisica");
+      assertApprox(fraccionable.stock_valorizado_fisico, 51625, "Producto fraccionable debe valorizar stock fisico con costo_unitario");
+      if (fraccionable.fuente_valorizacion_fisica !== "costo_unitario") {
+        throw new Error(`Producto fraccionable debe exponer fuente costo_unitario. Esperado=costo_unitario, actual=${fraccionable.fuente_valorizacion_fisica}`);
+      }
       assertApprox(rendimiento.stock_valorizado_fisico, 0, "Producto sin stock real no debe tener valorizacion fisica");
       assertApprox(rendimiento.valor_rendimiento_estimado, 99900, "Producto sin stock real debe quedar como estimacion separada");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testConfiguracionCodigoAutomaticoProductos() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const sufijo = Date.now().toString().slice(-8);
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST Codigo Auto ${sufijo}`);
+
+      let result = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      if (!result.response.ok) throw new Error(`GET /configuracion fallo: ${result.data?.message || result.response.status}`);
+      if (result.data.config.stock_codigo_automatico !== true) {
+        throw new Error(`stock_codigo_automatico debe venir activo por defecto. Actual=${result.data.config.stock_codigo_automatico}`);
+      }
+
+      result = await requestJson(baseUrl, "PUT", "/configuracion", { config: { stock_codigo_automatico: false } }, token);
+      if (!result.response.ok) throw new Error(`PUT /configuracion stock_codigo_automatico=false fallo: ${result.data?.message || result.response.status}`);
+      if (result.data.config.stock_codigo_automatico !== false) {
+        throw new Error("stock_codigo_automatico=false debe persistir en la respuesta de guardado");
+      }
+
+      result = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      if (!result.response.ok) throw new Error(`GET /configuracion recarga fallo: ${result.data?.message || result.response.status}`);
+      if (result.data.config.stock_codigo_automatico !== false) {
+        throw new Error("stock_codigo_automatico=false debe rehidratar al recargar configuracion");
+      }
+
+      const sinCodigoId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Sin Codigo Auto ${sufijo}`,
+        categoria: `TEST Codigo Auto ${sufijo}`,
+        categoria_id: categoriaId,
+        codigo: "",
+        stock: 1
+      });
+      const sinCodigo = await getProduct(baseUrl, token, sinCodigoId);
+      if (String(sinCodigo.codigo || "") !== "") {
+        throw new Error(`Con stock_codigo_automatico=false no debe generar codigo. Actual=${sinCodigo.codigo}`);
+      }
+
+      result = await requestJson(baseUrl, "PUT", "/configuracion", { config: { stock_codigo_automatico: true } }, token);
+      if (!result.response.ok) throw new Error(`PUT /configuracion stock_codigo_automatico=true fallo: ${result.data?.message || result.response.status}`);
+
+      const conCodigoId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Con Codigo Auto ${sufijo}`,
+        categoria: `TEST Codigo Auto ${sufijo}`,
+        categoria_id: categoriaId,
+        codigo: "",
+        stock: 1
+      });
+      const conCodigo = await getProduct(baseUrl, token, conCodigoId);
+      if (!String(conCodigo.codigo || "").trim()) {
+        throw new Error("Con stock_codigo_automatico=true debe generar codigo al crear sin codigo manual");
+      }
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -7159,6 +7285,7 @@ async function testResumenAjustesPendientes() {
   await testResumenReporteCalculaTicketPromedio();
   await testResumenReporteRespetaFiltroFechas();
   await testReporteStockValorizaSoloStockFisico();
+  await testConfiguracionCodigoAutomaticoProductos();
   await testProductosMasVendidosDevuelveClaves();
   await testProductosMasVendidosExcluyeVentasAnuladas();
   await testProductosMasVendidosOrdenaPorCantidad();

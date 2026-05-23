@@ -66,6 +66,37 @@ const MAPEO_PERMISOS = {
   configuracion: "admin_configuracion"
 };
 
+const CONFIGURACION_PUBLICA_KEYS = new Set([
+  "negocio_nombre_comercial",
+  "negocio_direccion",
+  "negocio_telefono",
+  "negocio_logo_url",
+  "negocio_logo_escala",
+  "pago_efectivo_activo",
+  "pago_debito_activo",
+  "pago_credito_activo",
+  "pago_transferencia_activo",
+  "pago_billetera_activo",
+  "pago_cuenta_corriente_activo",
+  "pago_tipos_disponibles",
+  "stock_codigo_automatico",
+  "stock_manejo_activo",
+  "stock_alerta_minimo",
+  "stock_valor_alerta",
+  "dashboard_tipo_admin",
+  "dashboard_tipo_encargado",
+  "dashboard_tipo_colaborador",
+  "dashboard_pizarra_categorias",
+  "dashboard_pizarra_productos",
+  "ticket_nombre",
+  "ticket_modo_encabezado",
+  "ticket_logo_ancho",
+  "ticket_impresora_activa",
+  "ticket_mostrar_logo",
+  "ticket_mostrar_items",
+  "ticket_mensaje_final"
+]);
+
 const CONFIGURACION_DEFAULTS = {
   negocio_nombre_comercial: { seccion: "negocio", valor: "Guernica Bar" },
   negocio_razon_social: { seccion: "negocio", valor: "" },
@@ -91,6 +122,7 @@ const CONFIGURACION_DEFAULTS = {
   cuenta_saldo_inicial: { seccion: "cuentas", valor: 0 },
   pago_tipos_disponibles: { seccion: "pagos", valor: "proveedor,gasto,impuesto,sueldo" },
   stock_manejo_activo: { seccion: "stock", valor: true },
+  stock_codigo_automatico: { seccion: "stock", valor: true },
   stock_unidad_default: { seccion: "stock", valor: "unidad" },
   stock_permitir_negativo: { seccion: "stock", valor: false },
   stock_alerta_minimo: { seccion: "stock", valor: true },
@@ -223,6 +255,14 @@ function normalizarRolPermiso(rol) {
   return { operador: "colaborador", caja: "colaborador", cajero: "colaborador" }[normalizado] || normalizado;
 }
 
+function sanitizarConfiguracionParaRol(config, rol) {
+  if (normalizarRolPermiso(rol) === "admin") return config;
+
+  return Object.fromEntries(
+    Object.entries(config || {}).filter(([clave]) => CONFIGURACION_PUBLICA_KEYS.has(clave))
+  );
+}
+
 function configBool(value) {
   return value === true || value === "true" || value === 1 || value === "1";
 }
@@ -327,6 +367,7 @@ module.exports = {
   normalizarPermisosAccionesRoles,
   parsearConfigValor,
   serializarConfigValor,
+  sanitizarConfiguracionParaRol,
   tienePermisoAccion,
   puedeAccionUsuario,
   requirePermiso
