@@ -3015,6 +3015,34 @@
     .concil-saldo-hint { font-size: 11px; color: var(--muted); margin-top: 3px; display: block; }
     .cuenta-cobro-saldos { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 0 2px; border-top: 1px dashed var(--border); margin-top: 4px; }
     .cuenta-cobro-saldo-item { font-size: 11px; background: #f0e5ff; color: #5b21b6; border-radius: 8px; padding: 2px 8px; font-weight: 700; }
+    .reduced-caja-note { display: none; }
+    body.vista-reducida .tab-button[data-tab="resumen"],
+    body.vista-reducida .tab-button[data-tab="apertura-cierre"],
+    body.vista-reducida .tab-button[data-tab="movimientos"],
+    body.vista-reducida .section:not(#tab-arqueos),
+    body.vista-reducida #tab-arqueos .audit-top-grid,
+    body.vista-reducida #tab-arqueos .audit-flow .audit-card:nth-child(2),
+    body.vista-reducida #tab-arqueos .audit-flow .audit-card:nth-child(3),
+    body.vista-reducida #tab-arqueos > article.card,
+    body.vista-reducida #tab-arqueos .audit-technical-detail,
+    body.vista-reducida #tab-arqueos .cash-audit-line:nth-child(1),
+    body.vista-reducida #tab-arqueos .cash-audit-line:nth-child(2),
+    body.vista-reducida #modalArqueoEfectivo .audit-mini-grid > div:nth-child(1),
+    body.vista-reducida #modalArqueoEfectivo .audit-mini-grid > div:nth-child(2),
+    body.vista-reducida #modalArqueoEfectivo .audit-mini-grid > div:nth-child(3),
+    body.vista-reducida #modalArqueoEfectivo .audit-mini-grid > div:nth-child(4),
+    body.vista-reducida #modalArqueoEfectivo .denomination-summary .mini-card:nth-child(1),
+    body.vista-reducida #modalArqueoEfectivo .denomination-summary .mini-card:nth-child(2),
+    body.vista-reducida #modalArqueoEfectivo .denomination-summary .mini-card:nth-child(4) {
+      display: none !important;
+    }
+    body.vista-reducida #tab-arqueos,
+    body.vista-reducida .reduced-caja-note {
+      display: block !important;
+    }
+    body.vista-reducida #tab-arqueos .audit-flow {
+      grid-template-columns: minmax(280px, 620px);
+    }
     /* ─────────────────────────────────────────────────────────── */
 
     @media (max-width: 1280px) {
@@ -4057,6 +4085,10 @@
           </article>
         </div>
 
+        <div class="notice reduced-caja-note">
+          Vista reducida de Caja: registrá el arqueo efectivo del turno. Los saldos generales y cierres están disponibles solo en vista completa.
+        </div>
+
         <div class="audit-flow">
           <article class="card audit-card">
             <h3>A) Arqueo efectivo</h3>
@@ -4688,6 +4720,7 @@
     let resumenCuentasCobroActual = [];
     let resumenCuentasDestinoActual = [];
     let conciliacionesCuentasActuales = [];
+    let configCaja = {};
     let conciliacionesCuentasDestinoActuales = [];
     let conciliacionCuentaModo = "cobro";
     let saldosInicialesCargando = false;
@@ -4696,6 +4729,13 @@
     let movimientoCajaEditando = null;
     let movimientoCajaClave = "";
     let toastTimer = null;
+
+    function normalizarVistaOperativa(valor){const v=String(valor??"").replace(/^"+|"+$/g,"").trim().toLowerCase();if(["complejo","completa"].includes(v))return "completa";if(["simple","reducida"].includes(v))return "reducida";return ""}
+    function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",dueno:"admin",dueño:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[raw]||raw}
+    function getVistaOperativa(rol,cfg=configCaja){const key=String(rol||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");const canonical={administrador:"admin",dueno:"admin",dueño:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[key]||key;if(canonical==="admin")return "completa";const directa=normalizarVistaOperativa(cfg?.[`vista_operativa_${canonical}`]);if(directa)return directa;const legacy=normalizarVistaOperativa(cfg?.[`dashboard_tipo_${canonical}`]);if(legacy)return legacy;return canonical==="colaborador"?"reducida":"completa"}
+    function esVistaReducida(){return getVistaOperativa(rolActual(),configCaja)==="reducida"}
+    function activarTabCaja(tab){const finalTab=esVistaReducida()&&tab!=="arqueos"?"arqueos":tab;tabButtons.forEach((item)=>item.classList.toggle("active",item.dataset.tab===finalTab));sections.forEach((section)=>section.classList.toggle("active",section.id===`tab-${finalTab}`))}
+    function aplicarVistaOperativaCaja(){document.body.classList.toggle("vista-reducida",esVistaReducida());if(esVistaReducida())activarTabCaja("arqueos")}
 
     function mostrarMensaje(texto, esError = false) {
       mensaje.innerText = texto;
@@ -7054,7 +7094,9 @@
           throw new Error("No se pudo obtener caja");
         }
         const configData = configRes.ok ? await configRes.json() : { config: {} };
-        aplicarCuentasPagoConfig(configData.config || {});
+        configCaja = configData.config || {};
+        aplicarVistaOperativaCaja();
+        aplicarCuentasPagoConfig(configCaja);
         const data = await res.json();
         renderizarApertura(data.apertura);
         renderizarResumen(data.resumen);
@@ -7365,11 +7407,7 @@
 
     tabButtons.forEach((button) => {
       button.addEventListener("click", function () {
-        const tab = button.dataset.tab;
-        tabButtons.forEach((item) => item.classList.toggle("active", item === button));
-        sections.forEach((section) => {
-          section.classList.toggle("active", section.id === `tab-${tab}`);
-        });
+        activarTabCaja(button.dataset.tab);
       });
     });
 
