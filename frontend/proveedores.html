@@ -222,6 +222,21 @@
     .kpi { padding: 7px 10px; gap: 2px; border-radius: 12px; min-height: 58px; }
     .kpi span { font-size: 10px; line-height: 1.1; }
     .kpi strong { font-size: 16px; line-height: 1.05; }
+    body.vista-reducida .kpi-grid,
+    body.vista-reducida #abrirProveedor,
+    body.vista-reducida #modalProveedor {
+      display: none !important;
+    }
+    body.vista-reducida #tablaProveedores tr > *:nth-child(6),
+    body.vista-reducida #tablaProveedores tr > *:nth-child(7),
+    body.vista-reducida #tablaProveedores tr > *:nth-child(8),
+    body.vista-reducida #tablaProveedores tr > *:nth-child(9),
+    body.vista-reducida table thead tr > *:nth-child(6),
+    body.vista-reducida table thead tr > *:nth-child(7),
+    body.vista-reducida table thead tr > *:nth-child(8),
+    body.vista-reducida table thead tr > *:nth-child(9) {
+      display: none;
+    }
     .proveedor-modal { width: min(680px, 100%); }
     .proveedor-form-grid { grid-template-columns: 1.2fr 1fr 1fr; gap: 10px; }
     .commercial-row {
@@ -815,6 +830,7 @@
     let categorias = [];
     let proveedorEditandoId = null;
     let proveedorPago = null;
+    let configProveedores = {};
     const kpiGrid = document.querySelector(".kpi-grid");
 
     function money(valor) {
@@ -822,7 +838,11 @@
     }
 
     function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[raw]||raw}
-    function mostrarKpisComplejos(config){const tipo=String(config?.[`dashboard_tipo_${rolActual()}`]??"").replace(/^"+|"+$/g,"").toLowerCase();const complejo=tipo ? tipo==="complejo" : ["admin","encargado"].includes(rolActual());if(window.initKpiVisibility){window.initKpiVisibility({storageKey:"guernica_kpis_proveedores",enabled:complejo})}else if(kpiGrid){kpiGrid.style.display=complejo?"grid":"none"}}
+    function normalizarVistaOperativa(valor){const v=String(valor??"").replace(/^"+|"+$/g,"").trim().toLowerCase();if(["complejo","completa"].includes(v))return "completa";if(["simple","reducida"].includes(v))return "reducida";return ""}
+    function getVistaOperativa(rol,cfg=configProveedores){const key=String(rol||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");const canonical={administrador:"admin",dueno:"admin",dueño:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[key]||key;if(canonical==="admin")return "completa";const directa=normalizarVistaOperativa(cfg?.[`vista_operativa_${canonical}`]);if(directa)return directa;const legacy=normalizarVistaOperativa(cfg?.[`dashboard_tipo_${canonical}`]);if(legacy)return legacy;return canonical==="colaborador"?"reducida":"completa"}
+    function esVistaReducida(){return getVistaOperativa(rolActual(),configProveedores)==="reducida"}
+    function aplicarVistaOperativaProveedores(){document.body.classList.toggle("vista-reducida",esVistaReducida())}
+    function mostrarKpisComplejos(config){aplicarVistaOperativaProveedores();const complejo=getVistaOperativa(rolActual(),config)==="completa";if(window.initKpiVisibility){window.initKpiVisibility({storageKey:"guernica_kpis_proveedores",enabled:complejo})}else if(kpiGrid){kpiGrid.style.display=complejo?"grid":"none"}}
 
     function hoyISO() {
       return new Date().toISOString().slice(0, 10);
@@ -1040,6 +1060,16 @@
         const row = document.createElement("tr");
         const activo = Number(proveedor.activo) === 1;
         const saldo = Number(proveedor.saldo_pendiente || 0);
+        const acciones = esVistaReducida()
+          ? '<button type="button" class="menu-action" data-action="detalle">Detalle</button>'
+          : `
+                <button type="button" class="menu-action" data-action="detalle">Detalle</button>
+                <button type="button" class="menu-action" data-action="movimientos">Movimientos</button>
+                <button type="button" class="menu-action" data-action="pago">Registrar pago</button>
+                <button type="button" class="menu-action" data-action="editar">Editar proveedor</button>
+                <button type="button" class="menu-action" data-action="estado">${activo ? "Desactivar" : "Activar"}</button>
+                <button type="button" class="menu-action danger" data-action="eliminar">Eliminar</button>
+              `;
         row.innerHTML = `
           <td><strong>${proveedor.nombre}</strong><br><span class="muted">CUIT ${proveedor.cuit || "-"}</span></td>
           <td>${proveedor.contacto || proveedor.alias || "-"}</td>
@@ -1055,12 +1085,7 @@
             <div class="actions-menu">
               <button type="button" class="dots-button" data-action="menu" aria-label="Acciones" title="Acciones"><span class="app-icon icon-more" aria-hidden="true"></span></button>
               <div class="actions-popup">
-                <button type="button" class="menu-action" data-action="detalle">Detalle</button>
-                <button type="button" class="menu-action" data-action="movimientos">Movimientos</button>
-                <button type="button" class="menu-action" data-action="pago">Registrar pago</button>
-                <button type="button" class="menu-action" data-action="editar">Editar proveedor</button>
-                <button type="button" class="menu-action" data-action="estado">${activo ? "Desactivar" : "Activar"}</button>
-                <button type="button" class="menu-action danger" data-action="eliminar">Eliminar</button>
+                ${acciones}
               </div>
             </div>
           </td>
@@ -1084,11 +1109,11 @@
           }
         });
         row.querySelector('[data-action="detalle"]').addEventListener("click", () => abrirDetalle(proveedor));
-        row.querySelector('[data-action="movimientos"]').addEventListener("click", () => abrirDetalle(proveedor));
-        row.querySelector('[data-action="pago"]').addEventListener("click", () => abrirPago(proveedor));
-        row.querySelector('[data-action="editar"]').addEventListener("click", () => editarProveedor(proveedor));
-        row.querySelector('[data-action="estado"]').addEventListener("click", () => cambiarEstado(proveedor));
-        row.querySelector('[data-action="eliminar"]').addEventListener("click", () => eliminarProveedor(proveedor));
+        row.querySelector('[data-action="movimientos"]')?.addEventListener("click", () => abrirDetalle(proveedor));
+        row.querySelector('[data-action="pago"]')?.addEventListener("click", () => abrirPago(proveedor));
+        row.querySelector('[data-action="editar"]')?.addEventListener("click", () => editarProveedor(proveedor));
+        row.querySelector('[data-action="estado"]')?.addEventListener("click", () => cambiarEstado(proveedor));
+        row.querySelector('[data-action="eliminar"]')?.addEventListener("click", () => eliminarProveedor(proveedor));
         tablaProveedores.appendChild(row);
       });
     }
@@ -1103,7 +1128,8 @@
         if (!res.ok) throw new Error("No se pudo obtener proveedores");
         proveedores = await res.json();
         categorias = catRes.ok ? await catRes.json() : [];
-        mostrarKpisComplejos(cfgRes.ok ? (await cfgRes.json()).config || {} : {});
+        configProveedores = cfgRes.ok ? (await cfgRes.json()).config || {} : {};
+        mostrarKpisComplejos(configProveedores);
         renderCategoriasProveedor();
         renderizarProveedores();
       } catch (error) {
@@ -1246,6 +1272,18 @@
     async function abrirDetalle(proveedor) {
       document.getElementById("tituloDetalle").innerText = proveedor.nombre;
       document.getElementById("subtituloDetalle").innerText = `${proveedor.cuit || "Sin CUIT"} - ${Number(proveedor.activo) === 1 ? "Activo" : "Inactivo"}`;
+      if (esVistaReducida()) {
+        detalleResumen.innerHTML = `
+          <div class="detail-box"><span>Contacto</span><strong>${proveedor.contacto || proveedor.alias || "-"}</strong></div>
+          <div class="detail-box"><span>TelÃ©fono</span><strong>${proveedor.telefono || "-"}</strong></div>
+          <div class="detail-box"><span>Email</span><strong>${proveedor.email || "-"}</strong></div>
+          <div class="detail-box"><span>Categoria</span><strong>${categoriaProveedorLabel(proveedor)}</strong></div>
+          <div class="detail-box"><span>Estado</span><strong>${Number(proveedor.activo) === 1 ? "Activo" : "Inactivo"}</strong></div>
+        `;
+        tablaMovimientos.innerHTML = '<tr><td colspan="6">Detalle financiero no disponible en vista reducida.</td></tr>';
+        abrirModal(modalDetalle);
+        return;
+      }
       detalleResumen.innerHTML = `
         <div class="detail-box"><span>Saldo pendiente</span><strong>${money(proveedor.saldo_pendiente)}</strong></div>
         <div class="detail-box"><span>Límite crédito</span><strong>${money(proveedor.limite_credito)}</strong></div>
@@ -1381,9 +1419,4 @@
   <script src="/user-menu.js?v=7" defer></script>
 </body>
 </html>
-
-
-
-
-
 
