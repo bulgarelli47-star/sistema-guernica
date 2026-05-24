@@ -3220,6 +3220,17 @@
       z-index: 4;
     }
 
+    .modal-body {
+      display: grid;
+      gap: 12px;
+    }
+
+    .modal-footer {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+
     .closure-real-panel {
       margin-top: 0;
       border: 1px solid var(--border);
@@ -3403,6 +3414,15 @@
         flex: 1 1 150px;
       }
     }
+    /* Modal UI unification layer - non invasive */
+    :where(.modal,.modal-backdrop){background:rgba(17,24,39,.52);padding:clamp(12px,3vw,28px);overflow:auto;overscroll-behavior:contain}
+    .modal>.modal-card:not(.stock-product-modal):not(.modal-card-wide):not(.cobro-modal-card),.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{max-height:calc(100vh - 56px);border:1px solid var(--border,#e5e7eb);border-radius:18px;background:#fff;box-shadow:0 26px 70px rgba(17,24,39,.28);overflow:auto;overscroll-behavior:contain}
+    :where(.modal-header,.modal-head,.dialog-head,.sticky-modal-header){display:flex;align-items:flex-start;justify-content:space-between;gap:14px;border-bottom:1px solid var(--border,#e5e7eb);padding-bottom:12px;margin-bottom:14px;background:#fff}
+    :where(.modal-header h2,.modal-header h3,.modal-head h2,.modal-head h3,.dialog-head h2,.dialog-head h3){margin:0;line-height:1.15}
+    :where(.modal-header p,.modal-head p,.dialog-head p){margin:4px 0 0;color:var(--muted,#6b7280)}
+    :where(.modal-actions,.dialog-actions,.modal-footer,.modal-header-actions){display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+    :where(.close,.icon-button,.mib.icon-only){display:inline-grid;place-items:center;flex:0 0 auto;border-radius:10px}
+    @media(max-width:860px){:where(.modal,.modal-backdrop){padding:10px}.modal>.modal-card,.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{width:min(100%,calc(100vw - 20px));max-height:calc(100vh - 20px);border-radius:16px}:where(.modal-actions,.dialog-actions,.modal-footer){justify-content:stretch}:where(.modal-actions>* , .dialog-actions>* , .modal-footer>*){flex:1 1 140px}}
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=7" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -4214,10 +4234,10 @@
 
       <div class="modal" id="modalMovimientosCaja">
         <div class="modal-card">
-          <div class="daily-card-header">
+          <div class="modal-header">
             <h3>Todos los movimientos</h3>
-            <button type="button" class="button secondary compact" id="cerrarModalMovimientos">Cerrar</button>
           </div>
+          <div class="modal-body">
           <div style="overflow:auto;">
             <table class="compact-table">
               <thead>
@@ -4232,15 +4252,19 @@
               <tbody id="modalMovimientosBody"></tbody>
             </table>
           </div>
+          </div>
+          <div class="modal-footer modal-actions">
+            <button type="button" class="button secondary compact" id="cerrarModalMovimientos">Cerrar</button>
+          </div>
         </div>
       </div>
 
       <div class="modal" id="modalArqueosCaja">
         <div class="modal-card">
-          <div class="daily-card-header">
+          <div class="modal-header">
             <h3>Todos los arqueos</h3>
-            <button type="button" class="button secondary compact" id="cerrarModalArqueos">Cerrar</button>
           </div>
+          <div class="modal-body">
           <div style="overflow:auto;">
             <table class="compact-table">
               <thead>
@@ -4254,52 +4278,70 @@
               <tbody id="modalArqueosBody"></tbody>
             </table>
           </div>
+          </div>
+          <div class="modal-footer modal-actions">
+            <button type="button" class="button secondary compact" id="cerrarModalArqueos">Cerrar</button>
+          </div>
         </div>
       </div>
 
       <div class="modal" id="modalDetalleApertura">
         <div class="modal-card">
-          <div class="daily-card-header">
+          <div class="modal-header">
             <h3>Detalle de apertura</h3>
+          </div>
+          <div class="modal-body">
+          <div id="detalleAperturaBody" class="list"></div>
+          </div>
+          <div class="modal-footer modal-actions">
             <button type="button" class="button secondary compact" id="cerrarModalDetalleApertura">Cerrar</button>
           </div>
-          <div id="detalleAperturaBody" class="list"></div>
         </div>
       </div>
 
       <div class="modal" id="modalDetalleCierre">
         <div class="modal-card">
-          <div class="daily-card-header">
+          <div class="modal-header">
             <h3>Detalle del cierre</h3>
+          </div>
+          <div class="modal-body">
+          <div id="detalleCierreModalBody"></div>
+          </div>
+          <div class="modal-footer modal-actions">
             <button type="button" class="button secondary compact" id="cerrarModalDetalleCierre">Cerrar</button>
           </div>
-          <div id="detalleCierreModalBody"></div>
         </div>
       </div>
 
       <div class="modal" id="modalDetalleArqueo">
         <div class="modal-card">
-          <div class="daily-card-header">
+          <div class="modal-header">
             <h3>Detalle del arqueo</h3>
+          </div>
+          <div class="modal-body">
+          <div id="detalleArqueoModalBody"></div>
+          </div>
+          <div class="modal-footer modal-actions">
             <button type="button" class="button secondary compact" id="cerrarModalDetalleArqueo">Cerrar</button>
           </div>
-          <div id="detalleArqueoModalBody"></div>
         </div>
       </div>
 
       <div class="modal" id="modalMovimientoCaja">
         <div class="modal-card">
-          <div class="daily-card-header">
+          <div class="modal-header">
             <h3 id="movimientoCajaTitulo">Movimiento de caja</h3>
             <button type="button" class="button secondary compact" id="cerrarModalMovimientoCaja">Cerrar</button>
           </div>
+          <div class="modal-body">
           <div class="field-grid">
             <input type="number" id="movimientoCajaMonto" class="field" placeholder="Monto" step="0.01" min="0" />
             <input type="text" id="movimientoCajaConcepto" class="field" placeholder="Concepto" />
             <input type="text" id="movimientoCajaUsuario" class="field" placeholder="Usuario" value="admin" />
             <input type="password" id="movimientoCajaClave" class="field" placeholder="Clave maestra" autocomplete="off" hidden />
           </div>
-          <div class="daily-card-header">
+          </div>
+          <div class="modal-footer modal-actions">
             <div class="muted" id="movimientoCajaAyuda">Completa los datos para registrar el movimiento.</div>
             <button type="button" class="button success" id="confirmarMovimientoCaja">Registrar</button>
           </div>
