@@ -3207,7 +3207,9 @@
     body.vista-reducida #tab-arqueos > article.card,
     body.vista-reducida #tab-arqueos .audit-technical-detail,
     body.vista-reducida #tab-arqueos .cash-audit-line:nth-child(1),
-    body.vista-reducida #tab-arqueos .cash-audit-line:nth-child(2) {
+    body.vista-reducida #tab-arqueos .cash-audit-line:nth-child(2),
+    body.vista-reducida .reduced-sensitive-saldo,
+    body.vista-reducida .audit-sensitive-system {
       display: none !important;
     }
     body.vista-reducida #tab-arqueos,
@@ -4063,7 +4065,7 @@
                   </div>
                   <label class="mini-card">
                     <span>Responsable</span>
-                    <input type="text" id="usuarioApertura" class="field" placeholder="Usuario" value="admin" />
+                    <input type="text" id="usuarioApertura" class="field" placeholder="Usuario" value="" />
                   </label>
                   <strong id="aperturaEstadoTexto" hidden>Sin caja activa</strong>
                 </div>
@@ -4562,7 +4564,7 @@
           <div class="field-grid">
             <input type="number" id="movimientoCajaMonto" class="field" placeholder="Monto" step="0.01" min="0" />
             <input type="text" id="movimientoCajaConcepto" class="field" placeholder="Concepto" />
-            <input type="text" id="movimientoCajaUsuario" class="field" placeholder="Usuario" value="admin" />
+            <input type="text" id="movimientoCajaUsuario" class="field" placeholder="Usuario" value="" />
             <input type="password" id="movimientoCajaClave" class="field" placeholder="Clave maestra" autocomplete="off" hidden />
           </div>
           </div>
@@ -4616,8 +4618,8 @@
                   <div class="mini-card"><span>Caja cambio</span><strong>$<span id="totalCambioRomaneo">0.00</span></strong></div>
                   <div class="mini-card"><span>Caja grande / resguardado</span><strong>$<span id="totalRetiroRomaneo">0.00</span></strong></div>
                   <div class="mini-card"><span>Total contado</span><strong id="modalArqueoContado">$0.00</strong></div>
-                  <label class="mini-card"><span>Saldo físico real</span><input class="field" id="saldoFisicoRealManual" type="number" step="0.01" min="0" placeholder="Manual"></label>
-                  <div class="mini-card"><span>Arrastra al próximo día</span><strong>$<span id="cajaInicioCambio">0.00</span></strong></div>
+                  <label class="mini-card"><span>Saldo aportado al cierre</span><input class="field" id="saldoFisicoRealManual" type="number" step="0.01" min="0" placeholder="Manual"></label>
+                  <div class="mini-card reduced-sensitive-saldo"><span>Arrastra al próximo día</span><strong>$<span id="cajaInicioCambio">0.00</span></strong></div>
                 </div>
               </section>
             </div>
@@ -5029,7 +5031,11 @@
     let toastTimer = null;
 
     function normalizarVistaOperativa(valor){const v=String(valor??"").replace(/^"+|"+$/g,"").trim().toLowerCase();if(["complejo","completa"].includes(v))return "completa";if(["simple","reducida"].includes(v))return "reducida";return ""}
-    function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",dueno:"admin",dueño:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[raw]||raw}
+    function usuarioActualCaja(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};return parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"}}
+    function rolActual(){const u=usuarioActualCaja();const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",dueno:"admin",dueño:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[raw]||raw}
+    function formatRolUsuarioCaja(valor){const raw=String(valor||"").trim();const key=raw.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");if(["admin","administrador","dueno","dueño"].includes(key))return "Dueño";return raw}
+    function usuarioVisibleCaja(valor){const formateado=formatRolUsuarioCaja(valor);if(formateado&&formateado!=="Dueño")return formateado;const u=usuarioActualCaja();return u.nombre||u.usuario||formateado||"-"}
+    function usuarioFormularioCaja(valor){const visible=usuarioVisibleCaja(valor);return visible==="-"?"":visible}
     function getVistaOperativa(rol,cfg=configCaja){const key=String(rol||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");const canonical={administrador:"admin",dueno:"admin",dueño:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[key]||key;if(canonical==="admin")return "completa";const directa=normalizarVistaOperativa(cfg?.[`vista_operativa_${canonical}`]);if(directa)return directa;const legacy=normalizarVistaOperativa(cfg?.[`dashboard_tipo_${canonical}`]);if(legacy)return legacy;return canonical==="colaborador"?"reducida":"completa"}
     function esVistaReducida(){return getVistaOperativa(rolActual(),configCaja)==="reducida"}
     function activarTabCaja(tab){const finalTab=esVistaReducida()&&tab!=="arqueos"?"arqueos":tab;tabButtons.forEach((item)=>item.classList.toggle("active",item.dataset.tab===finalTab));sections.forEach((section)=>section.classList.toggle("active",section.id===`tab-${finalTab}`))}
@@ -5850,7 +5856,7 @@
       const filas = ultimos.length ? ultimos.map((arqueo) => `
         <tr>
           <td>${arqueo.hora || "-"}</td>
-          <td>${arqueo.usuario || "-"}</td>
+          <td>${usuarioVisibleCaja(arqueo.usuario)}</td>
           <td>${money(arqueo.efectivo_contado)}</td>
           <td>${money(arqueo.diferencia_efectivo)}</td>
         </tr>
@@ -6028,7 +6034,7 @@
 
       detalleAperturaBody.innerHTML = `
         <div class="item"><strong>Apertura</strong><small>${aperturaActual.fecha || "-"} ${aperturaActual.hora || ""}</small></div>
-        <div class="item"><strong>Usuario</strong><small>${aperturaActual.usuario || "-"}</small></div>
+        <div class="item"><strong>Usuario</strong><small>${usuarioVisibleCaja(aperturaActual.usuario)}</small></div>
         <div class="item"><strong>Saldo inicial efectivo</strong><small>${money(aperturaActual.monto_apertura)}</small></div>
         <div class="item"><strong>Saldo inicial digital</strong><small>${money(aperturaActual.saldo_inicial_mp)}</small></div>
         <div class="item"><strong>Ingresos de dinero</strong><small>${money(resumenActual?.total_efectivo || 0)} en efectivo desde apertura</small></div>
@@ -6066,10 +6072,10 @@
         return;
       }
 
-      usuarioCajaVisual.innerText = apertura.usuario || "-";
+      usuarioCajaVisual.innerText = usuarioVisibleCaja(apertura.usuario);
       horaAperturaVisual.innerText = apertura.hora || "-";
       aperturaFechaHora.innerText = `${apertura.fecha || "-"} ${apertura.hora || ""}`.trim();
-      aperturaUsuario.innerText = apertura.usuario || "-";
+      aperturaUsuario.innerText = usuarioVisibleCaja(apertura.usuario);
 
       if (apertura.estado === "cerrada") {
         estadoApertura.innerText =
@@ -6097,7 +6103,7 @@
       }
 
       estadoApertura.innerText =
-        `Caja abierta | Fecha: ${apertura.fecha} ${apertura.hora} | Monto inicial: $${formatearNumero(apertura.monto_apertura)} | MP inicial: $${formatearNumero(apertura.saldo_inicial_mp)} | Usuario: ${apertura.usuario}`;
+        `Caja abierta | Fecha: ${apertura.fecha} ${apertura.hora} | Monto inicial: $${formatearNumero(apertura.monto_apertura)} | MP inicial: $${formatearNumero(apertura.saldo_inicial_mp)} | Usuario: ${usuarioVisibleCaja(apertura.usuario)}`;
       estadoCajaVisual.className = "status-pill open";
       estadoCajaVisual.innerText = "Caja abierta";
       estadoCajaVisual.title = estadoApertura.innerText;
@@ -6256,7 +6262,7 @@
     }
 
     function getMovimientoUsuario(movimiento) {
-      return movimiento.usuario || movimiento.cliente_nombre || movimiento.proveedor_nombre || "-";
+      return usuarioVisibleCaja(movimiento.usuario || movimiento.cliente_nombre || movimiento.proveedor_nombre || "-");
     }
 
     function actualizarKpisMovimientos() {
@@ -6367,7 +6373,7 @@
       confirmarMovimientoCaja.innerText = esIngreso ? "Registrar ingreso" : "Registrar retiro";
       movimientoCajaMonto.value = "";
       movimientoCajaConcepto.value = esIngreso ? "Ingreso de dinero" : "Retiro de dinero";
-      movimientoCajaUsuario.value = usuarioApertura.value.trim() || aperturaActual?.usuario || "admin";
+      movimientoCajaUsuario.value = usuarioFormularioCaja(usuarioApertura.value.trim() || aperturaActual?.usuario || "admin");
       movimientoCajaClaveInput.value = "";
       movimientoCajaClaveInput.hidden = true;
       abrirModal(modalMovimientoCaja);
@@ -6395,7 +6401,7 @@
       confirmarMovimientoCaja.innerText = "Guardar cambios";
       movimientoCajaMonto.value = Number(movimiento.total || movimiento.monto || 0);
       movimientoCajaConcepto.value = movimiento.concepto || movimiento.descripcion || "";
-      movimientoCajaUsuario.value = getMovimientoUsuario(movimiento) || "admin";
+      movimientoCajaUsuario.value = usuarioFormularioCaja(getMovimientoUsuario(movimiento) || "admin");
       movimientoCajaClaveInput.value = "";
       movimientoCajaClaveInput.hidden = false;
       abrirModal(modalMovimientoCaja);
@@ -6548,7 +6554,7 @@
       const html = `/*  */
         <div class="list">
           <div class="item"><strong>Fecha</strong><small>${cierre.fecha} | Apertura: ${cierre.hora} | Cierre: ${cierre.hora_cierre || "-"}</small></div>
-          <div class="item"><strong>Usuario</strong><small>${cierre.usuario || "-"}</small></div>
+          <div class="item"><strong>Usuario</strong><small>${usuarioVisibleCaja(cierre.usuario)}</small></div>
           <div class="item"><strong>Montos</strong><small>Apertura: ${money(cierre.monto_apertura)} | Esperado: ${money(cierre.efectivo_esperado)} | Contado: ${money(cierre.efectivo_contado)} | Diferencia: ${money(cierre.diferencia)}</small></div>
           <div class="item"><strong>Resumen</strong><small>Efectivo: ${money(resumen.total_efectivo)} | Debito/credito: ${money(resumen.total_debito_tarjeta ?? resumen.total_debito)} | Mixtas: ${resumen.operaciones_mixtas || 0} | Pagos: ${money(resumen.total_pagos_general)}</small></div>
           <div class="item"><strong>Distribucion</strong><small>Caja apertura: ${money(cierre.monto_caja_apertura)} | Caja fondo: ${money(cierre.monto_caja_fondo)}</small></div>
@@ -6566,7 +6572,7 @@
       return `
         <tr>
           <td>${cierre.fecha || "-"}</td>
-          <td>${cierre.usuario || "-"}</td>
+          <td>${usuarioVisibleCaja(cierre.usuario)}</td>
           <td>${cierre.hora || "-"}</td>
           <td>${cierre.hora_cierre || "-"}</td>
           <td>${money(resumen.total_efectivo || 0)}</td>
@@ -6590,7 +6596,7 @@
         const resumen = cierre.resumen_snapshot || {};
         return [
           cierre.fecha,
-          cierre.usuario,
+          usuarioVisibleCaja(cierre.usuario),
           cierre.hora,
           cierre.hora_cierre,
           cierre.estado,
@@ -6624,7 +6630,7 @@
         const resumen = cierre.resumen_snapshot || {};
         return [
           cierre.fecha || "",
-          cierre.usuario || "",
+          usuarioVisibleCaja(cierre.usuario),
           cierre.hora || "",
           cierre.hora_cierre || "",
           formatearNumero(resumen.total_efectivo || 0),
@@ -6776,7 +6782,7 @@
       return arqueosActuales.filter((arqueo) => [
         arqueo.fecha,
         arqueo.hora,
-        arqueo.usuario,
+        usuarioVisibleCaja(arqueo.usuario),
         arqueo.estado,
         arqueo.observaciones
       ].some((valor) => String(valor || "").toLowerCase().includes(arqueosFiltroTexto)));
@@ -6788,7 +6794,7 @@
       return `
         <tr>
           <td>${arqueo.hora || "-"}</td>
-          <td>${arqueo.usuario || "-"}</td>
+          <td>${usuarioVisibleCaja(arqueo.usuario)}</td>
           <td>${money(arqueo.efectivo_contado)}</td>
           <td class="${Number(arqueo.diferencia_efectivo || 0) < 0 ? "negative-text" : "positive-text"}">${money(arqueo.diferencia_efectivo)}</td>
           <td>${money(arqueo.digital_real)}</td>
@@ -6853,7 +6859,7 @@
       const conteo = arqueo.conteo_detalle || {};
       detalleArqueoModalBody.innerHTML = `
         <div class="list">
-          <div class="item"><strong>Control</strong><small>${arqueo.fecha || "-"} ${arqueo.hora || ""} | Usuario: ${arqueo.usuario || "-"}</small></div>
+          <div class="item"><strong>Control</strong><small>${arqueo.fecha || "-"} ${arqueo.hora || ""} | Usuario: ${usuarioVisibleCaja(arqueo.usuario)}</small></div>
           <div class="item"><strong>Efectivo</strong><small>Esperado: ${money(arqueo.efectivo_esperado)} | Contado: ${money(arqueo.efectivo_contado)} | Diferencia: ${money(arqueo.diferencia_efectivo)}</small></div>
           <div class="item"><strong>Digital</strong><small>Esperado: ${money(arqueo.digital_esperado)} | Real: ${money(arqueo.digital_real)} | Diferencia: ${money(arqueo.diferencia_digital)}</small></div>
           <div class="item"><strong>Resultado</strong><small>${money(arqueo.resultado_final)} | ${arqueo.estado || "-"} | ${Number(arqueo.registrado_cierre) === 1 ? "Registrado para cierre" : "Guardado sin registrar"}</small></div>
@@ -6891,7 +6897,7 @@
       const filas = arqueos.map((arqueo) => [
         arqueo.fecha || "",
         arqueo.hora || "",
-        arqueo.usuario || "",
+        usuarioVisibleCaja(arqueo.usuario),
         formatearNumero(arqueo.efectivo_contado),
         formatearNumero(arqueo.diferencia_efectivo),
         formatearNumero(arqueo.digital_real),
@@ -7908,6 +7914,7 @@
     renderizarCuentasDigitales();
     renderizarArqueosVisuales();
     actualizarGraficoMetodos();
+    if (usuarioApertura && !usuarioApertura.value.trim()) usuarioApertura.value = usuarioFormularioCaja("admin");
     async function cargarAvisoAjustesPendientes() {
       const aviso = document.getElementById("avisoAjustesPendientes");
       const texto = document.getElementById("avisoAjustesPendientesTexto");
