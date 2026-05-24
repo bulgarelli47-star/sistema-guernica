@@ -1385,6 +1385,17 @@
       color: var(--muted);
     }
 
+    .modal-body {
+      display: grid;
+      gap: 12px;
+    }
+
+    .modal-footer {
+      margin-top: 0;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+
     .modal-body-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1537,6 +1548,15 @@
         grid-template-columns: 1fr;
       }
     }
+    /* Modal UI unification layer - non invasive */
+    :where(.modal,.modal-backdrop){background:rgba(17,24,39,.52);padding:clamp(12px,3vw,28px);overflow:auto;overscroll-behavior:contain}
+    .modal>.modal-card:not(.stock-product-modal):not(.modal-card-wide):not(.cobro-modal-card),.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{max-height:calc(100vh - 56px);border:1px solid var(--border,#e5e7eb);border-radius:18px;background:#fff;box-shadow:0 26px 70px rgba(17,24,39,.28);overflow:auto;overscroll-behavior:contain}
+    :where(.modal-header,.modal-head,.dialog-head,.sticky-modal-header){display:flex;align-items:flex-start;justify-content:space-between;gap:14px;border-bottom:1px solid var(--border,#e5e7eb);padding-bottom:12px;margin-bottom:14px;background:#fff}
+    :where(.modal-header h2,.modal-header h3,.modal-head h2,.modal-head h3,.dialog-head h2,.dialog-head h3){margin:0;line-height:1.15}
+    :where(.modal-header p,.modal-head p,.dialog-head p){margin:4px 0 0;color:var(--muted,#6b7280)}
+    :where(.modal-actions,.dialog-actions,.modal-footer,.modal-header-actions){display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+    :where(.close,.icon-button,.mib.icon-only){display:inline-grid;place-items:center;flex:0 0 auto;border-radius:10px}
+    @media(max-width:860px){:where(.modal,.modal-backdrop){padding:10px}.modal>.modal-card,.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{width:min(100%,calc(100vw - 20px));max-height:calc(100vh - 20px);border-radius:16px}:where(.modal-actions,.dialog-actions,.modal-footer){justify-content:stretch}:where(.modal-actions>* , .dialog-actions>* , .modal-footer>*){flex:1 1 140px}}
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=8" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -1918,9 +1938,8 @@
           <h3>Guardar ticket pendiente</h3>
           <p>Asignale un identificador para recuperarlo despues.</p>
         </div>
-        <button type="button" class="button secondary" id="cerrarModalGuardar">Cerrar</button>
       </div>
-      <div>
+      <div class="modal-body">
         <label class="muted" for="modalIdentificadorPendiente">Identificador</label>
         <input
           type="text"
@@ -1930,7 +1949,8 @@
           placeholder="Mesa 4 / Barra Juan / Pedido 12"
         />
       </div>
-      <div class="inline-actions">
+      <div class="modal-footer modal-actions">
+        <button type="button" class="button secondary" id="cerrarModalGuardar">Cerrar</button>
         <button type="button" class="button secondary" id="cancelarGuardarPendiente">Cancelar</button>
         <button type="button" class="button warning" id="confirmarGuardarPendiente">Confirmar guardado</button>
       </div>
@@ -1944,8 +1964,8 @@
           <h3>Tickets pendientes</h3>
           <p>Abrí, cobrá o anulá pendientes sin ocupar la pantalla principal.</p>
         </div>
-        <button type="button" class="button secondary" id="cerrarModalPendientes">Cerrar</button>
       </div>
+      <div class="modal-body">
       <div class="modal-body-grid">
         <article class="card support-card">
           <h3>Pendientes activos</h3>
@@ -1957,6 +1977,10 @@
           <div class="annulled-list" id="ticketsAnulados"></div>
         </article>
       </div>
+      </div>
+      <div class="modal-footer modal-actions">
+        <button type="button" class="button secondary" id="cerrarModalPendientes">Cerrar</button>
+      </div>
     </div>
   </div>
 
@@ -1967,13 +1991,13 @@
           <h3>Anular pendiente</h3>
           <p>Ingresá la clave maestra para confirmar la anulación.</p>
         </div>
-        <button type="button" class="button secondary" id="cerrarModalAnularClave">Cerrar</button>
       </div>
-      <div>
+      <div class="modal-body">
         <input type="password" id="anularClaveInput" class="field" placeholder="Clave maestra" style="margin-top: 8px;">
         <p id="anularClaveError" style="color: var(--danger, #ef4444); font-size: 12px; margin: 6px 0 0; display: none;"></p>
       </div>
-      <div class="inline-actions" style="margin-top: 12px;">
+      <div class="modal-footer modal-actions">
+        <button type="button" class="button secondary" id="cerrarModalAnularClave">Cerrar</button>
         <button type="button" class="button secondary" id="cancelarAnularClave">Cancelar</button>
         <button type="button" class="button danger" id="confirmarAnularClave">Anular ticket</button>
       </div>
@@ -1987,15 +2011,15 @@
           <h3>Seleccionar cliente</h3>
           <p>Elegí un cliente cargado para este ticket.</p>
         </div>
-        <button type="button" class="button secondary" id="cerrarModalCliente">Cerrar</button>
       </div>
-      <div>
+      <div class="modal-body">
         <label class="muted" for="clienteVentaModal">Cliente</label>
         <select id="clienteVentaModal" class="field" style="margin-top: 8px;">
           <option value="">Consumidor Final</option>
         </select>
       </div>
-      <div class="inline-actions">
+      <div class="modal-footer modal-actions">
+        <button type="button" class="button secondary" id="cerrarModalCliente">Cerrar</button>
         <button type="button" class="button secondary" id="cancelarCliente">Cancelar</button>
         <button type="button" class="button success" id="confirmarCliente">Aplicar</button>
       </div>
@@ -2009,10 +2033,14 @@
           <h3 id="modalProductosTitulo">Productos</h3>
           <p class="muted">Vista ampliada de la seccion seleccionada.</p>
         </div>
-        <button type="button" class="button secondary" id="cerrarModalProductos">Cerrar</button>
       </div>
       <input type="text" id="modalBuscadorTodos" class="search-input" placeholder="Buscar por nombre, código o categoría..." style="display:none; margin-bottom:12px;">
+      <div class="modal-body">
       <div id="modalProductosGrid" class="product-grid"></div>
+      </div>
+      <div class="modal-footer modal-actions">
+        <button type="button" class="button secondary" id="cerrarModalProductos">Cerrar</button>
+      </div>
     </div>
   </div>
 
@@ -2023,8 +2051,8 @@
           <h3 id="modalModificadoresNombre">Modificadores</h3>
           <p class="muted" id="modalModificadoresSubtitulo"></p>
         </div>
-        <button type="button" class="button secondary" id="cerrarModalModificadores">Cerrar</button>
       </div>
+      <div class="modal-body">
       <div class="modifier-list" id="listaModificadoresVenta"></div>
       <div class="summary-box">
         <div class="summary-line">
@@ -2032,7 +2060,9 @@
           <strong>$<span id="modalModificadoresTotal">0.00</span></strong>
         </div>
       </div>
-      <div class="inline-actions">
+      </div>
+      <div class="modal-footer modal-actions">
+        <button type="button" class="button secondary" id="cerrarModalModificadores">Cerrar</button>
         <button type="button" class="button secondary" id="agregarSinModificadores">Sin modificadores</button>
         <button type="button" class="button success" id="aplicarModificadores">Aplicar</button>
       </div>
@@ -2047,8 +2077,10 @@
           <p class="muted" id="modalComboSubtitulo"></p>
         </div>
       </div>
+      <div class="modal-body">
       <div id="modalComboDetalle" style="margin:12px 0;"></div>
-      <div class="inline-actions">
+      </div>
+      <div class="modal-footer modal-actions">
         <button type="button" class="button secondary" id="cancelarCombo">Cancelar</button>
         <button type="button" class="button success" id="aceptarCombo">Aceptar combo</button>
       </div>
