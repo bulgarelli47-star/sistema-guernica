@@ -3209,6 +3209,7 @@
     body.vista-reducida #tab-arqueos .cash-audit-line:nth-child(1),
     body.vista-reducida #tab-arqueos .cash-audit-line:nth-child(2),
     body.vista-reducida .reduced-sensitive-saldo,
+    body.vista-reducida .reduced-sensitive-difference,
     body.vista-reducida .audit-sensitive-system {
       display: none !important;
     }
@@ -4338,13 +4339,13 @@
 
         <div class="audit-flow">
           <article class="card audit-card">
-            <h3>A) Arqueo efectivo</h3>
+            <h3>Arqueo efectivo</h3>
             <div class="cash-audit-summary">
               <div class="cash-audit-flow">
                 <div class="cash-audit-line"><small>Saldo arrastrado / inicial</small><strong id="arqueoEfectivoPanelInicial">$0.00</strong></div>
                 <div class="cash-audit-line"><small>Esperado por sistema</small><strong id="arqueoEfectivoPanelEsperado">$0.00</strong></div>
                 <div class="cash-audit-line"><small>Real cargado</small><strong id="arqueoEfectivoPanelContado">$0.00</strong></div>
-                <div class="cash-audit-line"><small>Diferencia</small><strong id="arqueoEfectivoPanelDiferencia">$0.00</strong></div>
+                <div class="cash-audit-line reduced-sensitive-difference"><small>Diferencia</small><strong id="arqueoEfectivoPanelDiferencia">$0.00</strong></div>
                 <div class="cash-audit-line"><small>Estado</small><span class="account-diff-pill pendiente" id="arqueoEfectivoPanelEstado">Pendiente de arqueo</span></div>
               </div>
               <button type="button" class="button secondary" id="abrirArqueoEfectivo">Abrir arqueo efectivo</button>
@@ -4385,7 +4386,7 @@
             <div class="audit-final-grid">
               <div class="audit-final-block">
                 <small>Efectivo</small>
-                <div class="audit-final-value"><span>Diferencia final</span><strong id="resultadoDiferenciaEfectivo">$0.00</strong></div>
+                <div class="audit-final-value reduced-sensitive-difference"><span>Diferencia final</span><strong id="resultadoDiferenciaEfectivo">$0.00</strong></div>
                 <div class="audit-final-value"><span>Estado</span><span class="account-diff-pill pendiente" id="resultadoEfectivoEstado">Pendiente de arqueo</span></div>
               </div>
               <div class="audit-final-block">
