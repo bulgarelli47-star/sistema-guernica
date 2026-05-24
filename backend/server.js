@@ -5996,7 +5996,7 @@ app.get("/tienda/publica/productos", async (req, res) => {
   try {
     const rows = await allQuery(`
       SELECT p.id, p.nombre, p.precio_venta AS precio, p.descripcion, p.unidad_medida,
-             p.maneja_stock, p.stock,
+             p.maneja_stock, p.stock, p.imagen_url,
              c.id AS categoria_id, c.nombre AS categoria_nombre
       FROM productos p
       LEFT JOIN categorias c ON c.id = p.categoria_id
@@ -6011,6 +6011,7 @@ app.get("/tienda/publica/productos", async (req, res) => {
       unidad_medida: p.unidad_medida || "unidad",
       categoria_id: p.categoria_id || null,
       categoria_nombre: p.categoria_nombre || "General",
+      imagen_url: p.imagen_url || "",
       disponible: Number(p.maneja_stock) === 0 ? true : Number(p.stock) > 0
     }));
     return res.json(productos);
