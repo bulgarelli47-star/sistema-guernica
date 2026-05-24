@@ -203,7 +203,7 @@ app.use(express.static(path.join(__dirname, "../frontend"), {
   }
 }));
 
-const RUTAS_PUBLICAS = new Set(["/", "/login", "/logout"]);
+const RUTAS_PUBLICAS = new Set(["/", "/login", "/logout", "/tienda/publica", "/tienda/publica/productos", "/tienda/publica/pedidos"]);
 
 function logError(contexto, error, extra = "") {
   const msg = error instanceof Error ? error.message : String(error);
@@ -506,6 +506,40 @@ async function ensureConfiguracionSchema() {
       valor TEXT NOT NULL,
       seccion TEXT NOT NULL,
       actualizado_en TEXT NOT NULL
+    )
+  `);
+}
+
+async function ensureTiendaSchema() {
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS tienda_pedidos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      codigo_publico TEXT NOT NULL UNIQUE,
+      cliente_nombre TEXT NOT NULL,
+      cliente_telefono TEXT,
+      observacion TEXT,
+      estado TEXT NOT NULL DEFAULT 'recibido',
+      total_estimado REAL NOT NULL DEFAULT 0,
+      origen TEXT NOT NULL DEFAULT 'qr',
+      creado_en TEXT NOT NULL,
+      actualizado_en TEXT NOT NULL,
+      tomado_por_usuario_id INTEGER,
+      venta_id INTEGER
+    )
+  `);
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS tienda_pedido_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pedido_id INTEGER NOT NULL,
+      producto_id INTEGER NOT NULL,
+      producto_nombre_snapshot TEXT NOT NULL,
+      cantidad REAL NOT NULL DEFAULT 1,
+      precio_unitario_snapshot REAL NOT NULL DEFAULT 0,
+      subtotal_snapshot REAL NOT NULL DEFAULT 0,
+      observacion TEXT,
+      estado_stock_snapshot TEXT NOT NULL DEFAULT 'disponible',
+      FOREIGN KEY (pedido_id) REFERENCES tienda_pedidos(id),
+      FOREIGN KEY (producto_id) REFERENCES productos(id)
     )
   `);
 }
@@ -5943,6 +5977,131 @@ app.put("/configuracion", async (req, res) => {
   }
 });
 
+// ── Tienda pública QR ──────────────────────────────────────────────────────────
+
+app.get("/tienda/publica", async (req, res) => {
+  try {
+    const config = await getConfiguracionGlobal();
+    return res.json({
+      nombre: config.negocio_nombre_comercial || "Tienda",
+      logo_url: config.negocio_logo_url || ""
+    });
+  } catch (error) {
+    logError("GET /tienda/publica", error);
+    return res.status(500).json({ message: "Error al cargar datos del local" });
+  }
+});
+
+app.get("/tienda/publica/productos", async (req, res) => {
+  try {
+    const rows = await allQuery(`
+      SELECT p.id, p.nombre, p.precio_venta AS precio, p.descripcion, p.unidad_medida,
+             p.maneja_stock, p.stock,
+             c.id AS categoria_id, c.nombre AS categoria_nombre
+      FROM productos p
+      LEFT JOIN categorias c ON c.id = p.categoria_id
+      WHERE p.activo = 1 AND COALESCE(p.eliminado, 0) = 0
+      ORDER BY c.nombre ASC, p.nombre ASC
+    `);
+    const productos = rows.map(p => ({
+      id: p.id,
+      nombre: p.nombre,
+      precio: Number(p.precio) || 0,
+      descripcion: p.descripcion || "",
+      unidad_medida: p.unidad_medida || "unidad",
+      categoria_id: p.categoria_id || null,
+      categoria_nombre: p.categoria_nombre || "General",
+      disponible: Number(p.maneja_stock) === 0 ? true : Number(p.stock) > 0
+    }));
+    return res.json(productos);
+  } catch (error) {
+    logError("GET /tienda/publica/productos", error);
+    return res.status(500).json({ message: "Error al cargar productos" });
+  }
+});
+
+app.post("/tienda/publica/pedidos", async (req, res) => {
+  const { cliente_nombre, cliente_telefono, observacion, items } = req.body || {};
+
+  const nombreCliente = String(cliente_nombre || "").trim();
+  if (!nombreCliente) {
+    return res.status(400).json({ message: "El nombre es obligatorio." });
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ message: "El pedido debe tener al menos un producto." });
+  }
+
+  const itemsValidados = [];
+  for (const item of items) {
+    const productoId = Number(item.producto_id);
+    const cantidad = Number(item.cantidad);
+    if (!Number.isInteger(productoId) || productoId <= 0) {
+      return res.status(400).json({ message: "Producto inválido en el pedido." });
+    }
+    if (!Number.isFinite(cantidad) || cantidad <= 0) {
+      return res.status(400).json({ message: "Cantidad inválida en el pedido." });
+    }
+    itemsValidados.push({ producto_id: productoId, cantidad, observacion: String(item.observacion || "").trim() });
+  }
+
+  try {
+    const ids = itemsValidados.map(i => i.producto_id);
+    const ph = ids.map(() => "?").join(",");
+    const productos = await allQuery(
+      `SELECT id, nombre, precio_venta, maneja_stock, stock, activo, COALESCE(eliminado, 0) AS eliminado FROM productos WHERE id IN (${ph})`,
+      ids
+    );
+    const productosMap = Object.fromEntries(productos.map(p => [p.id, p]));
+
+    for (const item of itemsValidados) {
+      const p = productosMap[item.producto_id];
+      if (!p || !p.activo || p.eliminado) {
+        return res.status(400).json({ message: `Producto no disponible (id ${item.producto_id}).` });
+      }
+    }
+
+    const ahora = new Date().toISOString();
+    const codigoPublico = "PED-" + Date.now().toString(36).toUpperCase().slice(-6);
+    let totalEstimado = 0;
+
+    await runQuery("BEGIN TRANSACTION");
+    const pedidoResult = await runQuery(
+      `INSERT INTO tienda_pedidos (codigo_publico, cliente_nombre, cliente_telefono, observacion, estado, total_estimado, origen, creado_en, actualizado_en)
+       VALUES (?, ?, ?, ?, 'recibido', 0, 'qr', ?, ?)`,
+      [codigoPublico, nombreCliente, String(cliente_telefono || "").trim() || null, String(observacion || "").trim() || null, ahora, ahora]
+    );
+    const pedidoId = pedidoResult.lastID;
+
+    for (const item of itemsValidados) {
+      const p = productosMap[item.producto_id];
+      const precio = Number(p.precio_venta) || 0;
+      const subtotal = Number((precio * item.cantidad).toFixed(2));
+      const estadoStock = Number(p.maneja_stock) === 0 ? "disponible" : Number(p.stock) > 0 ? "disponible" : "sin_stock";
+      totalEstimado += subtotal;
+      await runQuery(
+        `INSERT INTO tienda_pedido_items (pedido_id, producto_id, producto_nombre_snapshot, cantidad, precio_unitario_snapshot, subtotal_snapshot, observacion, estado_stock_snapshot)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [pedidoId, item.producto_id, p.nombre, item.cantidad, precio, subtotal, item.observacion || null, estadoStock]
+      );
+    }
+
+    await runQuery("UPDATE tienda_pedidos SET total_estimado = ? WHERE id = ?", [Number(totalEstimado.toFixed(2)), pedidoId]);
+    await runQuery("COMMIT");
+
+    return res.status(201).json({
+      ok: true,
+      codigo_publico: codigoPublico,
+      total_estimado: Number(totalEstimado.toFixed(2))
+    });
+  } catch (error) {
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("POST /tienda/publica/pedidos", error);
+    return res.status(500).json({ message: "Error al crear el pedido. Intentá de nuevo." });
+  }
+});
+
+// ── Fin Tienda pública QR ──────────────────────────────────────────────────────
+
 // Handler 404 para rutas no encontradas — siempre JSON
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: `Ruta no encontrada: ${req.method} ${req.path}` });
@@ -5972,7 +6131,8 @@ Promise.all([
   ensureMercadoPagoPointSchema(),
   ensureProductosSchema(),
   ensureClientesSchema(),
-  ensureConfiguracionSchema()
+  ensureConfiguracionSchema(),
+  ensureTiendaSchema()
 ])
   .then(async () => {
     await Promise.all([
