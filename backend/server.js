@@ -70,6 +70,9 @@ const {
   getResumenCuentasCobro
 } = require("./services/reportesService");
 const {
+  getResumenFinanciero
+} = require("./services/finanzasService");
+const {
   getTiposPagoActivos,
   getTodosTiposPago,
   calcularRecargoTipoPago,
@@ -5451,6 +5454,21 @@ app.get("/detalle-ventas", async (req, res) => {
   } catch (error) {
     logError("Error al listar detalle de ventas:", error);
     return res.status(500).json({ message: "Error al obtener detalle de ventas" });
+  }
+});
+
+app.get("/finanzas/resumen", async (req, res) => {
+  if (!puedeRol(req, ROLES.ADMIN)) {
+    return res.status(403).json({ message: "No tenes permisos para acceder al resumen financiero" });
+  }
+
+  const { desde = null, hasta = null } = req.query;
+
+  try {
+    return res.json(await getResumenFinanciero({ desde, hasta }));
+  } catch (error) {
+    logError("Error al obtener resumen financiero:", error);
+    return res.status(500).json({ message: "Error al obtener resumen financiero" });
   }
 });
 

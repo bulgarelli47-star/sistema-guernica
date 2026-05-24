@@ -613,6 +613,47 @@ async function testPermisosColaborador() {
   }
 }
 
+async function testFinanzasResumenBackendV1() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Finanzas",
+        usuario: "colaborador_finanzas",
+        password: "colaborador123",
+        confirmar_password: "colaborador123",
+        rol: "colaborador",
+        activo: true
+      }, adminToken);
+
+      const colaboradorToken = await login(baseUrl, "colaborador_finanzas", "colaborador123");
+      const bloqueado = await requestJson(baseUrl, "GET", "/finanzas/resumen", null, colaboradorToken);
+      assertEqual(bloqueado.response.status, 403, "El colaborador no debe acceder a finanzas/resumen");
+
+      const result = await requestJson(baseUrl, "GET", "/finanzas/resumen", null, adminToken);
+      if (!result.response.ok) throw new Error(`Admin debe acceder a finanzas/resumen: ${result.data?.message || result.response.status}`);
+      const data = result.data;
+      ["liquidez", "pendientes_cobro", "capital_inmovilizado", "pasivos", "resultado", "alertas"].forEach((clave) => {
+        if (data?.[clave] === undefined) throw new Error(`finanzas/resumen debe devolver ${clave}`);
+      });
+      if (!Array.isArray(data.alertas)) throw new Error("finanzas/resumen debe devolver alertas como array");
+      if (data.capital_inmovilizado?.stock_fisico_valorizado === undefined) {
+        throw new Error("Stock fisico valorizado debe quedar en capital_inmovilizado");
+      }
+      if (data.liquidez?.stock_fisico_valorizado !== undefined) {
+        throw new Error("Stock fisico valorizado no debe mezclarse en liquidez");
+      }
+      ["posicion_liquida", "masa_monetaria_bruta", "patrimonio_operativo_estimado", "deuda_neta"].forEach((clave) => {
+        if (data.resultado?.[clave] === undefined) throw new Error(`resultado debe devolver ${clave}`);
+      });
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testAjustesPendientesStockInfraestructura() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -7241,6 +7282,7 @@ async function testResumenAjustesPendientes() {
   await testBatchManual();
   await testBatchComoComponente();
   await testPermisosColaborador();
+  await testFinanzasResumenBackendV1();
   await testAjustesPendientesStockInfraestructura();
   await testAjustePendienteRequiereStockVer();
   await testAjustesPendientesAprobacionYRechazo();
