@@ -19,7 +19,12 @@
     .categorias-bar::-webkit-scrollbar{display:none}
     .cat-btn{border:0;background:transparent;color:var(--muted);font-weight:700;font-size:14px;padding:14px 10px;white-space:nowrap;border-bottom:2px solid transparent;transition:color .15s,border-color .15s}
     .cat-btn.active,.cat-btn:hover{color:var(--primary);border-color:var(--primary)}
-    .main{max-width:640px;margin:0 auto;padding:16px}
+    .main{max-width:640px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:14px}
+    .section-head{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}
+    .section-head h2{font-size:18px;font-weight:900;margin:0}
+    .section-head p{color:var(--muted);font-size:13px;margin:4px 0 0}
+    .ver-mas-btn{border:1px solid var(--primary);background:var(--primary-soft);color:var(--primary);border-radius:12px;padding:8px 16px;font-weight:800;font-size:14px;white-space:nowrap;flex-shrink:0}
+    .ver-mas-btn:hover{background:var(--primary);color:#fff}
     .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
     @media(min-width:480px){.grid{grid-template-columns:repeat(2,1fr)}}
     .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column}
@@ -91,6 +96,13 @@
 
 <div class="main">
   <div class="loading-state" id="loadingState">Cargando productos...</div>
+  <div class="section-head hidden" id="sectionHead">
+    <div>
+      <h2 id="sectionTitle">Destacados de la tienda</h2>
+      <p id="sectionSubtitle">Una selección rápida de nuestros productos.</p>
+    </div>
+    <button class="ver-mas-btn hidden" id="verMasBtn" type="button">Ver más productos</button>
+  </div>
   <div class="empty-state hidden" id="emptyState">No hay productos disponibles por ahora.</div>
   <div class="grid hidden" id="productGrid"></div>
 </div>
@@ -139,6 +151,7 @@
   let productos = [];
   let carrito = {};
   let categoriaActiva = "all";
+  let modoDestacados = true;
 
   async function cargarDatos() {
     try {
@@ -167,8 +180,14 @@
     }
   }
 
+  function productosActuales() {
+    const base = modoDestacados ? productos.filter(p => p.destacado) : productos;
+    return base.length > 0 || !modoDestacados ? base : productos;
+  }
+
   function renderCategorias() {
-    const cats = [...new Set(productos.map(p => p.categoria_nombre || "General"))].sort();
+    const base = productosActuales();
+    const cats = [...new Set(base.map(p => p.categoria_nombre || "General"))].sort();
     const bar = $("categoriaBar");
     bar.innerHTML = "";
 
@@ -189,6 +208,24 @@
     });
   }
 
+  function actualizarSectionHead() {
+    const head = $("sectionHead");
+    const btn = $("verMasBtn");
+    head.classList.remove("hidden");
+    const hayDestacados = productos.some(p => p.destacado);
+    if (modoDestacados) {
+      $("sectionTitle").textContent = "Destacados de la tienda";
+      $("sectionSubtitle").textContent = "Una selección rápida de nuestros productos.";
+      btn.textContent = "Ver más productos";
+      btn.classList.toggle("hidden", !hayDestacados || productos.length === productosActuales().length);
+    } else {
+      $("sectionTitle").textContent = "Todos los productos";
+      $("sectionSubtitle").textContent = "Explorá el catálogo disponible.";
+      btn.textContent = "Ver destacados";
+      btn.classList.toggle("hidden", !hayDestacados);
+    }
+  }
+
   function normalizeImgUrl(url) {
     const s = String(url || "").trim();
     if (!s) return "";
@@ -198,7 +235,9 @@
   }
 
   function renderProductos() {
-    const filtrados = categoriaActiva === "all" ? productos : productos.filter(p => (p.categoria_nombre || "General") === categoriaActiva);
+    actualizarSectionHead();
+    const base = productosActuales();
+    const filtrados = categoriaActiva === "all" ? base : base.filter(p => (p.categoria_nombre || "General") === categoriaActiva);
     $("loadingState").classList.add("hidden");
     if (!filtrados.length) {
       $("productGrid").classList.add("hidden");
@@ -405,6 +444,7 @@
       $("totalConfirmado").textContent = `Total estimado: ${fmt(data.total_estimado)}`;
       $("successScreen").classList.add("visible");
       $("productGrid").classList.add("hidden");
+      $("sectionHead").classList.add("hidden");
       $("categoriaBar").style.display = "none";
       $("cartBar").classList.remove("visible");
       document.querySelector(".main > *:not(.hidden)")?.classList.add("hidden");
@@ -417,12 +457,22 @@
     }
   });
 
+  $("verMasBtn").addEventListener("click", () => {
+    modoDestacados = !modoDestacados;
+    categoriaActiva = "all";
+    renderCategorias();
+    renderProductos();
+  });
+
   $("nuevoPedido").addEventListener("click", () => {
     $("successScreen").classList.remove("visible");
     $("categoriaBar").style.display = "";
+    $("sectionHead").classList.remove("hidden");
     $("loadingState").classList.add("hidden");
     $("emptyState").classList.add("hidden");
     $("productGrid").classList.remove("hidden");
+    modoDestacados = true;
+    categoriaActiva = "all";
     renderCategorias();
     renderProductos();
     actualizarCartBar();

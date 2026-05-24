@@ -5994,26 +5994,45 @@ app.get("/tienda/publica", async (req, res) => {
 
 app.get("/tienda/publica/productos", async (req, res) => {
   try {
-    const rows = await allQuery(`
-      SELECT p.id, p.nombre, p.precio_venta AS precio, p.descripcion, p.unidad_medida,
-             p.maneja_stock, p.stock, p.imagen_url,
-             c.id AS categoria_id, c.nombre AS categoria_nombre
-      FROM productos p
-      LEFT JOIN categorias c ON c.id = p.categoria_id
-      WHERE p.activo = 1 AND COALESCE(p.eliminado, 0) = 0
-      ORDER BY c.nombre ASC, p.nombre ASC
-    `);
-    const productos = rows.map(p => ({
-      id: p.id,
-      nombre: p.nombre,
-      precio: Number(p.precio) || 0,
-      descripcion: p.descripcion || "",
-      unidad_medida: p.unidad_medida || "unidad",
-      categoria_id: p.categoria_id || null,
-      categoria_nombre: p.categoria_nombre || "General",
-      imagen_url: p.imagen_url || "",
-      disponible: Number(p.maneja_stock) === 0 ? true : Number(p.stock) > 0
-    }));
+    const [rows, config] = await Promise.all([
+      allQuery(`
+        SELECT p.id, p.nombre, p.precio_venta AS precio, p.descripcion, p.unidad_medida,
+               p.maneja_stock, p.stock, p.imagen_url,
+               c.id AS categoria_id, c.nombre AS categoria_nombre
+        FROM productos p
+        LEFT JOIN categorias c ON c.id = p.categoria_id
+        WHERE p.activo = 1 AND COALESCE(p.eliminado, 0) = 0
+        ORDER BY c.nombre ASC, p.nombre ASC
+      `),
+      getConfiguracionGlobal()
+    ]);
+
+    const catCSV = String(config.dashboard_pizarra_categorias || "");
+    const prodCSV = String(config.dashboard_pizarra_productos || "");
+    const catDestacadas = new Set(
+      catCSV.split(",").map(s => s.trim().toLowerCase()).filter(Boolean)
+    );
+    const idDestacados = new Set(
+      prodCSV.split(",").map(s => Number(s.trim())).filter(n => n > 0)
+    );
+
+    const productos = rows.map(p => {
+      const catNombre = (p.categoria_nombre || "").toLowerCase();
+      const destacado = catDestacadas.has(catNombre) || idDestacados.has(p.id);
+      return {
+        id: p.id,
+        nombre: p.nombre,
+        precio: Number(p.precio) || 0,
+        descripcion: p.descripcion || "",
+        unidad_medida: p.unidad_medida || "unidad",
+        categoria_id: p.categoria_id || null,
+        categoria_nombre: p.categoria_nombre || "General",
+        imagen_url: p.imagen_url || "",
+        disponible: Number(p.maneja_stock) === 0 ? true : Number(p.stock) > 0,
+        destacado
+      };
+    });
+
     return res.json(productos);
   } catch (error) {
     logError("GET /tienda/publica/productos", error);
