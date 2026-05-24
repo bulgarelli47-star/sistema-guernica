@@ -214,6 +214,10 @@
   --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M4 20V4h2v14h14v2H4Zm4-4v-5h3v5H8Zm5 0V7h3v9h-3Zm5 0v-3h3v3h-3Z'/%3E%3C/svg%3E");
 }
 
+.nav-icon.finanzas {
+  --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M12 3 3 7v2h18V7l-9-4ZM5 11v6H3v2h18v-2h-2v-6h-2v6h-3v-6h-2v6H9v-6H7v6H5v-6Z'/%3E%3C/svg%3E");
+}
+
 .nav-icon.users {
   --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M12 12a5 5 0 1 1 .1 0H12Zm0-2a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM4 21v-2a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v2H4Zm2-2h12a4 4 0 0 0-4-4h-4a4 4 0 0 0-4 4Z'/%3E%3C/svg%3E");
 }

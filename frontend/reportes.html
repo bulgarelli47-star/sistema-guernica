@@ -785,7 +785,7 @@
     /* Modal UI unification layer - non invasive */
     :where(.modal,.modal-backdrop){background:rgba(17,24,39,.52);padding:clamp(12px,3vw,28px);overflow:auto;overscroll-behavior:contain}
     .modal>.modal-card:not(.stock-product-modal):not(.modal-card-wide):not(.cobro-modal-card),.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{max-height:calc(100vh - 56px);border:1px solid var(--border,#e5e7eb);border-radius:18px;background:#fff;box-shadow:0 26px 70px rgba(17,24,39,.28);overflow:auto;overscroll-behavior:contain}
-    :where(.modal-header,.modal-head,.dialog-head,.sticky-modal-header){display:flex;align-items:flex-start;justify-content:space-between;gap:14px;border-bottom:1px solid var(--border,#e5e7eb);padding-bottom:12px;margin-bottom:14px;background:#fff}
+    .modal-header,.modal-head,.dialog-head,.sticky-modal-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;border:1px solid rgba(109,40,217,.14);border-radius:14px;padding:12px 14px;margin:-2px -2px 14px;background:linear-gradient(135deg,rgba(109,40,217,.12),rgba(34,163,90,.08));box-shadow:inset 0 -1px 0 rgba(255,255,255,.65)}
     :where(.modal-header h2,.modal-header h3,.modal-head h2,.modal-head h3,.dialog-head h2,.dialog-head h3){margin:0;line-height:1.15}
     :where(.modal-header p,.modal-head p,.dialog-head p){margin:4px 0 0;color:var(--muted,#6b7280)}
     :where(.modal-actions,.dialog-actions,.modal-footer,.modal-header-actions){display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
@@ -831,8 +831,9 @@
         <a href="/pagos.html"><span class="nav-icon payments" aria-hidden="true"></span><span>Pagos</span></a>
         <a href="/productos.html"><span class="nav-icon stock" aria-hidden="true"></span><span>Stock</span></a>
         <a href="/clientes.html"><span class="nav-icon clients" aria-hidden="true"></span><span>Cuentas corrientes</span></a>
-        <a href="/proveedores.html"><span class="nav-icon providers" aria-hidden="true"></span><span>Proveedores</span></a>
-        <a class="active" href="/reportes.html"><span class="nav-icon reports" aria-hidden="true"></span><span>Reportes</span></a>
+          <a href="/proveedores.html"><span class="nav-icon providers" aria-hidden="true"></span><span>Proveedores</span></a>
+          <a href="/finanzas.html" data-admin-only="true"><span class="nav-icon finanzas" aria-hidden="true"></span><span>Finanzas</span></a>
+          <a class="active" href="/reportes.html"><span class="nav-icon reports" aria-hidden="true"></span><span>Reportes</span></a>
         <a href="/usuarios.html"><span class="nav-icon users" aria-hidden="true"></span><span>Usuarios</span></a>
         <a href="/configuracion.html"><span class="nav-icon settings" aria-hidden="true"></span><span>Configuración</span></a>
       </nav>

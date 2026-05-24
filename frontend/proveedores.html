@@ -399,6 +399,15 @@
       box-shadow: 0 26px 70px rgba(17, 24, 39, 0.28);
       padding: 18px;
     }
+    .modal-body {
+      display: grid;
+      gap: 12px;
+    }
+    .modal-footer {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
     .modal-card.compact { width: min(620px, 100%); }
     .modal-header {
       display: flex;
@@ -474,6 +483,15 @@
       .top-actions { justify-content: flex-start; }
       .form-grid { grid-template-columns: 1fr; }
     }
+    /* Modal UI unification layer - non invasive */
+    :where(.modal,.modal-backdrop){background:rgba(17,24,39,.52);padding:clamp(12px,3vw,28px);overflow:auto;overscroll-behavior:contain}
+    .modal>.modal-card:not(.stock-product-modal):not(.modal-card-wide):not(.cobro-modal-card),.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{max-height:calc(100vh - 56px);border:1px solid var(--border,#e5e7eb);border-radius:18px;background:#fff;box-shadow:0 26px 70px rgba(17,24,39,.28);overflow:auto;overscroll-behavior:contain}
+    .modal-header,.modal-head,.dialog-head,.sticky-modal-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;border:1px solid rgba(109,40,217,.14);border-radius:14px;padding:12px 14px;margin:-2px -2px 14px;background:linear-gradient(135deg,rgba(109,40,217,.12),rgba(34,163,90,.08));box-shadow:inset 0 -1px 0 rgba(255,255,255,.65)}
+    :where(.modal-header h2,.modal-header h3,.modal-head h2,.modal-head h3,.dialog-head h2,.dialog-head h3){margin:0;line-height:1.15}
+    :where(.modal-header p,.modal-head p,.dialog-head p){margin:4px 0 0;color:var(--muted,#6b7280)}
+    :where(.modal-actions,.dialog-actions,.modal-footer,.modal-header-actions){display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+    :where(.close,.icon-button,.mib.icon-only){display:inline-grid;place-items:center;flex:0 0 auto;border-radius:10px}
+    @media(max-width:860px){:where(.modal,.modal-backdrop){padding:10px}.modal>.modal-card,.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{width:min(100%,calc(100vw - 20px));max-height:calc(100vh - 20px);border-radius:16px}:where(.modal-actions,.dialog-actions,.modal-footer){justify-content:stretch}:where(.modal-actions>* , .dialog-actions>* , .modal-footer>*){flex:1 1 140px}}
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=7" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -536,6 +554,7 @@
         <a href="/productos.html"><span class="nav-icon stock" aria-hidden="true"></span><span>Stock</span></a>
         <a href="/clientes.html"><span class="nav-icon clients" aria-hidden="true"></span><span>Cuentas corrientes</span></a>
         <a class="active" href="/proveedores.html"><span class="nav-icon providers" aria-hidden="true"></span><span>Proveedores</span></a>
+        <a href="/finanzas.html" data-admin-only="true"><span class="nav-icon finanzas" aria-hidden="true"></span><span>Finanzas</span></a>
         <a href="/reportes.html"><span class="nav-icon reports" aria-hidden="true"></span><span>Reportes</span></a>
         <a href="/usuarios.html"><span class="nav-icon users" aria-hidden="true"></span><span>Usuarios</span></a>
         <a href="/configuracion.html"><span class="nav-icon settings" aria-hidden="true"></span><span>Configuración</span></a>
@@ -636,6 +655,7 @@
           <button type="button" class="mib ghost icon-only" id="cerrarProveedor" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
         </div>
       </div>
+      <div class="modal-body">
       <div class="form-grid proveedor-form-grid">
         <label>Nombre
           <input type="text" id="nombre" class="field" />
@@ -683,6 +703,7 @@
         <select class="hidden" id="moneda"><option value="ARS">ARS</option><option value="USD">USD</option></select>
         <input class="hidden" type="checkbox" id="activo" checked />
       </div>
+      </div>
     </article>
   </div>
 
@@ -699,6 +720,7 @@
           <button type="button" class="mib ghost icon-only" id="cerrarPago" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
         </div>
       </div>
+      <div class="modal-body">
       <div class="form-grid">
         <label>Fecha
           <input type="date" id="pagoFecha" class="field" />
@@ -734,6 +756,7 @@
         <div class="detail-box"><span>Saldo luego del pago</span><strong id="pagoSaldoLuego">$0.00</strong></div>
         <div class="detail-box"><span>Aplicación</span><strong>Deuda más antigua</strong></div>
       </div>
+      </div>
     </article>
   </div>
 
@@ -748,6 +771,7 @@
           <button type="button" class="mib ghost icon-only" id="cerrarDetalle" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
         </div>
       </div>
+      <div class="modal-body">
       <div class="detail-grid" id="detalleResumen"></div>
       <div style="overflow:auto;">
         <table>
@@ -765,6 +789,7 @@
             <tr><td colspan="6">Selecciona un proveedor.</td></tr>
           </tbody>
         </table>
+      </div>
       </div>
     </article>
   </div>
@@ -1275,7 +1300,7 @@
       if (esVistaReducida()) {
         detalleResumen.innerHTML = `
           <div class="detail-box"><span>Contacto</span><strong>${proveedor.contacto || proveedor.alias || "-"}</strong></div>
-          <div class="detail-box"><span>TelÃ©fono</span><strong>${proveedor.telefono || "-"}</strong></div>
+          <div class="detail-box"><span>Teléfono</span><strong>${proveedor.telefono || "-"}</strong></div>
           <div class="detail-box"><span>Email</span><strong>${proveedor.email || "-"}</strong></div>
           <div class="detail-box"><span>Categoria</span><strong>${categoriaProveedorLabel(proveedor)}</strong></div>
           <div class="detail-box"><span>Estado</span><strong>${Number(proveedor.activo) === 1 ? "Activo" : "Inactivo"}</strong></div>
@@ -1419,4 +1444,3 @@
   <script src="/user-menu.js?v=7" defer></script>
 </body>
 </html>
-

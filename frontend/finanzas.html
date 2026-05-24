@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Finanzas - Sistema Guernica</title>
+  <style>
+    :root{--header-height:88px;--sidebar-width:270px;--bg:#f7f7fb;--surface:#fff;--header:#16052e;--text:#111827;--muted:#6b7280;--border:#e5e7eb;--primary:#6d28d9;--primary-soft:#f0e5ff;--success:#22a35a;--danger:#e05252;--warning:#d99a21;--info:#2563eb;--shadow:0 12px 30px rgba(31,11,63,.08);--radius:18px}
+    *{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#fbfaff 0%,var(--bg) 100%);color:var(--text);font-family:"Segoe UI",Tahoma,Geneva,Verdana,sans-serif}button,input,select{font:inherit}button{cursor:pointer}
+    .site-header{position:fixed;inset:0 0 auto 0;z-index:30;min-height:var(--header-height);background:var(--header);box-shadow:var(--shadow)}.topbar{min-height:var(--header-height);display:flex;justify-content:space-between;align-items:center;gap:16px;color:#fff;padding:18px 28px}.topbar-left,.brand-block{display:flex;align-items:center;gap:16px;min-width:0}.logo-mark{width:54px;height:54px;border-radius:18px;display:grid;place-items:center;background:linear-gradient(135deg,#2b0b53 0%,#7c3aed 100%);font-size:28px;font-weight:900}.logo-text strong{display:block;letter-spacing:.08em}.logo-text small,.topbar-title p{color:rgba(255,255,255,.78)}.topbar-divider{width:1px;height:42px;background:rgba(255,255,255,.16)}.topbar-title h1{margin:0;font-size:26px}.topbar-title p{margin:6px 0 0}.top-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}.chip{border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#fff;padding:10px 12px;border-radius:999px;font-size:14px}.user-box{display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid rgba(255,255,255,.16);border-radius:999px;background:rgba(255,255,255,.08)}.avatar{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:#fff;color:var(--primary);font-weight:800}.user-box small{display:block;color:rgba(255,255,255,.72)}
+    .app-shell{display:grid;grid-template-columns:var(--sidebar-width) 1fr;gap:22px;padding:calc(var(--header-height) + 22px) 24px 28px}.sidebar{position:sticky;top:calc(var(--header-height) + 22px);align-self:start;min-height:calc(100vh - var(--header-height) - 46px);display:flex;flex-direction:column;gap:18px;background:#fff;border:1px solid var(--border);border-radius:22px;padding:18px;box-shadow:var(--shadow)}.nav-title{color:var(--muted);font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.nav{display:grid;gap:6px}.nav a{display:flex;align-items:center;gap:12px;min-height:44px;padding:10px 12px;border-radius:12px;color:var(--muted);text-decoration:none;font-weight:700}.nav a:hover,.nav a.active{color:var(--primary);background:var(--primary-soft)}.nav-icon{width:24px;text-align:center}.branch-card{margin-top:auto;border:1px solid var(--border);border-radius:16px;padding:14px;background:#fafafa;color:var(--text)}.branch-card small,.muted{color:var(--muted)}
+    .main{display:grid;gap:10px;min-width:0;align-items:start}.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px}.section-head{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}h2,h3{margin:0}.message{margin:4px 0 0;color:var(--muted);min-height:22px}.button{border:0;border-radius:12px;padding:10px 14px;background:var(--primary);color:#fff;font-weight:800;min-height:42px}.button.secondary{background:#eef2ff;color:#3730a3}.button:disabled{opacity:.62;cursor:not-allowed}
+    .kpi-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.kpi{display:grid;gap:10px;min-height:150px}.kpi span{color:var(--muted);font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em}.kpi strong{font-size:28px;line-height:1.04;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.kpi small{color:var(--muted);font-weight:700;line-height:1.35}.kpi.primary{border-color:rgba(109,40,217,.26);background:linear-gradient(180deg,#fbfaff,#fff)}
+    .breakdown-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.finance-block{display:grid;gap:12px}.finance-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;border-bottom:1px solid var(--border);padding:10px 0}.finance-row:last-child{border-bottom:0}.finance-row span{color:var(--muted);font-weight:800}.finance-row strong{text-align:right;font-variant-numeric:tabular-nums}.finance-list{display:grid;gap:8px}.finance-chip{display:flex;justify-content:space-between;gap:10px;border:1px solid var(--border);border-radius:12px;background:#fafafe;padding:10px 12px}.notice{border:1px solid #fde68a;background:#fffbeb;color:#92400e;border-radius:14px;padding:12px;font-weight:700}.restricted{display:none}.restricted.active,.loading.active,.content.active{display:grid}.loading,.content{display:none}.alert-list{display:grid;gap:10px}.alert-item{border:1px solid rgba(217,154,33,.28);background:#fffbeb;color:#92400e;border-radius:14px;padding:12px}.placeholder{border:1px dashed var(--border);border-radius:16px;padding:16px;color:var(--muted);background:#fafafa;font-weight:700}
+    @media(max-width:1180px){.kpi-grid,.breakdown-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:860px){.site-header{position:static}.topbar{align-items:flex-start;flex-direction:column}.topbar-left{flex-wrap:wrap}.topbar-divider{display:none}.app-shell{grid-template-columns:1fr;padding:18px}.sidebar{position:static;min-height:auto}.kpi-grid,.breakdown-grid{grid-template-columns:1fr}.card{padding:16px}.kpi strong{font-size:24px}}
+  </style>
+  <link rel="stylesheet" href="/nav-icons.css?v=7" />
+  <link rel="stylesheet" href="/user-menu.css?v=4" />
+  <script src="/auth-interceptor.js"></script>
+</head>
+<body>
+  <header class="site-header"><div class="topbar"><div class="topbar-left"><div class="brand-block"><div class="logo-mark">G</div><div class="logo-text"><strong>GUERNICA</strong><small>Sistema de gestión</small></div></div><div class="topbar-divider"></div><div class="topbar-title"><h1>Finanzas</h1><p>Lectura empresarial actual</p></div></div><div class="top-actions"><div class="chip">Ayuda</div><div class="user-box"><div class="avatar">JP</div><div><strong>Juan Perez</strong><small>Dueño</small></div><span class="app-icon icon-chevron" aria-hidden="true"></span></div></div></div></header>
+  <div class="app-shell">
+    <aside class="sidebar"><div class="nav-title">Navegación</div><nav class="nav"><a href="/dashboard.html"><span class="nav-icon home" aria-hidden="true"></span><span>Inicio</span></a><a href="/ventas.html"><span class="nav-icon sales" aria-hidden="true"></span><span>Ventas</span></a><a href="/caja.html"><span class="nav-icon cash" aria-hidden="true"></span><span>Caja</span></a><a href="/pagos.html"><span class="nav-icon payments" aria-hidden="true"></span><span>Pagos</span></a><a href="/productos.html"><span class="nav-icon stock" aria-hidden="true"></span><span>Stock</span></a><a href="/clientes.html"><span class="nav-icon clients" aria-hidden="true"></span><span>Cuentas corrientes</span></a><a href="/proveedores.html"><span class="nav-icon providers" aria-hidden="true"></span><span>Proveedores</span></a><a class="active" href="/finanzas.html" data-admin-only="true"><span class="nav-icon finanzas" aria-hidden="true"></span><span>Finanzas</span></a><a href="/reportes.html"><span class="nav-icon reports" aria-hidden="true"></span><span>Reportes</span></a><a href="/usuarios.html"><span class="nav-icon users" aria-hidden="true"></span><span>Usuarios</span></a><a href="/configuracion.html"><span class="nav-icon settings" aria-hidden="true"></span><span>Configuración</span></a></nav><div class="branch-card"><div><strong>Guernica Bar</strong><br><small>Sucursal Central</small></div><span class="app-icon icon-store" aria-hidden="true"></span></div></aside>
+    <main class="main">
+      <div class="card section-head"><div><p class="message" id="fechaCorte">Sin datos de corte.</p></div><button class="button secondary" id="actualizarFinanzas" type="button">Actualizar</button></div>
+      <section class="card loading active" id="loadingBox"><h2>Cargando lectura financiera...</h2><p class="message">Consultando resumen empresarial actual.</p></section>
+      <section class="card restricted" id="restrictedBox"><h2>Disponible solo para Dueño.</h2><p class="message">El resumen financiero contiene stock valorizado, deuda global, proveedores y liquidez consolidada.</p></section>
+      <section class="content" id="contentBox">
+        <div class="kpi-grid">
+          <article class="card kpi primary"><span>Posición líquida</span><strong id="kpiPosicionLiquida">$0,00</strong><small>Dinero disponible o conciliado.</small></article>
+          <article class="card kpi"><span>Masa monetaria bruta</span><strong id="kpiMasaBruta">$0,00</strong><small>Liquidez + pendientes + capital inmovilizado.</small></article>
+          <article class="card kpi"><span>Patrimonio operativo estimado</span><strong id="kpiPatrimonio">$0,00</strong><small>Lectura aproximada de operación.</small></article>
+          <article class="card kpi"><span>Deuda neta</span><strong id="kpiDeudaNeta">$0,00</strong><small>Pasivos menos pendientes cobrables.</small></article>
+        </div>
+        <div class="breakdown-grid">
+          <article class="card finance-block"><h3>Liquidez</h3><div id="liquidezRows"></div><div class="finance-list" id="bancosBilleteras"></div></article>
+          <article class="card finance-block"><h3>Pendientes de cobro</h3><div id="pendientesRows"></div></article>
+          <article class="card finance-block"><h3>Capital inmovilizado</h3><div id="capitalRows"></div><div class="notice">El stock valorizado no es liquidez.</div></article>
+          <article class="card finance-block"><h3>Pasivos</h3><div id="pasivosRows"></div></article>
+        </div>
+        <article class="card"><div class="section-head"><div><h3>Alertas financieras</h3><p class="message">Limitaciones y advertencias de la lectura actual.</p></div></div><div class="alert-list" id="alertasFinancieras"></div></article>
+        <article class="card placeholder">Los gráficos se activarán cuando existan snapshots financieros.</article>
+      </section>
+    </main>
+  </div>
+  <script>
+    const $=(id)=>document.getElementById(id);
+    const money=new Intl.NumberFormat("es-AR",{style:"currency",currency:"ARS"});
+    const fmt=(value)=>money.format(Number(value||0));
+    const dateFmt=new Intl.DateTimeFormat("es-AR",{dateStyle:"short",timeStyle:"short"});
+    function row(label,value){return `<div class="finance-row"><span>${label}</span><strong>${fmt(value)}</strong></div>`}
+    function setState(state){["loadingBox","restrictedBox","contentBox"].forEach(id=>$(id).classList.remove("active"));$(state).classList.add("active")}
+    function render(data){
+      $("fechaCorte").textContent=data.fecha_corte?`Corte ${dateFmt.format(new Date(data.fecha_corte))}`:"Sin fecha de corte";
+      $("kpiPosicionLiquida").textContent=fmt(data.resultado?.posicion_liquida);
+      $("kpiMasaBruta").textContent=fmt(data.resultado?.masa_monetaria_bruta);
+      $("kpiPatrimonio").textContent=fmt(data.resultado?.patrimonio_operativo_estimado);
+      $("kpiDeudaNeta").textContent=fmt(data.resultado?.deuda_neta);
+      const l=data.liquidez||{},p=data.pendientes_cobro||{},c=data.capital_inmovilizado||{},pa=data.pasivos||{};
+      $("liquidezRows").innerHTML=[row("Efectivo contado",l.efectivo_contado),row("Caja cambio",l.caja_cambio),row("Caja grande / resguardado",l.caja_grande_resguardado),row("Cuentas digitales conciliadas",l.cuentas_digitales_conciliadas),row("Total liquidez",l.total)].join("");
+      const bancos=Array.isArray(l.bancos_billeteras)?l.bancos_billeteras:[];
+      $("bancosBilleteras").innerHTML=bancos.length?bancos.map(item=>`<div class="finance-chip"><span>${item.nombre||"Banco / billetera"}</span><strong>${fmt(item.monto)}</strong></div>`).join(""):'<div class="finance-chip"><span>Bancos / billeteras</span><strong>$0,00</strong></div>';
+      $("pendientesRows").innerHTML=[row("Cuentas corrientes clientes",p.cuentas_corrientes_clientes),row("Ventas pendientes",p.ventas_pendientes),row("Acreditaciones pendientes estimadas",p.acreditaciones_pendientes_estimadas),row("Total pendientes",p.total)].join("");
+      $("capitalRows").innerHTML=[row("Stock físico valorizado",c.stock_fisico_valorizado),row("Estimado receta / rendimiento",c.estimado_receta_rendimiento),row("Total operativo",c.total_operativo)].join("");
+      $("pasivosRows").innerHTML=[row("Pagos pendientes",pa.pagos_pendientes),row("Proveedores pendientes",pa.proveedores_pendientes),row("Impuestos estimados",pa.impuestos_estimados),row("Total pasivos",pa.total)].join("");
+      const alertas=Array.isArray(data.alertas)?data.alertas:[];
+      $("alertasFinancieras").innerHTML=alertas.length?alertas.map(a=>`<div class="alert-item"><strong>${a.codigo||"alerta"}</strong><br><span>${a.mensaje||""}</span></div>`).join(""):'<div class="finance-chip"><span>Sin alertas financieras por ahora.</span></div>';
+      setState("contentBox");
+    }
+    async function cargarFinanzas(){
+      setState("loadingBox");
+      $("actualizarFinanzas").disabled=true;
+      try{
+        const res=await fetch("/finanzas/resumen");
+        if(res.status===403){setState("restrictedBox");return}
+        const data=await res.json();
+        if(!res.ok)throw new Error(data.message||"No se pudo cargar finanzas");
+        render(data);
+      }catch(error){
+        $("loadingBox").innerHTML=`<h2>Error al cargar Finanzas</h2><p class="message">${error.message||"No se pudo obtener la lectura financiera."}</p>`;
+        setState("loadingBox");
+      }finally{
+        $("actualizarFinanzas").disabled=false;
+      }
+    }
+    $("actualizarFinanzas").onclick=cargarFinanzas;
+    cargarFinanzas();
+  </script>
+  <script src="/nav-permissions.js?v=7" defer></script>
+  <script src="/user-menu.js?v=7" defer></script>
+</body>
+</html>
