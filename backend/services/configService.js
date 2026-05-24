@@ -259,7 +259,7 @@ function sanitizarConfiguracionParaRol(config, rol) {
   if (normalizarRolPermiso(rol) === "admin") return config;
 
   return Object.fromEntries(
-    Object.entries(config || {}).filter(([clave]) => CONFIGURACION_PUBLICA_KEYS.has(clave))
+    Object.entries(config || {}).filter(([clave]) => CONFIGURACION_PUBLICA_KEYS.has(clave) || clave.startsWith("modulo_"))
   );
 }
 
