@@ -1551,7 +1551,7 @@
     /* Modal UI unification layer - non invasive */
     :where(.modal,.modal-backdrop){background:rgba(17,24,39,.52);padding:clamp(12px,3vw,28px);overflow:auto;overscroll-behavior:contain}
     .modal>.modal-card:not(.stock-product-modal):not(.modal-card-wide):not(.cobro-modal-card),.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{max-height:calc(100vh - 56px);border:1px solid var(--border,#e5e7eb);border-radius:18px;background:#fff;box-shadow:0 26px 70px rgba(17,24,39,.28);overflow:auto;overscroll-behavior:contain}
-    :where(.modal-header,.modal-head,.dialog-head,.sticky-modal-header){display:flex;align-items:flex-start;justify-content:space-between;gap:14px;border-bottom:1px solid var(--border,#e5e7eb);padding-bottom:12px;margin-bottom:14px;background:#fff}
+    .modal-header,.modal-head,.dialog-head,.sticky-modal-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;border:1px solid rgba(109,40,217,.14);border-radius:14px;padding:12px 14px;margin:-2px -2px 14px;background:linear-gradient(135deg,rgba(109,40,217,.12),rgba(34,163,90,.08));box-shadow:inset 0 -1px 0 rgba(255,255,255,.65)}
     :where(.modal-header h2,.modal-header h3,.modal-head h2,.modal-head h3,.dialog-head h2,.dialog-head h3){margin:0;line-height:1.15}
     :where(.modal-header p,.modal-head p,.dialog-head p){margin:4px 0 0;color:var(--muted,#6b7280)}
     :where(.modal-actions,.dialog-actions,.modal-footer,.modal-header-actions){display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
@@ -3660,13 +3660,13 @@
         return nombre.includes(termino) || categoria.includes(termino) || codigo.includes(termino);
       }
 
-      // Grid principal: pizarra filtra por categoría. Sin término respeta pizarra, con término busca en todo.
+      // Grid principal: Tienda filtra por categoría. Sin término respeta la configuración legacy dashboard_pizarra_*; con término busca en todo.
       const productosFiltrados = productosCargados.filter((producto) => {
         if (!termino && !productoEnPizarraDirecta(producto)) return false;
         return coincideTermino(producto) && filtrarPorCategoria(producto);
       });
 
-      // Más vendidos: de TODOS los productos (no solo pizarra), con ventas reales > 0.
+      // Más vendidos: de TODOS los productos (no solo Tienda), con ventas reales > 0.
       const vendidos = productosCargados
         .filter(p => !Number(p.es_combo) && Number(p.total_vendido || 0) > 0 && coincideTermino(p))
         .sort((a, b) => Number(b.total_vendido || 0) - Number(a.total_vendido || 0));
@@ -3692,7 +3692,7 @@
       ultimaVistaSugeridos = sugeridos.length ? sugeridos : productosFiltrados.filter(p => !Number(p.es_combo));
       renderProductSection(productosSugeridos, ultimaVistaSugeridos.slice(0, 5), "Sin sugerencias disponibles.");
 
-      // Ver todos: todos los productos sin filtro de pizarra
+      // Ver todos: todos los productos sin filtro de Tienda
       ultimaTodosProductos = productosCargados.filter((producto) => coincideTermino(producto));
     }
 
