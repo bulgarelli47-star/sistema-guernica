@@ -649,6 +649,15 @@
       gap: 16px;
       margin-bottom: 14px;
     }
+    .modal-body {
+      display: grid;
+      gap: 12px;
+    }
+    .modal-footer {
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
     .close {
       width: 40px;
       height: 40px;
@@ -773,6 +782,15 @@
         overflow: hidden;
       }
     }
+    /* Modal UI unification layer - non invasive */
+    :where(.modal,.modal-backdrop){background:rgba(17,24,39,.52);padding:clamp(12px,3vw,28px);overflow:auto;overscroll-behavior:contain}
+    .modal>.modal-card:not(.stock-product-modal):not(.modal-card-wide):not(.cobro-modal-card),.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{max-height:calc(100vh - 56px);border:1px solid var(--border,#e5e7eb);border-radius:18px;background:#fff;box-shadow:0 26px 70px rgba(17,24,39,.28);overflow:auto;overscroll-behavior:contain}
+    :where(.modal-header,.modal-head,.dialog-head,.sticky-modal-header){display:flex;align-items:flex-start;justify-content:space-between;gap:14px;border-bottom:1px solid var(--border,#e5e7eb);padding-bottom:12px;margin-bottom:14px;background:#fff}
+    :where(.modal-header h2,.modal-header h3,.modal-head h2,.modal-head h3,.dialog-head h2,.dialog-head h3){margin:0;line-height:1.15}
+    :where(.modal-header p,.modal-head p,.dialog-head p){margin:4px 0 0;color:var(--muted,#6b7280)}
+    :where(.modal-actions,.dialog-actions,.modal-footer,.modal-header-actions){display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+    :where(.close,.icon-button,.mib.icon-only){display:inline-grid;place-items:center;flex:0 0 auto;border-radius:10px}
+    @media(max-width:860px){:where(.modal,.modal-backdrop){padding:10px}.modal>.modal-card,.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{width:min(100%,calc(100vw - 20px));max-height:calc(100vh - 20px);border-radius:16px}:where(.modal-actions,.dialog-actions,.modal-footer){justify-content:stretch}:where(.modal-actions>* , .dialog-actions>* , .modal-footer>*){flex:1 1 140px}}
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=6" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -965,6 +983,7 @@
         </div>
         <button class="close" id="cerrarExportacion" type="button" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
+      <div class="modal-body">
       <div class="filters">
         <label>Módulo
           <select id="exportModulo">
@@ -991,7 +1010,8 @@
         <strong id="nombreArchivo">Nombre automático pendiente.</strong>
         <span id="estadoExportacionArchivo">Listo para generar.</span>
       </div>
-      <div class="toolbar" style="margin-top:16px;">
+      </div>
+      <div class="modal-footer modal-actions">
         <button class="button ghost" id="cancelarExportacion" type="button">Cancelar</button>
         <button class="button" id="confirmarExportacion" type="button">Generar reporte</button>
       </div>

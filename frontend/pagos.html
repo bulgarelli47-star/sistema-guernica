@@ -546,6 +546,57 @@
       line-height: 1;
     }
 
+    .modal-body {
+      display: grid;
+      gap: 12px;
+    }
+
+    .modal-footer {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+
+    #editarPagoModal {
+      z-index: 200;
+      place-items: center;
+    }
+
+    .edit-payment-card {
+      width: min(560px, 100%);
+    }
+
+    .edit-payment-password {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .edit-payment-password .field {
+      flex: 1;
+    }
+
+    .edit-payment-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .edit-payment-grid .full {
+      grid-column: 1 / -1;
+    }
+
+    .edit-payment-alert {
+      display: none;
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 10px;
+      background: #fef3c7;
+      color: #92400e;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
     .table-toolbar {
       display: flex;
       justify-content: space-between;
@@ -660,6 +711,15 @@
       .topbar-divider { display: none; }
       .top-actions { justify-content: flex-start; }
     }
+    /* Modal UI unification layer - non invasive */
+    :where(.modal,.modal-backdrop){background:rgba(17,24,39,.52);padding:clamp(12px,3vw,28px);overflow:auto;overscroll-behavior:contain}
+    .modal>.modal-card:not(.stock-product-modal):not(.modal-card-wide):not(.cobro-modal-card),.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{max-height:calc(100vh - 56px);border:1px solid var(--border,#e5e7eb);border-radius:18px;background:#fff;box-shadow:0 26px 70px rgba(17,24,39,.28);overflow:auto;overscroll-behavior:contain}
+    :where(.modal-header,.modal-head,.dialog-head,.sticky-modal-header){display:flex;align-items:flex-start;justify-content:space-between;gap:14px;border-bottom:1px solid var(--border,#e5e7eb);padding-bottom:12px;margin-bottom:14px;background:#fff}
+    :where(.modal-header h2,.modal-header h3,.modal-head h2,.modal-head h3,.dialog-head h2,.dialog-head h3){margin:0;line-height:1.15}
+    :where(.modal-header p,.modal-head p,.dialog-head p){margin:4px 0 0;color:var(--muted,#6b7280)}
+    :where(.modal-actions,.dialog-actions,.modal-footer,.modal-header-actions){display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+    :where(.close,.icon-button,.mib.icon-only){display:inline-grid;place-items:center;flex:0 0 auto;border-radius:10px}
+    @media(max-width:860px){:where(.modal,.modal-backdrop){padding:10px}.modal>.modal-card,.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{width:min(100%,calc(100vw - 20px));max-height:calc(100vh - 20px);border-radius:16px}:where(.modal-actions,.dialog-actions,.modal-footer){justify-content:stretch}:where(.modal-actions>* , .dialog-actions>* , .modal-footer>*){flex:1 1 140px}}
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=7" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -813,6 +873,7 @@
         </div>
         <button type="button" class="close-button" id="cerrarPagoModal" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
+      <div class="modal-body">
       <div class="payment-form-compact">
         <div class="payment-row">
         <label>Fecha
@@ -875,7 +936,8 @@
         <input type="checkbox" id="esCuentaCorriente" hidden />
         <textarea id="observaciones" class="field hidden"></textarea>
       </div>
-      <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
+      </div>
+      <div class="modal-footer modal-actions">
         <button type="button" class="button success" id="guardarPago">Confirmar</button>
         <button type="button" class="button secondary" id="limpiarPago">Limpiar</button>
       </div>
@@ -883,35 +945,37 @@
   </div>
 
   <!-- Modal edición de pago -->
-  <div class="modal-backdrop" id="editarPagoModal" aria-hidden="true" style="display:none;position:fixed;inset:0;z-index:200;background:rgba(17,24,39,.52);display:none;place-items:center;padding:18px">
-    <article style="width:min(560px,100%);background:#fff;border-radius:20px;padding:22px;box-shadow:0 24px 70px rgba(17,24,39,.3)">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <div><h2 style="margin:0">Editar pago</h2><p id="editarPagoSubtitulo" style="margin:4px 0 0;color:#64748b;font-size:13px"></p></div>
+  <div class="modal-backdrop" id="editarPagoModal" aria-hidden="true">
+    <article class="modal-card edit-payment-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div><h2>Editar pago</h2><p id="editarPagoSubtitulo"></p></div>
         <button type="button" id="cerrarEditarPago" style="border:1px solid #e2e8f0;border-radius:10px;width:36px;height:36px;background:#fff;cursor:pointer;font-size:18px">✕</button>
       </div>
+      <div class="modal-body">
       <div id="editarPagoClaveSection">
         <p style="font-size:13px;color:#64748b;margin:0 0 10px">Ingresá la clave maestra para editar este pago.</p>
-        <div style="display:flex;gap:8px">
-          <input type="password" id="editarPagoClave" class="field" placeholder="Clave maestra" style="flex:1">
+        <div class="edit-payment-password">
+          <input type="password" id="editarPagoClave" class="field" placeholder="Clave maestra">
           <button type="button" id="confirmarClavePago" class="button">Continuar</button>
         </div>
         <p id="editarPagoClaveError" style="color:#ef4444;font-size:12px;margin:6px 0 0;display:none"></p>
       </div>
       <div id="editarPagoFormSection" style="display:none">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Concepto<input class="field" id="epConcepto"></label>
-          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Monto total<input class="field" type="number" id="epMonto" step="0.01" min="0"></label>
-          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Comprobante<input class="field" id="epComprobante"></label>
-          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Nro. comprobante<input class="field" id="epNumeroComprobante"></label>
-          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Cuenta destino<input class="field" id="epCuentaDestino"></label>
-          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b">Cuenta / terminal<select class="field" id="epCuentaCobro"><option value="">Sin asignar</option></select></label>
-          <label style="display:grid;gap:5px;font-size:12px;font-weight:700;color:#64748b;grid-column:span 2">Observaciones<textarea class="field" id="epObservaciones" style="min-height:60px;resize:vertical"></textarea></label>
+        <div class="edit-payment-grid">
+          <label>Concepto<input class="field" id="epConcepto"></label>
+          <label>Monto total<input class="field" type="number" id="epMonto" step="0.01" min="0"></label>
+          <label>Comprobante<input class="field" id="epComprobante"></label>
+          <label>Nro. comprobante<input class="field" id="epNumeroComprobante"></label>
+          <label>Cuenta destino<input class="field" id="epCuentaDestino"></label>
+          <label>Cuenta / terminal<select class="field" id="epCuentaCobro"><option value="">Sin asignar</option></select></label>
+          <label class="full">Observaciones<textarea class="field" id="epObservaciones"></textarea></label>
         </div>
-        <div id="editarPagoAviso" style="display:none;margin-top:10px;padding:10px;border-radius:10px;background:#fef3c7;color:#92400e;font-size:12px;font-weight:700"></div>
-        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
-          <button type="button" id="cerrarEditarPago2" style="border:1px solid #e2e8f0;border-radius:10px;padding:8px 14px;background:#fff;cursor:pointer;font-weight:700">Cancelar</button>
+        <div id="editarPagoAviso" class="edit-payment-alert"></div>
+        <div class="modal-footer modal-actions">
+          <button type="button" id="cerrarEditarPago2" class="button secondary">Cancelar</button>
           <button type="button" id="guardarEditarPago" class="button">Guardar cambios</button>
         </div>
+      </div>
       </div>
     </article>
   </div>
