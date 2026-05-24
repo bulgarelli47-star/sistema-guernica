@@ -2505,15 +2505,198 @@
 
     .cash-audit-modal-grid {
       display: grid;
-      gap: 10px;
+      gap: 12px;
     }
 
     .cash-audit-modal-grid .audit-mini-grid {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
     }
 
     .modal-card.modal-card-wide {
       width: min(960px, 100%);
+    }
+
+    #modalArqueoEfectivo .modal-header {
+      align-items: center;
+      gap: 10px;
+      margin: 0;
+      padding: 9px 12px;
+      background: linear-gradient(135deg, rgba(109, 40, 217, 0.14), rgba(34, 163, 90, 0.1));
+    }
+
+    #modalArqueoEfectivo .modal-header > div:first-child {
+      min-width: 0;
+    }
+
+    #modalArqueoEfectivo .modal-header h3 {
+      margin: 0;
+    }
+
+    #modalArqueoEfectivo .modal-header-actions {
+      display: flex;
+      flex: 0 0 auto;
+      flex-wrap: nowrap;
+      align-items: center;
+      gap: 8px;
+      margin-left: auto;
+      justify-content: flex-end;
+    }
+
+    #modalArqueoEfectivo .modal-header-actions .button {
+      min-height: 34px;
+      padding: 8px 11px;
+      white-space: nowrap;
+    }
+
+    #modalArqueoEfectivo #editarArqueoVisual,
+    #modalArqueoEfectivo #cerrarModalArqueoEfectivo {
+      border-color: transparent;
+      background: rgba(255, 255, 255, 0.55);
+      color: var(--muted);
+      box-shadow: none;
+    }
+
+    #modalArqueoEfectivo #guardarArqueoVisual {
+      background: #ffffff;
+    }
+
+    #modalArqueoEfectivo #registrarArqueoVisual {
+      font-weight: 900;
+    }
+
+    #modalArqueoEfectivo .modal-body {
+      display: grid;
+      gap: 12px;
+    }
+
+    #modalArqueoEfectivo .audit-modal-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+      gap: 12px;
+      align-items: start;
+    }
+
+    .audit-modal-section {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #ffffff;
+    }
+
+    .audit-modal-section.secondary {
+      background: #fafafe;
+    }
+
+    .audit-modal-section.technical {
+      padding: 0;
+      border-style: dashed;
+      background: #fafafe;
+    }
+
+    .audit-modal-section.technical summary {
+      cursor: pointer;
+      padding: 10px 12px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      list-style-position: inside;
+    }
+
+    .audit-modal-section.technical .audit-mini-grid,
+    .audit-modal-section.technical .audit-note-body {
+      padding: 0 12px 12px;
+    }
+
+    .audit-technical-hidden {
+      display: none !important;
+    }
+
+    .audit-modal-section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 12px;
+    }
+
+    .audit-modal-section-head h4 {
+      margin: 0;
+      font-size: 14px;
+    }
+
+    .audit-modal-section-head span {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    #modalArqueoEfectivo .audit-mini-grid .audit-primary-kpi {
+      border-color: rgba(109, 40, 217, 0.22);
+      background: #f7f2ff;
+    }
+
+    #modalArqueoEfectivo .audit-mini-grid .audit-primary-kpi strong {
+      font-size: 19px;
+    }
+
+    .audit-distribution-note {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .denomination-header,
+    #tab-arqueos .denomination-grid .denomination-row {
+      display: grid;
+      grid-template-columns: minmax(82px, 0.85fr) minmax(92px, 1fr) minmax(110px, 1fr);
+      align-items: center;
+      gap: 10px;
+    }
+
+    .denomination-header {
+      padding: 0 8px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .denomination-header span:last-child,
+    .denomination-subtotal {
+      text-align: right;
+    }
+
+    .denomination-value {
+      color: var(--text);
+      font-weight: 800;
+      margin: 0;
+    }
+
+    .denomination-subtotal {
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .audit-modal-actions {
+      justify-content: flex-end;
+    }
+
+    #modalArqueoEfectivo .denomination-grid {
+      grid-template-columns: 1fr;
+      max-height: none;
+      overflow: visible;
+      padding-right: 0;
+    }
+
+    #modalArqueoEfectivo .denomination-summary {
+      grid-template-columns: 1fr;
     }
 
     #tab-arqueos .card {
@@ -2533,7 +2716,7 @@
 
     #tab-arqueos .denomination-grid {
       display: grid;
-      grid-template-columns: 1fr;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 6px;
       max-height: 300px;
       overflow: auto;
@@ -2541,18 +2724,16 @@
     }
 
     #tab-arqueos .denomination-grid .mini-card {
-      display: grid;
-      grid-template-columns: 58px minmax(0, 1fr);
-      align-items: center;
-      gap: 8px;
       min-height: auto;
-      padding: 5px 7px;
+      padding: 7px 8px;
     }
 
     #tab-arqueos .denomination-grid .field {
-      padding: 7px 9px;
+      width: 100%;
+      padding: 8px 10px;
       border-radius: 9px;
-      font-size: 12px;
+      font-size: 14px;
+      text-align: right;
     }
 
     #tab-arqueos .day-summary-kpis {
@@ -3026,14 +3207,7 @@
     body.vista-reducida #tab-arqueos > article.card,
     body.vista-reducida #tab-arqueos .audit-technical-detail,
     body.vista-reducida #tab-arqueos .cash-audit-line:nth-child(1),
-    body.vista-reducida #tab-arqueos .cash-audit-line:nth-child(2),
-    body.vista-reducida #modalArqueoEfectivo .audit-mini-grid > div:nth-child(1),
-    body.vista-reducida #modalArqueoEfectivo .audit-mini-grid > div:nth-child(2),
-    body.vista-reducida #modalArqueoEfectivo .audit-mini-grid > div:nth-child(3),
-    body.vista-reducida #modalArqueoEfectivo .audit-mini-grid > div:nth-child(4),
-    body.vista-reducida #modalArqueoEfectivo .denomination-summary .mini-card:nth-child(1),
-    body.vista-reducida #modalArqueoEfectivo .denomination-summary .mini-card:nth-child(2),
-    body.vista-reducida #modalArqueoEfectivo .denomination-summary .mini-card:nth-child(4) {
+    body.vista-reducida #tab-arqueos .cash-audit-line:nth-child(2) {
       display: none !important;
     }
     body.vista-reducida #tab-arqueos,
@@ -3413,11 +3587,62 @@
       .modal-actions button {
         flex: 1 1 150px;
       }
+
+      #modalArqueoEfectivo .audit-mini-grid,
+      #modalArqueoEfectivo .denomination-summary,
+      #modalArqueoEfectivo .audit-modal-layout,
+      #tab-arqueos .denomination-grid {
+        grid-template-columns: 1fr;
+      }
+
+      #modalArqueoEfectivo .modal-card {
+        padding: 14px;
+      }
+
+      .denomination-header,
+      #tab-arqueos .denomination-grid .denomination-row {
+        grid-template-columns: minmax(70px, 0.8fr) minmax(86px, 0.8fr) minmax(96px, 1fr);
+        gap: 8px;
+      }
+
+      #tab-arqueos .denomination-grid .field {
+        min-height: 42px;
+        font-size: 16px;
+      }
+
+      #modalArqueoEfectivo .modal-header {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      #modalArqueoEfectivo .modal-header-actions {
+        width: 100%;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .audit-modal-actions {
+        width: 100%;
+        justify-content: stretch;
+      }
+
+      #modalArqueoEfectivo #registrarArqueoVisual {
+        order: -1;
+      }
+
+      #modalArqueoEfectivo .modal-header-actions .button {
+        width: 100%;
+        min-width: 0;
+      }
+
+      .audit-modal-actions .button {
+        flex: 1 1 120px;
+      }
     }
     /* Modal UI unification layer - non invasive */
     :where(.modal,.modal-backdrop){background:rgba(17,24,39,.52);padding:clamp(12px,3vw,28px);overflow:auto;overscroll-behavior:contain}
     .modal>.modal-card:not(.stock-product-modal):not(.modal-card-wide):not(.cobro-modal-card),.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{max-height:calc(100vh - 56px);border:1px solid var(--border,#e5e7eb);border-radius:18px;background:#fff;box-shadow:0 26px 70px rgba(17,24,39,.28);overflow:auto;overscroll-behavior:contain}
-    :where(.modal-header,.modal-head,.dialog-head,.sticky-modal-header){display:flex;align-items:flex-start;justify-content:space-between;gap:14px;border-bottom:1px solid var(--border,#e5e7eb);padding-bottom:12px;margin-bottom:14px;background:#fff}
+    .modal-header,.modal-head,.dialog-head,.sticky-modal-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;border:1px solid rgba(109,40,217,.14);border-radius:14px;padding:12px 14px;margin:-2px -2px 14px;background:linear-gradient(135deg,rgba(109,40,217,.12),rgba(34,163,90,.08));box-shadow:inset 0 -1px 0 rgba(255,255,255,.65)}
     :where(.modal-header h2,.modal-header h3,.modal-head h2,.modal-head h3,.dialog-head h2,.dialog-head h3){margin:0;line-height:1.15}
     :where(.modal-header p,.modal-head p,.dialog-head p){margin:4px 0 0;color:var(--muted,#6b7280)}
     :where(.modal-actions,.dialog-actions,.modal-footer,.modal-header-actions){display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
@@ -4350,39 +4575,69 @@
 
       <div class="modal" id="modalArqueoEfectivo">
         <div class="modal-card modal-card-wide">
-          <div class="daily-card-header">
+          <div class="modal-header">
             <div>
               <h3 style="margin: 0;">Arqueo efectivo</h3>
               <div class="muted">Control físico de billetes, caja cambio y dinero resguardado.</div>
             </div>
-            <button type="button" class="button secondary compact" id="cerrarModalArqueoEfectivo">Cerrar</button>
+            <div class="modal-header-actions audit-modal-actions">
+              <button type="button" class="button secondary" id="editarArqueoVisual">Editar arqueo</button>
+              <button type="button" class="button secondary" id="guardarArqueoVisual">Guardar arqueo</button>
+              <button type="button" class="button warning" id="registrarArqueoVisual">Registrar arqueo</button>
+              <button type="button" class="button secondary compact" id="cerrarModalArqueoEfectivo">Cerrar</button>
+            </div>
           </div>
-          <div class="cash-audit-modal-grid">
-            <div class="audit-mini-grid">
-              <div><small>Con esto arrancó el día</small><strong id="modalArqueoSaldoInicial">$0.00</strong></div>
-              <div><small>Ventas efectivo</small><strong id="modalArqueoVentasEfectivo">$0.00</strong></div>
-              <div><small>Pagos / egresos efectivo</small><strong id="modalArqueoPagosEfectivo">$0.00</strong></div>
-              <div><small>Esperado por sistema</small><strong id="modalArqueoEsperado">$0.00</strong></div>
-              <div><small>Efectivo contado</small><strong id="modalArqueoContado">$0.00</strong></div>
-              <div><small>Diferencia</small><strong id="modalArqueoDiferencia">$0.00</strong></div>
+          <div class="modal-body cash-audit-modal-grid">
+            <div class="audit-modal-layout">
+              <section class="audit-modal-section">
+                <div class="audit-modal-section-head">
+                  <div>
+                    <span>Romaneo de efectivo</span>
+                    <h4>Cargar billetes y monedas</h4>
+                  </div>
+                </div>
+                <div class="denomination-header" aria-hidden="true">
+                  <span>Denominación</span>
+                  <span>Cantidad</span>
+                  <span>Subtotal</span>
+                </div>
+                <div class="denomination-grid" id="conteoBilletes"></div>
+              </section>
+
+              <section class="audit-modal-section secondary">
+                <div class="audit-modal-section-head">
+                  <div>
+                    <span>Distribución del efectivo</span>
+                    <h4>Cambio disponible y resguardo</h4>
+                  </div>
+                </div>
+                <p class="audit-distribution-note">El total contado se distribuye entre cambio disponible y dinero resguardado.</p>
+                <div class="denomination-summary">
+                  <div class="mini-card"><span>Caja cambio</span><strong>$<span id="totalCambioRomaneo">0.00</span></strong></div>
+                  <div class="mini-card"><span>Caja grande / resguardado</span><strong>$<span id="totalRetiroRomaneo">0.00</span></strong></div>
+                  <div class="mini-card"><span>Total contado</span><strong id="modalArqueoContado">$0.00</strong></div>
+                  <label class="mini-card"><span>Saldo físico real</span><input class="field" id="saldoFisicoRealManual" type="number" step="0.01" min="0" placeholder="Manual"></label>
+                  <div class="mini-card"><span>Arrastra al próximo día</span><strong>$<span id="cajaInicioCambio">0.00</span></strong></div>
+                </div>
+              </section>
             </div>
 
-            <div class="denomination-grid" id="conteoBilletes"></div>
-            <div class="denomination-summary">
-              <div class="mini-card"><span>Caja cambio</span><strong>$<span id="totalCambioRomaneo">0.00</span></strong></div>
-              <div class="mini-card"><span>Caja grande / resguardado</span><strong>$<span id="totalRetiroRomaneo">0.00</span></strong></div>
-              <label class="mini-card"><span>Saldo físico real</span><input class="field" id="saldoFisicoRealManual" type="number" step="0.01" min="0" placeholder="Manual"></label>
-              <div class="mini-card"><span>Caja inicio con cambio</span><strong>$<span id="cajaInicioCambio">0.00</span></strong></div>
+            <div class="audit-technical-hidden" hidden>
+              <div class="audit-mini-grid">
+                <div><small>Diferencia</small><strong id="modalArqueoDiferencia">$0.00</strong></div>
+                <div><small>Esperado por sistema</small><strong id="modalArqueoEsperado">$0.00</strong></div>
+                <div><small>Con esto arrancó el día</small><strong id="modalArqueoSaldoInicial">$0.00</strong></div>
+                <div><small>Ventas efectivo</small><strong id="modalArqueoVentasEfectivo">$0.00</strong></div>
+                <div><small>Pagos / egresos efectivo</small><strong id="modalArqueoPagosEfectivo">$0.00</strong></div>
+              </div>
             </div>
 
-            <label>Observaciones
-              <textarea class="field" id="observacionesArqueo" placeholder="Observaciones del control"></textarea>
-            </label>
-            <div class="toolbar-actions">
-              <button type="button" class="button secondary" id="guardarArqueoVisual">Guardar</button>
-              <button type="button" class="button secondary" id="editarArqueoVisual">Editar</button>
-              <button type="button" class="button warning" id="registrarArqueoVisual">Registrar</button>
-            </div>
+            <details class="audit-modal-section technical">
+              <summary>Agregar observación</summary>
+              <label class="audit-note-body">Observaciones
+                <textarea class="field" id="observacionesArqueo" placeholder="Observaciones del control"></textarea>
+              </label>
+            </details>
           </div>
         </div>
       </div>
@@ -4744,6 +4999,7 @@
       { nombre: "Banco", saldo_inicial: 0, saldo_actual: 0 }
     ];
     const conteoInputs = {};
+    const conteoSubtotalDisplays = {};
     const cuentaInputs = [];
     let resumenActual = null;
     let aperturaActual = null;
@@ -5605,6 +5861,7 @@
     }
 
     function actualizarResumenCierre() {
+      actualizarSubtotalesConteo();
       const desgloseConteo = calcularConteoDesglose();
       const esperado = calcularEfectivoEsperado();
       const manualReal = Number(saldoFisicoRealManual?.value || 0);
@@ -5726,21 +5983,40 @@
 
     function renderizarConteoBilletes() {
       conteoBilletes.innerHTML = "";
-      denominaciones.forEach((denominacion) => {
+      [...denominaciones].sort((a, b) => b - a).forEach((denominacion) => {
         const fila = document.createElement("div");
-        fila.className = "mini-card";
-        fila.innerHTML = `<span>$${denominacion}</span>`;
+        fila.className = "mini-card denomination-row";
+        const valor = document.createElement("span");
+        valor.className = "denomination-value";
+        valor.textContent = money(denominacion);
         const input = document.createElement("input");
         input.type = "number";
         input.min = "0";
         input.step = "1";
         input.value = "0";
         input.className = "field";
+        const subtotal = document.createElement("strong");
+        subtotal.className = "denomination-subtotal";
+        subtotal.textContent = money(0);
+        input.addEventListener("input", () => {
+          subtotal.textContent = money(denominacion * (Number(input.value) || 0));
+        });
         input.addEventListener("input", actualizarResumenCierre);
         input.addEventListener("input", marcarArqueoPendienteRegistro);
         conteoInputs[denominacion] = input;
+        conteoSubtotalDisplays[denominacion] = subtotal;
+        fila.appendChild(valor);
         fila.appendChild(input);
+        fila.appendChild(subtotal);
         conteoBilletes.appendChild(fila);
+      });
+    }
+
+    function actualizarSubtotalesConteo() {
+      denominaciones.forEach((denominacion) => {
+        if (conteoSubtotalDisplays[denominacion]) {
+          conteoSubtotalDisplays[denominacion].textContent = money(denominacion * (Number(conteoInputs[denominacion]?.value || 0)));
+        }
       });
     }
 
