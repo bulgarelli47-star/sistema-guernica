@@ -212,7 +212,7 @@ function logError(contexto, error, extra = "") {
 }
 
 async function requireAuth(req, res, next) {
-  if (RUTAS_PUBLICAS.has(req.path)) return next();
+  if (RUTAS_PUBLICAS.has(req.path) || req.path.startsWith("/tienda/publica/")) return next();
 
   const authHeader = String(req.headers.authorization || "");
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
@@ -542,6 +542,21 @@ async function ensureTiendaSchema() {
       FOREIGN KEY (producto_id) REFERENCES productos(id)
     )
   `);
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS tienda_pedido_item_modificadores (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pedido_item_id INTEGER NOT NULL,
+      modificador_id INTEGER NOT NULL,
+      modificador_nombre_snapshot TEXT NOT NULL,
+      tipo_snapshot TEXT NOT NULL,
+      cantidad REAL NOT NULL DEFAULT 1,
+      precio_extra_snapshot REAL NOT NULL DEFAULT 0,
+      subtotal_snapshot REAL NOT NULL DEFAULT 0,
+      FOREIGN KEY (pedido_item_id) REFERENCES tienda_pedido_items(id),
+      FOREIGN KEY (modificador_id) REFERENCES modificadores(id)
+    )
+  `);
+  await ensureColumn("tienda_pedidos", "motivo_rechazo", "TEXT");
 }
 
 async function ensureUsuariosSchema() {
@@ -5998,7 +6013,12 @@ app.get("/tienda/publica/productos", async (req, res) => {
       allQuery(`
         SELECT p.id, p.nombre, p.precio_venta AS precio, p.descripcion, p.unidad_medida,
                p.maneja_stock, p.stock, p.imagen_url,
-               c.id AS categoria_id, c.nombre AS categoria_nombre
+               c.id AS categoria_id, c.nombre AS categoria_nombre,
+               EXISTS(
+                 SELECT 1 FROM producto_modificadores pm
+                 INNER JOIN modificadores m ON m.id = pm.modificador_id
+                 WHERE pm.producto_id = p.id AND pm.activo = 1 AND m.activo = 1
+               ) AS tiene_modificadores
         FROM productos p
         LEFT JOIN categorias c ON c.id = p.categoria_id
         WHERE p.activo = 1 AND COALESCE(p.eliminado, 0) = 0
@@ -6029,6 +6049,7 @@ app.get("/tienda/publica/productos", async (req, res) => {
         categoria_nombre: p.categoria_nombre || "General",
         imagen_url: p.imagen_url || "",
         disponible: Number(p.maneja_stock) === 0 ? true : Number(p.stock) > 0,
+        tiene_modificadores: p.tiene_modificadores === 1,
         destacado
       };
     });
@@ -6037,6 +6058,31 @@ app.get("/tienda/publica/productos", async (req, res) => {
   } catch (error) {
     logError("GET /tienda/publica/productos", error);
     return res.status(500).json({ message: "Error al cargar productos" });
+  }
+});
+
+app.get("/tienda/publica/productos/:id/modificadores", async (req, res) => {
+  try {
+    const productoId = Number(req.params.id);
+    if (!productoId || productoId <= 0) return res.status(400).json({ message: "ID inválido." });
+    const producto = await getQuery(
+      "SELECT id FROM productos WHERE id = ? AND activo = 1 AND COALESCE(eliminado, 0) = 0",
+      [productoId]
+    );
+    if (!producto) return res.status(404).json({ message: "Producto no encontrado." });
+    const mods = await getModificadoresProducto(productoId);
+    return res.json(mods.map(m => ({
+      modificador_id: m.id,
+      nombre: m.nombre,
+      tipo: m.tipo,
+      precio_extra: Number(m.precio_extra) || 0,
+      obligatorio: m.obligatorio === 1,
+      max_usos: Number(m.max_usos) || 1,
+      orden: Number(m.orden) || 0
+    })));
+  } catch (error) {
+    logError("GET /tienda/publica/productos/:id/modificadores", error);
+    return res.status(500).json({ message: "Error al cargar extras del producto." });
   }
 });
 
@@ -6061,23 +6107,82 @@ app.post("/tienda/publica/pedidos", async (req, res) => {
     if (!Number.isFinite(cantidad) || cantidad <= 0) {
       return res.status(400).json({ message: "Cantidad inválida en el pedido." });
     }
-    itemsValidados.push({ producto_id: productoId, cantidad, observacion: String(item.observacion || "").trim() });
+    const mods = Array.isArray(item.modificadores) ? item.modificadores : [];
+    for (const mod of mods) {
+      const modId = Number(mod.modificador_id);
+      const modCant = Number(mod.cantidad || 1);
+      if (!Number.isInteger(modId) || modId <= 0) {
+        return res.status(400).json({ message: "modificador_id inválido en el pedido." });
+      }
+      if (!Number.isFinite(modCant) || modCant < 1 || !Number.isInteger(modCant)) {
+        return res.status(400).json({ message: "Cantidad de modificador debe ser un entero mayor a 0." });
+      }
+    }
+    itemsValidados.push({
+      producto_id: productoId,
+      cantidad,
+      observacion: String(item.observacion || "").trim(),
+      modificadores: mods
+    });
   }
 
   try {
     const ids = itemsValidados.map(i => i.producto_id);
     const ph = ids.map(() => "?").join(",");
-    const productos = await allQuery(
-      `SELECT id, nombre, precio_venta, maneja_stock, stock, activo, COALESCE(eliminado, 0) AS eliminado FROM productos WHERE id IN (${ph})`,
-      ids
-    );
+    const [productos, modsAsociadas] = await Promise.all([
+      allQuery(
+        `SELECT id, nombre, precio_venta, maneja_stock, stock, activo, COALESCE(eliminado, 0) AS eliminado FROM productos WHERE id IN (${ph})`,
+        ids
+      ),
+      allQuery(
+        `SELECT pm.producto_id, pm.modificador_id, pm.max_usos, m.nombre, m.tipo, m.precio_extra
+         FROM producto_modificadores pm
+         INNER JOIN modificadores m ON m.id = pm.modificador_id
+         WHERE pm.producto_id IN (${ph}) AND pm.activo = 1 AND m.activo = 1`,
+        ids
+      )
+    ]);
+
     const productosMap = Object.fromEntries(productos.map(p => [p.id, p]));
+    const modsMap = {};
+    for (const row of modsAsociadas) {
+      modsMap[`${row.producto_id}:${row.modificador_id}`] = row;
+    }
 
     for (const item of itemsValidados) {
       const p = productosMap[item.producto_id];
       if (!p || !p.activo || p.eliminado) {
         return res.status(400).json({ message: `Producto no disponible (id ${item.producto_id}).` });
       }
+    }
+
+    // Validate modifiers and calculate prices before transaction
+    const itemsConPrecio = [];
+    for (const item of itemsValidados) {
+      const p = productosMap[item.producto_id];
+      let precioExtrasTotal = 0;
+      const modsValidados = [];
+
+      for (const mod of item.modificadores) {
+        const modId = Number(mod.modificador_id);
+        const modCant = Number(mod.cantidad || 1);
+        const assoc = modsMap[`${item.producto_id}:${modId}`];
+        if (!assoc) {
+          return res.status(400).json({ message: `Modificador no disponible para el producto solicitado.` });
+        }
+        if (modCant > (Number(assoc.max_usos) || 1)) {
+          return res.status(400).json({ message: `Cantidad excede el límite del modificador "${assoc.nombre}".` });
+        }
+        const precioExtra = assoc.tipo === "observacion" ? 0 : Number(assoc.precio_extra) || 0;
+        precioExtrasTotal += precioExtra * modCant;
+        modsValidados.push({ modId, modCant, assoc, precioExtra });
+      }
+
+      const precioBase = Number(p.precio_venta) || 0;
+      const precioUnitarioFinal = Number((precioBase + precioExtrasTotal).toFixed(2));
+      const subtotal = Number((precioUnitarioFinal * item.cantidad).toFixed(2));
+      const estadoStock = Number(p.maneja_stock) === 0 ? "disponible" : Number(p.stock) > 0 ? "disponible" : "sin_stock";
+      itemsConPrecio.push({ ...item, p, precioUnitarioFinal, subtotal, estadoStock, modsValidados });
     }
 
     const ahora = new Date().toISOString();
@@ -6092,17 +6197,22 @@ app.post("/tienda/publica/pedidos", async (req, res) => {
     );
     const pedidoId = pedidoResult.lastID;
 
-    for (const item of itemsValidados) {
-      const p = productosMap[item.producto_id];
-      const precio = Number(p.precio_venta) || 0;
-      const subtotal = Number((precio * item.cantidad).toFixed(2));
-      const estadoStock = Number(p.maneja_stock) === 0 ? "disponible" : Number(p.stock) > 0 ? "disponible" : "sin_stock";
-      totalEstimado += subtotal;
-      await runQuery(
+    for (const item of itemsConPrecio) {
+      totalEstimado += item.subtotal;
+      const itemResult = await runQuery(
         `INSERT INTO tienda_pedido_items (pedido_id, producto_id, producto_nombre_snapshot, cantidad, precio_unitario_snapshot, subtotal_snapshot, observacion, estado_stock_snapshot)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [pedidoId, item.producto_id, p.nombre, item.cantidad, precio, subtotal, item.observacion || null, estadoStock]
+        [pedidoId, item.producto_id, item.p.nombre, item.cantidad, item.precioUnitarioFinal, item.subtotal, item.observacion || null, item.estadoStock]
       );
+      const itemId = itemResult.lastID;
+      for (const { modId, modCant, assoc, precioExtra } of item.modsValidados) {
+        const subtotalMod = Number((precioExtra * modCant).toFixed(2));
+        await runQuery(
+          `INSERT INTO tienda_pedido_item_modificadores (pedido_item_id, modificador_id, modificador_nombre_snapshot, tipo_snapshot, cantidad, precio_extra_snapshot, subtotal_snapshot)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [itemId, modId, assoc.nombre, assoc.tipo, modCant, precioExtra, subtotalMod]
+        );
+      }
     }
 
     await runQuery("UPDATE tienda_pedidos SET total_estimado = ? WHERE id = ?", [Number(totalEstimado.toFixed(2)), pedidoId]);
@@ -6121,6 +6231,320 @@ app.post("/tienda/publica/pedidos", async (req, res) => {
 });
 
 // ── Fin Tienda pública QR ──────────────────────────────────────────────────────
+
+// ── Tienda interna — gestión de pedidos ───────────────────────────────────────
+
+function checkTiendaPermiso(req, res) {
+  const rol = normalizarRol(req.usuario?.rol || "");
+  if (!["admin", "encargado", "colaborador"].includes(rol)) {
+    res.status(403).json({ message: "No tenes permisos para gestionar pedidos de tienda." });
+    return false;
+  }
+  return true;
+}
+
+app.get("/tienda/pedidos/resumen", async (req, res) => {
+  if (!checkTiendaPermiso(req, res)) return;
+  try {
+    const row = await getQuery(`
+      SELECT
+        SUM(CASE WHEN estado='recibido' THEN 1 ELSE 0 END) AS recibidos,
+        SUM(CASE WHEN estado='aceptado' THEN 1 ELSE 0 END) AS aceptados,
+        SUM(CASE WHEN estado='preparando' THEN 1 ELSE 0 END) AS preparando,
+        SUM(CASE WHEN estado='listo' THEN 1 ELSE 0 END) AS listos
+      FROM tienda_pedidos
+      WHERE estado NOT IN ('rechazado', 'cancelado', 'convertido_venta')
+    `);
+    return res.json({
+      recibidos: Number(row?.recibidos) || 0,
+      aceptados: Number(row?.aceptados) || 0,
+      preparando: Number(row?.preparando) || 0,
+      listos: Number(row?.listos) || 0
+    });
+  } catch (error) {
+    logError("GET /tienda/pedidos/resumen", error);
+    return res.status(500).json({ message: "Error al cargar resumen de pedidos." });
+  }
+});
+
+app.get("/tienda/pedidos", async (req, res) => {
+  if (!checkTiendaPermiso(req, res)) return;
+  try {
+    const { estado, desde, hasta } = req.query;
+    const params = [];
+    let where = "1=1";
+    if (estado) { where += " AND p.estado = ?"; params.push(estado); }
+    if (desde) { where += " AND p.creado_en >= ?"; params.push(desde); }
+    if (hasta) { where += " AND p.creado_en <= ?"; params.push(hasta + " 23:59:59"); }
+    const rows = await allQuery(`
+      SELECT p.id, p.codigo_publico, p.cliente_nombre, p.cliente_telefono,
+             p.observacion, p.estado, p.total_estimado, p.creado_en, p.actualizado_en,
+             COUNT(i.id) AS items_count
+      FROM tienda_pedidos p
+      LEFT JOIN tienda_pedido_items i ON i.pedido_id = p.id
+      WHERE ${where}
+      GROUP BY p.id
+      ORDER BY p.creado_en DESC
+      LIMIT 100
+    `, params);
+    return res.json(rows.map(r => ({
+      id: r.id,
+      codigo_publico: r.codigo_publico,
+      cliente_nombre: r.cliente_nombre,
+      cliente_telefono: r.cliente_telefono || "",
+      observacion: r.observacion || "",
+      estado: r.estado,
+      total_estimado: Number(r.total_estimado) || 0,
+      creado_en: r.creado_en,
+      actualizado_en: r.actualizado_en,
+      items_count: Number(r.items_count) || 0
+    })));
+  } catch (error) {
+    logError("GET /tienda/pedidos", error);
+    return res.status(500).json({ message: "Error al cargar pedidos." });
+  }
+});
+
+app.get("/tienda/pedidos/:id", async (req, res) => {
+  if (!checkTiendaPermiso(req, res)) return;
+  try {
+    const pedidoId = Number(req.params.id);
+    if (!pedidoId || pedidoId <= 0) return res.status(400).json({ message: "ID inválido." });
+    const pedido = await getQuery(`
+      SELECT p.*, u.nombre AS tomado_por_nombre
+      FROM tienda_pedidos p
+      LEFT JOIN usuarios u ON u.id = p.tomado_por_usuario_id
+      WHERE p.id = ?
+    `, [pedidoId]);
+    if (!pedido) return res.status(404).json({ message: "Pedido no encontrado." });
+    const items = await allQuery(`
+      SELECT id, producto_id, producto_nombre_snapshot, cantidad,
+             precio_unitario_snapshot, subtotal_snapshot, observacion, estado_stock_snapshot
+      FROM tienda_pedido_items
+      WHERE pedido_id = ?
+      ORDER BY id ASC
+    `, [pedidoId]);
+    const itemIds = items.map(i => i.id);
+    const modsMap = {};
+    if (itemIds.length) {
+      const mods = await allQuery(
+        `SELECT pedido_item_id, modificador_id, modificador_nombre_snapshot,
+                tipo_snapshot, cantidad, precio_extra_snapshot, subtotal_snapshot
+         FROM tienda_pedido_item_modificadores
+         WHERE pedido_item_id IN (${itemIds.map(() => "?").join(",")})
+         ORDER BY pedido_item_id ASC, id ASC`,
+        itemIds
+      );
+      mods.forEach(m => {
+        if (!modsMap[m.pedido_item_id]) modsMap[m.pedido_item_id] = [];
+        modsMap[m.pedido_item_id].push({
+          modificador_id: m.modificador_id,
+          nombre: m.modificador_nombre_snapshot,
+          tipo: m.tipo_snapshot,
+          cantidad: Number(m.cantidad),
+          precio_extra: Number(m.precio_extra_snapshot),
+          subtotal: Number(m.subtotal_snapshot)
+        });
+      });
+    }
+    return res.json({
+      id: pedido.id,
+      codigo_publico: pedido.codigo_publico,
+      cliente_nombre: pedido.cliente_nombre,
+      cliente_telefono: pedido.cliente_telefono || "",
+      observacion: pedido.observacion || "",
+      estado: pedido.estado,
+      total_estimado: Number(pedido.total_estimado) || 0,
+      venta_id: pedido.venta_id || null,
+      creado_en: pedido.creado_en,
+      actualizado_en: pedido.actualizado_en,
+      tomado_por_nombre: pedido.tomado_por_nombre || null,
+      motivo_rechazo: pedido.motivo_rechazo || null,
+      items: items.map(i => ({
+        id: i.id,
+        producto_id: i.producto_id,
+        producto_nombre_snapshot: i.producto_nombre_snapshot,
+        cantidad: Number(i.cantidad),
+        precio_unitario_snapshot: Number(i.precio_unitario_snapshot),
+        subtotal_snapshot: Number(i.subtotal_snapshot),
+        observacion: i.observacion || "",
+        modificadores: modsMap[i.id] || []
+      }))
+    });
+  } catch (error) {
+    logError("GET /tienda/pedidos/:id", error);
+    return res.status(500).json({ message: "Error al cargar el pedido." });
+  }
+});
+
+app.post("/tienda/pedidos/:id/aceptar", async (req, res) => {
+  if (!checkTiendaPermiso(req, res)) return;
+  try {
+    const pedidoId = Number(req.params.id);
+    if (!pedidoId || pedidoId <= 0) return res.status(400).json({ message: "ID inválido." });
+    const pedido = await getQuery("SELECT id, estado FROM tienda_pedidos WHERE id = ?", [pedidoId]);
+    if (!pedido) return res.status(404).json({ message: "Pedido no encontrado." });
+    if (pedido.estado !== "recibido") return res.status(409).json({ message: `No se puede aceptar un pedido en estado '${pedido.estado}'.` });
+    const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+    await runQuery(
+      "UPDATE tienda_pedidos SET estado='aceptado', tomado_por_usuario_id=?, actualizado_en=? WHERE id=?",
+      [req.usuario.id, now, pedidoId]
+    );
+    return res.json({ ok: true, message: "Pedido aceptado." });
+  } catch (error) {
+    logError("POST /tienda/pedidos/:id/aceptar", error);
+    return res.status(500).json({ message: "Error al aceptar el pedido." });
+  }
+});
+
+app.post("/tienda/pedidos/:id/rechazar", async (req, res) => {
+  if (!checkTiendaPermiso(req, res)) return;
+  try {
+    const pedidoId = Number(req.params.id);
+    if (!pedidoId || pedidoId <= 0) return res.status(400).json({ message: "ID inválido." });
+    const pedido = await getQuery("SELECT id, estado FROM tienda_pedidos WHERE id = ?", [pedidoId]);
+    if (!pedido) return res.status(404).json({ message: "Pedido no encontrado." });
+    if (!["recibido", "aceptado"].includes(pedido.estado)) return res.status(409).json({ message: `No se puede rechazar un pedido en estado '${pedido.estado}'.` });
+    const motivo = String(req.body?.motivo || "").trim() || null;
+    const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+    await runQuery(
+      "UPDATE tienda_pedidos SET estado='rechazado', motivo_rechazo=?, actualizado_en=? WHERE id=?",
+      [motivo, now, pedidoId]
+    );
+    return res.json({ ok: true, message: "Pedido rechazado." });
+  } catch (error) {
+    logError("POST /tienda/pedidos/:id/rechazar", error);
+    return res.status(500).json({ message: "Error al rechazar el pedido." });
+  }
+});
+
+app.post("/tienda/pedidos/:id/preparando", async (req, res) => {
+  if (!checkTiendaPermiso(req, res)) return;
+  try {
+    const pedidoId = Number(req.params.id);
+    if (!pedidoId || pedidoId <= 0) return res.status(400).json({ message: "ID inválido." });
+    const pedido = await getQuery("SELECT id, estado FROM tienda_pedidos WHERE id = ?", [pedidoId]);
+    if (!pedido) return res.status(404).json({ message: "Pedido no encontrado." });
+    if (pedido.estado !== "aceptado") return res.status(409).json({ message: `No se puede marcar preparando un pedido en estado '${pedido.estado}'.` });
+    const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+    await runQuery("UPDATE tienda_pedidos SET estado='preparando', actualizado_en=? WHERE id=?", [now, pedidoId]);
+    return res.json({ ok: true, message: "Pedido marcado como preparando." });
+  } catch (error) {
+    logError("POST /tienda/pedidos/:id/preparando", error);
+    return res.status(500).json({ message: "Error al actualizar el pedido." });
+  }
+});
+
+app.post("/tienda/pedidos/:id/listo", async (req, res) => {
+  if (!checkTiendaPermiso(req, res)) return;
+  try {
+    const pedidoId = Number(req.params.id);
+    if (!pedidoId || pedidoId <= 0) return res.status(400).json({ message: "ID inválido." });
+    const pedido = await getQuery("SELECT id, estado FROM tienda_pedidos WHERE id = ?", [pedidoId]);
+    if (!pedido) return res.status(404).json({ message: "Pedido no encontrado." });
+    if (!["preparando", "aceptado"].includes(pedido.estado)) return res.status(409).json({ message: `No se puede marcar listo un pedido en estado '${pedido.estado}'.` });
+    const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+    await runQuery("UPDATE tienda_pedidos SET estado='listo', actualizado_en=? WHERE id=?", [now, pedidoId]);
+    return res.json({ ok: true, message: "Pedido listo." });
+  } catch (error) {
+    logError("POST /tienda/pedidos/:id/listo", error);
+    return res.status(500).json({ message: "Error al actualizar el pedido." });
+  }
+});
+
+// V1C: convertir pedido listo en ticket pendiente de ventas
+app.post("/tienda/pedidos/:id/convertir-venta", async (req, res) => {
+  const rol = normalizarRol(req.usuario?.rol || "");
+  if (!["admin", "encargado"].includes(rol)) {
+    return res.status(403).json({ message: "Solo admin o encargado pueden convertir pedidos en tickets." });
+  }
+  try {
+    const pedidoId = Number(req.params.id);
+    if (!pedidoId || pedidoId <= 0) return res.status(400).json({ message: "ID inválido." });
+
+    const pedido = await getQuery(
+      "SELECT id, codigo_publico, estado, venta_id, cliente_nombre, observacion, total_estimado FROM tienda_pedidos WHERE id = ?",
+      [pedidoId]
+    );
+    if (!pedido) return res.status(404).json({ message: "Pedido no encontrado." });
+    if (pedido.estado !== "listo") {
+      return res.status(409).json({ message: `El pedido debe estar en estado 'listo' para convertirse en ticket (estado actual: '${pedido.estado}').` });
+    }
+    if (pedido.venta_id) {
+      return res.status(409).json({ message: `Este pedido ya fue convertido en ticket (venta #${pedido.venta_id}).` });
+    }
+
+    const tiendaItems = await allQuery(
+      "SELECT producto_id, producto_nombre_snapshot, cantidad, precio_unitario_snapshot, subtotal_snapshot FROM tienda_pedido_items WHERE pedido_id = ?",
+      [pedidoId]
+    );
+    if (!tiendaItems || tiendaItems.length === 0) {
+      return res.status(400).json({ message: "El pedido no tiene ítems." });
+    }
+
+    // Verificar que todos los productos existen y están activos
+    const productoIds = [...new Set(tiendaItems.map((i) => i.producto_id))];
+    const productosActivos = await allQuery(
+      `SELECT id FROM productos WHERE id IN (${productoIds.map(() => "?").join(",")}) AND activo = 1`,
+      productoIds
+    );
+    const activosSet = new Set(productosActivos.map((p) => p.id));
+    const inactivo = tiendaItems.find((i) => !activosSet.has(i.producto_id));
+    if (inactivo) {
+      return res.status(409).json({
+        message: `El producto "${inactivo.producto_nombre_snapshot}" ya no está disponible en el sistema.`
+      });
+    }
+
+    // Construir items para venta usando snapshots de precio del pedido
+    const itemsVenta = tiendaItems.map((i) => ({
+      producto_id: i.producto_id,
+      nombre_producto: i.producto_nombre_snapshot,
+      cantidad: Number(i.cantidad),
+      precio_unitario: Number(i.precio_unitario_snapshot),
+      modificadores: []
+    }));
+
+    const totalVenta = Number(calculateTotal(itemsVenta).toFixed(2));
+    const { fecha, hora } = getNowParts();
+    const usuarioVenta = req.usuario?.usuario || "admin";
+    const identificadorPendiente = pedido.codigo_publico;
+
+    await runQuery("BEGIN TRANSACTION");
+
+    const venta = await runQuery(
+      `INSERT INTO ventas
+      (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id, cuenta_cobro_id, recargo_porcentaje, recargo_monto)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [fecha, hora, usuarioVenta, totalVenta, "pendiente", "pendiente", identificadorPendiente,
+       null, null, 0, 0, null, 0, 0, null, null, 0, 0]
+    );
+
+    await replaceVentaDetalle(venta.lastID, itemsVenta);
+    await applyStockForNewItems(itemsVenta);
+
+    const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+    await runQuery(
+      "UPDATE tienda_pedidos SET estado='convertido_venta', venta_id=?, actualizado_en=? WHERE id=?",
+      [venta.lastID, now, pedidoId]
+    );
+
+    await runQuery("COMMIT");
+
+    return res.json({
+      ok: true,
+      venta_id: venta.lastID,
+      codigo_publico: pedido.codigo_publico,
+      message: "Pedido convertido en ticket pendiente."
+    });
+  } catch (error) {
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("POST /tienda/pedidos/:id/convertir-venta", error);
+    return res.status(500).json({ message: "Error al convertir el pedido." });
+  }
+});
+
+// ── Fin Tienda interna ─────────────────────────────────────────────────────────
 
 // Handler 404 para rutas no encontradas — siempre JSON
 app.use((req, res) => {

@@ -7278,6 +7278,110 @@ async function testResumenAjustesPendientes() {
   }
 }
 
+async function testTiendaConvertirVenta() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+
+      // Crear usuarios de prueba
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Encargado Test",
+        usuario: "encargado_tienda",
+        password: "encargado123",
+        confirmar_password: "encargado123",
+        rol: "encargado",
+        activo: true
+      }, adminToken);
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Test",
+        usuario: "colaborador_tienda",
+        password: "colaborador123",
+        confirmar_password: "colaborador123",
+        rol: "colaborador",
+        activo: true
+      }, adminToken);
+      const encargadoToken = await login(baseUrl, "encargado_tienda", "encargado123");
+      const colaboradorToken = await login(baseUrl, "colaborador_tienda", "colaborador123");
+
+      const stockInicial = (await getProduct(baseUrl, adminToken, 11)).stock;
+
+      // Crear pedido via endpoint público (sin auth)
+      const { response: rPedido, data: dPedido } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
+        cliente_nombre: "Test Convert",
+        items: [{ producto_id: 11, cantidad: 2, modificadores: [] }]
+      });
+      if (!rPedido.ok) throw new Error(`No se pudo crear pedido público: ${dPedido?.message || rPedido.status}`);
+      const codigoPublico = dPedido.codigo_publico;
+
+      // Obtener id del pedido recién creado
+      const { data: listaPedidos } = await requestJson(baseUrl, "GET", "/tienda/pedidos", null, adminToken);
+      const pedido = listaPedidos.find(p => p.codigo_publico === codigoPublico);
+      if (!pedido) throw new Error("Pedido creado no aparece en listado interno");
+      const pedidoId = pedido.id;
+
+      // Test: no se puede convertir en estado 'recibido'
+      const { response: rConvRecibido } = await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedidoId}/convertir-venta`, {}, adminToken);
+      if (rConvRecibido.status !== 409) throw new Error(`Convertir pedido recibido debe devolver 409, actual=${rConvRecibido.status}`);
+
+      // Avanzar a 'listo': aceptar → listo
+      const { response: rAcep } = await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedidoId}/aceptar`, {}, adminToken);
+      if (!rAcep.ok) throw new Error("No se pudo aceptar el pedido");
+      const { response: rListo } = await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedidoId}/listo`, {}, adminToken);
+      if (!rListo.ok) throw new Error("No se pudo marcar listo el pedido");
+
+      // Test: colaborador no puede convertir
+      const { response: rColabConv } = await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedidoId}/convertir-venta`, {}, colaboradorToken);
+      if (rColabConv.status !== 403) throw new Error(`Colaborador no puede convertir: esperado 403, actual=${rColabConv.status}`);
+
+      // Test: admin convierte exitosamente
+      const { response: rConv, data: dConv } = await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedidoId}/convertir-venta`, {}, adminToken);
+      if (!rConv.ok) throw new Error(`Convertir fallo: ${dConv?.message || rConv.status}`);
+      if (!dConv.ok) throw new Error("Respuesta no incluye ok: true");
+      if (!dConv.venta_id) throw new Error("Respuesta no incluye venta_id");
+      if (dConv.codigo_publico !== codigoPublico) throw new Error(`codigo_publico incorrecto: ${dConv.codigo_publico} vs ${codigoPublico}`);
+
+      // Verificar que la venta creada existe como pendiente con identificador_pendiente = codigo_publico
+      const { data: ventas } = await requestJson(baseUrl, "GET", "/ventas/pendientes", null, adminToken);
+      const ventaCreada = ventas.find(v => v.id === dConv.venta_id);
+      if (!ventaCreada) throw new Error("Venta pendiente no encontrada tras convertir");
+      if (ventaCreada.tipo !== "pendiente") throw new Error(`tipo incorrecto: ${ventaCreada.tipo}`);
+      if (ventaCreada.estado !== "pendiente") throw new Error(`estado incorrecto: ${ventaCreada.estado}`);
+      if (ventaCreada.identificador_pendiente !== codigoPublico) throw new Error(`identificador_pendiente incorrecto: ${ventaCreada.identificador_pendiente}`);
+
+      // Verificar que el pedido tienda quedó en estado convertido_venta con venta_id
+      const { data: detallePedido } = await requestJson(baseUrl, "GET", `/tienda/pedidos/${pedidoId}`, null, adminToken);
+      if (detallePedido.estado !== "convertido_venta") throw new Error(`estado pedido incorrecto: ${detallePedido.estado}`);
+      assertEqual(Number(detallePedido.venta_id), dConv.venta_id, "Pedido tienda conserva venta_id");
+
+      // Test: no se puede convertir dos veces
+      const { response: rDoble } = await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedidoId}/convertir-venta`, {}, adminToken);
+      if (rDoble.status !== 409) throw new Error(`Convertir dos veces debe devolver 409, actual=${rDoble.status}`);
+
+      // Verificar descuento de stock: debe ser exactamente 1 descuento (cantidad=2)
+      const stockTras = (await getProduct(baseUrl, adminToken, 11)).stock;
+      assertEqual(stockTras, stockInicial - 2, "Stock descontado exactamente 1 vez (cantidad=2)");
+
+      // Test: encargado puede convertir un segundo pedido
+      const { response: rPedido2, data: dPedido2 } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
+        cliente_nombre: "Test Encargado",
+        items: [{ producto_id: 11, cantidad: 1, modificadores: [] }]
+      });
+      if (!rPedido2.ok) throw new Error(`No se pudo crear segundo pedido: ${dPedido2?.message}`);
+      const { data: lista2 } = await requestJson(baseUrl, "GET", "/tienda/pedidos", null, encargadoToken);
+      const pedido2 = lista2.find(p => p.codigo_publico === dPedido2.codigo_publico);
+      await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedido2.id}/aceptar`, {}, encargadoToken);
+      await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedido2.id}/listo`, {}, encargadoToken);
+      const { response: rConv2 } = await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedido2.id}/convertir-venta`, {}, encargadoToken);
+      if (!rConv2.ok) throw new Error(`Encargado no pudo convertir pedido listo: ${rConv2.status}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 (async () => {
   await testBatchManual();
   await testBatchComoComponente();
@@ -7394,6 +7498,7 @@ async function testResumenAjustesPendientes() {
   await testSaldosFormulaSaldoEsperadoFinal();
   await testSaldosArrastreNoCambiaDiferencia();
   await testSaldosRetirarDesdeSaldoRealNoEsperado();
+  await testTiendaConvertirVenta();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
   console.error(error.message);
