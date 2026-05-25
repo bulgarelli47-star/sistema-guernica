@@ -6054,7 +6054,25 @@ app.get("/tienda/publica/productos", async (req, res) => {
       };
     });
 
-    return res.json(productos);
+    // Categorías con productos activos (para el catálogo completo)
+    const categoriasSet = [...new Set(productos.map(p => p.categoria_nombre))].sort();
+
+    // Categorías destacadas: solo las configuradas que tienen al menos un producto
+    const categoriasDestacadas = catDestacadas.size > 0
+      ? categoriasSet.filter(nombre => catDestacadas.has(nombre.toLowerCase()))
+      : [];
+
+    // Productos destacados por ID explícito (subconjunto de productos)
+    const productosDestacados = idDestacados.size > 0
+      ? productos.filter(p => idDestacados.has(p.id))
+      : [];
+
+    return res.json({
+      categorias_destacadas: categoriasDestacadas,
+      productos_destacados: productosDestacados,
+      categorias: categoriasSet,
+      productos
+    });
   } catch (error) {
     logError("GET /tienda/publica/productos", error);
     return res.status(500).json({ message: "Error al cargar productos" });

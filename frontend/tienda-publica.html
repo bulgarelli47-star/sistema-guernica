@@ -38,6 +38,7 @@
     .card-precio{font-size:18px;font-weight:900;color:var(--primary)}
     .card-footer{padding:0 12px 12px;display:flex;justify-content:space-between;align-items:center;gap:8px}
     .badge-agotado{background:#fee2e2;color:#b91c1c;font-size:12px;font-weight:800;border-radius:8px;padding:4px 8px}
+    .badge-encarrito{background:var(--primary);color:#fff;border-radius:999px;font-size:12px;font-weight:800;padding:2px 8px}
     .qty-ctrl{display:flex;align-items:center;gap:6px}
     .qty-btn{width:30px;height:30px;border-radius:50%;border:1px solid var(--border);background:#fff;font-size:18px;display:grid;place-items:center;line-height:1}
     .qty-btn:hover{background:var(--primary-soft);border-color:var(--primary)}
@@ -59,7 +60,10 @@
     .required-mark{color:var(--danger)}
     .order-summary{border:1px solid var(--border);border-radius:12px;padding:12px;display:grid;gap:8px;background:#fafafe}
     .sum-item{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;font-size:14px}
-    .sum-item span{color:var(--muted)}
+    .sum-item-left{flex:1;display:flex;flex-direction:column;gap:2px}
+    .sum-item-nombre{color:var(--muted)}
+    .sum-item-mods{font-size:12px;color:var(--muted)}
+    .sum-item-obs{font-size:12px;color:var(--muted);font-style:italic}
     .sum-total{display:flex;justify-content:space-between;align-items:center;gap:8px;font-weight:900;font-size:16px;border-top:1px solid var(--border);padding-top:10px;margin-top:4px}
     .dialog-actions{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
     .btn{border:0;border-radius:12px;padding:10px 18px;font-weight:800;font-size:14px}
@@ -78,6 +82,16 @@
     .msg-error{color:var(--danger);font-weight:700;font-size:14px;min-height:20px}
     .loading-state,.empty-state{color:var(--muted);text-align:center;padding:40px 20px;font-weight:700}
     .hidden{display:none}
+    .extras-grupo{display:grid;gap:6px;padding:12px;background:#fafafe;border:1px solid var(--border);border-radius:12px}
+    .extras-grupo-titulo{font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+    .extras-chk-label{display:flex;flex-direction:row;justify-content:space-between;align-items:center;gap:12px;padding:6px 0;cursor:pointer;font-weight:normal;color:var(--text);font-size:14px}
+    .extras-chk-label+.extras-chk-label{border-top:1px solid var(--border)}
+    .extras-info{display:flex;flex-direction:column;gap:2px;flex:1}
+    .extras-nombre{font-size:14px;font-weight:700;color:var(--text)}
+    .extras-precio{font-size:13px;color:var(--primary);font-weight:700}
+    .extras-chk{width:20px;height:20px;accent-color:var(--primary);flex-shrink:0;cursor:pointer}
+    .extras-total{text-align:right;font-size:16px;font-weight:900;color:var(--primary);padding-top:4px}
+    .extras-sin-mods{color:var(--muted);font-size:14px;text-align:center;padding:12px 0}
   </style>
 </head>
 <body>
@@ -121,12 +135,27 @@
     <div class="order-summary" id="orderSummary"></div>
     <label>Nombre <span class="required-mark">*</span><input id="clienteNombre" type="text" autocomplete="name" placeholder="Tu nombre" required maxlength="80"></label>
     <label>Teléfono (opcional)<input id="clienteTelefono" type="tel" autocomplete="tel" placeholder="Ej: 1122334455" maxlength="30"></label>
-    <label>Observaciones (opcional)<textarea id="observacion" placeholder="Aclaraciones, alergias, etc." maxlength="300"></textarea></label>
+    <label>Observaciones generales (opcional)<textarea id="observacion" placeholder="Aclaraciones, alergias, etc." maxlength="300"></textarea></label>
     <p class="msg-error" id="modalError"></p>
     <div class="notice">El pago se realiza al retirar o cuando el local lo indique. Este pedido no genera cobro automático.</div>
     <div class="dialog-actions">
       <button class="btn btn-ghost" id="cerrarModal" type="button">Volver</button>
       <button class="btn btn-primary" id="enviarPedido" type="button">Confirmar pedido</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="extrasModal" role="dialog" aria-modal="true" aria-labelledby="extrasModalTitle">
+  <div class="dialog">
+    <h2 id="extrasModalTitle">Personalizá tu producto</h2>
+    <div id="extrasProductoInfo"></div>
+    <div id="extrasGrupos" style="display:grid;gap:10px"></div>
+    <label>Observaciones del ítem (opcional)<textarea id="extrasObs" maxlength="200" placeholder="Notas sobre este producto..."></textarea></label>
+    <p class="msg-error" id="extrasError"></p>
+    <div id="extrasPrecioTotal" class="extras-total"></div>
+    <div class="dialog-actions">
+      <button class="btn btn-ghost" id="cerrarExtras" type="button">Cancelar</button>
+      <button class="btn btn-primary" id="agregarExtras" type="button">Agregar al pedido</button>
     </div>
   </div>
 </div>
@@ -152,6 +181,59 @@
   let carrito = {};
   let categoriaActiva = "all";
   let modoDestacados = true;
+  let extrasProducto = null;
+  let extrasModificadores = [];
+
+  function claveCarrito(productoId, mods, obs) {
+    const modsKey = mods.map(m => `${m.modificador_id}x${m.cantidad}`).sort().join(",");
+    return `${productoId}:${modsKey}:${String(obs || "").trim()}`;
+  }
+
+  function agregarAlCarrito(producto, modificadores, observacion) {
+    const precioBase = producto.precio;
+    const precioMods = modificadores
+      .filter(m => m.tipo !== "observacion")
+      .reduce((acc, m) => acc + (Number(m.precio_extra) || 0) * m.cantidad, 0);
+    const precioFinal = precioBase + precioMods;
+    const obs = String(observacion || "").trim();
+    const clave = claveCarrito(producto.id, modificadores, obs);
+    if (carrito[clave]) {
+      carrito[clave].cantidad++;
+    } else {
+      carrito[clave] = {
+        clave,
+        producto,
+        cantidad: 1,
+        modificadores: [...modificadores],
+        observacion: obs,
+        precio_unitario_base: precioBase,
+        precio_modificadores: precioMods,
+        precio_unitario_final: precioFinal
+      };
+    }
+  }
+
+  function quitarDelCarrito(clave) {
+    if (!carrito[clave]) return;
+    carrito[clave].cantidad--;
+    if (carrito[clave].cantidad <= 0) delete carrito[clave];
+  }
+
+  function cantidadEnCarritoProducto(productoId) {
+    return Object.values(carrito)
+      .filter(i => i.producto.id === productoId)
+      .reduce((acc, i) => acc + i.cantidad, 0);
+  }
+
+  function actualizarCartBar() {
+    const items = Object.values(carrito);
+    const total = items.reduce((acc, i) => acc + i.precio_unitario_final * i.cantidad, 0);
+    const count = items.reduce((acc, i) => acc + i.cantidad, 0);
+    $("cartTotal").textContent = fmt(total);
+    $("cartCount").textContent = count === 1 ? "1 producto" : `${count} productos`;
+    const bar = $("cartBar");
+    if (count > 0) bar.classList.add("visible"); else bar.classList.remove("visible");
+  }
 
   async function cargarDatos() {
     try {
@@ -172,7 +254,23 @@
         $("headerLogo").textContent = (info.nombre || "T")[0].toUpperCase();
       }
 
-      productos = Array.isArray(prods) ? prods : [];
+      if (Array.isArray(prods)) {
+        // fallback: respuesta vieja — array plano con flag destacado
+        productos = prods;
+      } else {
+        // respuesta nueva: objeto estructurado
+        const todosProductos = Array.isArray(prods.productos) ? prods.productos : [];
+        const destIds = new Set((prods.productos_destacados || []).map(p => p.id));
+        const destCatsLower = new Set((prods.categorias_destacadas || []).map(n => String(n).toLowerCase()));
+        // Si ninguna config existe, marcamos todo como destacado (fallback: mostrar todo en vista inicial)
+        const hayConfig = destIds.size > 0 || destCatsLower.size > 0;
+        productos = todosProductos.map(p => ({
+          ...p,
+          destacado: hayConfig
+            ? (destIds.has(p.id) || destCatsLower.has((p.categoria_nombre || "General").toLowerCase()))
+            : true
+        }));
+      }
       renderCategorias();
       renderProductos();
     } catch {
@@ -250,7 +348,7 @@
     const grid = $("productGrid");
     grid.innerHTML = "";
     filtrados.forEach(p => {
-      const qty = carrito[p.id] ? carrito[p.id].cantidad : 0;
+      const qtyTotal = cantidadEnCarritoProducto(p.id);
       const card = document.createElement("article");
       card.className = "card";
       card.dataset.id = p.id;
@@ -312,39 +410,55 @@
         badge.className = "badge-agotado";
         badge.textContent = "Sin stock";
         footer.appendChild(badge);
-      } else if (qty === 0) {
+      } else if (p.tiene_modificadores) {
+        if (qtyTotal > 0) {
+          const badge = document.createElement("span");
+          badge.className = "badge-encarrito";
+          badge.textContent = `${qtyTotal} en pedido`;
+          footer.appendChild(badge);
+        }
         const addBtn = document.createElement("button");
         addBtn.className = "add-btn";
         addBtn.type = "button";
         addBtn.textContent = "Agregar";
-        addBtn.addEventListener("click", () => { agregarAlCarrito(p); renderProductos(); actualizarCartBar(); });
+        addBtn.addEventListener("click", () => abrirExtrasModal(p));
         footer.appendChild(addBtn);
       } else {
-        const ctrl = document.createElement("div");
-        ctrl.className = "qty-ctrl";
+        const clave = claveCarrito(p.id, [], "");
+        if (qtyTotal === 0) {
+          const addBtn = document.createElement("button");
+          addBtn.className = "add-btn";
+          addBtn.type = "button";
+          addBtn.textContent = "Agregar";
+          addBtn.addEventListener("click", () => { agregarAlCarrito(p, [], ""); renderProductos(); actualizarCartBar(); });
+          footer.appendChild(addBtn);
+        } else {
+          const ctrl = document.createElement("div");
+          ctrl.className = "qty-ctrl";
 
-        const minus = document.createElement("button");
-        minus.className = "qty-btn";
-        minus.type = "button";
-        minus.textContent = "−";
-        minus.setAttribute("aria-label", "Quitar uno");
-        minus.addEventListener("click", () => { quitarDelCarrito(p.id); renderProductos(); actualizarCartBar(); });
+          const minus = document.createElement("button");
+          minus.className = "qty-btn";
+          minus.type = "button";
+          minus.textContent = "−";
+          minus.setAttribute("aria-label", "Quitar uno");
+          minus.addEventListener("click", () => { quitarDelCarrito(clave); renderProductos(); actualizarCartBar(); });
 
-        const num = document.createElement("span");
-        num.className = "qty-num";
-        num.textContent = qty;
+          const num = document.createElement("span");
+          num.className = "qty-num";
+          num.textContent = qtyTotal;
 
-        const plus = document.createElement("button");
-        plus.className = "qty-btn";
-        plus.type = "button";
-        plus.textContent = "+";
-        plus.setAttribute("aria-label", "Agregar uno más");
-        plus.addEventListener("click", () => { agregarAlCarrito(p); renderProductos(); actualizarCartBar(); });
+          const plus = document.createElement("button");
+          plus.className = "qty-btn";
+          plus.type = "button";
+          plus.textContent = "+";
+          plus.setAttribute("aria-label", "Agregar uno más");
+          plus.addEventListener("click", () => { agregarAlCarrito(p, [], ""); renderProductos(); actualizarCartBar(); });
 
-        ctrl.appendChild(minus);
-        ctrl.appendChild(num);
-        ctrl.appendChild(plus);
-        footer.appendChild(ctrl);
+          ctrl.appendChild(minus);
+          ctrl.appendChild(num);
+          ctrl.appendChild(plus);
+          footer.appendChild(ctrl);
+        }
       }
 
       card.appendChild(body);
@@ -353,43 +467,172 @@
     });
   }
 
-  function agregarAlCarrito(p) {
-    if (!carrito[p.id]) carrito[p.id] = { producto: p, cantidad: 0 };
-    carrito[p.id].cantidad++;
+  async function abrirExtrasModal(producto) {
+    extrasProducto = producto;
+    extrasModificadores = [];
+    $("extrasError").textContent = "";
+    $("extrasObs").value = "";
+    $("extrasGrupos").innerHTML = "<div class='loading-state'>Cargando extras...</div>";
+    $("extrasPrecioTotal").textContent = `Total: ${fmt(producto.precio)}`;
+    $("extrasModalTitle").textContent = `Agregar ${producto.nombre}`;
+    $("extrasModal").classList.add("open");
+
+    try {
+      const res = await fetch(`/tienda/publica/productos/${producto.id}/modificadores`);
+      if (!res.ok) throw new Error("no ok");
+      extrasModificadores = await res.json();
+      renderExtrasGrupos();
+    } catch {
+      $("extrasGrupos").innerHTML = "";
+      $("extrasError").textContent = "No se pudieron cargar los extras. Podés agregar el producto sin extras.";
+      actualizarPrecioExtras();
+    }
   }
 
-  function quitarDelCarrito(id) {
-    if (!carrito[id]) return;
-    carrito[id].cantidad--;
-    if (carrito[id].cantidad <= 0) delete carrito[id];
+  function renderExtrasGrupos() {
+    const container = $("extrasGrupos");
+    container.innerHTML = "";
+
+    const checkMods = extrasModificadores.filter(m => m.tipo !== "observacion");
+
+    if (!checkMods.length) {
+      const msg = document.createElement("div");
+      msg.className = "extras-sin-mods";
+      msg.textContent = "Sin extras disponibles para este producto.";
+      container.appendChild(msg);
+      actualizarPrecioExtras();
+      return;
+    }
+
+    const grupo = document.createElement("div");
+    grupo.className = "extras-grupo";
+
+    const titulo = document.createElement("div");
+    titulo.className = "extras-grupo-titulo";
+    titulo.textContent = "Extras y modificaciones";
+    grupo.appendChild(titulo);
+
+    checkMods.forEach(m => {
+      const lbl = document.createElement("label");
+      lbl.className = "extras-chk-label";
+
+      const chk = document.createElement("input");
+      chk.type = "checkbox";
+      chk.className = "extras-chk";
+      chk.dataset.modId = m.modificador_id;
+      chk.addEventListener("change", actualizarPrecioExtras);
+
+      const info = document.createElement("div");
+      info.className = "extras-info";
+
+      const nom = document.createElement("div");
+      nom.className = "extras-nombre";
+      nom.textContent = m.nombre;
+      info.appendChild(nom);
+
+      if (Number(m.precio_extra) > 0) {
+        const prec = document.createElement("div");
+        prec.className = "extras-precio";
+        prec.textContent = `+${fmt(m.precio_extra)}`;
+        info.appendChild(prec);
+      }
+
+      lbl.appendChild(chk);
+      lbl.appendChild(info);
+      grupo.appendChild(lbl);
+    });
+
+    container.appendChild(grupo);
+    actualizarPrecioExtras();
   }
 
-  function actualizarCartBar() {
-    const items = Object.values(carrito);
-    const total = items.reduce((acc, i) => acc + i.producto.precio * i.cantidad, 0);
-    const count = items.reduce((acc, i) => acc + i.cantidad, 0);
-    $("cartTotal").textContent = fmt(total);
-    $("cartCount").textContent = count === 1 ? "1 producto" : `${count} productos`;
-    const bar = $("cartBar");
-    if (count > 0) bar.classList.add("visible"); else bar.classList.remove("visible");
+  function getModsSeleccionados() {
+    const checkboxes = $("extrasGrupos").querySelectorAll(".extras-chk:checked");
+    const result = [];
+    checkboxes.forEach(chk => {
+      const modId = Number(chk.dataset.modId);
+      const mod = extrasModificadores.find(m => m.modificador_id === modId);
+      if (mod) {
+        result.push({
+          modificador_id: mod.modificador_id,
+          nombre: mod.nombre,
+          tipo: mod.tipo,
+          precio_extra: Number(mod.precio_extra) || 0,
+          cantidad: 1
+        });
+      }
+    });
+    return result;
   }
+
+  function actualizarPrecioExtras() {
+    if (!extrasProducto) return;
+    const mods = getModsSeleccionados();
+    const precioMods = mods
+      .filter(m => m.tipo !== "observacion")
+      .reduce((acc, m) => acc + m.precio_extra * m.cantidad, 0);
+    $("extrasPrecioTotal").textContent = `Total: ${fmt(extrasProducto.precio + precioMods)}`;
+  }
+
+  function cerrarExtrasModal() {
+    $("extrasModal").classList.remove("open");
+    extrasProducto = null;
+    extrasModificadores = [];
+  }
+
+  $("cerrarExtras").addEventListener("click", cerrarExtrasModal);
+  $("extrasModal").addEventListener("click", e => { if (e.target === $("extrasModal")) cerrarExtrasModal(); });
+
+  $("agregarExtras").addEventListener("click", () => {
+    if (!extrasProducto) return;
+    const mods = getModsSeleccionados();
+    const obs = $("extrasObs").value.trim();
+    agregarAlCarrito(extrasProducto, mods, obs);
+    cerrarExtrasModal();
+    renderProductos();
+    actualizarCartBar();
+  });
 
   function renderResumenModal() {
     const items = Object.values(carrito);
-    const total = items.reduce((acc, i) => acc + i.producto.precio * i.cantidad, 0);
+    const total = items.reduce((acc, i) => acc + i.precio_unitario_final * i.cantidad, 0);
     const summary = $("orderSummary");
     summary.innerHTML = "";
+
     items.forEach(i => {
       const row = document.createElement("div");
       row.className = "sum-item";
-      const left = document.createElement("span");
-      left.textContent = `${i.cantidad}× ${i.producto.nombre}`;
+
+      const left = document.createElement("div");
+      left.className = "sum-item-left";
+
+      const nombretxt = document.createElement("span");
+      nombretxt.className = "sum-item-nombre";
+      nombretxt.textContent = `${i.cantidad}× ${i.producto.nombre}`;
+      left.appendChild(nombretxt);
+
+      if (i.modificadores && i.modificadores.length) {
+        const modtxt = document.createElement("span");
+        modtxt.className = "sum-item-mods";
+        modtxt.textContent = i.modificadores.map(m => m.nombre).join(", ");
+        left.appendChild(modtxt);
+      }
+
+      if (i.observacion) {
+        const obstxt = document.createElement("span");
+        obstxt.className = "sum-item-obs";
+        obstxt.textContent = `"${i.observacion}"`;
+        left.appendChild(obstxt);
+      }
+
       const right = document.createElement("strong");
-      right.textContent = fmt(i.producto.precio * i.cantidad);
+      right.textContent = fmt(i.precio_unitario_final * i.cantidad);
+
       row.appendChild(left);
       row.appendChild(right);
       summary.appendChild(row);
     });
+
     const totalRow = document.createElement("div");
     totalRow.className = "sum-total";
     const totalLabel = document.createElement("span");
@@ -419,7 +662,11 @@
     const items = Object.values(carrito).map(i => ({
       producto_id: i.producto.id,
       cantidad: i.cantidad,
-      observacion: ""
+      observacion: i.observacion || "",
+      modificadores: (i.modificadores || []).map(m => ({
+        modificador_id: m.modificador_id,
+        cantidad: m.cantidad
+      }))
     }));
 
     $("enviarPedido").disabled = true;
