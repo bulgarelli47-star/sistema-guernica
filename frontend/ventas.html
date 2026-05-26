@@ -1273,6 +1273,13 @@
       font-weight: 700;
     }
 
+    .stock-resolution-banner .stock-resolution-warning {
+      color: #92400e;
+      background: rgba(217, 154, 33, 0.14);
+      border-radius: 10px;
+      padding: 7px 9px;
+    }
+
     .stock-resolution-banner-actions {
       display: flex;
       gap: 8px;
@@ -1756,6 +1763,7 @@
               <div>
                 <strong id="ajusteStockResolucionTitulo">Resolviendo ajuste pendiente</strong>
                 <span id="ajusteStockResolucionDetalle"></span>
+                <span class="stock-resolution-warning hidden" id="ajusteStockResolucionAdvertencia"></span>
               </div>
               <div class="stock-resolution-banner-actions">
                 <span>La venta todav&iacute;a no est&aacute; registrada. Al confirmar, resolv&eacute;s manualmente el ajuste.</span>
@@ -2260,6 +2268,19 @@
       if (ajusteStockResolucionTitulo) ajusteStockResolucionTitulo.innerText = `Resolviendo ajuste pendiente #${ctx.ajuste_id}`;
       if (ajusteStockResolucionDetalle) {
         ajusteStockResolucionDetalle.innerText = `Producto: ${ctx.producto_nombre || `ID ${ctx.producto_id}`} | Cantidad: ${formatearNumero(ctx.cantidad)} | Modo: ${modo}`;
+      }
+      const advertencia = document.getElementById("ajusteStockResolucionAdvertencia");
+      if (advertencia) {
+        const cantidadOriginal = Number(ctx.cantidad || 0);
+        const cantidadTicket = ticket
+          .filter((item) => Number(item.producto_id) === Number(ctx.producto_id))
+          .reduce((acc, item) => acc + Number(item.cantidad || 0), 0);
+        const restante = Number((cantidadOriginal - cantidadTicket).toFixed(2));
+        const mostrarAdvertencia = cantidadOriginal > 0 && cantidadTicket > 0 && restante > 0;
+        advertencia.classList.toggle("hidden", !mostrarAdvertencia);
+        advertencia.textContent = mostrarAdvertencia
+          ? `Este ajuste era por ${formatearNumero(cantidadOriginal)} unidades y el ticket tiene ${formatearNumero(cantidadTicket)}. Quedar\u00e1n ${formatearNumero(restante)} unidades pendientes.`
+          : "";
       }
     }
 
@@ -3287,6 +3308,7 @@
         recargoVentaActual = { porcentaje: 0, monto: 0, cuotas: null, total: 0 };
         actualizarVuelto();
         actualizarResumenCobroTicket();
+        renderBannerResolucionAjusteStock();
         return;
       }
 
@@ -3373,6 +3395,7 @@
       ticketTotal.innerText = formatearNumero(recargoVentaActual.total);
       actualizarVuelto();
       actualizarResumenCobroTicket();
+      renderBannerResolucionAjusteStock();
     }
 
     async function agregarAlTicket(producto) {

@@ -81,7 +81,10 @@ async function ensureStockAjustesPendientesSchema() {
       tipo_resolucion TEXT,
       fecha_resolucion TEXT,
       hora_resolucion TEXT,
-      resuelto_por TEXT
+      resuelto_por TEXT,
+      cantidad_resuelta REAL DEFAULT 0,
+      cantidad_pendiente_resolucion REAL DEFAULT 0,
+      resolucion_parcial INTEGER DEFAULT 0
     )
   `);
 
@@ -90,6 +93,9 @@ async function ensureStockAjustesPendientesSchema() {
   await ensureColumnStockAjustesPendientes("fecha_resolucion", "TEXT");
   await ensureColumnStockAjustesPendientes("hora_resolucion", "TEXT");
   await ensureColumnStockAjustesPendientes("resuelto_por", "TEXT");
+  await ensureColumnStockAjustesPendientes("cantidad_resuelta", "REAL DEFAULT 0");
+  await ensureColumnStockAjustesPendientes("cantidad_pendiente_resolucion", "REAL DEFAULT 0");
+  await ensureColumnStockAjustesPendientes("resolucion_parcial", "INTEGER DEFAULT 0");
 
   await runQuery("CREATE INDEX IF NOT EXISTS idx_stock_ajustes_pendientes_estado ON stock_ajustes_pendientes(estado)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_stock_ajustes_pendientes_producto ON stock_ajustes_pendientes(producto_id)");
@@ -107,7 +113,10 @@ function mapAjuste(row) {
     cantidad_aprobada: row.cantidad_aprobada === null || row.cantidad_aprobada === undefined ? null : Number(row.cantidad_aprobada),
     movimiento_stock_id: row.movimiento_stock_id === null || row.movimiento_stock_id === undefined ? null : Number(row.movimiento_stock_id),
     caja_id: row.caja_id === null || row.caja_id === undefined ? null : Number(row.caja_id),
-    venta_id: row.venta_id === null || row.venta_id === undefined ? null : Number(row.venta_id)
+    venta_id: row.venta_id === null || row.venta_id === undefined ? null : Number(row.venta_id),
+    cantidad_resuelta: Number(row.cantidad_resuelta || 0),
+    cantidad_pendiente_resolucion: Number(row.cantidad_pendiente_resolucion || 0),
+    resolucion_parcial: Number(row.resolucion_parcial || 0)
   };
 }
 
@@ -190,17 +199,26 @@ async function crearAjustePendiente({
   return obtenerAjustePendiente(result.lastID);
 }
 
-async function listarAjustesPendientes({ estado } = {}) {
+async function listarAjustesPendientes({ estado, solo_accionables = false } = {}) {
   await ensureStockAjustesPendientesSchema();
   const estadoNormalizado = normalizarTexto(estado).toLowerCase();
   const filtrarEstado = ESTADOS_VALIDOS.has(estadoNormalizado);
+  const where = [];
+  const params = [];
+  if (filtrarEstado) {
+    where.push("sap.estado = ?");
+    params.push(estadoNormalizado);
+  }
+  if (solo_accionables) {
+    where.push("(sap.venta_id IS NULL OR COALESCE(sap.resolucion_parcial, 0) = 1 OR COALESCE(sap.cantidad_pendiente_resolucion, 0) > 0)");
+  }
   const rows = await allQuery(
     `SELECT sap.*, p.nombre AS producto_nombre
      FROM stock_ajustes_pendientes sap
      LEFT JOIN productos p ON p.id = sap.producto_id
-     ${filtrarEstado ? "WHERE sap.estado = ?" : ""}
+     ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
      ORDER BY sap.id DESC`,
-    filtrarEstado ? [estadoNormalizado] : []
+    params
   );
   return rows.map(mapAjuste);
 }
@@ -495,22 +513,48 @@ async function resolverAjustePendienteConVenta(id, {
     const ajuste = await getQuery("SELECT * FROM stock_ajustes_pendientes WHERE id = ?", [ajusteId]);
     if (!ajuste) throw crearError("Ajuste pendiente no encontrado", 404);
     if (ajuste.estado !== "pendiente") throw crearError("El ajuste pendiente ya fue revisado", 409);
-    if (ajuste.venta_id) throw crearError("El ajuste pendiente ya tiene una venta vinculada", 409);
+    if (Number(ajuste.venta_id) === ventaId) throw crearError("El ajuste pendiente ya tiene esta venta vinculada", 409);
+
+    const cantidadOriginal = Number(ajuste.cantidad || 0);
+    const cantidadYaResuelta = Number(ajuste.cantidad_resuelta || 0);
+    const pendienteActual = Math.max(0, cantidadOriginal - cantidadYaResuelta);
+    if (ajuste.venta_id && pendienteActual <= 0) {
+      throw crearError("El ajuste pendiente ya tiene una venta vinculada", 409);
+    }
 
     const venta = await getQuery("SELECT id FROM ventas WHERE id = ?", [ventaId]);
     if (!venta) throw crearError("Venta no encontrada", 404);
 
+    const detalleVenta = await getQuery(
+      `SELECT COALESCE(SUM(cantidad), 0) AS total
+       FROM detalle_ventas
+       WHERE venta_id = ? AND producto_id = ?`,
+      [ventaId, Number(ajuste.producto_id)]
+    );
+    const cantidadVendida = Number(detalleVenta?.total || 0);
+    if (!Number.isFinite(cantidadVendida) || cantidadVendida <= 0) {
+      throw crearError("La venta no incluye cantidad para el producto del ajuste", 400);
+    }
+
+    const cantidadResuelta = Math.min(cantidadOriginal, cantidadYaResuelta + cantidadVendida);
+    const cantidadPendienteResolucion = Math.max(0, cantidadOriginal - cantidadResuelta);
+    const resolucionParcial = cantidadResuelta > 0 && cantidadPendienteResolucion > 0 ? 1 : 0;
+
     const { fecha, hora } = getNowParts();
     await runQuery(
       `UPDATE stock_ajustes_pendientes
-       SET venta_id = ?, tipo_resolucion = ?, fecha_resolucion = ?, hora_resolucion = ?, resuelto_por = ?
-       WHERE id = ? AND estado = 'pendiente' AND venta_id IS NULL`,
+       SET venta_id = ?, tipo_resolucion = ?, fecha_resolucion = ?, hora_resolucion = ?, resuelto_por = ?,
+           cantidad_resuelta = ?, cantidad_pendiente_resolucion = ?, resolucion_parcial = ?
+       WHERE id = ? AND estado = 'pendiente'`,
       [
         ventaId,
         tipoResolucion,
         fecha,
         hora,
         normalizarTexto(usuario) || "admin",
+        cantidadResuelta,
+        cantidadPendienteResolucion,
+        resolucionParcial,
         ajusteId
       ]
     );
@@ -528,8 +572,17 @@ async function resolverAjustePendienteConVenta(id, {
 async function getResumenAjustesPendientes() {
   await ensureStockAjustesPendientesSchema();
   const hoy = new Date().toISOString().slice(0, 10);
-  const [rowPendientes, rowAprobados, rowRechazados] = await Promise.all([
-    getQuery("SELECT COUNT(*) AS total FROM stock_ajustes_pendientes WHERE estado = 'pendiente'"),
+  const [rowPendientes, rowResueltosPorVenta, rowAprobados, rowRechazados] = await Promise.all([
+    getQuery(`SELECT COUNT(*) AS total
+              FROM stock_ajustes_pendientes
+              WHERE estado = 'pendiente'
+                AND (venta_id IS NULL OR COALESCE(resolucion_parcial, 0) = 1 OR COALESCE(cantidad_pendiente_resolucion, 0) > 0)`),
+    getQuery(`SELECT COUNT(*) AS total
+              FROM stock_ajustes_pendientes
+              WHERE estado = 'pendiente'
+                AND venta_id IS NOT NULL
+                AND COALESCE(resolucion_parcial, 0) = 0
+                AND COALESCE(cantidad_pendiente_resolucion, 0) <= 0`),
     getQuery(
       "SELECT COUNT(*) AS total FROM stock_ajustes_pendientes WHERE estado IN ('aprobado', 'corregido') AND date(revisado_at) = ?",
       [hoy]
@@ -541,6 +594,8 @@ async function getResumenAjustesPendientes() {
   ]);
   return {
     pendientes: Number(rowPendientes?.total || 0),
+    pendientes_accionables: Number(rowPendientes?.total || 0),
+    resueltos_por_venta: Number(rowResueltosPorVenta?.total || 0),
     aprobados_hoy: Number(rowAprobados?.total || 0),
     rechazados_hoy: Number(rowRechazados?.total || 0)
   };

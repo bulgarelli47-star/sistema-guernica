@@ -2521,7 +2521,10 @@ app.get("/stock/ajustes-pendientes", async (req, res) => {
   }
 
   try {
-    const ajustes = await listarAjustesPendientes({ estado: req.query.estado });
+    const ajustes = await listarAjustesPendientes({
+      estado: req.query.estado,
+      solo_accionables: String(req.query.solo_accionables || "") === "1"
+    });
     return res.json(ajustes);
   } catch (error) {
     logError("Error al listar ajustes pendientes de stock:", error);

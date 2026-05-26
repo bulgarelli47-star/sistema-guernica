@@ -1011,11 +1011,24 @@ async function testResolverAjustePendienteConVenta() {
       const ajusteCobrar = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
         producto_id: 11,
         tipo_movimiento: "egreso",
-        cantidad: 2,
-        motivo: "TEST resolver cobrar"
+        cantidad: 3,
+        motivo: "TEST resolver parcial"
       });
-      const ventaCobrar = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), adminToken);
+      const resumenAntesResolver = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, adminToken);
+      if (!resumenAntesResolver.response.ok) throw new Error(`Resumen antes de resolver fallo: ${resumenAntesResolver.data?.message || resumenAntesResolver.response.status}`);
+      assertEqual(resumenAntesResolver.data.pendientes, 1, "Ajuste creado debe contar como pendiente accionable");
+      assertEqual(resumenAntesResolver.data.pendientes_accionables, 1, "Ajuste creado debe contar como pendiente accionable explicito");
+      const listadoAccionableAntes = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes?estado=pendiente&solo_accionables=1", null, adminToken);
+      if (!listadoAccionableAntes.response.ok) throw new Error(`Listado accionable antes de resolver fallo: ${listadoAccionableAntes.data?.message || listadoAccionableAntes.response.status}`);
+      if (!listadoAccionableAntes.data.some((a) => Number(a.id) === Number(ajusteCobrar.id))) {
+        throw new Error("Ajuste creado debe aparecer en listado solo_accionables");
+      }
+      const stockAntesParcial = (await getProduct(baseUrl, adminToken, 11)).stock;
+      const ventaCobrar = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        items: [{ producto_id: 11, nombre_producto: "Coca Cola 1250", cantidad: 1, precio_unitario: 100 }]
+      }), adminToken);
       if (!ventaCobrar.response.ok) throw new Error(`Venta normal para resolver fallo: ${ventaCobrar.data?.message || ventaCobrar.response.status}`);
+      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, stockAntesParcial - 1, "Resolver parcial debe descontar stock por cantidad vendida");
       const movimientosAntesResolver = await getMovimientosStock(baseUrl, adminToken, 11);
       const resolverCobrar = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajusteCobrar.id}/resolver`, {
         venta_id: ventaCobrar.data.venta_id,
@@ -1026,6 +1039,24 @@ async function testResolverAjustePendienteConVenta() {
       assertEqual(resolverCobrar.data.ajuste.venta_id, ventaCobrar.data.venta_id, "Resolver debe guardar venta_id");
       if (resolverCobrar.data.ajuste.tipo_resolucion !== "cobrar") throw new Error("Resolver debe guardar tipo_resolucion cobrar");
       if (resolverCobrar.data.ajuste.estado !== "pendiente") throw new Error("Resolver no debe cambiar estado persistido del ajuste");
+      assertEqual(resolverCobrar.data.ajuste.cantidad_resuelta, 1, "Resolver parcial debe guardar cantidad_resuelta");
+      assertEqual(resolverCobrar.data.ajuste.cantidad_pendiente_resolucion, 2, "Resolver parcial debe guardar cantidad pendiente restante");
+      assertEqual(resolverCobrar.data.ajuste.resolucion_parcial, 1, "Resolver parcial debe marcar resolucion_parcial");
+      const resumenDespuesResolver = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, adminToken);
+      if (!resumenDespuesResolver.response.ok) throw new Error(`Resumen despues de resolver fallo: ${resumenDespuesResolver.data?.message || resumenDespuesResolver.response.status}`);
+      assertEqual(resumenDespuesResolver.data.pendientes, 1, "Resolver parcial debe conservar el ajuste como pendiente accionable");
+      assertEqual(resumenDespuesResolver.data.pendientes_accionables, 1, "Resolver parcial debe conservar el ajuste como pendiente accionable explicito");
+      assertEqual(resumenDespuesResolver.data.resueltos_por_venta, 0, "Resolver parcial no debe contar como resuelto completo por venta");
+      const listadoNormalDespues = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes?estado=pendiente", null, adminToken);
+      if (!listadoNormalDespues.response.ok) throw new Error(`Listado normal despues de resolver fallo: ${listadoNormalDespues.data?.message || listadoNormalDespues.response.status}`);
+      if (!listadoNormalDespues.data.some((a) => Number(a.id) === Number(ajusteCobrar.id))) {
+        throw new Error("Ajuste resuelto por venta debe seguir en listado normal estado=pendiente");
+      }
+      const listadoAccionableDespues = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes?estado=pendiente&solo_accionables=1", null, adminToken);
+      if (!listadoAccionableDespues.response.ok) throw new Error(`Listado accionable despues de resolver fallo: ${listadoAccionableDespues.data?.message || listadoAccionableDespues.response.status}`);
+      if (!listadoAccionableDespues.data.some((a) => Number(a.id) === Number(ajusteCobrar.id))) {
+        throw new Error("Ajuste resuelto parcialmente debe seguir en listado solo_accionables");
+      }
       const movimientosDespuesResolver = await getMovimientosStock(baseUrl, adminToken, 11);
       assertEqual(movimientosDespuesResolver.length, movimientosAntesResolver.length, "Resolver ajuste no debe insertar movimientos_stock");
 
@@ -1034,6 +1065,31 @@ async function testResolverAjustePendienteConVenta() {
         tipo_resolucion: "cobrar"
       }, adminToken);
       assertEqual(dobleResolver.response.status, 409, "Resolver dos veces debe fallar");
+
+      const ajusteCompleto = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "egreso",
+        cantidad: 3,
+        motivo: "TEST resolver completo"
+      });
+      const ventaCompleta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        items: [{ producto_id: 11, nombre_producto: "Coca Cola 1250", cantidad: 3, precio_unitario: 100 }]
+      }), adminToken);
+      if (!ventaCompleta.response.ok) throw new Error(`Venta completa para resolver fallo: ${ventaCompleta.data?.message || ventaCompleta.response.status}`);
+      const resolverCompleto = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajusteCompleto.id}/resolver`, {
+        venta_id: ventaCompleta.data.venta_id,
+        tipo_resolucion: "cobrar",
+        usuario: "admin"
+      }, adminToken);
+      if (!resolverCompleto.response.ok) throw new Error(`Resolver ajuste completo fallo: ${resolverCompleto.data?.message || resolverCompleto.response.status}`);
+      assertEqual(resolverCompleto.data.ajuste.cantidad_resuelta, 3, "Resolver completo debe guardar cantidad_resuelta total");
+      assertEqual(resolverCompleto.data.ajuste.cantidad_pendiente_resolucion, 0, "Resolver completo no debe dejar cantidad pendiente");
+      assertEqual(resolverCompleto.data.ajuste.resolucion_parcial, 0, "Resolver completo no debe marcar parcial");
+      const listadoAccionableCompleto = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes?estado=pendiente&solo_accionables=1", null, adminToken);
+      if (!listadoAccionableCompleto.response.ok) throw new Error(`Listado accionable completo fallo: ${listadoAccionableCompleto.data?.message || listadoAccionableCompleto.response.status}`);
+      if (listadoAccionableCompleto.data.some((a) => Number(a.id) === Number(ajusteCompleto.id))) {
+        throw new Error("Ajuste resuelto completo no debe aparecer en listado solo_accionables");
+      }
 
       const ajusteCuenta = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
         producto_id: 11,
