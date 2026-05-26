@@ -2427,6 +2427,18 @@
         .filter((modificador) => modificador.modificador_id || modificador.nombre);
     }
 
+    function normalizarIngredientesTicket(ingredientes = []) {
+      return (Array.isArray(ingredientes) ? ingredientes : [])
+        .map((ingrediente) => ({
+          ingrediente_id: Number(ingrediente.ingrediente_id ?? ingrediente.id ?? 0) || null,
+          nombre: String(ingrediente.nombre || ingrediente.nombre_snapshot || "").trim(),
+          tipo: String(ingrediente.tipo || "quitar").trim().toLowerCase(),
+          cantidad: Number(ingrediente.cantidad || 1) || 1,
+          nota: String(ingrediente.nota || "").trim()
+        }))
+        .filter((ingrediente) => ingrediente.ingrediente_id || ingrediente.nombre);
+    }
+
     function normalizarModificadorDisponibleVenta(modificador = {}) {
       const modificadorId = Number(modificador.modificador_id ?? modificador.id ?? 0) || null;
       return {
@@ -2463,6 +2475,10 @@
 
     function tieneModificadoresItem(item) {
       return normalizarModificadoresTicket(item?.modificadores).length > 0;
+    }
+
+    function tienePersonalizacionesItem(item) {
+      return tieneModificadoresItem(item) || normalizarIngredientesTicket(item?.ingredientes).length > 0;
     }
 
     function buildTicketItem(producto, modificadores = []) {
@@ -3290,8 +3306,15 @@
         total += subtotal;
         const nombreProducto = String(item.nombre || "Producto sin nombre").trim() || "Producto sin nombre";
         const modificadores = normalizarModificadoresTicket(item.modificadores);
-        const modsHtml = modificadores.length
-          ? `<ul class="ticket-modifiers">${modificadores.map((mod) => mod.tipo === "observacion" ? `<li>Nota: ${escapeHtml(mod.nombre)}</li>` : mod.tipo === "quitar" ? `<li>Sin: ${escapeHtml(mod.nombre)}</li>` : `<li>+ ${escapeHtml(mod.nombre)} x${Number.isInteger(Number(mod.cantidad)) ? Number(mod.cantidad) : formatearNumero(mod.cantidad)}</li>`).join("")}</ul>`
+        const ingredientes = normalizarIngredientesTicket(item.ingredientes);
+        const personalizaciones = [
+          ...ingredientes
+            .filter((ingrediente) => ingrediente.tipo === "quitar")
+            .map((ingrediente) => `<li>Sin: ${escapeHtml(ingrediente.nombre)}</li>`),
+          ...modificadores.map((mod) => mod.tipo === "observacion" ? `<li>Nota: ${escapeHtml(mod.nombre)}</li>` : mod.tipo === "quitar" ? `<li>Sin: ${escapeHtml(mod.nombre)}</li>` : `<li>+ ${escapeHtml(mod.nombre)} x${Number.isInteger(Number(mod.cantidad)) ? Number(mod.cantidad) : formatearNumero(mod.cantidad)}</li>`)
+        ];
+        const modsHtml = personalizaciones.length
+          ? `<ul class="ticket-modifiers">${personalizaciones.join("")}</ul>`
           : "";
         const infoDescuento = descuentoUnit > 0
           ? `<small>${item.cantidad} x $${formatearNumero(precioVenta)} <span style="color:var(--success,#2ea043);font-weight:700">· Ahorraste $${formatearNumero(descuentoUnit * item.cantidad)}</span></small>`
@@ -3916,6 +3939,12 @@
           modificadores: normalizarModificadoresTicket(item.modificadores).map((modificador) => ({
             modificador_id: modificador.modificador_id,
             cantidad: modificador.cantidad
+          })),
+          ingredientes: normalizarIngredientesTicket(item.ingredientes).map((ingrediente) => ({
+            ingrediente_id: ingrediente.ingrediente_id,
+            tipo: ingrediente.tipo,
+            cantidad: ingrediente.cantidad,
+            nombre: ingrediente.nombre
           }))
         }))
       };
@@ -4232,10 +4261,11 @@
 
         data.items.forEach((item) => {
           const modificadores = normalizarModificadoresTicket(item.modificadores);
+          const ingredientes = normalizarIngredientesTicket(item.ingredientes);
           const precioFinal = Number(item.precio_unitario) || 0;
           const precioBase = calcularPrecioBaseDesdeDetalle(item);
           ticket.push({
-            id: modificadores.length
+            id: modificadores.length || ingredientes.length
               ? `${item.producto_id || "manual"}-${item.id || Date.now()}`
               : item.producto_id ? Number(item.producto_id) : siguienteManualId--,
             producto_id: item.producto_id ? Number(item.producto_id) : null,
@@ -4244,7 +4274,8 @@
             precio_venta: modificadores.length ? precioFinal : precioBase,
             cantidad: Number(item.cantidad) || 0,
             imagen_url: item.imagen_url || "",
-            modificadores
+            modificadores,
+            ingredientes
           });
         });
 

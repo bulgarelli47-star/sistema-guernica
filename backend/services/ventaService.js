@@ -1,5 +1,21 @@
 const { allQuery, getQuery, runQuery } = require("../db");
 
+async function ensureDetalleVentaIngredientesTable() {
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS detalle_venta_ingredientes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      detalle_venta_id INTEGER NOT NULL,
+      ingrediente_id INTEGER,
+      tipo TEXT NOT NULL,
+      nombre TEXT,
+      cantidad REAL DEFAULT 1,
+      nota TEXT,
+      FOREIGN KEY (detalle_venta_id) REFERENCES detalle_ventas(id)
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_detalle_venta_ingredientes_detalle ON detalle_venta_ingredientes(detalle_venta_id)");
+}
+
 function resolveCobroData(total, tipoCobro, montoEfectivo, montoDebito) {
   const tipo = String(tipoCobro || "").trim().toLowerCase();
   const totalRounded = Number(total.toFixed(2));
@@ -149,6 +165,15 @@ async function refreshCuentaCorrienteSaldo(ventaId) {
 }
 
 async function replaceVentaDetalle(ventaId, items) {
+  await ensureDetalleVentaIngredientesTable();
+  const detallesAnteriores = await allQuery("SELECT id FROM detalle_ventas WHERE venta_id = ?", [ventaId]);
+  const detalleIds = detallesAnteriores.map((item) => item.id);
+  if (detalleIds.length) {
+    await runQuery(
+      `DELETE FROM detalle_venta_ingredientes WHERE detalle_venta_id IN (${detalleIds.map(() => "?").join(",")})`,
+      detalleIds
+    );
+  }
   await runQuery("DELETE FROM detalle_ventas WHERE venta_id = ?", [ventaId]);
 
   const detalles = [];
@@ -175,6 +200,22 @@ async function replaceVentaDetalle(ventaId, items) {
       detalle_venta_id: result.lastID,
       subtotal
     });
+
+    for (const ingrediente of Array.isArray(item.ingredientes) ? item.ingredientes : []) {
+      await runQuery(
+        `INSERT INTO detalle_venta_ingredientes
+        (detalle_venta_id, ingrediente_id, tipo, nombre, cantidad, nota)
+        VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          result.lastID,
+          ingrediente.ingrediente_id ?? ingrediente.id ?? null,
+          String(ingrediente.tipo || "quitar").trim().toLowerCase(),
+          ingrediente.nombre || ingrediente.nombre_snapshot || null,
+          Number(ingrediente.cantidad || 1) || 1,
+          ingrediente.nota || null
+        ]
+      );
+    }
   }
 
   return detalles;
@@ -191,6 +232,7 @@ async function getVentaDetalleRows(ventaId) {
 }
 
 async function getVentaConDetalle(ventaId) {
+  await ensureDetalleVentaIngredientesTable();
   const venta = await getQuery("SELECT * FROM ventas WHERE id = ?", [ventaId]);
 
   if (!venta) {
@@ -202,6 +244,13 @@ async function getVentaConDetalle(ventaId) {
     item.modificadores = await allQuery(
       `SELECT modificador_id, nombre, tipo, precio_extra, cantidad, metadata_json
        FROM detalle_venta_modificadores
+       WHERE detalle_venta_id = ?
+       ORDER BY id ASC`,
+      [item.id]
+    );
+    item.ingredientes = await allQuery(
+      `SELECT ingrediente_id, nombre, tipo, cantidad, nota
+       FROM detalle_venta_ingredientes
        WHERE detalle_venta_id = ?
        ORDER BY id ASC`,
       [item.id]

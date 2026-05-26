@@ -679,7 +679,8 @@ function normalizeItems(items) {
     nombre_producto: String(item.nombre_producto ?? item.nombre ?? "").trim(),
     cantidad: Number(item.cantidad) || 0,
     precio_unitario: Number(item.precio_unitario ?? item.precio_venta) || 0,
-    modificadores: Array.isArray(item.modificadores) ? item.modificadores : []
+    modificadores: Array.isArray(item.modificadores) ? item.modificadores : [],
+    ingredientes: Array.isArray(item.ingredientes) ? item.ingredientes : []
   }));
 }
 
@@ -6639,7 +6640,7 @@ app.post("/tienda/pedidos/:id/convertir-venta", async (req, res) => {
     }
 
     const tiendaItems = await allQuery(
-      "SELECT producto_id, producto_nombre_snapshot, cantidad, precio_unitario_snapshot, subtotal_snapshot FROM tienda_pedido_items WHERE pedido_id = ?",
+      "SELECT id, producto_id, producto_nombre_snapshot, cantidad, precio_unitario_snapshot, subtotal_snapshot FROM tienda_pedido_items WHERE pedido_id = ?",
       [pedidoId]
     );
     if (!tiendaItems || tiendaItems.length === 0) {
@@ -6660,13 +6661,57 @@ app.post("/tienda/pedidos/:id/convertir-venta", async (req, res) => {
       });
     }
 
+    const tiendaItemIds = tiendaItems.map((item) => item.id);
+    const tiendaIngredientesMap = {};
+    const tiendaModificadoresMap = {};
+    if (tiendaItemIds.length) {
+      const placeholders = tiendaItemIds.map(() => "?").join(",");
+      const [ingredientesPedido, modificadoresPedido] = await Promise.all([
+        allQuery(
+          `SELECT pedido_item_id, ingrediente_id, tipo, nombre_snapshot, cantidad, nota
+           FROM tienda_pedido_item_ingredientes
+           WHERE pedido_item_id IN (${placeholders})
+           ORDER BY pedido_item_id ASC, id ASC`,
+          tiendaItemIds
+        ),
+        allQuery(
+          `SELECT pedido_item_id, modificador_id, modificador_nombre_snapshot, tipo_snapshot, cantidad, precio_extra_snapshot
+           FROM tienda_pedido_item_modificadores
+           WHERE pedido_item_id IN (${placeholders})
+           ORDER BY pedido_item_id ASC, id ASC`,
+          tiendaItemIds
+        )
+      ]);
+      ingredientesPedido.forEach((ingrediente) => {
+        if (!tiendaIngredientesMap[ingrediente.pedido_item_id]) tiendaIngredientesMap[ingrediente.pedido_item_id] = [];
+        tiendaIngredientesMap[ingrediente.pedido_item_id].push({
+          ingrediente_id: ingrediente.ingrediente_id,
+          tipo: ingrediente.tipo,
+          nombre: ingrediente.nombre_snapshot,
+          cantidad: Number(ingrediente.cantidad || 1) || 1,
+          nota: ingrediente.nota || ""
+        });
+      });
+      modificadoresPedido.forEach((modificador) => {
+        if (!tiendaModificadoresMap[modificador.pedido_item_id]) tiendaModificadoresMap[modificador.pedido_item_id] = [];
+        tiendaModificadoresMap[modificador.pedido_item_id].push({
+          modificador_id: modificador.modificador_id,
+          nombre: modificador.modificador_nombre_snapshot,
+          tipo: modificador.tipo_snapshot,
+          cantidad: Number(modificador.cantidad || 1) || 1,
+          precio_extra: Number(modificador.precio_extra_snapshot || 0) || 0
+        });
+      });
+    }
+
     // Construir items para venta usando snapshots de precio del pedido
     const itemsVenta = tiendaItems.map((i) => ({
       producto_id: i.producto_id,
       nombre_producto: i.producto_nombre_snapshot,
       cantidad: Number(i.cantidad),
       precio_unitario: Number(i.precio_unitario_snapshot),
-      modificadores: []
+      modificadores: tiendaModificadoresMap[i.id] || [],
+      ingredientes: tiendaIngredientesMap[i.id] || []
     }));
 
     const totalVenta = Number(calculateTotal(itemsVenta).toFixed(2));
@@ -6684,7 +6729,10 @@ app.post("/tienda/pedidos/:id/convertir-venta", async (req, res) => {
        null, null, 0, 0, null, 0, 0, null, null, 0, 0]
     );
 
-    await replaceVentaDetalle(venta.lastID, itemsVenta);
+    const detalles = await replaceVentaDetalle(venta.lastID, itemsVenta);
+    if (itemsVenta.some((item) => Array.isArray(item.modificadores) && item.modificadores.length)) {
+      await guardarSnapshotsModificadoresVenta(detalles);
+    }
     await applyStockForNewItems(itemsVenta);
 
     const now = new Date().toISOString().slice(0, 19).replace("T", " ");
