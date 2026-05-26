@@ -557,6 +557,37 @@ async function ensureTiendaSchema() {
     )
   `);
   await ensureColumn("tienda_pedidos", "motivo_rechazo", "TEXT");
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS producto_ingredientes_visibles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      producto_id INTEGER NOT NULL,
+      nombre TEXT NOT NULL,
+      incluido_por_defecto INTEGER NOT NULL DEFAULT 1,
+      permite_quitar INTEGER NOT NULL DEFAULT 1,
+      permite_extra INTEGER NOT NULL DEFAULT 0,
+      precio_extra REAL NOT NULL DEFAULT 0,
+      orden INTEGER NOT NULL DEFAULT 0,
+      activo INTEGER NOT NULL DEFAULT 1,
+      FOREIGN KEY (producto_id) REFERENCES productos(id)
+    )
+  `);
+  await runQuery(
+    "CREATE INDEX IF NOT EXISTS idx_piv_producto ON producto_ingredientes_visibles(producto_id)"
+  );
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS tienda_pedido_item_ingredientes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pedido_item_id INTEGER NOT NULL,
+      ingrediente_id INTEGER,
+      tipo TEXT NOT NULL,
+      nombre_snapshot TEXT NOT NULL,
+      precio_extra_snapshot REAL NOT NULL DEFAULT 0,
+      cantidad REAL NOT NULL DEFAULT 1,
+      nota TEXT,
+      FOREIGN KEY (pedido_item_id) REFERENCES tienda_pedido_items(id),
+      FOREIGN KEY (ingrediente_id) REFERENCES producto_ingredientes_visibles(id)
+    )
+  `);
 }
 
 async function ensureUsuariosSchema() {
@@ -6018,7 +6049,11 @@ app.get("/tienda/publica/productos", async (req, res) => {
                  SELECT 1 FROM producto_modificadores pm
                  INNER JOIN modificadores m ON m.id = pm.modificador_id
                  WHERE pm.producto_id = p.id AND pm.activo = 1 AND m.activo = 1
-               ) AS tiene_modificadores
+               ) AS tiene_modificadores,
+               EXISTS(
+                 SELECT 1 FROM producto_ingredientes_visibles piv
+                 WHERE piv.producto_id = p.id AND piv.activo = 1
+               ) AS tiene_ingredientes_visibles
         FROM productos p
         LEFT JOIN categorias c ON c.id = p.categoria_id
         WHERE p.activo = 1 AND COALESCE(p.eliminado, 0) = 0
@@ -6050,6 +6085,7 @@ app.get("/tienda/publica/productos", async (req, res) => {
         imagen_url: p.imagen_url || "",
         disponible: Number(p.maneja_stock) === 0 ? true : Number(p.stock) > 0,
         tiene_modificadores: p.tiene_modificadores === 1,
+        tiene_ingredientes_visibles: p.tiene_ingredientes_visibles === 1,
         destacado
       };
     });
@@ -6104,6 +6140,37 @@ app.get("/tienda/publica/productos/:id/modificadores", async (req, res) => {
   }
 });
 
+app.get("/tienda/publica/productos/:id/ingredientes", async (req, res) => {
+  try {
+    const productoId = Number(req.params.id);
+    if (!productoId || productoId <= 0) return res.status(400).json({ message: "ID inválido." });
+    const producto = await getQuery(
+      "SELECT id FROM productos WHERE id = ? AND activo = 1 AND COALESCE(eliminado, 0) = 0",
+      [productoId]
+    );
+    if (!producto) return res.status(404).json({ message: "Producto no encontrado." });
+    const ingredientes = await allQuery(
+      `SELECT id, nombre, incluido_por_defecto, permite_quitar, permite_extra, precio_extra, orden
+       FROM producto_ingredientes_visibles
+       WHERE producto_id = ? AND activo = 1
+       ORDER BY orden ASC, id ASC`,
+      [productoId]
+    );
+    return res.json(ingredientes.map(i => ({
+      id: i.id,
+      nombre: i.nombre,
+      incluido_por_defecto: i.incluido_por_defecto === 1,
+      permite_quitar: i.permite_quitar === 1,
+      permite_extra: i.permite_extra === 1,
+      precio_extra: Number(i.precio_extra) || 0,
+      orden: Number(i.orden) || 0
+    })));
+  } catch (error) {
+    logError("GET /tienda/publica/productos/:id/ingredientes", error);
+    return res.status(500).json({ message: "Error al cargar ingredientes del producto." });
+  }
+});
+
 app.post("/tienda/publica/pedidos", async (req, res) => {
   const { cliente_nombre, cliente_telefono, observacion, items } = req.body || {};
 
@@ -6136,18 +6203,30 @@ app.post("/tienda/publica/pedidos", async (req, res) => {
         return res.status(400).json({ message: "Cantidad de modificador debe ser un entero mayor a 0." });
       }
     }
+    const ings = Array.isArray(item.ingredientes) ? item.ingredientes : [];
+    for (const ing of ings) {
+      const ingId = Number(ing.ingrediente_id);
+      if (!Number.isInteger(ingId) || ingId <= 0) {
+        return res.status(400).json({ message: "ingrediente_id inválido en el pedido." });
+      }
+      const tipo = String(ing.tipo || "").toLowerCase();
+      if (tipo !== "quitar" && tipo !== "extra") {
+        return res.status(400).json({ message: `Tipo de ingrediente inválido: "${ing.tipo}". Debe ser "quitar" o "extra".` });
+      }
+    }
     itemsValidados.push({
       producto_id: productoId,
       cantidad,
       observacion: String(item.observacion || "").trim(),
-      modificadores: mods
+      modificadores: mods,
+      ingredientes: ings
     });
   }
 
   try {
     const ids = itemsValidados.map(i => i.producto_id);
     const ph = ids.map(() => "?").join(",");
-    const [productos, modsAsociadas] = await Promise.all([
+    const [productos, modsAsociadas, ingsAsociados] = await Promise.all([
       allQuery(
         `SELECT id, nombre, precio_venta, maneja_stock, stock, activo, COALESCE(eliminado, 0) AS eliminado FROM productos WHERE id IN (${ph})`,
         ids
@@ -6158,6 +6237,12 @@ app.post("/tienda/publica/pedidos", async (req, res) => {
          INNER JOIN modificadores m ON m.id = pm.modificador_id
          WHERE pm.producto_id IN (${ph}) AND pm.activo = 1 AND m.activo = 1`,
         ids
+      ),
+      allQuery(
+        `SELECT id, producto_id, nombre, permite_quitar, permite_extra, precio_extra
+         FROM producto_ingredientes_visibles
+         WHERE producto_id IN (${ph}) AND activo = 1`,
+        ids
       )
     ]);
 
@@ -6165,6 +6250,10 @@ app.post("/tienda/publica/pedidos", async (req, res) => {
     const modsMap = {};
     for (const row of modsAsociadas) {
       modsMap[`${row.producto_id}:${row.modificador_id}`] = row;
+    }
+    const ingsMap = {};
+    for (const row of ingsAsociados) {
+      ingsMap[`${row.producto_id}:${row.id}`] = row;
     }
 
     for (const item of itemsValidados) {
@@ -6196,11 +6285,37 @@ app.post("/tienda/publica/pedidos", async (req, res) => {
         modsValidados.push({ modId, modCant, assoc, precioExtra });
       }
 
+      let precioIngExtrasTotal = 0;
+      const ingsValidados = [];
+      for (const ing of item.ingredientes) {
+        const ingId = Number(ing.ingrediente_id);
+        const tipo = String(ing.tipo || "").toLowerCase();
+        const dbIng = ingsMap[`${item.producto_id}:${ingId}`];
+        if (!dbIng) {
+          return res.status(400).json({ message: "Ingrediente no disponible para el producto solicitado." });
+        }
+        if (tipo === "quitar" && !dbIng.permite_quitar) {
+          return res.status(400).json({ message: `El ingrediente "${dbIng.nombre}" no se puede quitar.` });
+        }
+        if (tipo === "extra" && !dbIng.permite_extra) {
+          return res.status(400).json({ message: `El ingrediente "${dbIng.nombre}" no se puede agregar como extra.` });
+        }
+        const precioExtra = tipo === "extra" ? (Number(dbIng.precio_extra) || 0) : 0;
+        precioIngExtrasTotal += precioExtra;
+        ingsValidados.push({
+          ingId,
+          tipo,
+          nombre: dbIng.nombre,
+          precioExtra,
+          nota: String(ing.nota || "").trim().slice(0, 200) || null
+        });
+      }
+
       const precioBase = Number(p.precio_venta) || 0;
-      const precioUnitarioFinal = Number((precioBase + precioExtrasTotal).toFixed(2));
+      const precioUnitarioFinal = Number((precioBase + precioExtrasTotal + precioIngExtrasTotal).toFixed(2));
       const subtotal = Number((precioUnitarioFinal * item.cantidad).toFixed(2));
       const estadoStock = Number(p.maneja_stock) === 0 ? "disponible" : Number(p.stock) > 0 ? "disponible" : "sin_stock";
-      itemsConPrecio.push({ ...item, p, precioUnitarioFinal, subtotal, estadoStock, modsValidados });
+      itemsConPrecio.push({ ...item, p, precioUnitarioFinal, subtotal, estadoStock, modsValidados, ingsValidados });
     }
 
     const ahora = new Date().toISOString();
@@ -6229,6 +6344,13 @@ app.post("/tienda/publica/pedidos", async (req, res) => {
           `INSERT INTO tienda_pedido_item_modificadores (pedido_item_id, modificador_id, modificador_nombre_snapshot, tipo_snapshot, cantidad, precio_extra_snapshot, subtotal_snapshot)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [itemId, modId, assoc.nombre, assoc.tipo, modCant, precioExtra, subtotalMod]
+        );
+      }
+      for (const { ingId, tipo, nombre, precioExtra, nota } of item.ingsValidados) {
+        await runQuery(
+          `INSERT INTO tienda_pedido_item_ingredientes (pedido_item_id, ingrediente_id, tipo, nombre_snapshot, precio_extra_snapshot, cantidad, nota)
+           VALUES (?, ?, ?, ?, ?, 1, ?)`,
+          [itemId, ingId, tipo, nombre, precioExtra, nota]
         );
       }
     }
@@ -6344,15 +6466,27 @@ app.get("/tienda/pedidos/:id", async (req, res) => {
     `, [pedidoId]);
     const itemIds = items.map(i => i.id);
     const modsMap = {};
+    const ingredientesMap = {};
     if (itemIds.length) {
-      const mods = await allQuery(
-        `SELECT pedido_item_id, modificador_id, modificador_nombre_snapshot,
-                tipo_snapshot, cantidad, precio_extra_snapshot, subtotal_snapshot
-         FROM tienda_pedido_item_modificadores
-         WHERE pedido_item_id IN (${itemIds.map(() => "?").join(",")})
-         ORDER BY pedido_item_id ASC, id ASC`,
-        itemIds
-      );
+      const ph2 = itemIds.map(() => "?").join(",");
+      const [mods, ingredientes] = await Promise.all([
+        allQuery(
+          `SELECT pedido_item_id, modificador_id, modificador_nombre_snapshot,
+                  tipo_snapshot, cantidad, precio_extra_snapshot, subtotal_snapshot
+           FROM tienda_pedido_item_modificadores
+           WHERE pedido_item_id IN (${ph2})
+           ORDER BY pedido_item_id ASC, id ASC`,
+          itemIds
+        ),
+        allQuery(
+          `SELECT pedido_item_id, ingrediente_id, tipo, nombre_snapshot,
+                  precio_extra_snapshot, cantidad, nota
+           FROM tienda_pedido_item_ingredientes
+           WHERE pedido_item_id IN (${ph2})
+           ORDER BY pedido_item_id ASC, id ASC`,
+          itemIds
+        )
+      ]);
       mods.forEach(m => {
         if (!modsMap[m.pedido_item_id]) modsMap[m.pedido_item_id] = [];
         modsMap[m.pedido_item_id].push({
@@ -6362,6 +6496,17 @@ app.get("/tienda/pedidos/:id", async (req, res) => {
           cantidad: Number(m.cantidad),
           precio_extra: Number(m.precio_extra_snapshot),
           subtotal: Number(m.subtotal_snapshot)
+        });
+      });
+      ingredientes.forEach(i => {
+        if (!ingredientesMap[i.pedido_item_id]) ingredientesMap[i.pedido_item_id] = [];
+        ingredientesMap[i.pedido_item_id].push({
+          ingrediente_id: i.ingrediente_id,
+          tipo: i.tipo,
+          nombre: i.nombre_snapshot,
+          precio_extra: Number(i.precio_extra_snapshot),
+          cantidad: Number(i.cantidad),
+          nota: i.nota || ""
         });
       });
     }
@@ -6386,7 +6531,8 @@ app.get("/tienda/pedidos/:id", async (req, res) => {
         precio_unitario_snapshot: Number(i.precio_unitario_snapshot),
         subtotal_snapshot: Number(i.subtotal_snapshot),
         observacion: i.observacion || "",
-        modificadores: modsMap[i.id] || []
+        modificadores: modsMap[i.id] || [],
+        ingredientes: ingredientesMap[i.id] || []
       }))
     });
   } catch (error) {
@@ -6559,6 +6705,136 @@ app.post("/tienda/pedidos/:id/convertir-venta", async (req, res) => {
     try { await runQuery("ROLLBACK"); } catch {}
     logError("POST /tienda/pedidos/:id/convertir-venta", error);
     return res.status(500).json({ message: "Error al convertir el pedido." });
+  }
+});
+
+// ── Admin CRUD: ingredientes visibles por producto ────────────────────────────
+
+app.get("/productos/:id/ingredientes-visibles", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para ver ingredientes"))) return;
+  const productoId = Number(req.params.id);
+  const todos = req.query.todos === "1";
+  try {
+    const producto = await getQuery(
+      "SELECT id FROM productos WHERE id = ? AND COALESCE(eliminado, 0) = 0",
+      [productoId]
+    );
+    if (!producto) return res.status(404).json({ message: "Producto no encontrado." });
+    const rows = await allQuery(
+      `SELECT id, nombre, incluido_por_defecto, permite_quitar, permite_extra, precio_extra, orden, activo
+       FROM producto_ingredientes_visibles
+       WHERE producto_id = ? ${todos ? "" : "AND activo = 1"}
+       ORDER BY orden ASC, id ASC`,
+      [productoId]
+    );
+    return res.json(rows.map(r => ({
+      id: r.id,
+      nombre: r.nombre,
+      incluido_por_defecto: r.incluido_por_defecto === 1,
+      permite_quitar: r.permite_quitar === 1,
+      permite_extra: r.permite_extra === 1,
+      precio_extra: Number(r.precio_extra) || 0,
+      orden: Number(r.orden) || 0,
+      activo: r.activo === 1
+    })));
+  } catch (error) {
+    logError("GET /productos/:id/ingredientes-visibles", error);
+    return res.status(500).json({ message: "Error al cargar ingredientes." });
+  }
+});
+
+app.post("/productos/:id/ingredientes-visibles", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para agregar ingredientes"))) return;
+  const productoId = Number(req.params.id);
+  const { nombre, incluido_por_defecto = 1, permite_quitar = 1, permite_extra = 0, precio_extra = 0, orden = 0 } = req.body || {};
+  const nombreClean = String(nombre || "").trim();
+  if (!nombreClean) return res.status(400).json({ message: "El nombre del ingrediente es obligatorio." });
+  const precioExtraNum = Number(precio_extra) || 0;
+  if (precioExtraNum < 0) return res.status(400).json({ message: "El precio extra no puede ser negativo." });
+  try {
+    const producto = await getQuery(
+      "SELECT id FROM productos WHERE id = ? AND COALESCE(eliminado, 0) = 0",
+      [productoId]
+    );
+    if (!producto) return res.status(404).json({ message: "Producto no encontrado." });
+    const result = await runQuery(
+      `INSERT INTO producto_ingredientes_visibles
+         (producto_id, nombre, incluido_por_defecto, permite_quitar, permite_extra, precio_extra, orden, activo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+      [productoId, nombreClean, incluido_por_defecto ? 1 : 0, permite_quitar ? 1 : 0, permite_extra ? 1 : 0, precioExtraNum, Number(orden) || 0]
+    );
+    const nuevo = await getQuery("SELECT * FROM producto_ingredientes_visibles WHERE id = ?", [result.lastID]);
+    return res.status(201).json({
+      id: nuevo.id,
+      nombre: nuevo.nombre,
+      incluido_por_defecto: nuevo.incluido_por_defecto === 1,
+      permite_quitar: nuevo.permite_quitar === 1,
+      permite_extra: nuevo.permite_extra === 1,
+      precio_extra: Number(nuevo.precio_extra) || 0,
+      orden: Number(nuevo.orden) || 0,
+      activo: nuevo.activo === 1
+    });
+  } catch (error) {
+    logError("POST /productos/:id/ingredientes-visibles", error);
+    return res.status(500).json({ message: "Error al crear ingrediente." });
+  }
+});
+
+app.put("/productos/:id/ingredientes-visibles/:ingId", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar ingredientes"))) return;
+  const productoId = Number(req.params.id);
+  const ingId = Number(req.params.ingId);
+  const { nombre, incluido_por_defecto, permite_quitar, permite_extra, precio_extra, orden, activo } = req.body || {};
+  const nombreClean = String(nombre || "").trim();
+  if (!nombreClean) return res.status(400).json({ message: "El nombre del ingrediente es obligatorio." });
+  const precioExtraNum = Number(precio_extra) || 0;
+  if (precioExtraNum < 0) return res.status(400).json({ message: "El precio extra no puede ser negativo." });
+  try {
+    const ing = await getQuery(
+      "SELECT id FROM producto_ingredientes_visibles WHERE id = ? AND producto_id = ?",
+      [ingId, productoId]
+    );
+    if (!ing) return res.status(404).json({ message: "Ingrediente no encontrado." });
+    await runQuery(
+      `UPDATE producto_ingredientes_visibles
+       SET nombre = ?, incluido_por_defecto = ?, permite_quitar = ?, permite_extra = ?,
+           precio_extra = ?, orden = ?, activo = ?
+       WHERE id = ?`,
+      [nombreClean, incluido_por_defecto ? 1 : 0, permite_quitar ? 1 : 0, permite_extra ? 1 : 0,
+       precioExtraNum, Number(orden) || 0, activo !== false ? 1 : 0, ingId]
+    );
+    const act = await getQuery("SELECT * FROM producto_ingredientes_visibles WHERE id = ?", [ingId]);
+    return res.json({
+      id: act.id,
+      nombre: act.nombre,
+      incluido_por_defecto: act.incluido_por_defecto === 1,
+      permite_quitar: act.permite_quitar === 1,
+      permite_extra: act.permite_extra === 1,
+      precio_extra: Number(act.precio_extra) || 0,
+      orden: Number(act.orden) || 0,
+      activo: act.activo === 1
+    });
+  } catch (error) {
+    logError("PUT /productos/:id/ingredientes-visibles/:ingId", error);
+    return res.status(500).json({ message: "Error al actualizar ingrediente." });
+  }
+});
+
+app.delete("/productos/:id/ingredientes-visibles/:ingId", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para eliminar ingredientes"))) return;
+  const productoId = Number(req.params.id);
+  const ingId = Number(req.params.ingId);
+  try {
+    const ing = await getQuery(
+      "SELECT id FROM producto_ingredientes_visibles WHERE id = ? AND producto_id = ?",
+      [ingId, productoId]
+    );
+    if (!ing) return res.status(404).json({ message: "Ingrediente no encontrado." });
+    await runQuery("UPDATE producto_ingredientes_visibles SET activo = 0 WHERE id = ?", [ingId]);
+    return res.json({ ok: true });
+  } catch (error) {
+    logError("DELETE /productos/:id/ingredientes-visibles/:ingId", error);
+    return res.status(500).json({ message: "Error al eliminar ingrediente." });
   }
 });
 

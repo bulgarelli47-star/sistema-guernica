@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e ' *)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\bulga\\\\OneDrive\\\\Escritorio\\\\SISTEMA-GUERNICA\\\\backend\\\\routes\" -Recurse -Filter \"*.js\")",
+      "Bash(Select-Object FullName)",
+      "Bash(node --check \"c:/Users/bulga/OneDrive/Escritorio/SISTEMA-GUERNICA/backend/server.js\")",
+      "Bash(node --check \"c:/Users/bulga/OneDrive/Escritorio/SISTEMA-GUERNICA/backend/services/stockAjustePendienteService.js\")",
+      "Bash(node --check \"c:/Users/bulga/OneDrive/Escritorio/SISTEMA-GUERNICA/scripts/test-stock-flows.js\")",
+      "Bash(git stash *)",
+      "Bash(git checkout *)",
+      "Read(//mnt/c/Users/bulga/OneDrive/Escritorio/**)",
+      "Bash(cat .gitignore)",
+      "Bash(ls -la .env)",
+      "Bash(node -e \"require\\('dotenv'\\); console.log\\('dotenv ok'\\)\")",
+      "Bash(node -e \"require\\('https'\\); console.log\\('https ok'\\); require\\('http'\\); console.log\\('http ok'\\)\")",
+      "Bash(node --check backend/services/mercadoPagoPointService.js)",
+      "WebSearch"
+    ]
+  }
+}

@@ -1413,6 +1413,7 @@
       border-radius: 12px;
       padding: 10px;
       display: grid;
+      cursor: pointer;
       grid-template-columns: minmax(0, 1fr) 88px;
       gap: 8px;
       align-items: center;
@@ -2426,6 +2427,18 @@
         .filter((modificador) => modificador.modificador_id || modificador.nombre);
     }
 
+    function normalizarModificadorDisponibleVenta(modificador = {}) {
+      const modificadorId = Number(modificador.modificador_id ?? modificador.id ?? 0) || null;
+      return {
+        ...modificador,
+        id: modificadorId,
+        modificador_id: modificadorId,
+        nombre: String(modificador.nombre || "").trim(),
+        tipo: String(modificador.tipo || "libre").trim().toLowerCase(),
+        precio_extra: Number(modificador.precio_extra ?? modificador.precio ?? 0) || 0
+      };
+    }
+
     function calcularExtrasModificadores(modificadores = []) {
       return normalizarModificadoresTicket(modificadores).reduce((acc, modificador) => {
         if (modificador.tipo === "observacion") return acc;
@@ -2477,7 +2490,9 @@
         if (!res.ok) throw new Error("No se pudieron cargar modificadores");
         const data = await res.json();
         const mods = Array.isArray(data)
-          ? data.filter((modificador) => ["libre", "observacion", "agregar", "quitar"].includes(String(modificador.tipo || "").toLowerCase()))
+          ? data
+            .map(normalizarModificadorDisponibleVenta)
+            .filter((modificador) => modificador.id && ["libre", "observacion", "agregar", "quitar"].includes(String(modificador.tipo || "").toLowerCase()))
           : [];
         modificadoresCache.set(key, mods);
         return mods;
@@ -2510,11 +2525,13 @@
 
     function renderModalModificadores(producto, modificadores) {
       productoModificadoresActual = producto;
-      modificadoresDisponiblesActuales = modificadores;
+      modificadoresDisponiblesActuales = (Array.isArray(modificadores) ? modificadores : [])
+        .map(normalizarModificadorDisponibleVenta)
+        .filter((modificador) => modificador.id);
       modalModificadoresNombre.innerText = producto.nombre;
       modalModificadoresSubtitulo.innerText = `Base $${formatearNumero(producto.precio_venta)}`;
-      listaModificadoresVenta.innerHTML = modificadores.map((modificador) => `
-        <label class="modifier-option" data-modificador-id="${modificador.id}">
+      listaModificadoresVenta.innerHTML = modificadoresDisponiblesActuales.map((modificador) => `
+        <div class="modifier-option" data-modificador-id="${modificador.id}">
           <span class="modifier-option-main">
             <input type="checkbox" data-mod-check>
             <span>
@@ -2523,8 +2540,16 @@
             </span>
           </span>
           <input class="field" type="number" min="1" step="1" value="1" data-mod-cantidad>
-        </label>
+        </div>
       `).join("");
+      listaModificadoresVenta.querySelectorAll(".modifier-option").forEach((opt) => {
+        opt.addEventListener("click", (e) => {
+          if (e.target.closest("[data-mod-cantidad]")) return;
+          if (e.target.type === "checkbox") return;
+          const check = opt.querySelector("[data-mod-check]");
+          if (check) { check.checked = !check.checked; actualizarTotalModalModificadores(); }
+        });
+      });
       listaModificadoresVenta.querySelectorAll("input").forEach((input) => {
         input.addEventListener("input", actualizarTotalModalModificadores);
         input.addEventListener("change", actualizarTotalModalModificadores);

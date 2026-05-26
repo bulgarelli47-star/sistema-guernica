@@ -893,6 +893,41 @@ function estadoStockProducto(producto) {
   return "ok";
 }
 
+function obtenerCostoValorizacionFisica(row) {
+  const costoUnitario = Number(row.costo_unitario_fisico || 0);
+  if (costoUnitario > 0) {
+    return {
+      costo: costoUnitario,
+      fuente: "costo_unitario",
+      descripcion: "Valorizado por unidad física"
+    };
+  }
+
+  const costoFinal = Number(row.costo_final || 0);
+  if (costoFinal > 0) {
+    return {
+      costo: costoFinal,
+      fuente: "costo_final",
+      descripcion: "Valorizado por costo del producto"
+    };
+  }
+
+  const precioCompra = Number(row.precio_compra || 0);
+  if (precioCompra > 0) {
+    return {
+      costo: precioCompra,
+      fuente: "precio_compra",
+      descripcion: "Valorizado por costo del producto"
+    };
+  }
+
+  return {
+    costo: 0,
+    fuente: "sin_costo",
+    descripcion: "Sin costo para valorizar"
+  };
+}
+
 function mapReporteStockProducto(row) {
   const tipo = String(row.tipo || "simple").toLowerCase();
   const manejaStock = Number(row.maneja_stock || 0) === 1 ? 1 : 0;
@@ -911,12 +946,14 @@ function mapReporteStockProducto(row) {
     stockVendible = Math.max(0, Math.floor(stockFisico / consumoUnidad));
   }
 
-  const costoBase = Number(row.costo_final || row.precio_compra || 0);
+  const costoValorizacion = obtenerCostoValorizacionFisica(row);
+  const costoBase = costoValorizacion.costo;
+  const costoEstimado = Number(row.costo_final || row.precio_compra || 0);
   const stockValorizadoFisico = manejaStock === 1 && costoBase > 0
     ? round2(stockFisico * costoBase)
     : 0;
-  const valorRendimientoEstimado = manejaStock !== 1 && costoBase > 0
-    ? round2(Math.max(0, stockFisico) * costoBase)
+  const valorRendimientoEstimado = manejaStock !== 1 && costoEstimado > 0
+    ? round2(Math.max(0, stockFisico) * costoEstimado)
     : 0;
   const producto = {
     producto_id: Number(row.id),
@@ -934,7 +971,10 @@ function mapReporteStockProducto(row) {
     stock_vendible: stockVendible,
     stock_minimo: round2(row.stock_minimo),
     costo_base_estimado: round2(costoBase),
-    costo_fuente: Number(row.costo_final || 0) > 0 ? "costo_final" : Number(row.precio_compra || 0) > 0 ? "precio_compra" : "sin_costo",
+    costo_fuente: costoValorizacion.fuente,
+    costo_valorizacion_fisica: round2(costoBase),
+    fuente_valorizacion_fisica: costoValorizacion.fuente,
+    descripcion_valorizacion_fisica: costoValorizacion.descripcion,
     stock_valorizado_fisico: stockValorizadoFisico,
     stock_valorizado_estimado: stockValorizadoFisico,
     valor_rendimiento_estimado: valorRendimientoEstimado,
@@ -1034,14 +1074,24 @@ async function getReporteStock({
        p.precio_compra,
        p.costo_final,
        COALESCE(ci.consumo_unidad, 0) AS consumo_unidad,
+       COALESCE(ci.costo_unitario_fisico, 0) AS costo_unitario_fisico,
        COALESCE(vendidos.items_vendidos, 0) AS items_vendidos,
        COALESCE(movs.movimientos, 0) AS movimientos
      FROM productos p
      LEFT JOIN categorias c ON c.id = p.categoria_id
      LEFT JOIN (
-       SELECT producto_id, COALESCE(SUM(cantidad_usada), 0) AS consumo_unidad
-       FROM producto_costos_insumos
-       GROUP BY producto_id
+       SELECT ci_base.producto_id,
+              COALESCE(SUM(ci_base.cantidad_usada), 0) AS consumo_unidad,
+              (
+                SELECT ci_unit.costo_unitario
+                FROM producto_costos_insumos ci_unit
+                WHERE ci_unit.producto_id = ci_base.producto_id
+                  AND COALESCE(ci_unit.costo_unitario, 0) > 0
+                ORDER BY ci_unit.id ASC
+                LIMIT 1
+              ) AS costo_unitario_fisico
+       FROM producto_costos_insumos ci_base
+       GROUP BY ci_base.producto_id
      ) ci ON ci.producto_id = p.id
      LEFT JOIN (
        SELECT dv.producto_id, COALESCE(SUM(dv.cantidad), 0) AS items_vendidos

@@ -8,6 +8,7 @@
     "/productos.html": "stock",
     "/clientes.html": "clientes",
     "/proveedores.html": "proveedores",
+    "/finanzas.html": "finanzas",
     "/reportes.html": "reportes",
     "/usuarios.html": "usuarios",
     "/configuracion.html": "configuracion"
@@ -38,6 +39,7 @@
 
   function isAllowed(config, moduleName, role) {
     if (!moduleName) return true;
+    if (moduleName === "finanzas") return role === "admin";
     if (role === "admin" && (moduleName === "usuarios" || moduleName === "configuracion")) return true;
     const key = `modulo_${moduleName}_${role}`;
     return config[key] !== false;
@@ -176,7 +178,8 @@
       if (nav) {
         nav.querySelectorAll("a[href]").forEach((link) => {
           const moduleName = getModuleFromLink(link);
-          link.hidden = !isAllowed(config, moduleName, role);
+          const adminOnly = link.dataset.adminOnly === "true";
+          link.hidden = adminOnly && role !== "admin" ? true : !isAllowed(config, moduleName, role);
         });
       }
 

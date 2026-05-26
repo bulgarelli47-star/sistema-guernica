@@ -10,6 +10,9 @@ backups/
 # Imágenes subidas por usuarios
 uploads/
 
+# Variables de entorno locales (tokens, secretos — nunca subir)
+.env
+
 # Configuración local de Claude Code
 .claude/settings.local.json
 

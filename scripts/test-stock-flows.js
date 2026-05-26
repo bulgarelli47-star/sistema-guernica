@@ -7278,6 +7278,156 @@ async function testResumenAjustesPendientes() {
   }
 }
 
+async function testTiendaIngredientesVisibles() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      const stockInicial = (await getProduct(baseUrl, adminToken, 11)).stock;
+
+      // Admin agrega ingredientes visibles al producto 11 (precio_venta=100)
+      const { response: rIng1, data: dIng1 } = await requestJson(
+        baseUrl, "POST", "/productos/11/ingredientes-visibles",
+        { nombre: "Cebolla", incluido_por_defecto: true, permite_quitar: true, permite_extra: false, precio_extra: 0, orden: 1 },
+        adminToken
+      );
+      if (!rIng1.ok) throw new Error(`No se pudo crear ingrediente Cebolla: ${dIng1?.message}`);
+      const ingCebollaId = dIng1.id;
+
+      const { response: rIng2, data: dIng2 } = await requestJson(
+        baseUrl, "POST", "/productos/11/ingredientes-visibles",
+        { nombre: "Queso extra", incluido_por_defecto: false, permite_quitar: false, permite_extra: true, precio_extra: 250, orden: 2 },
+        adminToken
+      );
+      if (!rIng2.ok) throw new Error(`No se pudo crear ingrediente Queso extra: ${dIng2?.message}`);
+      const ingQuesoId = dIng2.id;
+
+      // GET /tienda/publica/productos muestra tiene_ingredientes_visibles=true
+      const { data: prodData } = await requestJson(baseUrl, "GET", "/tienda/publica/productos");
+      const todosProds = Array.isArray(prodData) ? prodData : (prodData.productos || []);
+      const prod = todosProds.find(p => p.id === 11);
+      if (!prod) throw new Error("Producto 11 no encontrado en tienda publica");
+      if (!prod.tiene_ingredientes_visibles) throw new Error("tiene_ingredientes_visibles debe ser true");
+
+      // GET /tienda/publica/productos/:id/ingredientes devuelve lista
+      const { response: rIngsPublic, data: ingsPublic } = await requestJson(baseUrl, "GET", "/tienda/publica/productos/11/ingredientes");
+      if (!rIngsPublic.ok) throw new Error(`Error al cargar ingredientes publicos: ${rIngsPublic.status}`);
+      if (!Array.isArray(ingsPublic) || ingsPublic.length !== 2) throw new Error(`Ingredientes publicos debe tener 2, actual=${ingsPublic.length}`);
+      const cebolla = ingsPublic.find(i => i.id === ingCebollaId);
+      if (!cebolla || !cebolla.permite_quitar || cebolla.permite_extra) throw new Error("Cebolla con propiedades incorrectas");
+
+      // Pedido con quitar ingrediente → precio sin cambio (quitar no suma)
+      const { response: rPed1, data: dPed1 } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
+        cliente_nombre: "Test Quitar",
+        items: [{ producto_id: 11, cantidad: 1, modificadores: [], ingredientes: [{ ingrediente_id: ingCebollaId, tipo: "quitar" }] }]
+      });
+      if (!rPed1.ok) throw new Error(`Pedido con quitar fallo: ${dPed1?.message}`);
+      if (Math.abs(dPed1.total_estimado - 100) > 0.01) throw new Error(`total con quitar debe ser 100, actual=${dPed1.total_estimado}`);
+
+      const { data: listaP1 } = await requestJson(baseUrl, "GET", "/tienda/pedidos", null, adminToken);
+      const ped1 = listaP1.find(p => p.codigo_publico === dPed1.codigo_publico);
+      const { data: detP1 } = await requestJson(baseUrl, "GET", `/tienda/pedidos/${ped1.id}`, null, adminToken);
+      const item1 = detP1.items[0];
+      if (Math.abs(item1.precio_unitario_snapshot - 100) > 0.01) throw new Error(`precio_unitario con quitar debe ser 100, actual=${item1.precio_unitario_snapshot}`);
+      if (!Array.isArray(item1.ingredientes) || item1.ingredientes.length !== 1) throw new Error("Ingrediente quitar no almacenado en item");
+      if (item1.ingredientes[0].tipo !== "quitar") throw new Error(`tipo incorrecto: ${item1.ingredientes[0].tipo}`);
+      if (item1.ingredientes[0].nombre !== "Cebolla") throw new Error(`nombre snapshot incorrecto: ${item1.ingredientes[0].nombre}`);
+      if (item1.ingredientes[0].precio_extra !== 0) throw new Error(`precio_extra quitar debe ser 0, actual=${item1.ingredientes[0].precio_extra}`);
+      if (!Array.isArray(item1.modificadores) || item1.modificadores.length !== 0) throw new Error("modificadores debe estar vacio en pedido con ingredientes");
+
+      // Pedido con extra ingrediente con precio → precio bakeado desde DB (no confiar en frontend)
+      const { response: rPed2, data: dPed2 } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
+        cliente_nombre: "Test Extra",
+        items: [{ producto_id: 11, cantidad: 2, modificadores: [], ingredientes: [{ ingrediente_id: ingQuesoId, tipo: "extra" }] }]
+      });
+      if (!rPed2.ok) throw new Error(`Pedido con extra fallo: ${dPed2?.message}`);
+      const totalEsperado = Number(((100 + 250) * 2).toFixed(2));
+      if (Math.abs(dPed2.total_estimado - totalEsperado) > 0.01) throw new Error(`total con extra incorrecto: ${dPed2.total_estimado} vs ${totalEsperado}`);
+
+      const { data: listaP2 } = await requestJson(baseUrl, "GET", "/tienda/pedidos", null, adminToken);
+      const ped2 = listaP2.find(p => p.codigo_publico === dPed2.codigo_publico);
+      const { data: detP2 } = await requestJson(baseUrl, "GET", `/tienda/pedidos/${ped2.id}`, null, adminToken);
+      const item2 = detP2.items[0];
+      if (Math.abs(item2.precio_unitario_snapshot - 350) > 0.01) throw new Error(`precio_unitario con extra debe ser 350, actual=${item2.precio_unitario_snapshot}`);
+      if (!Array.isArray(item2.ingredientes) || item2.ingredientes.length !== 1) throw new Error("Ingrediente extra no almacenado");
+      if (item2.ingredientes[0].precio_extra !== 250) throw new Error(`precio_extra snapshot incorrecto: ${item2.ingredientes[0].precio_extra}`);
+
+      // ingrediente_id inválido → 400
+      const { response: rInvalid } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
+        cliente_nombre: "Test Invalid",
+        items: [{ producto_id: 11, cantidad: 1, modificadores: [], ingredientes: [{ ingrediente_id: 99999, tipo: "extra" }] }]
+      });
+      if (rInvalid.status !== 400) throw new Error(`Ingrediente inválido debe dar 400, actual=${rInvalid.status}`);
+
+      // tipo quitar en ingrediente que no permite_quitar → 400
+      const { response: rNoPermite } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
+        cliente_nombre: "Test No Permite",
+        items: [{ producto_id: 11, cantidad: 1, modificadores: [], ingredientes: [{ ingrediente_id: ingQuesoId, tipo: "quitar" }] }]
+      });
+      if (rNoPermite.status !== 400) throw new Error(`Quitar en no-permite_quitar debe dar 400, actual=${rNoPermite.status}`);
+
+      // tipo extra en ingrediente que no permite_extra → 400
+      const { response: rNoExtra } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
+        cliente_nombre: "Test No Extra",
+        items: [{ producto_id: 11, cantidad: 1, modificadores: [], ingredientes: [{ ingrediente_id: ingCebollaId, tipo: "extra" }] }]
+      });
+      if (rNoExtra.status !== 400) throw new Error(`Extra en no-permite_extra debe dar 400, actual=${rNoExtra.status}`);
+
+      // tipo inválido → 400
+      const { response: rTipoInvalido } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
+        cliente_nombre: "Test Tipo",
+        items: [{ producto_id: 11, cantidad: 1, modificadores: [], ingredientes: [{ ingrediente_id: ingCebollaId, tipo: "invalido" }] }]
+      });
+      if (rTipoInvalido.status !== 400) throw new Error(`tipo inválido debe dar 400, actual=${rTipoInvalido.status}`);
+
+      // Stock no cambia por pedidos tienda (solo ventas descuentan stock)
+      const stockTras = (await getProduct(baseUrl, adminToken, 11)).stock;
+      if (stockTras !== stockInicial) throw new Error(`Stock no debe cambiar por pedidos tienda: ${stockTras} vs ${stockInicial}`);
+
+      // Admin CRUD: GET con todos=1 muestra ambos
+      const { response: rListaAdmin, data: listaAdmin } = await requestJson(
+        baseUrl, "GET", "/productos/11/ingredientes-visibles?todos=1", null, adminToken
+      );
+      if (!rListaAdmin.ok) throw new Error(`Error al listar ingredientes admin: ${rListaAdmin.status}`);
+      if (!Array.isArray(listaAdmin) || listaAdmin.length !== 2) throw new Error(`Lista admin debe tener 2, actual=${listaAdmin.length}`);
+
+      // Admin CRUD: PUT actualiza ingrediente
+      const { response: rUpdate, data: dUpdate } = await requestJson(
+        baseUrl, "PUT", `/productos/11/ingredientes-visibles/${ingCebollaId}`,
+        { nombre: "Cebolla actualizada", incluido_por_defecto: true, permite_quitar: true, permite_extra: false, precio_extra: 0, orden: 1, activo: true },
+        adminToken
+      );
+      if (!rUpdate.ok) throw new Error(`Error al actualizar ingrediente: ${dUpdate?.message}`);
+      if (dUpdate.nombre !== "Cebolla actualizada") throw new Error(`Nombre actualizado incorrecto: ${dUpdate.nombre}`);
+
+      // Admin CRUD: DELETE (soft) — elimina cebolla
+      const { response: rDel } = await requestJson(
+        baseUrl, "DELETE", `/productos/11/ingredientes-visibles/${ingCebollaId}`, null, adminToken
+      );
+      if (!rDel.ok) throw new Error(`Error al eliminar ingrediente: ${rDel.status}`);
+
+      // Después de eliminar: GET sin todos → 1 (queso activo)
+      const { data: listaTras } = await requestJson(baseUrl, "GET", "/productos/11/ingredientes-visibles", null, adminToken);
+      if (!Array.isArray(listaTras) || listaTras.length !== 1) throw new Error(`Lista tras eliminar debe tener 1, actual=${listaTras?.length}`);
+      // Con todos=1 → 2 (uno inactivo)
+      const { data: listaTodosTras } = await requestJson(baseUrl, "GET", "/productos/11/ingredientes-visibles?todos=1", null, adminToken);
+      if (!Array.isArray(listaTodosTras) || listaTodosTras.length !== 2) throw new Error(`Lista todos tras eliminar debe tener 2, actual=${listaTodosTras?.length}`);
+      const cebollaElim = listaTodosTras.find(i => i.id === ingCebollaId);
+      if (!cebollaElim || cebollaElim.activo) throw new Error("Cebolla debe estar inactiva tras DELETE");
+
+      // Con cebolla inactiva, tiene_ingredientes_visibles sigue true (queso activo)
+      const { data: prodData2 } = await requestJson(baseUrl, "GET", "/tienda/publica/productos");
+      const todosProds2 = Array.isArray(prodData2) ? prodData2 : (prodData2.productos || []);
+      const prod2 = todosProds2.find(p => p.id === 11);
+      if (!prod2.tiene_ingredientes_visibles) throw new Error("tiene_ingredientes_visibles debe seguir true con queso activo");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testTiendaConvertirVenta() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -7498,6 +7648,7 @@ async function testTiendaConvertirVenta() {
   await testSaldosFormulaSaldoEsperadoFinal();
   await testSaldosArrastreNoCambiaDiferencia();
   await testSaldosRetirarDesdeSaldoRealNoEsperado();
+  await testTiendaIngredientesVisibles();
   await testTiendaConvertirVenta();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {

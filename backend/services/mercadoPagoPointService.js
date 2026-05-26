@@ -196,11 +196,164 @@ async function actualizarIntentoPointEstado(id, { estado, status_detail = "", mp
   return obtenerIntentoPoint(id);
 }
 
+async function listarTerminalesPoint(accessToken, { store_id, pos_id } = {}) {
+  const params = new URLSearchParams({ limit: "50", offset: "0" });
+  if (store_id) params.set("store_id", String(store_id));
+  if (pos_id) params.set("pos_id", String(pos_id));
+  const url = `https://api.mercadopago.com/terminals/v1/list?${params.toString()}`;
+
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+  } catch (netErr) {
+    const err = new Error("No se pudo conectar con Mercado Pago: " + netErr.message);
+    err.statusCode = 502;
+    throw err;
+  }
+
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    const err = new Error("Respuesta inesperada de Mercado Pago (no es JSON)");
+    err.statusCode = 502;
+    throw err;
+  }
+
+  if (!res.ok) {
+    const mpMsg = data?.message || data?.error || "";
+    let msg;
+    let statusCode;
+    if (res.status === 401 || res.status === 403) {
+      msg = "Access token inválido o sin permisos Mercado Pago Point";
+      statusCode = 401;
+    } else if (res.status === 404) {
+      msg = "Cuenta sin Mercado Pago Point habilitado";
+      statusCode = 404;
+    } else if (res.status === 429) {
+      msg = "Rate limit de Mercado Pago alcanzado, esperá un momento";
+      statusCode = 429;
+    } else {
+      msg = mpMsg || `Error Mercado Pago (HTTP ${res.status})`;
+      statusCode = 502;
+    }
+    const err = new Error(msg);
+    err.statusCode = statusCode;
+    throw err;
+  }
+
+  const terminals = Array.isArray(data.terminals) ? data.terminals : [];
+  const paging = data.paging || {};
+  return {
+    total: paging.total != null ? paging.total : terminals.length,
+    terminales: terminals.map((t) => ({
+      terminal_id: t.id || null,
+      store_id: t.store_id || null,
+      pos_id: t.pos_id != null ? t.pos_id : null,
+      operating_mode: t.operating_mode || null,
+      estado: (t.status && typeof t.status === "object" ? t.status.state : t.status) || null,
+      nombre: t.name || null
+    })),
+    mensaje: terminals.length === 0 ? "No hay terminales Point registradas en esta cuenta" : null
+  };
+}
+
+async function llamarMpDebug(url, options) {
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch (netErr) {
+    return { error_red: netErr.message, http_status: null, content_type: null, raw: null, raw_text: null };
+  }
+
+  const content_type = res.headers.get("content-type") || "";
+  let raw_text = null;
+  try {
+    raw_text = await res.text();
+  } catch (textErr) {
+    raw_text = `[no se pudo leer body: ${textErr.message}]`;
+  }
+
+  let raw = null;
+  if (raw_text) {
+    try {
+      raw = JSON.parse(raw_text);
+    } catch {
+      // body no es JSON, raw_text lo conserva
+    }
+  }
+
+  console.log(
+    `[MP Debug] ${options.method || "GET"} ${url} → HTTP ${res.status} | content-type: ${content_type} | body(120): ${String(raw_text || "").slice(0, 120)}`
+  );
+
+  return {
+    http_status: res.status,
+    content_type,
+    raw: raw || null,
+    raw_text: raw ? undefined : String(raw_text || "").slice(0, 2000)
+  };
+}
+
+async function crearOrdenPointDiagnostico(accessToken, { terminal_id, monto, store_id, pos_id } = {}) {
+  const external_reference = generarExternalReference();
+  const idempotency_key = generarIdempotencyKey();
+  const amount = normalizarMonto(monto);
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+    "X-Idempotency-Key": idempotency_key
+  };
+
+  // Intento 1: payment-intents — body mínimo sin description/payment (rechazados por MP)
+  const urlPaymentIntents = `https://api.mercadopago.com/point/integration-api/devices/${encodeURIComponent(terminal_id)}/payment-intents`;
+  const bodyPaymentIntents = {
+    amount,
+    additional_info: { external_reference }
+  };
+  const resultPaymentIntents = await llamarMpDebug(urlPaymentIntents, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(bodyPaymentIntents)
+  });
+
+  // Intento 2: /v1/orders con type "point" — schema corregido según errores MP
+  // transactions debe ser objeto (no array); config.point lleva terminal_id; sin total_amount
+  const urlOrders = "https://api.mercadopago.com/v1/orders";
+  // config.point solo acepta terminal_id — store_id/pos_id NO van aquí según error MP
+  const bodyOrders = {
+    type: "point",
+    external_reference,
+    transactions: {
+      payments: [{ amount: String(amount.toFixed(2)) }]
+    },
+    config: { point: { terminal_id } }
+  };
+  const resultOrders = await llamarMpDebug(urlOrders, {
+    method: "POST",
+    headers: { ...headers, "X-Idempotency-Key": generarIdempotencyKey() },
+    body: JSON.stringify(bodyOrders)
+  });
+
+  return {
+    external_reference,
+    idempotency_key,
+    terminal_id,
+    monto: amount,
+    payment_intents: { url: urlPaymentIntents, body: bodyPaymentIntents, ...resultPaymentIntents },
+    v1_orders: { url: urlOrders, body: bodyOrders, ...resultOrders }
+  };
+}
+
 module.exports = {
   ensureMercadoPagoPointSchema,
   crearIntentoPoint,
   obtenerIntentoPoint,
   listarIntentosPoint,
   actualizarIntentoPointEstado,
+  listarTerminalesPoint,
+  crearOrdenPointDiagnostico,
   ESTADOS_INTENTO_POINT
 };

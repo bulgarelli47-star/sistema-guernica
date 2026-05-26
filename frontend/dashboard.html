@@ -153,8 +153,14 @@
       return"";
     }
 
+    function renderOpcionesPedidoItem(item){
+      const ingredientes=(item.ingredientes||[]).filter(i=>String(i.tipo||"").toLowerCase()==="quitar").map(i=>`<div style="font-size:12px;color:var(--muted);margin-top:2px">- Sin ${i.nombre||i.ingrediente_nombre_snapshot||""}</div>`).join("");
+      const modificadores=(item.modificadores||[]).map(m=>{const precio=n(m.precio_extra);return`<div style="font-size:12px;color:var(--primary);margin-top:2px">+ ${m.nombre||m.modificador_nombre_snapshot||""}${precio>0?" (+"+money(precio)+")":""}</div>`}).join("");
+      return ingredientes+modificadores;
+    }
+
     function renderDetallePedido(pedido){
-      const itemsHtml=pedido.items.map(i=>{const mods=(i.modificadores||[]).map(m=>`<div style="font-size:12px;color:var(--primary);margin-top:2px">+ ${m.nombre}${m.precio_extra>0?" (+"+money(m.precio_extra)+")":""}</div>`).join("");return`<div class="item" style="margin:0"><div class="item-row"><div><strong>${n(i.cantidad).toFixed(0)}× ${i.producto_nombre_snapshot}</strong>${i.observacion?`<small style="font-style:italic">"${i.observacion}"</small>`:""}${mods}</div><strong>${money(i.subtotal_snapshot)}</strong></div></div>`}).join("");
+      const itemsHtml=pedido.items.map(i=>{const opciones=renderOpcionesPedidoItem(i);return`<div class="item" style="margin:0"><div class="item-row"><div><strong>${n(i.cantidad).toFixed(0)}× ${i.producto_nombre_snapshot}</strong>${i.observacion?`<small style="font-style:italic">"${i.observacion}"</small>`:""}${opciones}</div><strong>${money(i.subtotal_snapshot)}</strong></div></div>`}).join("");
       const acciones=renderAccionesPedido(pedido);
       const tomadoPor=pedido.tomado_por_nombre?`<small style="color:var(--muted)">Tomado por ${pedido.tomado_por_nombre}</small>`:"";
       const motivoRec=pedido.motivo_rechazo?`<div class="item" style="margin:0;background:rgba(224,82,82,.06)"><small style="color:var(--danger)">Motivo rechazo: "${pedido.motivo_rechazo}"</small></div>`:"";

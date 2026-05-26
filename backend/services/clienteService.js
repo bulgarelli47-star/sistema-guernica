@@ -1,4 +1,5 @@
 const { allQuery, getQuery, runQuery } = require("../db");
+const TIPOS_CUENTA_CORRIENTE_PERMITIDOS = new Set(["cliente", "personal", "interna", "produccion", "cortesia"]);
 
 const TIPOS_CLIENTE_PERMITIDOS = new Set(["cliente", "colaborador", "dueño", "negocio"]);
 
@@ -7,12 +8,18 @@ function normalizarTipoCliente(valor) {
   return TIPOS_CLIENTE_PERMITIDOS.has(tipo) ? tipo : "cliente";
 }
 
+function normalizarTipoCuentaCorriente(valor) {
+  const tipo = String(valor || "").trim().toLowerCase();
+  return TIPOS_CUENTA_CORRIENTE_PERMITIDOS.has(tipo) ? tipo : "cliente";
+}
+
 function parseClientePayload(body) {
   return {
     nombre: String(body.nombre || "").trim(),
     dni_cuit: String(body.dni_cuit || body.cuit || "").trim(),
     tipo_persona: String(body.tipo_persona || "fisica").trim().toLowerCase(),
     tipo_cliente: normalizarTipoCliente(body.tipo_cliente),
+    tipo_cuenta_corriente: normalizarTipoCuentaCorriente(body.tipo_cuenta_corriente),
     telefono: String(body.telefono || "").trim(),
     email: String(body.email || "").trim(),
     contacto: String(body.contacto || "").trim(),
@@ -310,6 +317,7 @@ async function aplicarRecalculoDeudaCliente(clienteId, { usuario, motivo } = {})
 
 module.exports = {
   parseClientePayload,
+  normalizarTipoCuentaCorriente,
   buildClienteCuentaResumen,
   getClienteConMetricas,
   getHistorialProductosCliente,
