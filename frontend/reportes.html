@@ -1116,7 +1116,7 @@
       generales: ["Resumen general", "Detalle por módulo", "KPIs principales", "Comparativa"],
       ventas: ["Resumen general", "Detalle de ventas", "Métodos de pago", "Productos vendidos"],
       caja: ["Movimientos de caja", "Cierres de caja", "Arqueos", "Ingresos / egresos"],
-      stock: ["Stock actual", "Movimientos de stock", "Productos bajo stock", "Stock físico valorizado"],
+      stock: ["Stock físico / disponibilidad", "Movimientos de stock", "Productos bajo stock", "Stock físico valorizado"],
       "cuentas-corrientes": ["Clientes con deuda", "Detalle de movimientos", "Cobros recibidos", "Clientes excedidos"],
       "proveedores-pagos": ["Pagos realizados", "Saldos pendientes", "Compras del periodo", "Detalle por proveedor"]
     };
@@ -1416,11 +1416,32 @@
     }
 
     function fuenteValorizacionFisica(producto) {
+      if (!productoManejaStockReal(producto)) return "No integra inventario f\u00edsico";
       if (producto?.descripcion_valorizacion_fisica) return producto.descripcion_valorizacion_fisica;
       const costoUnitario = n(producto?.costo_unitario_fisico || producto?.costo_consumo_unitario);
       return productoManejaStockReal(producto) && costoUnitario > 0
         ? "Valorizado por unidad física"
         : "Valorizado por costo del producto";
+    }
+
+    function formatoCantidadStock(valor) {
+      const numero = n(valor);
+      return Number.isInteger(numero) ? String(numero) : numero.toFixed(2);
+    }
+
+    function stockFisicoODisponibilidadTexto(producto) {
+      if (productoManejaStockReal(producto)) {
+        return formatoCantidadStock(producto?.stock_vendible ?? producto?.stock_fisico ?? producto?.stock);
+      }
+      const disponibilidad = producto?.stock_vendible ?? producto?.stock_disponible_calculado ?? producto?.stock_disponible;
+      if (disponibilidad !== undefined && disponibilidad !== null && disponibilidad !== "") {
+        return `Disponibilidad por receta: ${formatoCantidadStock(disponibilidad)}`;
+      }
+      return "Sin stock f\u00edsico";
+    }
+
+    function stockMinimoReporteTexto(producto) {
+      return productoManejaStockReal(producto) ? formatoCantidadStock(producto?.stock_minimo) : "-";
     }
 
     function stockValorizadoFisicoLocal(productos = state.productos) {
@@ -1958,15 +1979,15 @@
           ].slice(0, 40)
         },
         stock: {
-          head: ["Codigo", "Producto", "Stock", "Minimo", "Stock físico valorizado", "Fuente"],
+          head: ["Codigo", "Producto", "Stock f\u00edsico / disponibilidad", "Minimo", "Stock f\u00edsico valorizado", "Fuente"],
           rows: productosStock ? productosStock.slice(0, 40).map((p) => [
             p.codigo || `#${p.producto_id}`,
             p.nombre,
-            p.stock_vendible == null ? n(p.stock_fisico) : n(p.stock_vendible),
-            n(p.stock_minimo),
+            stockFisicoODisponibilidadTexto(p),
+            stockMinimoReporteTexto(p),
             money(p.stock_valorizado_fisico ?? p.stock_valorizado_estimado),
             fuenteValorizacionFisica(p)
-          ]) : state.productos.slice(0, 40).map((p) => [p.codigo || `#${p.id}`, p.nombre, n(p.stock), n(p.stock_minimo), money(n(p.stock) * costoStockProducto(p)), fuenteValorizacionFisica(p)])
+          ]) : state.productos.slice(0, 40).map((p) => [p.codigo || `#${p.id}`, p.nombre, stockFisicoODisponibilidadTexto(p), stockMinimoReporteTexto(p), money(productoManejaStockReal(p) ? n(p.stock) * costoStockProducto(p) : 0), fuenteValorizacionFisica(p)])
         },
         "cuentas-corrientes": {
           head: ["Cliente", "DNI/CUIT", "Deuda", "Limite", "Estado"],
@@ -2201,7 +2222,7 @@
           setVisualPanel(2, "Valorización separada", visualSummary([
             { label: "Stock físico valorizado", value: money(stockBackend.stock_valorizado_fisico ?? stockBackend.stock_valorizado_estimado), hideZero: true },
             { label: "Valor estimado por receta/rendimiento", value: money(stockBackend.valor_rendimiento_estimado), hideZero: true },
-            { label: "Nota", value: "La estimación no forma parte del inventario físico. Los fraccionables se valorizan por unidad física desde backend." },
+            { label: "Nota", value: "La estimación por receta/rendimiento no forma parte del inventario físico. Stock físico valorizado incluye solo productos con stock real." },
             { label: "Items vendidos", value: Number(stockBackend.items_vendidos || 0), hideZero: true },
             { label: "Categorías", value: Number(stockBackend.categorias || 0), hideZero: true }
           ]), "summary-grid");
@@ -2215,7 +2236,7 @@
         setVisualPanel(2, "Valorización separada", visualSummary([
           { label: "Stock físico valorizado", value: money(stockValorizadoFisico), hideZero: true },
           { label: "Valor estimado por receta/rendimiento", value: money(estimacionRendimiento), hideZero: true },
-          { label: "Nota", value: "La estimación no forma parte del inventario físico. Valorización física calculada desde backend cuando está disponible." },
+          { label: "Nota", value: "La estimación por receta/rendimiento no forma parte del inventario físico. Valorización física calculada desde backend cuando está disponible." },
           { label: "Items vendidos", value: detalle.reduce((acc, d) => acc + n(d.cantidad), 0), hideZero: true }
         ]), "summary-grid");
         return;
