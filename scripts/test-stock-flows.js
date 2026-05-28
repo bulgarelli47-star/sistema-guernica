@@ -2962,6 +2962,43 @@ async function testCompuestoConStockPropioNoDuplicaDescuento() {
         costos_extra: []
       });
 
+      const compuestoCreado = await getProduct(baseUrl, token, compuestoId);
+      assertEqual(compuestoCreado.stock, 5, "Crear compuesto con stock propio debe conservar stock");
+      assertEqual(compuestoCreado.stock_fisico, 5, "GET /productos debe exponer stock_fisico de compuesto con stock propio");
+      assertEqual(compuestoCreado.stock_vendible_calculado, 5, "GET /productos debe usar stock propio como vendible");
+
+      const editar = await requestJson(baseUrl, "PUT", `/productos/${compuestoId}`, {
+        nombre: "TEST Compuesto con stock propio",
+        categoria: "TEST Compuesto Stock Propio",
+        categoria_id: categoriaId,
+        tipo: "compuesto",
+        maneja_stock: true,
+        stock: 5,
+        precio_compra: 10,
+        precio_venta: 300,
+        activo: true,
+        componentes: [{ producto_id: componenteId, cantidad: 2 }],
+        costos_extra: []
+      }, token);
+      if (!editar.response.ok) throw new Error(`Editar compuesto con stock propio fallo: ${editar.data?.message || editar.response.status}`);
+      const compuestoEditado = await getProduct(baseUrl, token, compuestoId);
+      assertEqual(compuestoEditado.stock, 5, "Editar compuesto con stock propio debe conservar stock");
+      assertEqual(compuestoEditado.stock_fisico, 5, "Editar compuesto con stock propio debe conservar stock_fisico");
+
+      const recetaConSemielaboradoId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Receta usa semielaborado",
+        categoria: "TEST Compuesto Stock Propio",
+        categoria_id: categoriaId,
+        tipo: "compuesto",
+        maneja_stock: false,
+        stock: 0,
+        precio_venta: 200,
+        componentes: [{ producto_id: compuestoId, cantidad: 2 }],
+        costos_extra: []
+      });
+      const recetaConSemielaborado = await getProduct(baseUrl, token, recetaConSemielaboradoId);
+      assertEqual(recetaConSemielaborado.stock_disponible, 2, "Receta debe calcular disponibilidad usando stock propio del semielaborado");
+
       const venta = await requestJson(baseUrl, "POST", "/ventas", {
         usuario: "test",
         tipo: "normal",

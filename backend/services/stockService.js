@@ -158,7 +158,7 @@ async function calcularStockDisponibleCompuesto(productoCompuestoId, visited = n
       continue;
     }
 
-    const stockBase = esProductoReceta(item)
+    const stockBase = esProductoReceta(item) && Number(item.maneja_stock) !== 1
       ? await calcularStockDisponibleCompuesto(item.producto_id, new Set(visited))
       : Number(item.stock || 0);
     disponibilidades.push(stockBase / cantidad);

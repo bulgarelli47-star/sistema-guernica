@@ -1466,10 +1466,12 @@ app.get("/productos", async (req, res) => {
 
       if (esCompuesto) {
         const costo = costoCompuestoMemoria(row.id, row.rendimiento_receta);
-        const stock = stockCompuestoMemoria(row.id, row.rendimiento_receta);
+        const manejaStockPropio = Number(row.maneja_stock) === 1;
+        const stockFisico = Number(row.stock || 0);
+        const stock = manejaStockPropio ? stockFisico : stockCompuestoMemoria(row.id, row.rendimiento_receta);
         return {
           ...row,
-          stock_fisico: 0,
+          stock_fisico: manejaStockPropio ? stockFisico : 0,
           stock_disponible: stock,
           stock_vendible_calculado: stock,
           precio_compra: costo,
