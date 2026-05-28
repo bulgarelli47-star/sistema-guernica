@@ -5,10 +5,12 @@ const {
   getComponentesProductoCompuesto,
   normalizarTipoProducto
 } = require("./stockService");
+const { getConfiguracionGlobal } = require("./configService");
 
 const TIPOS_MOVIMIENTO_VALIDOS = new Set(["ingreso", "egreso"]);
 const ESTADOS_VALIDOS = new Set(["pendiente", "aprobado", "rechazado", "corregido"]);
-const TIPOS_RESOLUCION_VALIDOS = new Set(["cobrar", "cuenta_corriente", "ajuste_stock", "perdida_interna", "rechazado"]);
+const TIPOS_RESOLUCION_VALIDOS = new Set(["cobrar", "cuenta_corriente", "ajuste_stock", "perdida_interna", "rechazado", "cuenta_local"]);
+const TIPOS_RESOLUCION_VENTA_VALIDOS = new Set(["cobrar", "cuenta_corriente", "ajuste_stock", "perdida_interna", "rechazado"]);
 
 function normalizarTexto(valor) {
   return String(valor || "").trim();
@@ -31,6 +33,10 @@ function crearError(message, statusCode = 400) {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
+}
+
+function configBool(value) {
+  return value === true || value === "true" || value === 1 || value === "1";
 }
 
 async function ensureColumnStockAjustesPendientes(columnName, definition) {
@@ -84,7 +90,12 @@ async function ensureStockAjustesPendientesSchema() {
       resuelto_por TEXT,
       cantidad_resuelta REAL DEFAULT 0,
       cantidad_pendiente_resolucion REAL DEFAULT 0,
-      resolucion_parcial INTEGER DEFAULT 0
+      resolucion_parcial INTEGER DEFAULT 0,
+      cuenta_local_integracion TEXT,
+      cuenta_local_observacion TEXT,
+      cuenta_local_responsable TEXT,
+      cuenta_local_nombre_snapshot TEXT,
+      cuenta_local_costo_estimado REAL DEFAULT 0
     )
   `);
 
@@ -96,6 +107,11 @@ async function ensureStockAjustesPendientesSchema() {
   await ensureColumnStockAjustesPendientes("cantidad_resuelta", "REAL DEFAULT 0");
   await ensureColumnStockAjustesPendientes("cantidad_pendiente_resolucion", "REAL DEFAULT 0");
   await ensureColumnStockAjustesPendientes("resolucion_parcial", "INTEGER DEFAULT 0");
+  await ensureColumnStockAjustesPendientes("cuenta_local_integracion", "TEXT");
+  await ensureColumnStockAjustesPendientes("cuenta_local_observacion", "TEXT");
+  await ensureColumnStockAjustesPendientes("cuenta_local_responsable", "TEXT");
+  await ensureColumnStockAjustesPendientes("cuenta_local_nombre_snapshot", "TEXT");
+  await ensureColumnStockAjustesPendientes("cuenta_local_costo_estimado", "REAL DEFAULT 0");
 
   await runQuery("CREATE INDEX IF NOT EXISTS idx_stock_ajustes_pendientes_estado ON stock_ajustes_pendientes(estado)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_stock_ajustes_pendientes_producto ON stock_ajustes_pendientes(producto_id)");
@@ -116,7 +132,8 @@ function mapAjuste(row) {
     venta_id: row.venta_id === null || row.venta_id === undefined ? null : Number(row.venta_id),
     cantidad_resuelta: Number(row.cantidad_resuelta || 0),
     cantidad_pendiente_resolucion: Number(row.cantidad_pendiente_resolucion || 0),
-    resolucion_parcial: Number(row.resolucion_parcial || 0)
+    resolucion_parcial: Number(row.resolucion_parcial || 0),
+    cuenta_local_costo_estimado: Number(row.cuenta_local_costo_estimado || 0)
   };
 }
 
@@ -210,7 +227,7 @@ async function listarAjustesPendientes({ estado, solo_accionables = false } = {}
     params.push(estadoNormalizado);
   }
   if (solo_accionables) {
-    where.push("(sap.venta_id IS NULL OR COALESCE(sap.resolucion_parcial, 0) = 1 OR COALESCE(sap.cantidad_pendiente_resolucion, 0) > 0)");
+    where.push("((sap.venta_id IS NULL AND COALESCE(sap.tipo_resolucion, '') = '') OR COALESCE(sap.resolucion_parcial, 0) = 1 OR COALESCE(sap.cantidad_pendiente_resolucion, 0) > 0)");
   }
   const rows = await allQuery(
     `SELECT sap.*, p.nombre AS producto_nombre
@@ -504,7 +521,7 @@ async function resolverAjustePendienteConVenta(id, {
     throw crearError("Venta invalida", 400);
   }
 
-  if (!TIPOS_RESOLUCION_VALIDOS.has(tipoResolucion)) {
+  if (!TIPOS_RESOLUCION_VENTA_VALIDOS.has(tipoResolucion)) {
     throw crearError("Tipo de resolucion invalido", 400);
   }
 
@@ -569,6 +586,154 @@ async function resolverAjustePendienteConVenta(id, {
   }
 }
 
+async function calcularCostoEstimadoCuentaLocal(productoId, cantidad) {
+  const costoInsumo = await getQuery(
+    `SELECT costo_unitario
+     FROM producto_costos_insumos
+     WHERE producto_id = ? AND COALESCE(costo_unitario, 0) > 0
+     ORDER BY id ASC
+     LIMIT 1`,
+    [productoId]
+  ).catch(() => null);
+  if (costoInsumo) {
+    return Number((Number(costoInsumo.costo_unitario || 0) * cantidad).toFixed(2));
+  }
+
+  const producto = await getQuery(
+    "SELECT costo_final, precio_compra FROM productos WHERE id = ?",
+    [productoId]
+  );
+  const costoUnitario = Number(producto?.costo_final || producto?.precio_compra || 0);
+  return Number((costoUnitario * cantidad).toFixed(2));
+}
+
+async function resolverAjustePendienteConCuentaLocal(id, {
+  integracion,
+  responsable,
+  observacion,
+  usuario
+} = {}) {
+  await ensureStockAjustesPendientesSchema();
+
+  const config = await getConfiguracionGlobal();
+  if (!configBool(config.cuenta_local_activa)) {
+    throw crearError("Cuenta Local no esta activa", 400);
+  }
+
+  const integracionNormalizada = normalizarTexto(integracion).toLowerCase();
+  const integracionesValidas = new Set(["produccion", "interno_cortesia"]);
+  if (!integracionesValidas.has(integracionNormalizada)) {
+    throw crearError("Integracion de Cuenta Local invalida", 400);
+  }
+  if (integracionNormalizada === "produccion" && !configBool(config.cuenta_local_produccion_activa)) {
+    throw crearError("La integracion Produccion no esta habilitada", 400);
+  }
+  if (integracionNormalizada === "interno_cortesia" && !configBool(config.cuenta_local_interno_cortesia_activa)) {
+    throw crearError("La integracion Interno / cortesia no esta habilitada", 400);
+  }
+
+  const ajusteId = Number(id);
+  const responsableNormalizado = normalizarTexto(responsable);
+  const observacionNormalizada = normalizarTexto(observacion);
+  const usuarioNormalizado = normalizarTexto(usuario) || "admin";
+  const cuentaLocalNombre = normalizarTexto(config.cuenta_local_nombre || config.negocio_nombre_comercial) || "Cuenta Local";
+
+  await runQuery("BEGIN TRANSACTION");
+  try {
+    const ajuste = await getQuery(
+      `SELECT sap.*, p.nombre AS producto_nombre, p.tipo AS producto_tipo, p.maneja_stock AS producto_maneja_stock
+       FROM stock_ajustes_pendientes sap
+       LEFT JOIN productos p ON p.id = sap.producto_id
+       WHERE sap.id = ?`,
+      [ajusteId]
+    );
+    if (!ajuste) throw crearError("Ajuste pendiente no encontrado", 404);
+    if (ajuste.estado !== "pendiente") throw crearError("El ajuste pendiente ya fue revisado", 409);
+    if (normalizarTexto(ajuste.tipo_movimiento).toLowerCase() !== "egreso") {
+      throw crearError("Cuenta Local solo puede resolver egresos de stock", 400);
+    }
+    if (Number(ajuste.venta_id) > 0 || normalizarTexto(ajuste.tipo_resolucion)) {
+      throw crearError("El ajuste pendiente ya tiene una resolucion operativa", 409);
+    }
+
+    const manejaStock = Number(ajuste.producto_maneja_stock) === 1;
+    const esRecetaSinStock = normalizarTipoProducto(ajuste.producto_tipo) === "compuesto" && !manejaStock;
+    if (esRecetaSinStock || !manejaStock) {
+      throw crearError("Este producto no tiene stock fisico. Ajusta sus insumos.", 400);
+    }
+
+    const cantidad = Number(ajuste.cantidad || 0);
+    if (!Number.isFinite(cantidad) || cantidad <= 0) {
+      throw crearError("Cantidad invalida", 400);
+    }
+
+    const motivo = [
+      "Cuenta Local / absorbida por el negocio",
+      integracionNormalizada === "produccion" ? "Produccion" : "Interno / cortesia",
+      ajuste.motivo,
+      observacionNormalizada
+    ].map(normalizarTexto).filter(Boolean).join(" | ");
+    const movimiento = await registrarMovimientoStockAprobado({
+      productoId: Number(ajuste.producto_id),
+      tipoMovimiento: "egreso",
+      cantidad,
+      motivo,
+      proveedorId: normalizarId(ajuste.proveedor_id),
+      usuario: usuarioNormalizado
+    });
+    const costoEstimado = await calcularCostoEstimadoCuentaLocal(Number(ajuste.producto_id), cantidad);
+    const { fecha, hora } = getNowParts();
+
+    await runQuery(
+      `UPDATE stock_ajustes_pendientes
+       SET estado = 'aprobado',
+           revisado_por = ?,
+           revisado_at = datetime('now'),
+           cantidad_aprobada = ?,
+           tipo_movimiento_aprobado = 'egreso',
+           observaciones_admin = ?,
+           movimiento_stock_id = ?,
+           tipo_resolucion = 'cuenta_local',
+           fecha_resolucion = ?,
+           hora_resolucion = ?,
+           resuelto_por = ?,
+           cantidad_resuelta = ?,
+           cantidad_pendiente_resolucion = 0,
+           resolucion_parcial = 0,
+           cuenta_local_integracion = ?,
+           cuenta_local_observacion = ?,
+           cuenta_local_responsable = ?,
+           cuenta_local_nombre_snapshot = ?,
+           cuenta_local_costo_estimado = ?
+       WHERE id = ? AND estado = 'pendiente'`,
+      [
+        usuarioNormalizado,
+        cantidad,
+        observacionNormalizada,
+        movimiento.movimiento_stock_id,
+        fecha,
+        hora,
+        usuarioNormalizado,
+        cantidad,
+        integracionNormalizada,
+        observacionNormalizada,
+        responsableNormalizado,
+        cuentaLocalNombre,
+        costoEstimado,
+        ajusteId
+      ]
+    );
+
+    await runQuery("COMMIT");
+    return obtenerAjustePendiente(ajusteId);
+  } catch (error) {
+    try {
+      await runQuery("ROLLBACK");
+    } catch {}
+    throw error;
+  }
+}
+
 async function getResumenAjustesPendientes() {
   await ensureStockAjustesPendientesSchema();
   const hoy = new Date().toISOString().slice(0, 10);
@@ -576,7 +741,7 @@ async function getResumenAjustesPendientes() {
     getQuery(`SELECT COUNT(*) AS total
               FROM stock_ajustes_pendientes
               WHERE estado = 'pendiente'
-                AND (venta_id IS NULL OR COALESCE(resolucion_parcial, 0) = 1 OR COALESCE(cantidad_pendiente_resolucion, 0) > 0)`),
+                AND ((venta_id IS NULL AND COALESCE(tipo_resolucion, '') = '') OR COALESCE(resolucion_parcial, 0) = 1 OR COALESCE(cantidad_pendiente_resolucion, 0) > 0)`),
     getQuery(`SELECT COUNT(*) AS total
               FROM stock_ajustes_pendientes
               WHERE estado = 'pendiente'
@@ -610,5 +775,6 @@ module.exports = {
   aprobarAjustePendiente,
   rechazarAjustePendiente,
   resolverAjustePendienteConVenta,
+  resolverAjustePendienteConCuentaLocal,
   getResumenAjustesPendientes
 };

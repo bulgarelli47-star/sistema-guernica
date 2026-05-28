@@ -1122,6 +1122,153 @@ async function testResolverAjustePendienteConVenta() {
   }
 }
 
+async function testResolverAjustePendienteConCuentaLocal() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+
+  try {
+    await prepareDb(dbPath, [
+      ...resetOperationalDataStatements(),
+      [
+        `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)
+         VALUES ('cuenta_local_activa', 'false', 'cuentas_corrientes', datetime('now'))
+         ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, seccion = excluded.seccion, actualizado_en = excluded.actualizado_en`
+      ],
+      [
+        `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)
+         VALUES ('cuenta_local_nombre', '"Guernica Local"', 'cuentas_corrientes', datetime('now'))
+         ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, seccion = excluded.seccion, actualizado_en = excluded.actualizado_en`
+      ],
+      [
+        `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)
+         VALUES ('cuenta_local_produccion_activa', 'true', 'cuentas_corrientes', datetime('now'))
+         ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, seccion = excluded.seccion, actualizado_en = excluded.actualizado_en`
+      ],
+      [
+        `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)
+         VALUES ('cuenta_local_interno_cortesia_activa', 'true', 'cuentas_corrientes', datetime('now'))
+         ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, seccion = excluded.seccion, actualizado_en = excluded.actualizado_en`
+      ]
+    ]);
+
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Cuenta Local",
+        usuario: "colaborador_cuenta_local",
+        password: "colaborador123",
+        confirmar_password: "colaborador123",
+        rol: "colaborador",
+        activo: true
+      }, adminToken);
+      const colaboradorToken = await login(baseUrl, "colaborador_cuenta_local", "colaborador123");
+
+      const ajusteInactivo = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "egreso",
+        cantidad: 1,
+        motivo: "TEST cuenta local inactiva"
+      });
+      const inactivo = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajusteInactivo.id}/cuenta-local`, {
+        integracion: "interno_cortesia",
+        responsable: "Test",
+        observacion: "Debe rechazar"
+      }, adminToken);
+      assertEqual(inactivo.response.status, 400, "Cuenta Local inactiva debe rechazar");
+
+      await runSql(dbPath,
+        `UPDATE configuracion_global SET valor = 'true', actualizado_en = datetime('now') WHERE clave = 'cuenta_local_activa'`
+      );
+      await runSql(dbPath,
+        `UPDATE configuracion_global SET valor = 'false', actualizado_en = datetime('now') WHERE clave = 'cuenta_local_produccion_activa'`
+      );
+
+      const ajusteProduccionOff = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "egreso",
+        cantidad: 1,
+        motivo: "TEST produccion off"
+      });
+      const produccionOff = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajusteProduccionOff.id}/cuenta-local`, {
+        integracion: "produccion",
+        responsable: "Produccion",
+        observacion: "Debe rechazar"
+      }, adminToken);
+      assertEqual(produccionOff.response.status, 400, "Integracion deshabilitada debe rechazar");
+
+      await runSql(dbPath,
+        `UPDATE configuracion_global SET valor = 'true', actualizado_en = datetime('now') WHERE clave = 'cuenta_local_produccion_activa'`
+      );
+
+      const categoriaRecetaId = await crearCategoria(baseUrl, adminToken, "Cuenta Local Recetas");
+      const recetaId = await crearProducto(baseUrl, adminToken, {
+        nombre: "Receta sin stock Cuenta Local",
+        categoria_id: categoriaRecetaId,
+        tipo: "compuesto",
+        maneja_stock: false,
+        rendimiento_receta: 1,
+        stock: 0
+      });
+      const ajusteReceta = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: recetaId,
+        tipo_movimiento: "egreso",
+        cantidad: 1,
+        motivo: "TEST receta sin stock"
+      });
+      const receta = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajusteReceta.id}/cuenta-local`, {
+        integracion: "interno_cortesia",
+        responsable: "Test",
+        observacion: "Debe rechazar receta"
+      }, adminToken);
+      assertEqual(receta.response.status, 400, "Receta sin stock fisico debe rechazar Cuenta Local");
+
+      const ventasAntes = await allSql(dbPath, "SELECT COUNT(*) AS total, COALESCE(SUM(saldo_pendiente), 0) AS saldo FROM ventas");
+      const pagosCcAntes = await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos_cuenta_corriente");
+      const stockAntes = (await getProduct(baseUrl, adminToken, 11)).stock;
+      const movimientosAntes = await getMovimientosStock(baseUrl, adminToken, 11);
+
+      const ajusteCuentaLocal = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
+        producto_id: 11,
+        tipo_movimiento: "egreso",
+        cantidad: 3,
+        motivo: "TEST cuenta local ok"
+      });
+      const resolver = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajusteCuentaLocal.id}/cuenta-local`, {
+        integracion: "interno_cortesia",
+        responsable: "Mostrador",
+        observacion: "Consumo interno test"
+      }, adminToken);
+      if (!resolver.response.ok) throw new Error(`Resolver Cuenta Local fallo: ${resolver.data?.message || resolver.response.status}`);
+
+      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, stockAntes - 3, "Cuenta Local debe descontar stock fisico");
+      if (resolver.data.ajuste.tipo_resolucion !== "cuenta_local") throw new Error("Cuenta Local debe guardar tipo_resolucion");
+      if (resolver.data.ajuste.estado !== "aprobado") throw new Error("Cuenta Local debe aprobar el ajuste fisico");
+      assertEqual(resolver.data.ajuste.cantidad_aprobada, 3, "Cuenta Local debe guardar cantidad_aprobada");
+      if (resolver.data.ajuste.tipo_movimiento_aprobado !== "egreso") throw new Error("Cuenta Local debe guardar egreso aprobado");
+      if (!resolver.data.ajuste.movimiento_stock_id) throw new Error("Cuenta Local debe crear movimiento_stock");
+      if (resolver.data.ajuste.cuenta_local_integracion !== "interno_cortesia") throw new Error("Cuenta Local debe guardar integracion");
+      if (resolver.data.ajuste.cuenta_local_nombre_snapshot !== "Guernica Local") throw new Error("Cuenta Local debe guardar nombre snapshot");
+
+      const movimientosDespues = await getMovimientosStock(baseUrl, adminToken, 11);
+      assertEqual(movimientosDespues.length, movimientosAntes.length + 1, "Cuenta Local debe registrar movimiento stock");
+
+      const ventasDespues = await allSql(dbPath, "SELECT COUNT(*) AS total, COALESCE(SUM(saldo_pendiente), 0) AS saldo FROM ventas");
+      const pagosCcDespues = await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos_cuenta_corriente");
+      assertEqual(ventasDespues[0].total, ventasAntes[0].total, "Cuenta Local no debe crear venta");
+      assertEqual(pagosCcDespues[0].total, pagosCcAntes[0].total, "Cuenta Local no debe crear pago cuenta corriente");
+      assertEqual(Number(ventasDespues[0].saldo || 0), Number(ventasAntes[0].saldo || 0), "Cuenta Local no debe modificar saldo pendiente");
+
+      const accionables = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes?estado=pendiente&solo_accionables=1", null, adminToken);
+      if (!accionables.response.ok) throw new Error(`Listado accionable Cuenta Local fallo: ${accionables.data?.message || accionables.response.status}`);
+      if (accionables.data.some((a) => Number(a.id) === Number(ajusteCuentaLocal.id))) {
+        throw new Error("Cuenta Local no debe quedar como pendiente accionable");
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testClientesTipoClienteClasificacion() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -7598,6 +7745,7 @@ async function testTiendaConvertirVenta() {
   await testAjustesPendientesAprobacionYRechazo();
   await testReconciliarAjustesPendientesStock();
   await testResolverAjustePendienteConVenta();
+  await testResolverAjustePendienteConCuentaLocal();
   await testResumenAjustesPendientes();
   await testClientesTipoClienteClasificacion();
   await testClientesHistorialProductosComprados();

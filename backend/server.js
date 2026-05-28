@@ -143,6 +143,7 @@ const {
   obtenerAjustePendiente,
   reconciliarAjustesPendientes,
   rechazarAjustePendiente,
+  resolverAjustePendienteConCuentaLocal,
   resolverAjustePendienteConVenta
 } = require("./services/stockAjustePendienteService");
 const {
@@ -2642,6 +2643,28 @@ app.post("/stock/ajustes-pendientes/:id/resolver", async (req, res) => {
     }
     logError("Error al resolver ajuste pendiente de stock:", error);
     return res.status(500).json({ message: "Error al resolver ajuste pendiente de stock" });
+  }
+});
+
+app.post("/stock/ajustes-pendientes/:id/cuenta-local", async (req, res) => {
+  if (!(await puedeGestionarAjustesPendientes(req))) {
+    return res.status(403).json({ message: "No tenes permisos para resolver ajustes pendientes de stock" });
+  }
+
+  try {
+    const ajuste = await resolverAjustePendienteConCuentaLocal(req.params.id, {
+      integracion: req.body.integracion,
+      responsable: req.body.responsable,
+      observacion: req.body.observacion,
+      usuario: req.usuario?.nombre || req.body.usuario || "admin"
+    });
+    return res.json({ message: "Ajuste enviado a Cuenta Local", ajuste });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    logError("Error al resolver ajuste pendiente con Cuenta Local:", error);
+    return res.status(500).json({ message: "Error al resolver ajuste pendiente con Cuenta Local" });
   }
 });
 
