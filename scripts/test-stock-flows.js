@@ -760,6 +760,163 @@ async function testProduccionV1DominioSeparado() {
   }
 }
 
+async function testConsumoTeoricoAgrupadoPorInsumo() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const categoriaId = await crearCategoria(baseUrl, token, `Consumo teorico TEST ${Date.now()}`);
+      const insumoId = await crearProducto(baseUrl, token, {
+        nombre: `Insumo consumo teorico TEST ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "Consumo teorico TEST",
+        stock: 500,
+        precio_compra: 2,
+        costo_final: 2,
+        precio_venta: 2,
+        maneja_stock: true,
+        tipo: "simple",
+        unidad_medida: "g"
+      });
+      const recetaAId = await crearProducto(baseUrl, token, {
+        nombre: `Receta A consumo TEST ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "Consumo teorico TEST",
+        stock: 0,
+        precio_compra: 10,
+        costo_final: 10,
+        precio_venta: 100,
+        maneja_stock: false,
+        tipo: "compuesto",
+        componentes: [{ producto_id: insumoId, cantidad: 2 }],
+        costos_extra: []
+      });
+      const recetaBId = await crearProducto(baseUrl, token, {
+        nombre: `Receta B consumo TEST ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "Consumo teorico TEST",
+        stock: 0,
+        precio_compra: 10,
+        costo_final: 10,
+        precio_venta: 100,
+        maneja_stock: false,
+        tipo: "compuesto",
+        componentes: [{ producto_id: insumoId, cantidad: 4 }],
+        costos_extra: []
+      });
+      const derivadoId = await crearProducto(baseUrl, token, {
+        nombre: `Derivado stock consumo TEST ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "Consumo teorico TEST",
+        stock: 0,
+        precio_compra: 10,
+        costo_final: 10,
+        precio_venta: 100,
+        maneja_stock: true,
+        tipo: "compuesto",
+        componentes: [{ producto_id: insumoId, cantidad: 20 }],
+        costos_extra: []
+      });
+
+      const agregar = await requestJson(baseUrl, "POST", `/productos/${recetaAId}/modificadores`, {
+        nombre: `Extra consumo TEST ${Date.now()}`,
+        tipo: "agregar",
+        precio_extra: 10,
+        componentes: [{ producto_id: insumoId, cantidad: 1 }]
+      }, token);
+      if (!agregar.response.ok) throw new Error(`Crear modificador agregar consumo teorico fallo: ${agregar.data?.message || agregar.response.status}`);
+
+      const quitar = await requestJson(baseUrl, "POST", `/productos/${recetaAId}/modificadores`, {
+        nombre: `Quitar consumo TEST ${Date.now()}`,
+        tipo: "quitar",
+        precio_extra: 0,
+        componentes: [{ producto_id: insumoId, cantidad: 0.5 }]
+      }, token);
+      if (!quitar.response.ok) throw new Error(`Crear modificador quitar consumo teorico fallo: ${quitar.data?.message || quitar.response.status}`);
+
+      const produccion = await requestJson(baseUrl, "POST", "/produccion", {
+        producto_id: derivadoId,
+        cantidad_producida: 2,
+        responsable: "TEST",
+        observacion: "No debe mezclarse con consumo teorico"
+      }, token);
+      if (!produccion.response.ok) throw new Error(`Produccion para consumo teorico fallo: ${produccion.data?.message || produccion.response.status}`);
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [
+          {
+            producto_id: recetaAId,
+            nombre_producto: "Receta A consumo",
+            cantidad: 3,
+            precio_unitario: 100,
+            modificadores: [
+              { modificador_id: agregar.data.modificador.id, cantidad: 1 },
+              { modificador_id: quitar.data.modificador.id, cantidad: 1 }
+            ]
+          },
+          {
+            producto_id: recetaBId,
+            nombre_producto: "Receta B consumo",
+            cantidad: 1,
+            precio_unitario: 100
+          },
+          {
+            producto_id: derivadoId,
+            nombre_producto: "Derivado con stock propio",
+            cantidad: 2,
+            precio_unitario: 100
+          }
+        ]
+      }, token);
+      if (!venta.response.ok) throw new Error(`Venta consumo teorico fallo: ${venta.data?.message || venta.response.status}`);
+
+      const ventaAnulada = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [{
+          producto_id: recetaBId,
+          nombre_producto: "Receta B anulada",
+          cantidad: 10,
+          precio_unitario: 100
+        }]
+      }, token);
+      if (!ventaAnulada.response.ok) throw new Error(`Venta anulada consumo teorico fallo: ${ventaAnulada.data?.message || ventaAnulada.response.status}`);
+      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${ventaAnulada.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anulacion.response.ok) throw new Error(`Anular venta consumo teorico fallo: ${anulacion.data?.message || anulacion.response.status}`);
+
+      const consumo = await requestJson(baseUrl, "GET", "/stock/consumo-teorico", null, token);
+      if (!consumo.response.ok) throw new Error(`GET consumo teorico fallo: ${consumo.data?.message || consumo.response.status}`);
+      if (!Array.isArray(consumo.data.insumos)) throw new Error("Consumo teorico debe devolver insumos");
+      const insumo = consumo.data.insumos.find((item) => Number(item.producto_id) === Number(insumoId));
+      if (!insumo) throw new Error(`Consumo teorico debe incluir el insumo vendido. Respuesta=${JSON.stringify(consumo.data)}`);
+      assertApprox(insumo.cantidad_total, 11.5, "Consumo teorico debe agrupar base de dos recetas y deltas agregar/quitar");
+      if (insumo.detalle.some((item) => Number(item.producto_vendido_id) === Number(derivadoId))) {
+        throw new Error("Producto compuesto con stock propio no debe expandirse en consumo teorico");
+      }
+      const detalleA = insumo.detalle.find((item) => Number(item.producto_vendido_id) === Number(recetaAId));
+      const detalleB = insumo.detalle.find((item) => Number(item.producto_vendido_id) === Number(recetaBId));
+      if (!detalleA || !detalleB) throw new Error(`Consumo teorico debe detallar ambas recetas. Detalle=${JSON.stringify(insumo.detalle)}`);
+      assertApprox(detalleA.cantidad_teorica, 7.5, "Modificador agregar debe sumar y quitar debe restar sobre receta A");
+      assertApprox(detalleB.cantidad_teorica, 4, "Receta B debe aportar su consumo base");
+      if (!consumo.data.limitaciones?.some((item) => String(item).includes("receta actual"))) {
+        throw new Error("Consumo teorico debe declarar la limitacion V1 de receta actual");
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testAjustesPendientesStockInfraestructura() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -7847,6 +8004,7 @@ async function testTiendaConvertirVenta() {
   await testPermisosColaborador();
   await testFinanzasResumenBackendV1();
   await testProduccionV1DominioSeparado();
+  await testConsumoTeoricoAgrupadoPorInsumo();
   await testAjustesPendientesStockInfraestructura();
   await testAjustePendienteRequiereStockVer();
   await testAjustesPendientesAprobacionYRechazo();

@@ -2488,6 +2488,174 @@ async function puedeGestionarAjustesPendientes(req) {
   return puedeRol(req, ROLES.ADMIN_ENCARGADO) || await tienePermisoAccion(req, "stock_ajustar");
 }
 
+function buildConsumoTeoricoWhere(query = {}) {
+  const where = [
+    "COALESCE(v.estado, '') != 'anulado'",
+    "COALESCE(v.tipo, '') != 'test_modificadores'",
+    "LOWER(COALESCE(pv.tipo, 'simple')) = 'compuesto'",
+    "COALESCE(pv.maneja_stock, 0) = 0"
+  ];
+  const params = [];
+  if (query.desde) {
+    where.push("v.fecha >= ?");
+    params.push(String(query.desde).slice(0, 10));
+  }
+  if (query.hasta) {
+    where.push("v.fecha <= ?");
+    params.push(String(query.hasta).slice(0, 10));
+  }
+  return { where, params };
+}
+
+function roundConsumo(value) {
+  return Number((Number(value) || 0).toFixed(4));
+}
+
+async function getConsumoTeoricoInsumos({ desde = null, hasta = null } = {}) {
+  const filtros = buildConsumoTeoricoWhere({ desde, hasta });
+  const whereSql = filtros.where.join(" AND ");
+
+  const [baseRows, modificadorRows] = await Promise.all([
+    allQuery(
+      `SELECT
+         pc.producto_id AS insumo_id,
+         pi.nombre AS insumo_nombre,
+         pi.unidad_medida,
+         dv.producto_id AS producto_vendido_id,
+         dv.nombre_producto AS producto_vendido_nombre,
+         COALESCE(SUM(dv.cantidad), 0) AS cantidad_vendida,
+         COALESCE(SUM(dv.cantidad * pc.cantidad), 0) AS cantidad_base,
+         COUNT(DISTINCT v.id) AS ventas
+       FROM detalle_ventas dv
+       INNER JOIN ventas v ON v.id = dv.venta_id
+       INNER JOIN productos pv ON pv.id = dv.producto_id
+       INNER JOIN producto_componentes pc ON pc.producto_compuesto_id = pv.id
+       INNER JOIN productos pi ON pi.id = pc.producto_id
+       WHERE ${whereSql}
+       GROUP BY pc.producto_id, pi.nombre, pi.unidad_medida, dv.producto_id, dv.nombre_producto`,
+      filtros.params
+    ),
+    allQuery(
+      `SELECT
+         md.producto_id AS insumo_id,
+         COALESCE(pi.nombre, md.nombre_producto) AS insumo_nombre,
+         pi.unidad_medida,
+         dv.producto_id AS producto_vendido_id,
+         dv.nombre_producto AS producto_vendido_nombre,
+         COALESCE(SUM(dv.cantidad), 0) AS cantidad_vendida,
+         COALESCE(SUM(md.cantidad_delta), 0) AS cantidad_delta,
+         COUNT(DISTINCT v.id) AS ventas
+       FROM (
+         SELECT
+           detalle_venta_id,
+           producto_id,
+           MAX(nombre_producto) AS nombre_producto,
+           COALESCE(SUM(CASE WHEN operacion = 'quitar' THEN -cantidad ELSE cantidad END), 0) AS cantidad_delta
+         FROM detalle_venta_componentes_snapshot
+         WHERE producto_id IS NOT NULL
+           AND operacion IN ('agregar', 'quitar')
+         GROUP BY detalle_venta_id, producto_id
+       ) md
+       INNER JOIN detalle_ventas dv ON dv.id = md.detalle_venta_id
+       INNER JOIN ventas v ON v.id = dv.venta_id
+       INNER JOIN productos pv ON pv.id = dv.producto_id
+       LEFT JOIN productos pi ON pi.id = md.producto_id
+       WHERE ${whereSql}
+       GROUP BY md.producto_id, COALESCE(pi.nombre, md.nombre_producto), pi.unidad_medida, dv.producto_id, dv.nombre_producto`,
+      filtros.params
+    )
+  ]);
+
+  const detalleMap = new Map();
+  const ensureDetalle = (row) => {
+    const key = `${Number(row.insumo_id)}:${Number(row.producto_vendido_id)}`;
+    if (!detalleMap.has(key)) {
+      detalleMap.set(key, {
+        producto_id: Number(row.insumo_id),
+        nombre: row.insumo_nombre || `Insumo ${row.insumo_id}`,
+        unidad_medida: row.unidad_medida || "",
+        producto_vendido_id: Number(row.producto_vendido_id),
+        producto_vendido_nombre: row.producto_vendido_nombre || `Producto ${row.producto_vendido_id}`,
+        cantidad_vendida: 0,
+        cantidad_base: 0,
+        cantidad_delta: 0,
+        ventas: 0
+      });
+    }
+    return detalleMap.get(key);
+  };
+
+  for (const row of baseRows) {
+    const item = ensureDetalle(row);
+    item.cantidad_vendida = Math.max(item.cantidad_vendida, Number(row.cantidad_vendida || 0));
+    item.cantidad_base += Number(row.cantidad_base || 0);
+    item.ventas = Math.max(item.ventas, Number(row.ventas || 0));
+  }
+
+  for (const row of modificadorRows) {
+    const item = ensureDetalle(row);
+    item.cantidad_vendida = Math.max(item.cantidad_vendida, Number(row.cantidad_vendida || 0));
+    item.cantidad_delta += Number(row.cantidad_delta || 0);
+    item.ventas = Math.max(item.ventas, Number(row.ventas || 0));
+  }
+
+  const insumosMap = new Map();
+  for (const item of detalleMap.values()) {
+    const cantidadTeorica = Math.max(0, Number(item.cantidad_base || 0) + Number(item.cantidad_delta || 0));
+    if (cantidadTeorica <= 0) continue;
+    if (!insumosMap.has(item.producto_id)) {
+      insumosMap.set(item.producto_id, {
+        producto_id: item.producto_id,
+        nombre: item.nombre,
+        unidad_medida: item.unidad_medida,
+        cantidad_total: 0,
+        detalle: []
+      });
+    }
+    const insumo = insumosMap.get(item.producto_id);
+    insumo.cantidad_total += cantidadTeorica;
+    insumo.detalle.push({
+      producto_vendido_id: item.producto_vendido_id,
+      producto_vendido_nombre: item.producto_vendido_nombre,
+      cantidad_vendida: roundConsumo(item.cantidad_vendida),
+      cantidad_teorica: roundConsumo(cantidadTeorica),
+      ventas: Number(item.ventas || 0)
+    });
+  }
+
+  const insumos = [...insumosMap.values()]
+    .map((insumo) => ({
+      ...insumo,
+      cantidad_total: roundConsumo(insumo.cantidad_total),
+      detalle: insumo.detalle.sort((a, b) => b.cantidad_teorica - a.cantidad_teorica || a.producto_vendido_nombre.localeCompare(b.producto_vendido_nombre))
+    }))
+    .sort((a, b) => b.cantidad_total - a.cantidad_total || a.nombre.localeCompare(b.nombre));
+
+  return {
+    desde: desde || null,
+    hasta: hasta || null,
+    insumos,
+    limitaciones: [
+      "El consumo base se calcula con la receta actual hasta activar snapshot base por venta."
+    ]
+  };
+}
+
+app.get("/stock/consumo-teorico", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_ver", "No tenes permisos para consultar consumo teorico"))) return;
+
+  try {
+    const data = await getConsumoTeoricoInsumos({
+      desde: req.query.desde,
+      hasta: req.query.hasta
+    });
+    return res.json(data);
+  } catch (error) {
+    logError("Error al obtener consumo teorico de stock:", error);
+    return res.status(500).json({ message: "Error al obtener consumo teorico" });
+  }
+});
+
 app.post("/stock/ajustes-pendientes", async (req, res) => {
   if (!(await requirePermiso(req, res, "stock_ver", "No tenes permisos para proponer ajustes de stock"))) return;
 
