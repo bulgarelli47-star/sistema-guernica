@@ -137,6 +137,10 @@ function mapAjuste(row) {
   };
 }
 
+function round2(valor) {
+  return Number((Number(valor) || 0).toFixed(2));
+}
+
 async function obtenerAjustePendiente(id) {
   const row = await getQuery(
     `SELECT sap.*, p.nombre AS producto_nombre
@@ -766,6 +770,99 @@ async function getResumenAjustesPendientes() {
   };
 }
 
+async function getResumenCuentaLocalNoMonetaria({ desde = null, hasta = null, limite = 8 } = {}) {
+  await ensureStockAjustesPendientesSchema();
+
+  const base = {
+    produccion: {
+      movimientos: 0,
+      unidades: 0,
+      costo_estimado: 0
+    },
+    interno_cortesia: {
+      movimientos: 0,
+      unidades: 0,
+      costo_estimado: 0
+    },
+    total_absorbido: 0,
+    movimientos_recientes: []
+  };
+
+  const where = [
+    "sap.tipo_resolucion = 'cuenta_local'",
+    "sap.estado IN ('aprobado', 'corregido')"
+  ];
+  const params = [];
+
+  if (desde) {
+    where.push("sap.fecha_resolucion >= ?");
+    params.push(String(desde).slice(0, 10));
+  }
+
+  if (hasta) {
+    where.push("sap.fecha_resolucion <= ?");
+    params.push(String(hasta).slice(0, 10));
+  }
+
+  const whereSql = where.join(" AND ");
+  const limiteSeguro = Math.min(Math.max(Number(limite) || 8, 1), 50);
+  const [resumenRows, recientesRows] = await Promise.all([
+    allQuery(
+      `SELECT
+         COALESCE(sap.cuenta_local_integracion, 'interno_cortesia') AS integracion,
+         COUNT(*) AS movimientos,
+         COALESCE(SUM(COALESCE(sap.cantidad_aprobada, sap.cantidad, 0)), 0) AS unidades,
+         COALESCE(SUM(COALESCE(sap.cuenta_local_costo_estimado, 0)), 0) AS costo_estimado
+       FROM stock_ajustes_pendientes sap
+       WHERE ${whereSql}
+       GROUP BY COALESCE(sap.cuenta_local_integracion, 'interno_cortesia')`,
+      params
+    ),
+    allQuery(
+      `SELECT
+         sap.fecha_resolucion AS fecha,
+         sap.hora_resolucion AS hora,
+         COALESCE(p.nombre, sap.producto_id) AS producto_nombre,
+         COALESCE(sap.cantidad_aprobada, sap.cantidad, 0) AS cantidad,
+         COALESCE(sap.cuenta_local_integracion, 'interno_cortesia') AS integracion,
+         sap.cuenta_local_responsable AS responsable,
+         sap.cuenta_local_observacion AS observacion,
+         COALESCE(sap.cuenta_local_costo_estimado, 0) AS costo_estimado,
+         sap.resuelto_por
+       FROM stock_ajustes_pendientes sap
+       LEFT JOIN productos p ON p.id = sap.producto_id
+       WHERE ${whereSql}
+       ORDER BY sap.fecha_resolucion DESC, sap.hora_resolucion DESC, sap.id DESC
+       LIMIT ?`,
+      [...params, limiteSeguro]
+    )
+  ]);
+
+  resumenRows.forEach((row) => {
+    const key = row.integracion === "produccion" ? "produccion" : "interno_cortesia";
+    base[key] = {
+      movimientos: Number(row.movimientos || 0),
+      unidades: round2(row.unidades),
+      costo_estimado: round2(row.costo_estimado)
+    };
+  });
+
+  base.total_absorbido = round2(base.produccion.costo_estimado + base.interno_cortesia.costo_estimado);
+  base.movimientos_recientes = recientesRows.map((row) => ({
+    fecha: row.fecha || null,
+    hora: row.hora || null,
+    producto_nombre: row.producto_nombre || "",
+    cantidad: round2(row.cantidad),
+    integracion: row.integracion === "produccion" ? "produccion" : "interno_cortesia",
+    responsable: row.responsable || "",
+    observacion: row.observacion || "",
+    costo_estimado: round2(row.costo_estimado),
+    resuelto_por: row.resuelto_por || ""
+  }));
+
+  return base;
+}
+
 module.exports = {
   ensureStockAjustesPendientesSchema,
   crearAjustePendiente,
@@ -776,5 +873,6 @@ module.exports = {
   rechazarAjustePendiente,
   resolverAjustePendienteConVenta,
   resolverAjustePendienteConCuentaLocal,
-  getResumenAjustesPendientes
+  getResumenAjustesPendientes,
+  getResumenCuentaLocalNoMonetaria
 };

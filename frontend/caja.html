@@ -2060,6 +2060,64 @@
       overflow-wrap: anywhere;
     }
 
+    #tab-apertura-cierre .operational-metric strong small {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      margin-top: 2px;
+    }
+
+    #tab-apertura-cierre .non-monetary-card {
+      grid-column: 1 / -1;
+    }
+
+    #tab-apertura-cierre .non-monetary-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    #tab-apertura-cierre .non-monetary-list {
+      display: grid;
+      gap: 6px;
+      margin-top: 10px;
+      max-height: 180px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+
+    #tab-apertura-cierre .non-monetary-row {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #ffffff;
+      padding: 8px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) auto;
+      gap: 8px;
+      align-items: center;
+    }
+
+    #tab-apertura-cierre .non-monetary-row strong {
+      display: block;
+      font-size: 13px;
+      line-height: 1.2;
+    }
+
+    #tab-apertura-cierre .non-monetary-row small {
+      color: var(--muted);
+      display: block;
+      font-size: 11px;
+      line-height: 1.25;
+    }
+
+    #tab-apertura-cierre .non-monetary-cost {
+      font-weight: 900;
+      white-space: nowrap;
+      color: var(--text);
+    }
+
     #tab-apertura-cierre .operational-accounts {
       display: grid;
       gap: 6px;
@@ -3285,6 +3343,7 @@
       #tab-apertura-cierre .closure-quick-grid,
       #tab-apertura-cierre .closure-prep-grid,
       #tab-apertura-cierre .closure-summary-grid,
+      #tab-apertura-cierre .non-monetary-metrics,
       .closure-overview-grid,
       .closure-work-grid,
       .close-cash-layout,
@@ -4142,6 +4201,23 @@
                     </div>
                   </div>
                 </section>
+              </section>
+
+              <section class="operational-card non-monetary-card" id="movimientosNoMonetariosCard">
+                <div class="operational-card-head">
+                  <div>
+                    <h4>Movimientos no monetarios del dia</h4>
+                    <div class="muted">Consumos absorbidos por el negocio. No afectan efectivo, cuentas digitales ni diferencia de caja.</div>
+                  </div>
+                </div>
+                <div class="non-monetary-metrics">
+                  <div class="operational-metric"><span>Produccion absorbida</span><strong id="noMonetarioProduccion">$0.00</strong></div>
+                  <div class="operational-metric"><span>Interno / cortesia</span><strong id="noMonetarioInterno">$0.00</strong></div>
+                  <div class="operational-metric"><span>Total no monetario</span><strong id="noMonetarioTotal">$0.00</strong></div>
+                </div>
+                <div class="non-monetary-list" id="noMonetarioMovimientos">
+                  <div class="muted">Sin movimientos no monetarios del dia.</div>
+                </div>
               </section>
             </div>
           </article>
@@ -5007,6 +5083,7 @@
     const cuentaInputs = [];
     let resumenActual = null;
     let aperturaActual = null;
+    let fechaCajaActual = null;
     let ventasActuales = [];
     let movimientosFiltrados = [];
     let movimientosPaginaActual = 1;
@@ -7410,6 +7487,80 @@
       }
     }
 
+    function textoSeguroCaja(valor) {
+      return String(valor ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function fechaCajaParaConsulta() {
+      const fecha = aperturaActual?.fecha || fechaCajaActual || new Date().toISOString().slice(0, 10);
+      return String(fecha).slice(0, 10);
+    }
+
+    function renderizarMovimientosNoMonetarios(data = {}) {
+      const produccion = data.produccion || {};
+      const interno = data.interno_cortesia || {};
+      const recientes = Array.isArray(data.movimientos_recientes) ? data.movimientos_recientes : [];
+      const produccionTotal = Number(produccion.costo_estimado || 0);
+      const internoTotal = Number(interno.costo_estimado || 0);
+      const total = Number(data.total_absorbido ?? (produccionTotal + internoTotal));
+
+      const produccionEl = document.getElementById("noMonetarioProduccion");
+      const internoEl = document.getElementById("noMonetarioInterno");
+      const totalEl = document.getElementById("noMonetarioTotal");
+      const listaEl = document.getElementById("noMonetarioMovimientos");
+
+      if (produccionEl) {
+        produccionEl.innerHTML = `${money(produccionTotal)} <small>${Number(produccion.movimientos || 0)} mov. / ${formatearNumero(produccion.unidades || 0)} u.</small>`;
+      }
+      if (internoEl) {
+        internoEl.innerHTML = `${money(internoTotal)} <small>${Number(interno.movimientos || 0)} mov. / ${formatearNumero(interno.unidades || 0)} u.</small>`;
+      }
+      if (totalEl) {
+        totalEl.textContent = money(total);
+      }
+
+      if (!listaEl) return;
+      if (!recientes.length) {
+        listaEl.innerHTML = '<div class="muted">Sin movimientos no monetarios del dia.</div>';
+        return;
+      }
+
+      listaEl.innerHTML = recientes.map((movimiento) => {
+        const integracion = movimiento.integracion === "produccion" ? "Produccion" : "Interno / cortesia";
+        const responsable = movimiento.responsable ? ` · ${textoSeguroCaja(movimiento.responsable)}` : "";
+        const observacion = movimiento.observacion ? `<small>${textoSeguroCaja(movimiento.observacion)}</small>` : "";
+        return `
+          <div class="non-monetary-row">
+            <div>
+              <strong>${textoSeguroCaja(movimiento.producto_nombre || "Movimiento")}</strong>
+              <small>${textoSeguroCaja(movimiento.fecha || "-")} ${textoSeguroCaja(movimiento.hora || "")} · ${integracion}${responsable} · ${formatearNumero(movimiento.cantidad || 0)} u.</small>
+              ${observacion}
+            </div>
+            <div class="non-monetary-cost">${money(movimiento.costo_estimado || 0)}</div>
+          </div>`;
+      }).join("");
+    }
+
+    async function cargarMovimientosNoMonetariosCaja() {
+      try {
+        const desde = fechaCajaParaConsulta();
+        const hasta = new Date().toISOString().slice(0, 10);
+        const res = await fetch(`/caja/movimientos-no-monetarios?desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}`);
+        if (!res.ok) throw new Error("No se pudo obtener movimientos no monetarios");
+        const data = await res.json();
+        renderizarMovimientosNoMonetarios(data.cuenta_local || {});
+      } catch (error) {
+        console.error("Error al cargar movimientos no monetarios:", error);
+        const listaEl = document.getElementById("noMonetarioMovimientos");
+        if (listaEl) listaEl.innerHTML = '<div class="muted">No se pudo cargar la lectura no monetaria.</div>';
+      }
+    }
+
     async function cargarCaja() {
       try {
         const [res, configRes] = await Promise.all([
@@ -7424,10 +7575,12 @@
         aplicarVistaOperativaCaja();
         aplicarCuentasPagoConfig(configCaja);
         const data = await res.json();
+        fechaCajaActual = data.fecha || null;
         renderizarApertura(data.apertura);
         renderizarResumen(data.resumen);
         renderizarVentas(data.ventas);
         await cargarResumenCuentasCobro(data.apertura?.id || null);
+        await cargarMovimientosNoMonetariosCaja();
       } catch (error) {
         console.error("Error al cargar caja:", error);
         estadoApertura.innerText = "Error al cargar apertura.";

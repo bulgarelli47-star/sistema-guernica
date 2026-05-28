@@ -138,6 +138,7 @@ const {
   aprobarAjustePendiente,
   crearAjustePendiente,
   ensureStockAjustesPendientesSchema,
+  getResumenCuentaLocalNoMonetaria,
   getResumenAjustesPendientes,
   listarAjustesPendientes,
   obtenerAjustePendiente,
@@ -4074,6 +4075,20 @@ app.get("/caja/resumen", async (req, res) => {
   } catch (error) {
     logError("Error al obtener resumen de caja:", error);
     return res.status(500).json({ message: "Error al obtener resumen de caja" });
+  }
+});
+
+app.get("/caja/movimientos-no-monetarios", async (req, res) => {
+  try {
+    const resumen = await getResumenCuentaLocalNoMonetaria({
+      desde: req.query.desde || null,
+      hasta: req.query.hasta || null,
+      limite: req.query.limite || 8
+    });
+    return res.json({ cuenta_local: resumen });
+  } catch (error) {
+    logError("Error al obtener movimientos no monetarios de caja:", error);
+    return res.status(500).json({ message: "Error al obtener movimientos no monetarios de caja" });
   }
 });
 
