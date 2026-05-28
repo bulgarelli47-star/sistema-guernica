@@ -166,15 +166,110 @@ async function obtenerPasivos({ desde, hasta }, alertas) {
   return pasivos;
 }
 
+async function obtenerMovimientosNoMonetarios({ desde, hasta } = {}) {
+  const base = {
+    cuenta_local: {
+      produccion: {
+        movimientos: 0,
+        unidades: 0,
+        costo_estimado: 0
+      },
+      interno_cortesia: {
+        movimientos: 0,
+        unidades: 0,
+        costo_estimado: 0
+      },
+      total_absorbido: 0,
+      movimientos_recientes: []
+    }
+  };
+
+  const where = [
+    "sap.tipo_resolucion = 'cuenta_local'",
+    "sap.estado IN ('aprobado', 'corregido')"
+  ];
+  const params = [];
+  if (desde) {
+    where.push("sap.fecha_resolucion >= ?");
+    params.push(desde);
+  }
+  if (hasta) {
+    where.push("sap.fecha_resolucion <= ?");
+    params.push(hasta);
+  }
+
+  const whereSql = where.join(" AND ");
+  const [resumenRows, recientesRows] = await Promise.all([
+    allQuery(
+      `SELECT
+         COALESCE(sap.cuenta_local_integracion, 'interno_cortesia') AS integracion,
+         COUNT(*) AS movimientos,
+         COALESCE(SUM(COALESCE(sap.cantidad_aprobada, sap.cantidad, 0)), 0) AS unidades,
+         COALESCE(SUM(COALESCE(sap.cuenta_local_costo_estimado, 0)), 0) AS costo_estimado
+       FROM stock_ajustes_pendientes sap
+       WHERE ${whereSql}
+       GROUP BY COALESCE(sap.cuenta_local_integracion, 'interno_cortesia')`,
+      params
+    ),
+    allQuery(
+      `SELECT
+         sap.fecha_resolucion AS fecha,
+         sap.hora_resolucion AS hora,
+         COALESCE(p.nombre, sap.producto_id) AS producto_nombre,
+         COALESCE(sap.cantidad_aprobada, sap.cantidad, 0) AS cantidad,
+         COALESCE(sap.cuenta_local_integracion, 'interno_cortesia') AS integracion,
+         sap.cuenta_local_responsable AS responsable,
+         sap.cuenta_local_observacion AS observacion,
+         COALESCE(sap.cuenta_local_costo_estimado, 0) AS costo_estimado,
+         sap.resuelto_por
+       FROM stock_ajustes_pendientes sap
+       LEFT JOIN productos p ON p.id = sap.producto_id
+       WHERE ${whereSql}
+       ORDER BY sap.fecha_resolucion DESC, sap.hora_resolucion DESC, sap.id DESC
+       LIMIT 10`,
+      params
+    )
+  ]);
+
+  resumenRows.forEach((row) => {
+    const key = row.integracion === "produccion" ? "produccion" : "interno_cortesia";
+    base.cuenta_local[key] = {
+      movimientos: Number(row.movimientos || 0),
+      unidades: round2(row.unidades),
+      costo_estimado: round2(row.costo_estimado)
+    };
+  });
+
+  base.cuenta_local.total_absorbido = round2(
+    base.cuenta_local.produccion.costo_estimado +
+    base.cuenta_local.interno_cortesia.costo_estimado
+  );
+
+  base.cuenta_local.movimientos_recientes = recientesRows.map((row) => ({
+    fecha: row.fecha || null,
+    hora: row.hora || null,
+    producto_nombre: row.producto_nombre || "",
+    cantidad: round2(row.cantidad),
+    integracion: row.integracion === "produccion" ? "produccion" : "interno_cortesia",
+    responsable: row.responsable || "",
+    observacion: row.observacion || "",
+    costo_estimado: round2(row.costo_estimado),
+    resuelto_por: row.resuelto_por || ""
+  }));
+
+  return base;
+}
+
 async function getResumenFinanciero({ desde = null, hasta = null } = {}) {
   const alertas = [];
   const fechaCorte = new Date().toISOString();
 
-  const [liquidez, pendientesCobro, capitalInmovilizado, pasivos] = await Promise.all([
+  const [liquidez, pendientesCobro, capitalInmovilizado, pasivos, movimientosNoMonetarios] = await Promise.all([
     obtenerLiquidez(alertas),
     obtenerPendientesCobro({ desde, hasta }, alertas),
     obtenerCapitalInmovilizado({ desde, hasta }),
-    obtenerPasivos({ desde, hasta }, alertas)
+    obtenerPasivos({ desde, hasta }, alertas),
+    obtenerMovimientosNoMonetarios({ desde, hasta })
   ]);
 
   return {
@@ -184,6 +279,7 @@ async function getResumenFinanciero({ desde = null, hasta = null } = {}) {
     pendientes_cobro: pendientesCobro,
     capital_inmovilizado: capitalInmovilizado,
     pasivos,
+    movimientos_no_monetarios: movimientosNoMonetarios,
     resultado: {
       posicion_liquida: round2(liquidez.total),
       masa_monetaria_bruta: round2(liquidez.total + pendientesCobro.total + capitalInmovilizado.total_operativo),
