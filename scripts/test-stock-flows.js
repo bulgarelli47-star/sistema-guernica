@@ -654,6 +654,112 @@ async function testFinanzasResumenBackendV1() {
   }
 }
 
+async function testProduccionV1DominioSeparado() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      const categoriaId = await crearCategoria(baseUrl, adminToken, `Produccion TEST ${Date.now()}`);
+      const insumoId = await crearProducto(baseUrl, adminToken, {
+        nombre: `Insumo produccion TEST ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "Produccion TEST",
+        stock: 10,
+        precio_compra: 5,
+        costo_final: 5,
+        precio_venta: 5,
+        maneja_stock: true,
+        tipo: "simple"
+      });
+      const derivadoId = await crearProducto(baseUrl, adminToken, {
+        nombre: `Derivado produccion TEST ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "Produccion TEST",
+        stock: 0,
+        precio_compra: 10,
+        costo_final: 10,
+        precio_venta: 20,
+        maneja_stock: true,
+        tipo: "compuesto",
+        componentes: [{ producto_id: insumoId, cantidad: 2, cantidad_uso: 2, unidad_uso: "un" }],
+        costos_extra: []
+      });
+      const recetaSinStockId = await crearProducto(baseUrl, adminToken, {
+        nombre: `Receta sin stock TEST ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "Produccion TEST",
+        stock: 0,
+        precio_compra: 10,
+        costo_final: 10,
+        precio_venta: 20,
+        maneja_stock: false,
+        tipo: "compuesto",
+        componentes: [{ producto_id: insumoId, cantidad: 1, cantidad_uso: 1, unidad_uso: "un" }],
+        costos_extra: []
+      });
+
+      const rechazaSimple = await requestJson(baseUrl, "GET", `/produccion/preview?producto_id=${insumoId}&cantidad=1`, null, adminToken);
+      assertEqual(rechazaSimple.response.status, 400, "Produccion debe rechazar producto simple");
+
+      const rechazaSinStock = await requestJson(baseUrl, "GET", `/produccion/preview?producto_id=${recetaSinStockId}&cantidad=1`, null, adminToken);
+      assertEqual(rechazaSinStock.response.status, 400, "Produccion debe rechazar compuesto sin stock fisico");
+
+      const preview = await requestJson(baseUrl, "GET", `/produccion/preview?producto_id=${derivadoId}&cantidad=3`, null, adminToken);
+      if (!preview.response.ok) throw new Error(`Preview produccion fallo: ${preview.data?.message || preview.response.status}`);
+      assertEqual(preview.data.puede_producir ? 1 : 0, 1, "Preview debe permitir produccion valida");
+      assertEqual(preview.data.componentes[0].cantidad_requerida, 6, "Preview debe calcular consumo de componentes");
+
+      const ventasAntes = await getVentas(baseUrl, adminToken);
+      const cajaAntes = await getCajaResumen(baseUrl, adminToken);
+      const registrar = await requestJson(baseUrl, "POST", "/produccion", {
+        producto_id: derivadoId,
+        cantidad_producida: 3,
+        responsable: "TEST cocina",
+        observacion: "TEST produccion V1"
+      }, adminToken);
+      if (!registrar.response.ok) throw new Error(`Registrar produccion fallo: ${registrar.data?.message || registrar.response.status}`);
+
+      assertEqual((await getProduct(baseUrl, adminToken, insumoId)).stock, 4, "Produccion debe descontar componentes fisicos");
+      assertEqual((await getProduct(baseUrl, adminToken, derivadoId)).stock, 3, "Produccion debe ingresar stock derivado");
+      if (!registrar.data.produccion?.movimiento_stock_ingreso_id) throw new Error("Produccion debe guardar movimiento_stock_ingreso_id");
+      assertEqual(registrar.data.produccion.componentes.length, 1, "Produccion debe guardar snapshot de componentes");
+      assertEqual(registrar.data.produccion.componentes[0].cantidad_consumida, 6, "Snapshot debe guardar cantidad consumida");
+
+      const movimientosInsumo = await getMovimientosStock(baseUrl, adminToken, insumoId);
+      const movimientosDerivado = await getMovimientosStock(baseUrl, adminToken, derivadoId);
+      if (!movimientosInsumo.some((m) => m.tipo_movimiento === "produccion_consumo")) {
+        throw new Error("Produccion debe crear movimiento produccion_consumo");
+      }
+      if (!movimientosDerivado.some((m) => m.tipo_movimiento === "produccion_ingreso")) {
+        throw new Error("Produccion debe crear movimiento produccion_ingreso");
+      }
+
+      const detalle = await requestJson(baseUrl, "GET", `/produccion/${registrar.data.produccion.id}`, null, adminToken);
+      if (!detalle.response.ok) throw new Error("Debe poder obtener detalle de produccion");
+      assertEqual(detalle.data.componentes.length, 1, "Detalle debe incluir componentes snapshot");
+
+      const ventasDespues = await getVentas(baseUrl, adminToken);
+      const cajaDespues = await getCajaResumen(baseUrl, adminToken);
+      assertEqual(ventasDespues.length, ventasAntes.length, "Produccion no debe crear ventas");
+      assertEqual(cajaDespues.resumen.total_general, cajaAntes.resumen.total_general, "Produccion no debe modificar caja");
+    });
+
+    const producciones = await allSql(dbPath, "SELECT * FROM producciones");
+    const snapshots = await allSql(dbPath, "SELECT * FROM produccion_componentes_snapshot");
+    const ventas = await allSql(dbPath, "SELECT * FROM ventas");
+    const pagosCuenta = await allSql(dbPath, "SELECT * FROM pagos_cuenta_corriente");
+    if (producciones.length !== 1) throw new Error("Debe persistir una produccion");
+    if (snapshots.length !== 1) throw new Error("Debe persistir un snapshot de componente");
+    if (ventas.length !== 0) throw new Error("Produccion no debe persistir ventas");
+    if (pagosCuenta.length !== 0) throw new Error("Produccion no debe persistir pagos de cuenta corriente");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testAjustesPendientesStockInfraestructura() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -7740,6 +7846,7 @@ async function testTiendaConvertirVenta() {
   await testBatchComoComponente();
   await testPermisosColaborador();
   await testFinanzasResumenBackendV1();
+  await testProduccionV1DominioSeparado();
   await testAjustesPendientesStockInfraestructura();
   await testAjustePendienteRequiereStockVer();
   await testAjustesPendientesAprobacionYRechazo();

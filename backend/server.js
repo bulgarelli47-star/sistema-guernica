@@ -155,6 +155,13 @@ const {
   listarTerminalesPoint,
   obtenerIntentoPoint
 } = require("./services/mercadoPagoPointService");
+const {
+  buildPreviewProduccion,
+  listarProductosProducibles,
+  listarProducciones,
+  obtenerProduccion,
+  registrarProduccion
+} = require("./services/produccionService");
 
 // Cargar variables de .env local si existe (sin dependencia dotenv)
 {
@@ -2666,6 +2673,82 @@ app.post("/stock/ajustes-pendientes/:id/cuenta-local", async (req, res) => {
     }
     logError("Error al resolver ajuste pendiente con Cuenta Local:", error);
     return res.status(500).json({ message: "Error al resolver ajuste pendiente con Cuenta Local" });
+  }
+});
+
+app.get("/produccion/productos", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_ver", "No tenes permisos para ver produccion"))) return;
+
+  try {
+    return res.json(await listarProductosProducibles());
+  } catch (error) {
+    logError("Error al listar productos producibles:", error);
+    return res.status(500).json({ message: "Error al listar productos producibles" });
+  }
+});
+
+app.get("/produccion/preview", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_ver", "No tenes permisos para ver produccion"))) return;
+
+  try {
+    const preview = await buildPreviewProduccion({
+      producto_id: req.query.producto_id,
+      cantidad: req.query.cantidad
+    });
+    return res.json(preview);
+  } catch (error) {
+    const status = error.statusCode || 500;
+    if (status >= 500) logError("Error al previsualizar produccion:", error);
+    return res.status(status).json({ message: error.message || "Error al previsualizar produccion" });
+  }
+});
+
+app.post("/produccion", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_ajustar", "No tenes permisos para registrar produccion"))) return;
+
+  try {
+    const produccion = await registrarProduccion({
+      producto_id: req.body.producto_id,
+      cantidad_producida: req.body.cantidad_producida,
+      responsable: req.body.responsable,
+      observacion: req.body.observacion,
+      usuario: req.usuario?.nombre || req.body.usuario || "admin"
+    });
+    return res.status(201).json({ message: "Produccion registrada", produccion });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    if (status >= 500) logError("Error al registrar produccion:", error);
+    return res.status(status).json({ message: error.message || "Error al registrar produccion" });
+  }
+});
+
+app.get("/produccion", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_ver", "No tenes permisos para ver produccion"))) return;
+
+  try {
+    const producciones = await listarProducciones({
+      desde: req.query.desde || null,
+      hasta: req.query.hasta || null,
+      producto_id: req.query.producto_id || null,
+      estado: req.query.estado || null
+    });
+    return res.json(producciones);
+  } catch (error) {
+    logError("Error al listar producciones:", error);
+    return res.status(500).json({ message: "Error al listar producciones" });
+  }
+});
+
+app.get("/produccion/:id", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_ver", "No tenes permisos para ver produccion"))) return;
+
+  try {
+    const produccion = await obtenerProduccion(req.params.id);
+    if (!produccion) return res.status(404).json({ message: "Produccion no encontrada" });
+    return res.json(produccion);
+  } catch (error) {
+    logError("Error al obtener produccion:", error);
+    return res.status(500).json({ message: "Error al obtener produccion" });
   }
 });
 
