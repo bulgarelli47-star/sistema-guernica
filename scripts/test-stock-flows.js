@@ -1494,6 +1494,65 @@ async function testResolverAjustePendienteConVenta() {
   }
 }
 
+async function testAjusteVentaRecetaConVentaIdEsAccionable() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+
+      const ensureResumen = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, adminToken);
+      if (!ensureResumen.response.ok) throw new Error(`Ensure resumen ajustes fallo: ${ensureResumen.data?.message || ensureResumen.response.status}`);
+
+      const { lastID: ventaId } = await runSql(
+        dbPath,
+        `INSERT INTO ventas
+         (fecha, hora, usuario, total, tipo, estado, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, es_cuenta_corriente, saldo_pendiente)
+         VALUES ('2024-01-20', '12:00:00', 'test', 100, 'normal', 'cobrada', 'efectivo', 'efectivo', 100, 0, 0, 0)`
+      );
+      const { lastID: detalleVentaId } = await runSql(
+        dbPath,
+        `INSERT INTO detalle_ventas (venta_id, producto_id, nombre_producto, cantidad, precio_unitario, subtotal)
+         VALUES (?, 4, 'TEST Receta sin stock', 1, 100, 100)`,
+        [ventaId]
+      );
+      const { lastID: ajusteId } = await runSql(
+        dbPath,
+        `INSERT INTO stock_ajustes_pendientes
+         (producto_id, componente_id, tipo_movimiento, cantidad, cantidad_teorica,
+          motivo, observaciones, proveedor_id, stock_actual_snapshot, estado,
+          solicitado_por, solicitado_rol, fecha, hora, created_at, caja_id,
+          venta_id, detalle_venta_id, producto_vendido_id, producto_vendido_nombre_snapshot, origen)
+         VALUES (11, 11, 'egreso', 2, 2, 'TEST venta receta accionable', '', NULL, 80, 'pendiente',
+                 'test', 'admin', '2024-01-20', '12:01:00', datetime('now'), NULL,
+                 ?, ?, 4, 'TEST Receta sin stock', 'venta_receta')`,
+        [ventaId, detalleVentaId]
+      );
+
+      const listadoAccionable = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes?estado=pendiente&solo_accionables=1", null, adminToken);
+      if (!listadoAccionable.response.ok) throw new Error(`Listado venta_receta accionable fallo: ${listadoAccionable.data?.message || listadoAccionable.response.status}`);
+      const ajuste = listadoAccionable.data.find((item) => Number(item.id) === Number(ajusteId));
+      if (!ajuste) throw new Error("Ajuste venta_receta con venta_id debe aparecer en solo_accionables=1");
+      if (ajuste.origen !== "venta_receta") throw new Error(`Ajuste debe conservar origen venta_receta. Actual=${ajuste.origen}`);
+      assertEqual(ajuste.venta_id, ventaId, "Ajuste venta_receta debe conservar venta_id como origen");
+      assertEqual(ajuste.detalle_venta_id, detalleVentaId, "Ajuste venta_receta debe conservar detalle_venta_id");
+      assertEqual(ajuste.producto_vendido_id, 4, "Ajuste venta_receta debe conservar producto_vendido_id");
+      assertApprox(ajuste.cantidad_teorica, 2, "Ajuste venta_receta debe exponer cantidad_teorica");
+
+      const resumen = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, adminToken);
+      if (!resumen.response.ok) throw new Error(`Resumen venta_receta accionable fallo: ${resumen.data?.message || resumen.response.status}`);
+      assertEqual(resumen.data.pendientes, 1, "Ajuste venta_receta debe contar como pendiente real");
+      assertEqual(resumen.data.pendientes_accionables, 1, "Ajuste venta_receta debe contar como pendiente accionable");
+      assertEqual(resumen.data.resueltos_por_venta, 0, "Ajuste venta_receta no debe contar como resuelto_por_venta por tener venta_id");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testResolverAjustePendienteConCuentaLocal() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -8195,6 +8254,7 @@ async function testTiendaConvertirVenta() {
   await testAjustesPendientesAprobacionYRechazo();
   await testReconciliarAjustesPendientesStock();
   await testResolverAjustePendienteConVenta();
+  await testAjusteVentaRecetaConVentaIdEsAccionable();
   await testResolverAjustePendienteConCuentaLocal();
   await testResumenAjustesPendientes();
   await testClientesTipoClienteClasificacion();

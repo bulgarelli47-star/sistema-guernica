@@ -159,6 +159,13 @@ function round2(valor) {
   return Number((Number(valor) || 0).toFixed(2));
 }
 
+const AJUSTE_ACCIONABLE_SQL = `(
+  (COALESCE(sap.origen, '') = '${ORIGEN_VENTA_RECETA}')
+  OR (sap.venta_id IS NULL AND COALESCE(sap.tipo_resolucion, '') = '')
+  OR COALESCE(sap.resolucion_parcial, 0) = 1
+  OR COALESCE(sap.cantidad_pendiente_resolucion, 0) > 0
+)`;
+
 async function obtenerAjustePendiente(id) {
   const row = await getQuery(
     `SELECT sap.*, p.nombre AS producto_nombre
@@ -415,7 +422,7 @@ async function listarAjustesPendientes({ estado, solo_accionables = false } = {}
     params.push(estadoNormalizado);
   }
   if (solo_accionables) {
-    where.push("((sap.venta_id IS NULL AND COALESCE(sap.tipo_resolucion, '') = '') OR COALESCE(sap.resolucion_parcial, 0) = 1 OR COALESCE(sap.cantidad_pendiente_resolucion, 0) > 0)");
+    where.push(AJUSTE_ACCIONABLE_SQL);
   }
   const rows = await allQuery(
     `SELECT sap.*, p.nombre AS producto_nombre
@@ -887,15 +894,18 @@ async function getResumenAjustesPendientes() {
   const hoy = new Date().toISOString().slice(0, 10);
   const [rowPendientes, rowResueltosPorVenta, rowAprobados, rowRechazados] = await Promise.all([
     getQuery(`SELECT COUNT(*) AS total
-              FROM stock_ajustes_pendientes
+              FROM stock_ajustes_pendientes sap
               WHERE estado = 'pendiente'
-                AND ((venta_id IS NULL AND COALESCE(tipo_resolucion, '') = '') OR COALESCE(resolucion_parcial, 0) = 1 OR COALESCE(cantidad_pendiente_resolucion, 0) > 0)`),
+                AND ${AJUSTE_ACCIONABLE_SQL}`),
     getQuery(`SELECT COUNT(*) AS total
               FROM stock_ajustes_pendientes
               WHERE estado = 'pendiente'
                 AND venta_id IS NOT NULL
+                AND COALESCE(origen, '') != ?
                 AND COALESCE(resolucion_parcial, 0) = 0
-                AND COALESCE(cantidad_pendiente_resolucion, 0) <= 0`),
+                AND COALESCE(cantidad_pendiente_resolucion, 0) <= 0`,
+      [ORIGEN_VENTA_RECETA]
+    ),
     getQuery(
       "SELECT COUNT(*) AS total FROM stock_ajustes_pendientes WHERE estado IN ('aprobado', 'corregido') AND date(revisado_at) = ?",
       [hoy]
