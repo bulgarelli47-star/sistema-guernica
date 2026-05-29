@@ -508,7 +508,7 @@ async function testRecetaSinStockBloqueaMovimientoManual() {
   }
 }
 
-async function testRecetaSinStockComoComponenteDescuentaDirecto() {
+async function testRecetaSinStockComoComponenteNoDescuentaDirecto() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
   try {
@@ -531,8 +531,117 @@ async function testRecetaSinStockComoComponenteDescuentaDirecto() {
       assertEqual((await getProduct(baseUrl, token, 9)).stock, 72, "Pizza Muzzarella debe ingresar 1 unidad");
       assertEqual((await getProduct(baseUrl, token, 4)).stock, 0, "Salsa lista no debe usar stock como contador");
       assertEqual((await getProduct(baseUrl, token, 7)).stock, 0, "Pre Pizza no debe usar stock como contador");
-      assertEqual((await getProduct(baseUrl, token, 3)).stock, 4920, "Salsa lista debe consumir componentes directos");
+      assertEqual((await getProduct(baseUrl, token, 3)).stock, 5000, "Receta sin stock como componente no debe consumir componentes directos");
       assertEqual((await getProduct(baseUrl, token, 6)).stock, 4800, "Muzzarella Cremac debe consumir 200gr");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function setupRecetaSinStockVenta(baseUrl, token) {
+  const categoriaId = await crearCategoria(baseUrl, token, "TEST Receta Ajuste Pendiente");
+  const componenteId = await crearProducto(baseUrl, token, {
+    nombre: `TEST Insumo Receta ${Date.now()}`,
+    categoria: "TEST Receta Ajuste Pendiente",
+    categoria_id: categoriaId,
+    stock: 100,
+    maneja_stock: true,
+    precio_venta: 10
+  });
+  const recetaId = await crearProductoCompuesto(baseUrl, token, {
+    nombre: `TEST Receta Sin Stock ${Date.now()}`,
+    categoria: "TEST Receta Ajuste Pendiente",
+    categoria_id: categoriaId,
+    precio_venta: 300,
+    componentes: [{ producto_id: componenteId, cantidad: 2 }],
+    rendimiento_receta: 8
+  });
+  await abrirCaja(baseUrl, token, 1000);
+  return { componenteId, recetaId };
+}
+
+async function venderRecetaSinStock(baseUrl, token, recetaId, cantidad = 3) {
+  return requestJson(baseUrl, "POST", "/ventas", {
+    usuario: "test",
+    tipo: "normal",
+    tipo_cobro: "efectivo",
+    items: [{
+      producto_id: recetaId,
+      nombre_producto: "TEST Receta Sin Stock",
+      cantidad,
+      precio_unitario: 300
+    }]
+  }, token);
+}
+
+async function testVentaRecetaSinStockGeneraAjustePendiente() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const { componenteId, recetaId } = await setupRecetaSinStockVenta(baseUrl, token);
+
+      const venta = await venderRecetaSinStock(baseUrl, token, recetaId, 3);
+      if (!venta.response.ok) throw new Error(`Venta receta sin stock fallo: ${venta.data?.message || venta.response.status}`);
+
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 100, "Venta de receta sin stock no debe descontar componente");
+      assertEqual((await getProduct(baseUrl, token, recetaId)).stock, 0, "Receta sin stock debe quedar en stock 0");
+
+      const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+      const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(venta.data.venta_id) && item.origen === "venta_receta");
+      if (!ajuste) throw new Error("Venta de receta sin stock debe crear ajuste pendiente venta_receta");
+      assertEqual(ajuste.producto_id, componenteId, "Ajuste pendiente debe apuntar al componente fisico");
+      assertEqual(ajuste.componente_id, componenteId, "Ajuste pendiente debe guardar componente_id");
+      assertEqual(ajuste.producto_vendido_id, recetaId, "Ajuste pendiente debe guardar producto_vendido_id");
+      assertApprox(ajuste.cantidad_teorica, 6, "Ajuste pendiente debe guardar cantidad teorica");
+
+      const aprobar = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajuste.id}/aprobar`, {}, token);
+      if (!aprobar.response.ok) throw new Error(`Aprobar ajuste teorico fallo: ${aprobar.data?.message || aprobar.response.status}`);
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 94, "Aprobar ajuste pendiente debe descontar stock fisico");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAnularRecetaSinStockCancelaPendienteSinReponerAprobado() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const { componenteId, recetaId } = await setupRecetaSinStockVenta(baseUrl, token);
+
+      const ventaPendiente = await venderRecetaSinStock(baseUrl, token, recetaId, 1);
+      if (!ventaPendiente.response.ok) throw new Error(`Venta pendiente ajuste fallo: ${ventaPendiente.data?.message || ventaPendiente.response.status}`);
+      const anularPendiente = await requestJson(baseUrl, "POST", `/ventas/${ventaPendiente.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anularPendiente.response.ok) throw new Error(`Anular venta con ajuste pendiente fallo: ${anularPendiente.data?.message || anularPendiente.response.status}`);
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 100, "Anular ajuste pendiente no debe mover stock fisico");
+      const rechazados = await getAjustesPendientesStock(baseUrl, token, "rechazado");
+      if (!rechazados.some((item) => Number(item.venta_id) === Number(ventaPendiente.data.venta_id) && item.origen === "venta_receta")) {
+        throw new Error("Anular venta debe cancelar ajuste teorico pendiente");
+      }
+
+      const ventaAprobada = await venderRecetaSinStock(baseUrl, token, recetaId, 1);
+      if (!ventaAprobada.response.ok) throw new Error(`Venta aprobada ajuste fallo: ${ventaAprobada.data?.message || ventaAprobada.response.status}`);
+      const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+      const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(ventaAprobada.data.venta_id) && item.origen === "venta_receta");
+      if (!ajuste) throw new Error("Debe existir ajuste pendiente para aprobar");
+      const aprobar = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajuste.id}/aprobar`, {}, token);
+      if (!aprobar.response.ok) throw new Error(`Aprobar ajuste antes de anular fallo: ${aprobar.data?.message || aprobar.response.status}`);
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 98, "Aprobar ajuste debe descontar componente");
+
+      const anularAprobada = await requestJson(baseUrl, "POST", `/ventas/${ventaAprobada.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anularAprobada.response.ok) throw new Error(`Anular venta con ajuste aprobado fallo: ${anularAprobada.data?.message || anularAprobada.response.status}`);
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 98, "Anular venta con ajuste aprobado no debe reponer stock automatico");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -2143,7 +2252,7 @@ async function testAnularVentaCobradaReponeStock() {
   }
 }
 
-async function testProductoCompuestoDescuentaComponentes() {
+async function testProductoCompuestoGeneraAjusteTeorico() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
   try {
@@ -2193,7 +2302,12 @@ async function testProductoCompuestoDescuentaComponentes() {
       }, token);
       if (!venta.response.ok) throw new Error(`Venta de compuesto fallo: ${venta.data?.message || venta.response.status}`);
 
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 74, "Vender 2 compuestos debe descontar 6 unidades del componente");
+      assertEqual((await getProduct(baseUrl, token, 11)).stock, 80, "Vender compuesto sin stock no debe descontar componente fisico");
+      const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+      const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(venta.data.venta_id) && item.origen === "venta_receta");
+      if (!ajuste) throw new Error("Vender compuesto sin stock debe generar ajuste teorico pendiente");
+      assertEqual(ajuste.producto_id, 11, "Ajuste teorico debe apuntar al componente fisico");
+      assertApprox(ajuste.cantidad_teorica, 6, "Ajuste teorico debe guardar consumo de 6 unidades");
       const productoCompuestoDespues = await getProduct(baseUrl, token, compuesto.data.id);
       assertEqual(productoCompuestoDespues.stock_fisico, 0, "Vender compuesto no debe romper stock propio del compuesto");
     });
@@ -2927,7 +3041,11 @@ async function testCompuestoConComponenteFraccionadoDescuentaCantidadUsada() {
       }, token);
       if (!venta.response.ok) throw new Error(`Venta compuesto fraccionado fallo: ${venta.data?.message || venta.response.status}`);
 
-      assertApprox((await getProduct(baseUrl, token, componenteId)).stock, 7.5, "Vender compuesto debe descontar solo cantidad usada del componente fraccionado");
+      assertApprox((await getProduct(baseUrl, token, componenteId)).stock, 10, "Vender compuesto sin stock no debe descontar componente fraccionado");
+      const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+      const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(venta.data.venta_id) && item.origen === "venta_receta");
+      if (!ajuste) throw new Error("Vender compuesto fraccionado debe generar ajuste teorico pendiente");
+      assertApprox(ajuste.cantidad_teorica, 2.5, "Ajuste teorico debe conservar cantidad fraccionada usada");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -3020,7 +3138,7 @@ async function testCompuestoConStockPropioNoDuplicaDescuento() {
   }
 }
 
-async function testAnularVentaCompuestaReponeComponente() {
+async function testAnularVentaCompuestaCancelaAjusteTeorico() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
   try {
@@ -3057,13 +3175,17 @@ async function testAnularVentaCompuestaReponeComponente() {
         }]
       }, token);
       if (!venta.response.ok) throw new Error(`Venta compuesto para anular fallo: ${venta.data?.message || venta.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 12, "Venta compuesta debe descontar componente antes de anular");
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 20, "Venta compuesta sin stock no debe descontar componente antes de aprobar ajuste");
 
       const anulacion = await requestJson(baseUrl, "POST", `/ventas/${venta.data.venta_id}/anular-cobrada`, {
         authorization_code: "1234"
       }, token);
       if (!anulacion.response.ok) throw new Error(`Anulacion venta compuesta fallo: ${anulacion.data?.message || anulacion.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 20, "Anular venta compuesta debe reponer stock del componente");
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 20, "Anular venta compuesta con ajuste pendiente no debe mover stock");
+      const rechazados = await getAjustesPendientesStock(baseUrl, token, "rechazado");
+      if (!rechazados.some((item) => Number(item.venta_id) === Number(venta.data.venta_id) && item.origen === "venta_receta")) {
+        throw new Error("Anular venta compuesta debe cancelar ajuste teorico pendiente");
+      }
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -3684,7 +3806,7 @@ async function testCuentaCorrienteConservaDetalleHistoricoSinModificadores() {
   }
 }
 
-async function testComboActualNoDescuentaDobleSinModificadores() {
+async function testComboActualGeneraAjusteTeoricoSinModificadores() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
   try {
@@ -3726,7 +3848,11 @@ async function testComboActualNoDescuentaDobleSinModificadores() {
       }, token);
       if (!venta.response.ok) throw new Error(`Venta combo etapa 0 fallo: ${venta.data?.message || venta.response.status}`);
 
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 78, "Combo actual debe descontar componentes una sola vez");
+      assertEqual((await getProduct(baseUrl, token, 11)).stock, 80, "Combo sin stock no debe descontar componentes al vender");
+      const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+      const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(venta.data.venta_id) && item.origen === "venta_receta");
+      if (!ajuste) throw new Error("Combo sin stock debe generar ajuste teorico pendiente");
+      assertApprox(ajuste.cantidad_teorica, 2, "Ajuste teorico de combo debe guardar consumo de componentes");
       const detalle = await getVentaDetalle(baseUrl, token, venta.data.venta_id);
       assertEqual(detalle.items.length, 1, "Combo debe quedar como una sola linea de detalle_ventas");
       assertEqual(detalle.items[0].producto_id, combo.data.id, "Detalle debe registrar el producto combo, no sus componentes como lineas vendidas");
@@ -7146,7 +7272,11 @@ async function testModificadorQuitarVentaCompuestoDescuentaMenos() {
 
       const stockFinal = (await getProduct(baseUrl, token, componenteId)).stock;
       // Receta descuenta 30, snapshot quitar restaura 15 → neto = -15
-      assertEqual(stockFinal, stockInicial - 15, "Venta compuesto con quitar 15/30 debe descontar solo 15 del componente");
+      assertEqual(stockFinal, stockInicial, "Venta compuesto con quitar no debe descontar stock fisico");
+      const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+      const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(venta.data.venta_id) && item.origen === "venta_receta");
+      if (!ajuste) throw new Error("Venta compuesto con quitar debe generar ajuste teorico");
+      assertApprox(ajuste.cantidad_teorica, 15, "Venta compuesto con quitar 15/30 debe generar consumo teorico neto 15");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -7244,7 +7374,7 @@ async function testModificadorQuitarAnulacionReponeExacto() {
 
       const venta = await venderConQuitar(baseUrl, token, compuestoId, modId);
       if (!venta.response.ok) throw new Error(`Venta con quitar fallo: ${venta.data?.message || venta.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial - 15, "Venta con quitar debe descontar 15 neto");
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial, "Venta con quitar no debe descontar stock fisico");
 
       const anulacion = await requestJson(baseUrl, "POST", `/ventas/${venta.data.venta_id}/anular-cobrada`, {
         authorization_code: "1234"
@@ -7284,14 +7414,18 @@ async function testModificadorQuitarPendienteDescuentaMenos() {
         }]
       }, token);
       if (!pendiente.response.ok) throw new Error(`Pendiente con quitar fallo: ${pendiente.data?.message || pendiente.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial - 15, "Pendiente con quitar debe descontar 15 neto al guardar");
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial, "Pendiente con quitar no debe descontar stock fisico al guardar");
+      const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+      const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(pendiente.data.venta_id) && item.origen === "venta_receta");
+      if (!ajuste) throw new Error("Pendiente con quitar debe generar ajuste teorico");
+      assertApprox(ajuste.cantidad_teorica, 15, "Pendiente con quitar debe guardar consumo teorico neto 15");
 
       // Cobrar el pendiente NO debe volver a aplicar snapshots de quitar
       const cobro = await requestJson(baseUrl, "POST", `/ventas/${pendiente.data.venta_id}/cobrar`, {
         tipo_cobro: "efectivo"
       }, token);
       if (!cobro.response.ok) throw new Error(`Cobrar pendiente con quitar fallo: ${cobro.data?.message || cobro.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial - 15, "Cobrar pendiente con quitar NO debe volver a aplicar el snapshot");
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial, "Cobrar pendiente con quitar no debe descontar stock fisico");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -7655,8 +7789,12 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
       }, token);
       if (!pendiente.response.ok) throw new Error(`Pendiente inicial fallo: ${pendiente.data?.message}`);
       const ventaId = pendiente.data.venta_id;
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial - 30,
-        "Pendiente sin quitar debe descontar 30 del componente base (receta)");
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial,
+        "Pendiente sin quitar no debe descontar stock fisico");
+      let ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+      let ajuste = ajustes.find((item) => Number(item.venta_id) === Number(ventaId) && item.origen === "venta_receta");
+      if (!ajuste) throw new Error("Pendiente sin quitar debe crear ajuste teorico");
+      assertApprox(ajuste.cantidad_teorica, 30, "Pendiente sin quitar debe guardar consumo teorico 30");
 
       // 2. Editar AGREGANDO quitar 15 → diff snapshot old=[], new=[quitar 15] → restaura 15
       const edit1 = await requestJson(baseUrl, "PUT", `/ventas/${ventaId}/pendiente`, {
@@ -7670,8 +7808,12 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
         }]
       }, token);
       if (!edit1.response.ok) throw new Error(`Edicion agregando quitar fallo: ${edit1.data?.message}`);
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial - 15,
-        "Editar pendiente agregando quitar 15 debe restaurar 15 via diff (neto inicial-15)");
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial,
+        "Editar pendiente agregando quitar no debe mover stock fisico");
+      ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+      ajuste = ajustes.find((item) => Number(item.venta_id) === Number(ventaId) && item.origen === "venta_receta");
+      if (!ajuste) throw new Error("Editar pendiente con quitar debe regenerar ajuste teorico");
+      assertApprox(ajuste.cantidad_teorica, 15, "Editar pendiente con quitar debe dejar consumo teorico neto 15");
 
       // 3. Editar QUITANDO el modificador → diff old=[quitar 15], new=[] → deducta 15 de vuelta
       const edit2 = await requestJson(baseUrl, "PUT", `/ventas/${ventaId}/pendiente`, {
@@ -7685,16 +7827,20 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
         }]
       }, token);
       if (!edit2.response.ok) throw new Error(`Edicion quitando quitar fallo: ${edit2.data?.message}`);
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial - 30,
-        "Editar pendiente quitando el modificador debe volver a inicial-30 (diff exacto)");
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial,
+        "Editar pendiente quitando el modificador no debe mover stock fisico");
+      ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+      ajuste = ajustes.find((item) => Number(item.venta_id) === Number(ventaId) && item.origen === "venta_receta");
+      if (!ajuste) throw new Error("Editar pendiente quitando modificador debe regenerar ajuste teorico");
+      assertApprox(ajuste.cantidad_teorica, 30, "Editar pendiente quitando modificador debe volver a consumo teorico 30");
 
       // 4. Cobrar pendiente (composición final sin quitar) → no re-aplica stock extra
       const cobro = await requestJson(baseUrl, "POST", `/ventas/${ventaId}/cobrar`, {
         tipo_cobro: "efectivo"
       }, token);
       if (!cobro.response.ok) throw new Error(`Cobrar pendiente fallo: ${cobro.data?.message}`);
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial - 30,
-        "Cobrar pendiente no debe re-aplicar stock: queda en inicial-30");
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial,
+        "Cobrar pendiente no debe descontar stock fisico");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -8037,7 +8183,9 @@ async function testTiendaConvertirVenta() {
 
 (async () => {
   await testRecetaSinStockBloqueaMovimientoManual();
-  await testRecetaSinStockComoComponenteDescuentaDirecto();
+  await testRecetaSinStockComoComponenteNoDescuentaDirecto();
+  await testVentaRecetaSinStockGeneraAjustePendiente();
+  await testAnularRecetaSinStockCancelaPendienteSinReponerAprobado();
   await testPermisosColaborador();
   await testFinanzasResumenBackendV1();
   await testProduccionV1DominioSeparado();
@@ -8057,7 +8205,7 @@ async function testTiendaConvertirVenta() {
   await testPendienteNoImpactaCajaHastaCobro();
   await testAnularPendienteReponeStock();
   await testAnularVentaCobradaReponeStock();
-  await testProductoCompuestoDescuentaComponentes();
+  await testProductoCompuestoGeneraAjusteTeorico();
   await testProveedorGuardaImpactoContable();
   await testPagoRegistradoImpactaCaja();
   await testPagoPendienteNoImpactaCaja();
@@ -8078,7 +8226,7 @@ async function testTiendaConvertirVenta() {
   await testSimpleConRendimientoDescuentaStockFisicoUnaVez();
   await testCompuestoConComponenteFraccionadoDescuentaCantidadUsada();
   await testCompuestoConStockPropioNoDuplicaDescuento();
-  await testAnularVentaCompuestaReponeComponente();
+  await testAnularVentaCompuestaCancelaAjusteTeorico();
   await testMovimientoManualRegistraStockAnteriorYNuevo();
   await testResumenReporteDevuelveClaves();
   await testResumenReporteExcluyeVentasAnuladas();
@@ -8095,7 +8243,7 @@ async function testTiendaConvertirVenta() {
   await testProductosMasVendidosRespetaLimite();
   await testModificadoresEtapa0SchemaYReporteNeutro();
   await testCuentaCorrienteConservaDetalleHistoricoSinModificadores();
-  await testComboActualNoDescuentaDobleSinModificadores();
+  await testComboActualGeneraAjusteTeoricoSinModificadores();
   await testModificadoresEtapa1BackendAislado();
   await testModificadoresEtapa2AVentasNormales();
   await testModificadoresEtapa2AProteccionesAuditoria();

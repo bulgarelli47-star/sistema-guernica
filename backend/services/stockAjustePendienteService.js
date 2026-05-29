@@ -11,6 +11,7 @@ const TIPOS_MOVIMIENTO_VALIDOS = new Set(["ingreso", "egreso"]);
 const ESTADOS_VALIDOS = new Set(["pendiente", "aprobado", "rechazado", "corregido"]);
 const TIPOS_RESOLUCION_VALIDOS = new Set(["cobrar", "cuenta_corriente", "ajuste_stock", "perdida_interna", "rechazado", "cuenta_local"]);
 const TIPOS_RESOLUCION_VENTA_VALIDOS = new Set(["cobrar", "cuenta_corriente", "ajuste_stock", "perdida_interna", "rechazado"]);
+const ORIGEN_VENTA_RECETA = "venta_receta";
 
 function normalizarTexto(valor) {
   return String(valor || "").trim();
@@ -95,7 +96,13 @@ async function ensureStockAjustesPendientesSchema() {
       cuenta_local_observacion TEXT,
       cuenta_local_responsable TEXT,
       cuenta_local_nombre_snapshot TEXT,
-      cuenta_local_costo_estimado REAL DEFAULT 0
+      cuenta_local_costo_estimado REAL DEFAULT 0,
+      origen TEXT,
+      detalle_venta_id INTEGER,
+      producto_vendido_id INTEGER,
+      producto_vendido_nombre_snapshot TEXT,
+      componente_id INTEGER,
+      cantidad_teorica REAL
     )
   `);
 
@@ -112,10 +119,17 @@ async function ensureStockAjustesPendientesSchema() {
   await ensureColumnStockAjustesPendientes("cuenta_local_responsable", "TEXT");
   await ensureColumnStockAjustesPendientes("cuenta_local_nombre_snapshot", "TEXT");
   await ensureColumnStockAjustesPendientes("cuenta_local_costo_estimado", "REAL DEFAULT 0");
+  await ensureColumnStockAjustesPendientes("origen", "TEXT");
+  await ensureColumnStockAjustesPendientes("detalle_venta_id", "INTEGER");
+  await ensureColumnStockAjustesPendientes("producto_vendido_id", "INTEGER");
+  await ensureColumnStockAjustesPendientes("producto_vendido_nombre_snapshot", "TEXT");
+  await ensureColumnStockAjustesPendientes("componente_id", "INTEGER");
+  await ensureColumnStockAjustesPendientes("cantidad_teorica", "REAL");
 
   await runQuery("CREATE INDEX IF NOT EXISTS idx_stock_ajustes_pendientes_estado ON stock_ajustes_pendientes(estado)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_stock_ajustes_pendientes_producto ON stock_ajustes_pendientes(producto_id)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_stock_ajustes_pendientes_caja ON stock_ajustes_pendientes(caja_id)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_stock_ajustes_pendientes_venta_origen ON stock_ajustes_pendientes(venta_id, origen)");
 }
 
 function mapAjuste(row) {
@@ -133,7 +147,11 @@ function mapAjuste(row) {
     cantidad_resuelta: Number(row.cantidad_resuelta || 0),
     cantidad_pendiente_resolucion: Number(row.cantidad_pendiente_resolucion || 0),
     resolucion_parcial: Number(row.resolucion_parcial || 0),
-    cuenta_local_costo_estimado: Number(row.cuenta_local_costo_estimado || 0)
+    cuenta_local_costo_estimado: Number(row.cuenta_local_costo_estimado || 0),
+    detalle_venta_id: row.detalle_venta_id === null || row.detalle_venta_id === undefined ? null : Number(row.detalle_venta_id),
+    producto_vendido_id: row.producto_vendido_id === null || row.producto_vendido_id === undefined ? null : Number(row.producto_vendido_id),
+    componente_id: row.componente_id === null || row.componente_id === undefined ? null : Number(row.componente_id),
+    cantidad_teorica: row.cantidad_teorica === null || row.cantidad_teorica === undefined ? null : Number(row.cantidad_teorica)
   };
 }
 
@@ -218,6 +236,172 @@ async function crearAjustePendiente({
   );
 
   return obtenerAjustePendiente(result.lastID);
+}
+
+async function acumularComponenteFisico(productoId, cantidad, acumulado, visited = new Set()) {
+  const componenteId = Number(productoId);
+  const cantidadNumero = Number(cantidad || 0);
+  if (!componenteId || !Number.isFinite(cantidadNumero) || Math.abs(cantidadNumero) <= 0.0001) {
+    return;
+  }
+
+  if (visited.has(componenteId)) {
+    return;
+  }
+
+  const producto = await getQuery(
+    "SELECT id, nombre, stock, tipo, maneja_stock FROM productos WHERE id = ?",
+    [componenteId]
+  );
+  if (!producto) return;
+
+  const esRecetaSinStock = normalizarTipoProducto(producto.tipo) === "compuesto" && !Number(producto.maneja_stock);
+  if (esRecetaSinStock) {
+    const componentes = await getComponentesProductoCompuesto(componenteId);
+    if (!componentes.length) {
+      return;
+    }
+
+    const nextVisited = new Set(visited);
+    nextVisited.add(componenteId);
+    for (const componente of componentes) {
+      await acumularComponenteFisico(
+        componente.producto_id,
+        cantidadNumero * Number(componente.cantidad || 0),
+        acumulado,
+        nextVisited
+      );
+    }
+    return;
+  }
+
+  const actual = acumulado.get(componenteId) || {
+    producto,
+    cantidad: 0
+  };
+  actual.cantidad += cantidadNumero;
+  acumulado.set(componenteId, actual);
+}
+
+async function crearAjustesPendientesVentaReceta({
+  ventaId,
+  detalles = [],
+  usuario,
+  rol
+} = {}) {
+  await ensureStockAjustesPendientesSchema();
+
+  const venta = normalizarId(ventaId);
+  if (!venta || !Array.isArray(detalles) || !detalles.length) {
+    return [];
+  }
+
+  const creados = [];
+  const { fecha, hora } = getNowParts();
+  const solicitadoPor = normalizarTexto(usuario) || "admin";
+  const solicitadoRol = normalizarTexto(rol);
+
+  for (const detalle of detalles) {
+    const productoVendidoId = normalizarId(detalle.producto_id);
+    const detalleVentaId = normalizarId(detalle.detalle_venta_id ?? detalle.id);
+    const cantidadVendida = Number(detalle.cantidad || 0);
+    if (!productoVendidoId || !detalleVentaId || cantidadVendida <= 0) continue;
+
+    const productoVendido = await getQuery(
+      "SELECT id, nombre, tipo, maneja_stock FROM productos WHERE id = ?",
+      [productoVendidoId]
+    );
+    const esRecetaSinStock = productoVendido
+      && normalizarTipoProducto(productoVendido.tipo) === "compuesto"
+      && !Number(productoVendido.maneja_stock);
+    if (!esRecetaSinStock) continue;
+
+    const acumulado = new Map();
+    const componentesBase = await getComponentesProductoCompuesto(productoVendidoId);
+    for (const componente of componentesBase) {
+      await acumularComponenteFisico(
+        componente.producto_id,
+        cantidadVendida * Number(componente.cantidad || 0),
+        acumulado,
+        new Set([productoVendidoId])
+      );
+    }
+
+    for (const componente of Array.isArray(detalle.componentes) ? detalle.componentes : []) {
+      const efecto = componente.operacion === "quitar" ? -1 : 1;
+      await acumularComponenteFisico(
+        componente.producto_id,
+        efecto * Number(componente.cantidad || 0),
+        acumulado,
+        new Set([productoVendidoId])
+      );
+    }
+
+    for (const [componenteId, item] of acumulado.entries()) {
+      const cantidadTeorica = Number(Number(item.cantidad || 0).toFixed(4));
+      if (cantidadTeorica <= 0) continue;
+
+      const result = await runQuery(
+        `INSERT INTO stock_ajustes_pendientes
+         (producto_id, componente_id, tipo_movimiento, cantidad, cantidad_teorica,
+          motivo, observaciones, proveedor_id, stock_actual_snapshot, estado,
+          solicitado_por, solicitado_rol, fecha, hora, created_at, caja_id,
+          venta_id, detalle_venta_id, producto_vendido_id, producto_vendido_nombre_snapshot, origen)
+         VALUES (?, ?, 'egreso', ?, ?, ?, ?, NULL, ?, 'pendiente',
+                 ?, ?, ?, ?, datetime('now'), NULL, ?, ?, ?, ?, ?)`,
+        [
+          componenteId,
+          componenteId,
+          cantidadTeorica,
+          cantidadTeorica,
+          `Consumo teorico venta receta: ${productoVendido.nombre || detalle.nombre_producto || productoVendidoId}`,
+          `Venta #${venta} detalle #${detalleVentaId}`,
+          Number(item.producto.stock || 0),
+          solicitadoPor,
+          solicitadoRol,
+          fecha,
+          hora,
+          venta,
+          detalleVentaId,
+          productoVendidoId,
+          normalizarTexto(productoVendido.nombre || detalle.nombre_producto),
+          ORIGEN_VENTA_RECETA
+        ]
+      );
+      creados.push(await obtenerAjustePendiente(result.lastID));
+    }
+  }
+
+  return creados;
+}
+
+async function cancelarAjustesPendientesVentaReceta(ventaId, {
+  usuario,
+  observaciones_admin
+} = {}) {
+  await ensureStockAjustesPendientesSchema();
+
+  const venta = normalizarId(ventaId);
+  if (!venta) {
+    return { cancelados: 0 };
+  }
+
+  const result = await runQuery(
+    `UPDATE stock_ajustes_pendientes
+     SET estado = 'rechazado', revisado_por = ?, revisado_at = datetime('now'),
+         observaciones_admin = ?
+     WHERE venta_id = ?
+       AND origen = ?
+       AND estado = 'pendiente'`,
+    [
+      normalizarTexto(usuario) || "admin",
+      normalizarTexto(observaciones_admin) || "Cancelado por anulacion o reemplazo de venta",
+      venta,
+      ORIGEN_VENTA_RECETA
+    ]
+  );
+
+  return { cancelados: Number(result?.changes || 0) };
 }
 
 async function listarAjustesPendientes({ estado, solo_accionables = false } = {}) {
@@ -826,6 +1010,8 @@ async function getResumenCuentaLocalNoMonetaria({ desde = null, hasta = null, li
 module.exports = {
   ensureStockAjustesPendientesSchema,
   crearAjustePendiente,
+  crearAjustesPendientesVentaReceta,
+  cancelarAjustesPendientesVentaReceta,
   listarAjustesPendientes,
   reconciliarAjustesPendientes,
   obtenerAjustePendiente,

@@ -122,7 +122,6 @@ const {
   borrarSnapshotsDetalles,
   crearModificadorProducto,
   ensureModificadoresSchema,
-  getComponentesItemsVenta,
   getComponentesSnapshotVenta,
   getStockDeltaVentaItem,
   getModificadoresProducto,
@@ -136,7 +135,9 @@ const {
 } = require("./services/modificadorService");
 const {
   aprobarAjustePendiente,
+  cancelarAjustesPendientesVentaReceta,
   crearAjustePendiente,
+  crearAjustesPendientesVentaReceta,
   ensureStockAjustesPendientesSchema,
   getResumenCuentaLocalNoMonetaria,
   getResumenAjustesPendientes,
@@ -637,6 +638,53 @@ function getNowParts() {
     fecha: now.toISOString().slice(0, 10),
     hora: now.toTimeString().slice(0, 8)
   };
+}
+
+async function getRecetasSinStockIdsVenta(items = []) {
+  const ids = [...new Set((Array.isArray(items) ? items : [])
+    .map((item) => Number(item.producto_id || 0))
+    .filter(Boolean))];
+  if (!ids.length) return new Set();
+
+  const rows = await allQuery(
+    `SELECT id
+     FROM productos
+     WHERE id IN (${ids.map(() => "?").join(",")})
+       AND LOWER(COALESCE(tipo, 'simple')) = 'compuesto'
+       AND COALESCE(maneja_stock, 0) = 0`,
+    ids
+  );
+  return new Set(rows.map((row) => Number(row.id)));
+}
+
+async function filtrarDetallesConStockFisico(detalles = []) {
+  const recetasSinStock = await getRecetasSinStockIdsVenta(detalles);
+  if (!recetasSinStock.size) return detalles;
+  return detalles.filter((detalle) => !recetasSinStock.has(Number(detalle.producto_id || 0)));
+}
+
+async function filtrarComponentesSnapshotConStockFisico(componentes = [], detalles = []) {
+  const recetasSinStock = await getRecetasSinStockIdsVenta(detalles);
+  if (!recetasSinStock.size) return componentes;
+
+  const detalleRecetaIds = new Set(
+    detalles
+      .filter((detalle) => recetasSinStock.has(Number(detalle.producto_id || 0)))
+      .map((detalle) => Number(detalle.detalle_venta_id ?? detalle.id))
+      .filter(Boolean)
+  );
+  return componentes.filter((componente) => !detalleRecetaIds.has(Number(componente.detalle_venta_id || 0)));
+}
+
+async function getComponentesItemsConStockFisico(items = []) {
+  const recetasSinStock = await getRecetasSinStockIdsVenta(items);
+  return (Array.isArray(items) ? items : [])
+    .filter((item) => !recetasSinStock.has(Number(item.producto_id || 0)))
+    .flatMap((item) => Array.isArray(item.componentes) ? item.componentes : []);
+}
+
+function getUsuarioAuditoria(req, fallback = "admin") {
+  return req.usuario?.usuario || fallback || "admin";
 }
 
 function calcularCostoFinal(precioCompra, ivaPorcentaje, incluyeIva) {
@@ -3961,8 +4009,14 @@ app.post("/ventas", async (req, res) => {
       await guardarSnapshotsModificadoresVenta(detalles);
     }
     await applyStockForNewItems(itemsVenta);
+    await crearAjustesPendientesVentaReceta({
+      ventaId: venta.lastID,
+      detalles,
+      usuario: getUsuarioAuditoria(req, usuarioVenta),
+      rol: req.usuario?.rol
+    });
     if (hayModificadores) {
-      await aplicarStockComponentesSnapshot(detalles, 1);
+      await aplicarStockComponentesSnapshot(await filtrarDetallesConStockFisico(detalles), 1);
     }
 
     await runQuery("COMMIT");
@@ -4138,8 +4192,14 @@ app.post("/clientes/:id/venta-cuenta", async (req, res) => {
         null
       ]
     );
-    await replaceVentaDetalle(result.lastID, items);
+    const detalles = await replaceVentaDetalle(result.lastID, items);
     await applyStockForNewItems(items);
+    await crearAjustesPendientesVentaReceta({
+      ventaId: result.lastID,
+      detalles,
+      usuario: getUsuarioAuditoria(req),
+      rol: req.usuario?.rol
+    });
     await runQuery("COMMIT");
     return res.json({ message: "Venta a cuenta registrada", venta_id: result.lastID });
   } catch (error) {
@@ -5461,17 +5521,28 @@ app.put("/ventas/:id/pendiente", async (req, res) => {
 
     const oldItems = await getVentaDetalleRows(ventaId);
     const oldComponentesExtra = await getComponentesSnapshotVenta(ventaId);
-    const newComponentesExtra = getComponentesItemsVenta(itemsVenta);
+    const oldComponentesExtraStockFisico = await filtrarComponentesSnapshotConStockFisico(oldComponentesExtra, oldItems);
+    const newComponentesExtraStockFisico = await getComponentesItemsConStockFisico(itemsVenta);
     const total = calculateTotal(itemsVenta);
 
     await runQuery("BEGIN TRANSACTION");
     await applyStockDiff(oldItems, itemsVenta);
-    await aplicarStockDiffComponentesExtra(oldComponentesExtra, newComponentesExtra);
+    await aplicarStockDiffComponentesExtra(oldComponentesExtraStockFisico, newComponentesExtraStockFisico);
+    await cancelarAjustesPendientesVentaReceta(ventaId, {
+      usuario: getUsuarioAuditoria(req),
+      observaciones_admin: "Cancelado por edicion de ticket pendiente"
+    });
     await borrarSnapshotsDetalles(oldItems);
     const detalles = await replaceVentaDetalle(ventaId, itemsVenta);
     if (hayModificadores) {
       await guardarSnapshotsModificadoresVenta(detalles);
     }
+    await crearAjustesPendientesVentaReceta({
+      ventaId,
+      detalles,
+      usuario: getUsuarioAuditoria(req),
+      rol: req.usuario?.rol
+    });
     await runQuery(
       `UPDATE ventas
        SET total = ?, identificador_pendiente = ?
@@ -5598,7 +5669,11 @@ app.post("/ventas/:id/anular", async (req, res) => {
 
       await applyStockChange(item.producto_id, -Number(item.cantidad || 0));
     }
-    await aplicarStockComponentesSnapshot(items, -1);
+    await aplicarStockComponentesSnapshot(await filtrarDetallesConStockFisico(items), -1);
+    await cancelarAjustesPendientesVentaReceta(ventaId, {
+      usuario: getUsuarioAuditoria(req),
+      observaciones_admin: "Cancelado por anulacion de ticket pendiente"
+    });
 
     await runQuery(
       `UPDATE ventas
@@ -5709,7 +5784,11 @@ app.post("/ventas/:id/anular-cobrada", async (req, res) => {
         await applyStockChange(item.producto_id, -Number(item.cantidad || 0));
       }
     }
-    await aplicarStockComponentesSnapshot(items, -1);
+    await aplicarStockComponentesSnapshot(await filtrarDetallesConStockFisico(items), -1);
+    await cancelarAjustesPendientesVentaReceta(ventaId, {
+      usuario: getUsuarioAuditoria(req),
+      observaciones_admin: "Cancelado por anulacion de venta cobrada"
+    });
 
     await runQuery(
       `UPDATE ventas
@@ -6987,6 +7066,12 @@ app.post("/tienda/pedidos/:id/convertir-venta", async (req, res) => {
       await guardarSnapshotsModificadoresVenta(detalles);
     }
     await applyStockForNewItems(itemsVenta);
+    await crearAjustesPendientesVentaReceta({
+      ventaId: venta.lastID,
+      detalles,
+      usuario: getUsuarioAuditoria(req, usuarioVenta),
+      rol: req.usuario?.rol
+    });
 
     const now = new Date().toISOString().slice(0, 19).replace("T", " ");
     await runQuery(

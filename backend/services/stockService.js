@@ -328,10 +328,8 @@ async function applyStockChange(productoId, deltaCantidad, options = {}) {
       return;
     }
 
-    // Receta sin stock propio: nunca usa productos.stock como contador.
-    // Siempre descuenta los componentes directos, sin importar rendimiento_receta.
-    await descontarComponentesReceta(producto.id, deltaCantidad, visited);
-
+    // Receta sin stock propio: no mueve stock fisico en ventas ni anulaciones.
+    // El consumo se audita como ajuste pendiente y se descuenta solo al aprobarlo.
     return;
   }
 
