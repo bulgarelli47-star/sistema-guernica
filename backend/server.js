@@ -487,7 +487,7 @@ async function ensureProductosSchema() {
     )
   `);
   await runQuery(
-    "UPDATE productos SET stock = 0, stock_minimo = 0, alerta_stock_minimo = 0 WHERE tipo = 'compuesto' AND maneja_stock = 0 AND (rendimiento_receta IS NULL OR rendimiento_receta <= 1)"
+    "UPDATE productos SET stock = 0, stock_minimo = 0, alerta_stock_minimo = 0 WHERE tipo = 'compuesto' AND maneja_stock = 0"
   );
 }
 
@@ -1285,7 +1285,6 @@ app.post("/productos", async (req, res) => {
     const stockInicial = Number(stock) || 0;
     const recetaSinStockFisico = tipoProducto === "compuesto" && !maneja_stock;
     const rendimientoPost = recetaSinStockFisico ? Math.max(1, Number(req.body.rendimiento_receta) || 1) : 1;
-    const esBatchPost = recetaSinStockFisico && rendimientoPost > 1;
     const costoBase = tipoProducto === "compuesto"
       ? await calcularCostoProductoCompuestoPayload(componentes, costos_extra, rendimientoPost)
       : usaCostos ? calcularCostoPorRendimiento(costos_insumos) : Number(precio_compra) || 0;
@@ -1320,7 +1319,7 @@ app.post("/productos", async (req, res) => {
         categoria || "",
         costoBase,
         precioVentaFinal,
-        esBatchPost ? rendimientoPost : (recetaSinStockFisico ? 0 : stockInicial),
+        recetaSinStockFisico ? 0 : stockInicial,
         recetaSinStockFisico ? 0 : (maneja_stock ? 1 : 0),
         proveedor_principal || "",
         proveedor_id ? Number(proveedor_id) : null,
@@ -1600,8 +1599,7 @@ app.put("/productos/:id", async (req, res) => {
     const tipoProducto = normalizarTipoProducto(tipo);
     const usaCostos = tipoProducto === "simple" && (usa_costos_varios || categoriaData?.usa_costos_varios);
     const rendimientoReceta = (tipoProducto === "compuesto" && !maneja_stock) ? Math.max(1, Number(req.body.rendimiento_receta) || 1) : 1;
-    const esBatchCounter = tipoProducto === "compuesto" && !maneja_stock && rendimientoReceta > 1;
-    const stockProducto = esBatchCounter ? rendimientoReceta : (Number(stock) || 0);
+    const stockProducto = Number(stock) || 0;
     const recetaSinStockFisico = tipoProducto === "compuesto" && !maneja_stock;
     const costoBase = tipoProducto === "compuesto"
       ? await calcularCostoProductoCompuestoPayload(componentes, costos_extra, rendimientoReceta)
@@ -1629,7 +1627,7 @@ app.put("/productos/:id", async (req, res) => {
         categoria || "",
         costoBase,
         precioVentaFinal,
-        esBatchCounter ? Number(existente.stock || 0) : (recetaSinStockFisico ? 0 : stockProducto),
+        recetaSinStockFisico ? 0 : stockProducto,
         recetaSinStockFisico ? 0 : (maneja_stock ? 1 : 0),
         proveedor_principal || "",
         proveedor_id ? Number(proveedor_id) : null,
@@ -2322,9 +2320,8 @@ app.post("/productos/:id/movimientos-stock", async (req, res) => {
       return res.status(404).json({ message: "Producto no encontrado" });
     }
     const esCompuesto = normalizarTipoProducto(producto.tipo) === "compuesto";
-    const esBatch = esCompuesto && !Number(producto.maneja_stock) && Number(producto.rendimiento_receta || 1) > 1;
-    const esStockCalculado = esCompuesto && !Number(producto.maneja_stock) && !esBatch;
-    if (esStockCalculado) {
+    const esRecetaSinStockFisico = esCompuesto && !Number(producto.maneja_stock);
+    if (esRecetaSinStockFisico) {
       return res.status(400).json({ message: "Este producto no posee stock propio. Ajusta sus ingredientes." });
     }
 
@@ -2333,18 +2330,7 @@ app.post("/productos/:id/movimientos-stock", async (req, res) => {
     const esIngreso = tiposPositivos.includes(tipoMovimiento.toLowerCase());
     const stockNuevo = esIngreso ? stockAnterior + cantidad : stockAnterior - cantidad;
 
-    // Para batch counter: si el egreso lo deja en <= 0, activar replenishment automático
-    let stockFinal = stockNuevo;
-    let batchesReponer = 0;
-    if (esBatch && !esIngreso && stockNuevo <= 0) {
-      const rendimiento = Number(producto.rendimiento_receta);
-      let restante = stockNuevo;
-      while (restante <= 0) {
-        batchesReponer++;
-        restante += rendimiento;
-      }
-      stockFinal = restante;
-    }
+    const stockFinal = stockNuevo;
 
     await runQuery("BEGIN TRANSACTION");
     await runQuery(
@@ -2355,44 +2341,20 @@ app.post("/productos/:id/movimientos-stock", async (req, res) => {
     );
     await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockFinal, productoId]);
 
-    // Batch counter: consumir ingredientes de los batches necesarios
-    if (esBatch && batchesReponer > 0) {
-      const rendimiento = Number(producto.rendimiento_receta);
-      const componentes = await getComponentesProductoCompuesto(productoId);
-      for (const comp of componentes) {
-        const consumo = Number(comp.cantidad || 0) * rendimiento * batchesReponer;
-        if (consumo <= 0) continue;
-        const ing = await getQuery("SELECT stock FROM productos WHERE id = ?", [comp.producto_id]);
-        if (ing) {
-          const nuevoStockIng = Number(ing.stock || 0) - consumo;
-          await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [nuevoStockIng, comp.producto_id]);
-          await runQuery(
-            `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
-             VALUES (?, 'egreso', ?, ?, ?, ?, ?, ?, ?)`,
-            [comp.producto_id, consumo, Number(ing.stock || 0), nuevoStockIng,
-             `Replenishment batch: ${producto.nombre} (${batchesReponer} lote/s)`, usuario, fecha, hora]
-          );
-        }
-      }
-    }
-
     // Si es receta con stock propio y es un ingreso, descontar ingredientes
     if (esCompuesto && Number(producto.maneja_stock) && esIngreso) {
       const componentes = await getComponentesProductoCompuesto(productoId);
       for (const comp of componentes) {
         const consumo = cantidad * Number(comp.cantidad);
-        // Para batch counters: usar applyStockChange (dispara replenishment si llega a 0)
-        // Para el resto: descuento directo (evita doble-multiplicación de fracciones gr/ml)
         const compProd = await getQuery(
           "SELECT tipo, maneja_stock, rendimiento_receta FROM productos WHERE id = ?",
           [comp.producto_id]
         );
-        const esCompBatch = compProd
+        const esCompuestoSinStock = compProd
           && normalizarTipoProducto(compProd.tipo) === "compuesto"
-          && !Number(compProd.maneja_stock)
-          && Number(compProd.rendimiento_receta || 1) > 1;
+          && !Number(compProd.maneja_stock);
 
-        if (esCompBatch) {
+        if (esCompuestoSinStock) {
           await applyStockChange(comp.producto_id, consumo);
         } else {
           const ing = await getQuery("SELECT stock FROM productos WHERE id = ?", [comp.producto_id]);
@@ -2435,10 +2397,7 @@ app.post("/productos/:id/movimientos-stock", async (req, res) => {
     await logHistorialProducto(productoId, "stock", stockAnterior, stockNuevo, motivo || tipoMovimiento, usuario);
     await runQuery("COMMIT");
 
-    const mensajeMovimiento = esBatch
-      ? `Contador actualizado: ${stockNuevo}/${producto.rendimiento_receta} porciones`
-      : "Movimiento registrado correctamente";
-    return res.json({ message: mensajeMovimiento, stock_nuevo: stockNuevo });
+    return res.json({ message: "Movimiento registrado correctamente", stock_nuevo: stockNuevo });
   } catch (error) {
     try {
       await runQuery("ROLLBACK");

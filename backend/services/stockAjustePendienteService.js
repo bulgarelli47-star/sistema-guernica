@@ -291,9 +291,8 @@ async function registrarMovimientoStockAprobado({
   }
 
   const esCompuesto = normalizarTipoProducto(producto.tipo) === "compuesto";
-  const esBatch = esCompuesto && !Number(producto.maneja_stock) && Number(producto.rendimiento_receta || 1) > 1;
-  const esStockCalculado = esCompuesto && !Number(producto.maneja_stock) && !esBatch;
-  if (esStockCalculado) {
+  const esRecetaSinStockFisico = esCompuesto && !Number(producto.maneja_stock);
+  if (esRecetaSinStockFisico) {
     throw crearError("Este producto no posee stock propio. Ajusta sus ingredientes.", 400);
   }
 
@@ -301,18 +300,7 @@ async function registrarMovimientoStockAprobado({
   const stockAnterior = Number(producto.stock || 0);
   const esIngreso = tipoMovimiento === "ingreso";
   const stockNuevo = esIngreso ? stockAnterior + cantidad : stockAnterior - cantidad;
-  let stockFinal = stockNuevo;
-  let batchesReponer = 0;
-
-  if (esBatch && !esIngreso && stockNuevo <= 0) {
-    const rendimiento = Number(producto.rendimiento_receta);
-    let restante = stockNuevo;
-    while (restante <= 0) {
-      batchesReponer += 1;
-      restante += rendimiento;
-    }
-    stockFinal = restante;
-  }
+  const stockFinal = stockNuevo;
 
   const movimiento = await runQuery(
     `INSERT INTO movimientos_stock
@@ -322,33 +310,6 @@ async function registrarMovimientoStockAprobado({
   );
   await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockFinal, productoId]);
 
-  if (esBatch && batchesReponer > 0) {
-    const rendimiento = Number(producto.rendimiento_receta);
-    const componentes = await getComponentesProductoCompuesto(productoId);
-    for (const comp of componentes) {
-      const consumo = Number(comp.cantidad || 0) * rendimiento * batchesReponer;
-      if (consumo <= 0) continue;
-      const ing = await getQuery("SELECT stock FROM productos WHERE id = ?", [comp.producto_id]);
-      if (!ing) continue;
-      const nuevoStockIng = Number(ing.stock || 0) - consumo;
-      await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [nuevoStockIng, comp.producto_id]);
-      await runQuery(
-        `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
-         VALUES (?, 'egreso', ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          comp.producto_id,
-          consumo,
-          Number(ing.stock || 0),
-          nuevoStockIng,
-          `Replenishment batch: ${producto.nombre} (${batchesReponer} lote/s)`,
-          usuario,
-          fecha,
-          hora
-        ]
-      );
-    }
-  }
-
   if (esCompuesto && Number(producto.maneja_stock) && esIngreso) {
     const componentes = await getComponentesProductoCompuesto(productoId);
     for (const comp of componentes) {
@@ -357,12 +318,11 @@ async function registrarMovimientoStockAprobado({
         "SELECT tipo, maneja_stock, rendimiento_receta FROM productos WHERE id = ?",
         [comp.producto_id]
       );
-      const esCompBatch = compProd
+      const esCompuestoSinStock = compProd
         && normalizarTipoProducto(compProd.tipo) === "compuesto"
-        && !Number(compProd.maneja_stock)
-        && Number(compProd.rendimiento_receta || 1) > 1;
+        && !Number(compProd.maneja_stock);
 
-      if (esCompBatch) {
+      if (esCompuestoSinStock) {
         await applyStockChange(comp.producto_id, consumo);
       } else {
         const ing = await getQuery("SELECT stock FROM productos WHERE id = ?", [comp.producto_id]);

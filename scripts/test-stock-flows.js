@@ -479,7 +479,7 @@ function assertApprox(actual, expected, message, tolerance = 0.01) {
   }
 }
 
-async function testBatchManual() {
+async function testRecetaSinStockBloqueaMovimientoManual() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
   try {
@@ -494,21 +494,21 @@ async function testBatchManual() {
       const beforeSalsa = (await getProduct(baseUrl, token, 4)).stock;
       const result = await requestJson(baseUrl, "POST", "/productos/4/movimientos-stock", {
         tipo_movimiento: "egreso",
-        cantidad: beforeSalsa,
-        motivo: "TEST batch counter manual",
+        cantidad: 1,
+        motivo: "TEST receta sin stock no ajustable",
         usuario: "test"
       }, token);
 
-      if (!result.response.ok) throw new Error(`Egreso batch counter fallo: ${result.data?.message || result.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 4)).stock, 25, "Salsa lista debe reponer a 25");
-      assertEqual((await getProduct(baseUrl, token, 3)).stock, beforeTomate - 2000, "Tomate perita debe consumir 2000gr");
+      assertEqual(result.response.status, 400, "Receta sin stock propio no debe recibir movimiento manual");
+      assertEqual((await getProduct(baseUrl, token, 4)).stock, beforeSalsa, "Salsa lista debe conservar stock en 0");
+      assertEqual((await getProduct(baseUrl, token, 3)).stock, beforeTomate, "Movimiento bloqueado no debe consumir tomate");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
   }
 }
 
-async function testBatchComoComponente() {
+async function testRecetaSinStockComoComponenteDescuentaDirecto() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
   try {
@@ -529,9 +529,9 @@ async function testBatchComoComponente() {
 
       if (!result.response.ok) throw new Error(`Ingreso pizza fallo: ${result.data?.message || result.response.status}`);
       assertEqual((await getProduct(baseUrl, token, 9)).stock, 72, "Pizza Muzzarella debe ingresar 1 unidad");
-      assertEqual((await getProduct(baseUrl, token, 4)).stock, 25, "Salsa lista componente debe reponer batch");
-      assertEqual((await getProduct(baseUrl, token, 7)).stock, 100, "Pre Pizza componente debe reponer batch");
-      assertEqual((await getProduct(baseUrl, token, 3)).stock, 3000, "Tomate perita debe consumir 2000gr");
+      assertEqual((await getProduct(baseUrl, token, 4)).stock, 0, "Salsa lista no debe usar stock como contador");
+      assertEqual((await getProduct(baseUrl, token, 7)).stock, 0, "Pre Pizza no debe usar stock como contador");
+      assertEqual((await getProduct(baseUrl, token, 3)).stock, 4920, "Salsa lista debe consumir componentes directos");
       assertEqual((await getProduct(baseUrl, token, 6)).stock, 4800, "Muzzarella Cremac debe consumir 200gr");
     });
   } finally {
@@ -8036,8 +8036,8 @@ async function testTiendaConvertirVenta() {
 }
 
 (async () => {
-  await testBatchManual();
-  await testBatchComoComponente();
+  await testRecetaSinStockBloqueaMovimientoManual();
+  await testRecetaSinStockComoComponenteDescuentaDirecto();
   await testPermisosColaborador();
   await testFinanzasResumenBackendV1();
   await testProduccionV1DominioSeparado();

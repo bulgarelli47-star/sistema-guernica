@@ -284,40 +284,6 @@ async function descontarStockPropioProducto(productoId, producto, deltaCantidad,
   return descontarStockFisicoProducto(productoId, producto, deltaCantidad, comoComponente);
 }
 
-async function actualizarContadorBatch(productoId, producto, deltaCantidad, visited) {
-  const rendimiento = Number(producto.rendimiento_receta) || 1;
-  let contador = Number(producto.stock ?? rendimiento) - Number(deltaCantidad);
-  let batchesConsumidos = 0;
-
-  while (contador <= 0) {
-    batchesConsumidos++;
-    contador += rendimiento;
-  }
-
-  await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [contador, productoId]);
-
-  if (batchesConsumidos > 0) {
-    const componentes = await getComponentesProductoCompuesto(productoId);
-    const { fecha, hora } = getNowParts();
-    for (const componente of componentes) {
-      const cantidadConsumida = Number(componente.cantidad || 0) * rendimiento * batchesConsumidos;
-      const ingAntes = await getQuery("SELECT stock FROM productos WHERE id = ?", [componente.producto_id]);
-      await applyStockChange(
-        componente.producto_id,
-        cantidadConsumida,
-        { comoComponente: true, visited: new Set(visited) }
-      );
-      const ingDespues = await getQuery("SELECT stock FROM productos WHERE id = ?", [componente.producto_id]);
-      await runQuery(
-        `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
-         VALUES (?, 'venta', ?, ?, ?, ?, 'admin', ?, ?)`,
-        [componente.producto_id, cantidadConsumida, Number(ingAntes?.stock || 0), Number(ingDespues?.stock || 0),
-         `Consumo receta batch (producto id: ${productoId})`, fecha, hora]
-      );
-    }
-  }
-}
-
 async function descontarComponentesReceta(productoId, deltaCantidad, visited) {
   const componentes = await getComponentesProductoCompuesto(productoId);
 
@@ -362,16 +328,8 @@ async function applyStockChange(productoId, deltaCantidad, options = {}) {
       return;
     }
 
-    const rendimiento = Number(producto.rendimiento_receta) || 1;
-
-    // Modo batch counter: sin stock propio pero con rendimiento > 1
-    // El campo stock actúa como contador. Cuando llega a 0 consume ingredientes y reinicia.
-    if (rendimiento > 1) {
-      await actualizarContadorBatch(productoId, producto, deltaCantidad, visited);
-      return;
-    }
-
-    // Modo en el momento (sin_stock_propio, rendimiento = 1): descuenta ingredientes directo
+    // Receta sin stock propio: nunca usa productos.stock como contador.
+    // Siempre descuenta los componentes directos, sin importar rendimiento_receta.
     await descontarComponentesReceta(producto.id, deltaCantidad, visited);
 
     return;
@@ -433,7 +391,6 @@ module.exports = {
   descontarStockFisicoProducto,
   descontarStockPropioProducto,
   descontarComponentesReceta,
-  actualizarContadorBatch,
   applyStockChange,
   applyStockForNewItems,
   applyStockDiff
