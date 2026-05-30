@@ -227,6 +227,26 @@ const CONFIGURACION_DEFAULTS = {
   dashboard_tipo_colaborador: { seccion: "usuarios_permisos", valor: "simple" },
   dashboard_pizarra_categorias: { seccion: "usuarios_permisos", valor: "cafeteria,cafe,menu,desayuno,merienda" },
   dashboard_pizarra_productos: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_ventas_encargado: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_ventas_colaborador: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_caja_encargado: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_caja_colaborador: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_stock_encargado: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_stock_colaborador: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_clientes_encargado: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_clientes_colaborador: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_pagos_encargado: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_pagos_colaborador: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_proveedores_encargado: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_proveedores_colaborador: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_inicio_encargado: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_inicio_colaborador: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_reportes_encargado: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_reportes_colaborador: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_usuarios_encargado: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_usuarios_colaborador: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_configuracion_encargado: { seccion: "usuarios_permisos", valor: "" },
+  vista_operativa_configuracion_colaborador: { seccion: "usuarios_permisos", valor: "" },
   ticket_nombre: { seccion: "tickets", valor: "Guernica Bar" },
   ticket_modo_encabezado: { seccion: "tickets", valor: "logo" },
   ticket_logo_ancho: { seccion: "tickets", valor: 65 },
@@ -267,7 +287,7 @@ function sanitizarConfiguracionParaRol(config, rol) {
   if (normalizarRolPermiso(rol) === "admin") return config;
 
   return Object.fromEntries(
-    Object.entries(config || {}).filter(([clave]) => CONFIGURACION_PUBLICA_KEYS.has(clave) || clave.startsWith("modulo_"))
+    Object.entries(config || {}).filter(([clave]) => CONFIGURACION_PUBLICA_KEYS.has(clave) || clave.startsWith("modulo_") || clave.startsWith("vista_operativa_"))
   );
 }
 
