@@ -1952,17 +1952,23 @@ app.get("/productos_compuestos/:id", async (req, res) => {
       return res.status(404).json({ message: "Producto compuesto no encontrado" });
     }
 
-    const [componentes, costos_extra, stock_disponible, costo] = await Promise.all([
+    const manejaStockPropio = Number(producto.maneja_stock) === 1;
+
+    const [componentes, costos_extra, costo] = await Promise.all([
       getComponentesProductoCompuesto(productoId),
       getCostosExtraProductoCompuesto(productoId),
-      calcularStockDisponibleCompuesto(productoId),
       calcularCostoProductoCompuesto(productoId)
     ]);
 
+    const stockFisico = manejaStockPropio ? Number(producto.stock || 0) : 0;
+    const stock_disponible = manejaStockPropio
+      ? stockFisico
+      : await calcularStockDisponibleCompuesto(productoId);
+
     return res.json({
       ...producto,
-      stock: 0,
-      stock_fisico: 0,
+      stock: manejaStockPropio ? stockFisico : 0,
+      stock_fisico: stockFisico,
       stock_disponible,
       stock_vendible_calculado: stock_disponible,
       precio_compra: costo,
@@ -1987,13 +1993,19 @@ app.get("/productos_compuestos/:id/stock_disponible", async (req, res) => {
   const productoId = Number(req.params.id);
 
   try {
-    const producto = await getQuery("SELECT id, tipo, es_combo FROM productos WHERE id = ?", [productoId]);
+    const producto = await getQuery(
+      "SELECT id, tipo, es_combo, maneja_stock, stock FROM productos WHERE id = ?",
+      [productoId]
+    );
 
     if (!producto || (normalizarTipoProducto(producto.tipo) !== "compuesto")) {
       return res.status(404).json({ message: "Producto compuesto no encontrado" });
     }
 
-    const stock_disponible = await calcularStockDisponibleCompuesto(productoId);
+    const stock_disponible = Number(producto.maneja_stock) === 1
+      ? Number(producto.stock || 0)
+      : await calcularStockDisponibleCompuesto(productoId);
+
     return res.json({ producto_id: productoId, stock_disponible, stock_vendible_calculado: stock_disponible });
   } catch (error) {
     logError("Error al calcular stock disponible:", error);
