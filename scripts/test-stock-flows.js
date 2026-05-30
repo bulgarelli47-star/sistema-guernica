@@ -8389,6 +8389,92 @@ async function testBatchLegacyLimitadoAManeja0RendimientoMayor1() {
   }
 }
 
+async function testGuardarComponentesDuplicadosSumaYDedup() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const catId = await crearCategoria(baseUrl, token, "TEST DedupComp");
+      const ingId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Ing DedupComp", categoria: "TEST DedupComp", categoria_id: catId,
+        stock: 100, maneja_stock: true
+      });
+      // mismo producto_id dos veces: 2 + 3 = 5
+      const compId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Comp DedupComp", categoria: "TEST DedupComp", categoria_id: catId,
+        tipo: "compuesto", maneja_stock: false, stock: 0, precio_venta: 200,
+        componentes: [{ producto_id: ingId, cantidad: 2 }, { producto_id: ingId, cantidad: 3 }],
+        costos_extra: []
+      });
+      const { response, data } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compId}`, null, token);
+      if (!response.ok) throw new Error(`GET /productos_compuestos fallo: ${data?.message}`);
+      assertEqual(data.componentes.length, 1, "Dedup: POST con duplicados debe guardar una sola fila");
+      assertApprox(data.componentes[0].cantidad, 5, "Dedup: cantidad debe sumar los duplicados (2+3=5)", 0.01);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testConsolidacionComponentesDuplicadosExistentes() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    let compId, ingId;
+    // Fase 1: crear producto via API
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const catId = await crearCategoria(baseUrl, token, "TEST ConsExist");
+      ingId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Ing ConsExist", categoria: "TEST ConsExist", categoria_id: catId,
+        stock: 100, maneja_stock: true
+      });
+      compId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Comp ConsExist", categoria: "TEST ConsExist", categoria_id: catId,
+        tipo: "compuesto", maneja_stock: false, stock: 0, precio_venta: 200,
+        componentes: [{ producto_id: ingId, cantidad: 2 }], costos_extra: []
+      });
+    });
+    // Fase 2: insertar duplicado directamente en DB (simula deuda historica)
+    await runSql(dbPath,
+      `INSERT INTO producto_componentes (producto_compuesto_id, producto_id, cantidad) VALUES (?, ?, ?)`,
+      [compId, ingId, 3]
+    );
+    const antes = await allSql(dbPath,
+      `SELECT id FROM producto_componentes WHERE producto_compuesto_id = ? AND producto_id = ?`,
+      [compId, ingId]
+    );
+    if (antes.length !== 2) throw new Error(`Setup: se esperaban 2 filas duplicadas, hay ${antes.length}`);
+    // Fase 3: reiniciar servidor — consolidarComponentesDuplicados corre en startup
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const { response, data } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compId}`, null, token);
+      if (!response.ok) throw new Error(`GET fallo: ${data?.message}`);
+      assertEqual(data.componentes.length, 1, "Consolidacion startup: debe haber 1 componente tras limpiar duplicados");
+      assertApprox(data.componentes[0].cantidad, 5, "Consolidacion startup: cantidad debe ser suma (2+3=5)", 0.01);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testTipoAyudaSinUnidadesHardcodeado() {
+  const html = fs.readFileSync(path.join(ROOT, "frontend", "productos.html"), "utf8");
+  if (html.includes("||0} unidades</strong>")) {
+    throw new Error("tipoAyuda todavia tiene 'unidades' hardcodeado en actualizarResumenFraccionado");
+  }
+}
+
+async function testLogsTemporalesRemovidos() {
+  const html = fs.readFileSync(path.join(ROOT, "frontend", "productos.html"), "utf8");
+  if (html.includes('console.count("cargarFormulario")')) throw new Error("Log temporal console.count no fue removido");
+  if (html.includes('"COMPONENTES API"')) throw new Error("Log temporal COMPONENTES API no fue removido");
+  if (html.includes('"ADD COMPONENTE"')) throw new Error("Log temporal ADD COMPONENTE no fue removido");
+}
+
 (async () => {
   await testRecetaSinStockBloqueaMovimientoManual();
   await testRecetaSinStockComoComponenteNoDescuentaDirecto();
@@ -8518,6 +8604,10 @@ async function testBatchLegacyLimitadoAManeja0RendimientoMayor1() {
   await testCompuestosLegacyEndpointSDManejaStock1();
   await testCompuestosLegacyEndpointSDManejaStock0();
   await testBatchLegacyLimitadoAManeja0RendimientoMayor1();
+  await testGuardarComponentesDuplicadosSumaYDedup();
+  await testConsolidacionComponentesDuplicadosExistentes();
+  await testTipoAyudaSinUnidadesHardcodeado();
+  await testLogsTemporalesRemovidos();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
   console.error(error.message);

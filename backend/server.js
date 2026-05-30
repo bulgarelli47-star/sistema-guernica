@@ -18,6 +18,7 @@ const {
   calcularCostoPorRendimiento,
   guardarInsumosProducto,
   normalizarTipoProducto,
+  consolidarComponentesDuplicados,
   guardarProductoCompuestoConfig,
   getComponentesProductoCompuesto,
   getCostosExtraProductoCompuesto,
@@ -7283,6 +7284,7 @@ Promise.all([
       runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_productos_codigo_unique ON productos(codigo) WHERE codigo IS NOT NULL AND codigo != '' AND eliminado = 0"),
       runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_dni_cuit_unique ON clientes(dni_cuit) WHERE dni_cuit IS NOT NULL AND dni_cuit != ''")
     ]);
+    await consolidarComponentesDuplicados();
     app.listen(PORT, () => {
       console.log(`Servidor corriendo en http://localhost:${PORT}`);
     });

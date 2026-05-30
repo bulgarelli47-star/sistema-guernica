@@ -66,12 +66,22 @@ function normalizarComponentesProducto(componentes = []) {
     return [];
   }
 
-  return componentes
+  const base = componentes
     .map((item) => ({
       producto_id: Number(item.producto_id ?? item.id),
       cantidad: Number(item.cantidad) || 0
     }))
     .filter((item) => item.producto_id > 0 && item.cantidad > 0);
+
+  const map = new Map();
+  for (const item of base) {
+    const prev = map.get(item.producto_id);
+    map.set(item.producto_id, prev
+      ? { producto_id: item.producto_id, cantidad: prev.cantidad + item.cantidad }
+      : item
+    );
+  }
+  return [...map.values()];
 }
 
 function normalizarCostosExtraProducto(costosExtra = []) {
@@ -368,6 +378,36 @@ async function applyStockDiff(oldItems, newItems) {
   }
 }
 
+async function consolidarComponentesDuplicados() {
+  const duplicados = await allQuery(
+    `SELECT producto_compuesto_id, producto_id, SUM(cantidad) AS cantidad_total, COUNT(*) AS total_filas
+     FROM producto_componentes
+     GROUP BY producto_compuesto_id, producto_id
+     HAVING total_filas > 1`
+  );
+  for (const dup of duplicados) {
+    const filas = await allQuery(
+      `SELECT id FROM producto_componentes
+       WHERE producto_compuesto_id = ? AND producto_id = ?
+       ORDER BY id ASC`,
+      [Number(dup.producto_compuesto_id), Number(dup.producto_id)]
+    );
+    if (filas.length < 2) continue;
+    await runQuery(
+      `UPDATE producto_componentes SET cantidad = ? WHERE id = ?`,
+      [Number(dup.cantidad_total), filas[0].id]
+    );
+    const restoIds = filas.slice(1).map((f) => Number(f.id));
+    await runQuery(
+      `DELETE FROM producto_componentes WHERE id IN (${restoIds.map(() => "?").join(",")})`,
+      restoIds
+    );
+  }
+  if (duplicados.length > 0) {
+    console.log(`[stockService] Consolidados ${duplicados.length} grupos de componentes duplicados`);
+  }
+}
+
 module.exports = {
   normalizarInsumosCostos,
   calcularCostoPorRendimiento,
@@ -377,6 +417,7 @@ module.exports = {
   esProductoReceta,
   normalizarComponentesProducto,
   normalizarCostosExtraProducto,
+  consolidarComponentesDuplicados,
   guardarProductoCompuestoConfig,
   getComponentesProductoCompuesto,
   getCostosExtraProductoCompuesto,
