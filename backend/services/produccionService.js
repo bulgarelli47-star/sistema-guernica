@@ -78,7 +78,7 @@ function esProductoProducible(producto) {
 
 async function obtenerProductoProducible(productoId) {
   const producto = await getQuery(
-    `SELECT id, nombre, tipo, maneja_stock, stock, costo_final, precio_compra, activo, COALESCE(eliminado, 0) AS eliminado
+    `SELECT id, nombre, tipo, maneja_stock, stock, unidad_medida, costo_final, precio_compra, activo, COALESCE(eliminado, 0) AS eliminado
      FROM productos
      WHERE id = ?`,
     [Number(productoId)]
@@ -96,7 +96,7 @@ async function obtenerProductoProducible(productoId) {
 async function listarProductosProducibles() {
   await ensureProduccionSchema();
   return allQuery(
-    `SELECT p.id, p.nombre, p.codigo, p.categoria, c.nombre AS categoria_nombre, p.stock, p.costo_final, p.precio_compra
+    `SELECT p.id, p.nombre, p.codigo, p.categoria, c.nombre AS categoria_nombre, p.stock, p.unidad_medida, p.costo_final, p.precio_compra
      FROM productos p
      LEFT JOIN categorias c ON c.id = p.categoria_id
      WHERE COALESCE(p.eliminado, 0) = 0
@@ -126,6 +126,7 @@ async function buildPreviewProduccion({ producto_id, cantidad }) {
       componentesPreview.push({
         producto_id: Number(componente.producto_id),
         producto_nombre: componente.producto_nombre || "",
+        unidad_medida: componente.unidad_medida || "un",
         cantidad_unitaria: round4(componente.cantidad),
         cantidad_requerida: round4(Number(componente.cantidad || 0) * cantidadProducida),
         stock_actual: round4(componente.stock),
@@ -145,6 +146,7 @@ async function buildPreviewProduccion({ producto_id, cantidad }) {
     componentesPreview.push({
       producto_id: Number(componente.producto_id),
       producto_nombre: componente.producto_nombre || "",
+      unidad_medida: componente.unidad_medida || "un",
       cantidad_unitaria: round4(componente.cantidad),
       cantidad_requerida: cantidadRequerida,
       stock_actual: stockActual,
@@ -167,6 +169,7 @@ async function buildPreviewProduccion({ producto_id, cantidad }) {
     producto: {
       id: Number(producto.id),
       nombre: producto.nombre,
+      unidad_medida: producto.unidad_medida || "un",
       stock_actual: round4(producto.stock),
       costo_unitario_estimado: round2(costoUnitarioReceta)
     },
@@ -302,10 +305,11 @@ async function listarProducciones({ desde = null, hasta = null, producto_id = nu
   }
 
   return allQuery(
-    `SELECT *
-     FROM producciones
+    `SELECT pr.*, p.unidad_medida
+     FROM producciones pr
+     LEFT JOIN productos p ON p.id = pr.producto_id
      WHERE ${where.join(" AND ")}
-     ORDER BY fecha DESC, hora DESC, id DESC
+     ORDER BY pr.fecha DESC, pr.hora DESC, pr.id DESC
      LIMIT 150`,
     params
   );
