@@ -8389,6 +8389,157 @@ async function testBatchLegacyLimitadoAManeja0RendimientoMayor1() {
   }
 }
 
+function setConfigStockNegativo(valor) {
+  return [
+    `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)
+     VALUES ('stock_permitir_negativo', '${valor ? "true" : "false"}', 'stock', datetime('now'))
+     ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, seccion = excluded.seccion, actualizado_en = excluded.actualizado_en`
+  ];
+}
+function habilitarStockNegativo() { return setConfigStockNegativo(true); }
+function deshabilitarStockNegativo() { return setConfigStockNegativo(false); }
+
+async function testStockNegativoNoCreaPendienteSiConfigFalse() {
+  // Con stock_permitir_negativo=false (default), la venta falla y no crea ajuste pendiente
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, [...resetOperationalDataStatements(), deshabilitarStockNegativo()]);
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const catId = await crearCategoria(baseUrl, token, "TEST SNConfigFalse");
+      const pid = await crearProducto(baseUrl, token, {
+        nombre: "TEST Prod SNFalse", categoria: "TEST SNConfigFalse", categoria_id: catId,
+        stock: 3, maneja_stock: true, precio_venta: 100
+      });
+      // Intentar vender 5 unidades con stock=3 — debe fallar
+      const { response } = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test", tipo: "normal", tipo_cobro: "efectivo",
+        items: [{ producto_id: pid, nombre_producto: "TEST Prod SNFalse", cantidad: 5, precio_unitario: 100 }]
+      }, token);
+      if (response.ok) throw new Error("La venta no debio registrarse con stock insuficiente y config=false");
+      const ajustesPendientes = await allSql(dbPath,
+        `SELECT id FROM stock_ajustes_pendientes WHERE producto_id = ? AND origen = 'stock_negativo_venta'`, [pid]
+      );
+      assertEqual(ajustesPendientes.length, 0, "Config false: no debe crearse ajuste pendiente por stock negativo");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockNegativoCreaPendienteConConfigTrue() {
+  // Con stock_permitir_negativo=true, la venta se registra y crea ajuste pendiente
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, [...resetOperationalDataStatements(), habilitarStockNegativo()]);
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const catId = await crearCategoria(baseUrl, token, "TEST SNConfigTrue");
+      const pid = await crearProducto(baseUrl, token, {
+        nombre: "TEST Prod SNTrue", categoria: "TEST SNConfigTrue", categoria_id: catId,
+        stock: 3, maneja_stock: true, precio_venta: 100
+      });
+      // Vender 6 con stock=3 → stock queda -3
+      const { response, data } = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test", tipo: "normal", tipo_cobro: "efectivo",
+        items: [{ producto_id: pid, nombre_producto: "TEST Prod SNTrue", cantidad: 6, precio_unitario: 100 }]
+      }, token);
+      if (!response.ok) throw new Error(`Venta con stock_permitir_negativo=true fallo: ${data?.message}`);
+      const ventaId = data.venta_id;
+      // Verificar stock negativo
+      const prodActual = await allSql(dbPath, "SELECT stock FROM productos WHERE id = ?", [pid]);
+      assertApprox(prodActual[0].stock, -3, "Stock debe ser -3 tras la venta", 0.01);
+      // Verificar ajuste pendiente creado
+      const ajustes = await allSql(dbPath,
+        `SELECT cantidad, tipo_movimiento, venta_id, estado FROM stock_ajustes_pendientes
+         WHERE producto_id = ? AND origen = 'stock_negativo_venta'`, [pid]
+      );
+      assertEqual(ajustes.length, 1, "Debe existir exactamente un ajuste pendiente por stock negativo");
+      if (ajustes[0].tipo_movimiento !== "ingreso") throw new Error(`Ajuste stock negativo debe ser tipo ingreso, actual=${ajustes[0].tipo_movimiento}`);
+      assertApprox(ajustes[0].cantidad, 3, "Ajuste debe registrar el deficit (3)", 0.01);
+      assertEqual(Number(ajustes[0].venta_id), Number(ventaId), "Ajuste debe vincular al venta_id correcto");
+      if (ajustes[0].estado !== "pendiente") throw new Error(`Ajuste debe estar pendiente, actual=${ajustes[0].estado}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockExactoNoCreaPendiente() {
+  // Venta exacta hasta stock=0 no crea ajuste pendiente
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, [...resetOperationalDataStatements(), habilitarStockNegativo()]);
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const catId = await crearCategoria(baseUrl, token, "TEST SNExacto");
+      const pid = await crearProducto(baseUrl, token, {
+        nombre: "TEST Prod SNExacto", categoria: "TEST SNExacto", categoria_id: catId,
+        stock: 5, maneja_stock: true, precio_venta: 100
+      });
+      // Vender exactamente el stock disponible (5 = 5)
+      const { response, data } = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test", tipo: "normal", tipo_cobro: "efectivo",
+        items: [{ producto_id: pid, nombre_producto: "TEST Prod SNExacto", cantidad: 5, precio_unitario: 100 }]
+      }, token);
+      if (!response.ok) throw new Error(`Venta exacta fallo: ${data?.message}`);
+      const ajustes = await allSql(dbPath,
+        `SELECT id FROM stock_ajustes_pendientes WHERE producto_id = ? AND origen = 'stock_negativo_venta'`, [pid]
+      );
+      assertEqual(ajustes.length, 0, "Stock exacto en 0 no debe crear ajuste pendiente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockNegativoNoDuplicaPendiente() {
+  // Dos ventas del mismo producto, ambas dejan stock negativo → dos ajustes, uno por venta
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, [...resetOperationalDataStatements(), habilitarStockNegativo()]);
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const catId = await crearCategoria(baseUrl, token, "TEST SNDuplicado");
+      const pid = await crearProducto(baseUrl, token, {
+        nombre: "TEST Prod SNDup", categoria: "TEST SNDuplicado", categoria_id: catId,
+        stock: 2, maneja_stock: true, precio_venta: 100
+      });
+      // Venta 1: vende 5 con stock=2 → stock -3
+      const { response: r1 } = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test", tipo: "normal", tipo_cobro: "efectivo",
+        items: [{ producto_id: pid, nombre_producto: "TEST Prod SNDup", cantidad: 5, precio_unitario: 100 }]
+      }, token);
+      if (!r1.ok) throw new Error("Venta 1 fallo");
+      // Venta 2: vende 2 más con stock=-3 → stock -5
+      const { response: r2 } = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test", tipo: "normal", tipo_cobro: "efectivo",
+        items: [{ producto_id: pid, nombre_producto: "TEST Prod SNDup", cantidad: 2, precio_unitario: 100 }]
+      }, token);
+      if (!r2.ok) throw new Error("Venta 2 fallo");
+      const ajustes = await allSql(dbPath,
+        `SELECT id, venta_id FROM stock_ajustes_pendientes
+         WHERE producto_id = ? AND origen = 'stock_negativo_venta' ORDER BY id ASC`, [pid]
+      );
+      // Debe haber exactamente 2 ajustes, uno por cada venta (no duplicados por misma venta)
+      assertEqual(ajustes.length, 2, "Deben existir 2 ajustes pendientes, uno por cada venta con stock negativo");
+      if (Number(ajustes[0].venta_id) === Number(ajustes[1].venta_id)) {
+        throw new Error("Los dos ajustes no deben pertenecer a la misma venta");
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testGuardarComponentesDuplicadosSumaYDedup() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -8604,6 +8755,10 @@ async function testLogsTemporalesRemovidos() {
   await testCompuestosLegacyEndpointSDManejaStock1();
   await testCompuestosLegacyEndpointSDManejaStock0();
   await testBatchLegacyLimitadoAManeja0RendimientoMayor1();
+  await testStockNegativoNoCreaPendienteSiConfigFalse();
+  await testStockNegativoCreaPendienteConConfigTrue();
+  await testStockExactoNoCreaPendiente();
+  await testStockNegativoNoDuplicaPendiente();
   await testGuardarComponentesDuplicadosSumaYDedup();
   await testConsolidacionComponentesDuplicadosExistentes();
   await testTipoAyudaSinUnidadesHardcodeado();

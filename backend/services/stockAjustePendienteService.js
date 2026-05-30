@@ -12,6 +12,7 @@ const ESTADOS_VALIDOS = new Set(["pendiente", "aprobado", "rechazado", "corregid
 const TIPOS_RESOLUCION_VALIDOS = new Set(["cobrar", "cuenta_corriente", "ajuste_stock", "perdida_interna", "rechazado", "cuenta_local"]);
 const TIPOS_RESOLUCION_VENTA_VALIDOS = new Set(["cobrar", "cuenta_corriente", "ajuste_stock", "perdida_interna", "rechazado"]);
 const ORIGEN_VENTA_RECETA = "venta_receta";
+const ORIGEN_STOCK_NEGATIVO = "stock_negativo_venta";
 
 function normalizarTexto(valor) {
   return String(valor || "").trim();
@@ -161,6 +162,7 @@ function round2(valor) {
 
 const AJUSTE_ACCIONABLE_SQL = `(
   (COALESCE(sap.origen, '') = '${ORIGEN_VENTA_RECETA}')
+  OR (COALESCE(sap.origen, '') = '${ORIGEN_STOCK_NEGATIVO}')
   OR (sap.venta_id IS NULL AND COALESCE(sap.tipo_resolucion, '') = '')
   OR COALESCE(sap.resolucion_parcial, 0) = 1
   OR COALESCE(sap.cantidad_pendiente_resolucion, 0) > 0
@@ -1017,9 +1019,52 @@ async function getResumenCuentaLocalNoMonetaria({ desde = null, hasta = null, li
   return base;
 }
 
+async function crearAjustePendienteStockNegativo({
+  productoId,
+  cantidad,
+  ventaId,
+  stockAnterior,
+  stockNuevo,
+  usuario
+}) {
+  await ensureStockAjustesPendientesSchema();
+  const pid = normalizarId(productoId);
+  const vid = normalizarId(ventaId);
+  if (!pid || !Number.isFinite(Number(cantidad)) || Number(cantidad) <= 0) return;
+
+  if (vid) {
+    const existente = await getQuery(
+      `SELECT id FROM stock_ajustes_pendientes
+       WHERE venta_id = ? AND producto_id = ? AND origen = '${ORIGEN_STOCK_NEGATIVO}' AND estado = 'pendiente'`,
+      [vid, pid]
+    );
+    if (existente) return;
+  }
+
+  const { fecha, hora } = getNowParts();
+  await runQuery(
+    `INSERT INTO stock_ajustes_pendientes
+     (producto_id, tipo_movimiento, cantidad, motivo, observaciones,
+      stock_actual_snapshot, estado, solicitado_por, solicitado_rol, fecha, hora,
+      created_at, venta_id, origen)
+     VALUES (?, 'ingreso', ?, ?, ?, ?, 'pendiente', 'sistema', 'sistema', ?, ?, datetime('now'), ?, '${ORIGEN_STOCK_NEGATIVO}')`,
+    [
+      pid,
+      round2(Number(cantidad)),
+      "Stock negativo generado por venta",
+      `Stock anterior: ${Number(stockAnterior || 0).toFixed(2)}. Stock negativo: ${Number(stockNuevo || 0).toFixed(2)}. Requiere ingreso correctivo.${vid ? " Venta #" + vid + "." : ""}`,
+      round2(Number(stockAnterior || 0)),
+      fecha,
+      hora,
+      vid
+    ]
+  );
+}
+
 module.exports = {
   ensureStockAjustesPendientesSchema,
   crearAjustePendiente,
+  crearAjustePendienteStockNegativo,
   crearAjustesPendientesVentaReceta,
   cancelarAjustesPendientesVentaReceta,
   listarAjustesPendientes,

@@ -138,6 +138,7 @@ const {
   aprobarAjustePendiente,
   cancelarAjustesPendientesVentaReceta,
   crearAjustePendiente,
+  crearAjustePendienteStockNegativo,
   crearAjustesPendientesVentaReceta,
   ensureStockAjustesPendientesSchema,
   getResumenCuentaLocalNoMonetaria,
@@ -4022,6 +4023,23 @@ app.post("/ventas", async (req, res) => {
       await guardarSnapshotsModificadoresVenta(detalles);
     }
     await applyStockForNewItems(itemsVenta);
+    try {
+      const prodIdsVenta = [...new Set(itemsVenta.map((i) => Number(i.producto_id)).filter(Boolean))];
+      for (const pid of prodIdsVenta) {
+        const prodFinal = await getQuery("SELECT id, stock FROM productos WHERE id = ?", [pid]);
+        if (prodFinal && Number(prodFinal.stock) < 0) {
+          await crearAjustePendienteStockNegativo({
+            productoId: pid,
+            cantidad: Math.abs(Number(prodFinal.stock)),
+            ventaId: venta.lastID,
+            stockNuevo: Number(prodFinal.stock),
+            usuario: getUsuarioAuditoria(req, usuarioVenta)
+          });
+        }
+      }
+    } catch (stockNegativoError) {
+      logError("Error al crear ajuste por stock negativo:", stockNegativoError);
+    }
     await crearAjustesPendientesVentaReceta({
       ventaId: venta.lastID,
       detalles,
