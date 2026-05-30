@@ -73,12 +73,14 @@ async function ensureProduccionSchema() {
 }
 
 function esProductoProducible(producto) {
-  return normalizarTipoProducto(producto?.tipo) === "compuesto" && Number(producto?.maneja_stock || 0) === 1;
+  return normalizarTipoProducto(producto?.tipo) === "compuesto"
+    && Number(producto?.maneja_stock || 0) === 1
+    && Number(producto?.es_combo || 0) === 0;
 }
 
 async function obtenerProductoProducible(productoId) {
   const producto = await getQuery(
-    `SELECT id, nombre, tipo, maneja_stock, stock, unidad_medida, costo_final, precio_compra, activo, COALESCE(eliminado, 0) AS eliminado
+    `SELECT id, nombre, tipo, maneja_stock, es_combo, stock, unidad_medida, costo_final, precio_compra, activo, COALESCE(eliminado, 0) AS eliminado
      FROM productos
      WHERE id = ?`,
     [Number(productoId)]
@@ -103,6 +105,7 @@ async function listarProductosProducibles() {
        AND COALESCE(p.activo, 1) = 1
        AND LOWER(COALESCE(p.tipo, 'simple')) = 'compuesto'
        AND COALESCE(p.maneja_stock, 0) = 1
+       AND COALESCE(p.es_combo, 0) = 0
      ORDER BY p.nombre ASC`
   );
 }
