@@ -8609,6 +8609,56 @@ async function testStockNegativoNoDuplicaPendiente() {
   }
 }
 
+async function testPerfilCliente() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const suf = Date.now();
+      // 1. perfil_cliente=normal → persiste correctamente
+      const { response: r1, data: d1 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST Perfil Normal", dni_cuit: `pnorm-${suf}`, activo: true, perfil_cliente: "normal"
+      }, token);
+      if (!r1.ok) throw new Error(`Perfil normal fallo: ${d1?.message}`);
+      if (d1.cliente?.perfil_cliente !== "normal") throw new Error(`Esperado perfil=normal, actual=${d1.cliente?.perfil_cliente}`);
+      // 2. perfil_cliente=empleado → persiste correctamente
+      const { response: r2, data: d2 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST Perfil Empleado", dni_cuit: `pemp-${suf}`, activo: true, perfil_cliente: "empleado"
+      }, token);
+      if (!r2.ok) throw new Error(`Perfil empleado fallo: ${d2?.message}`);
+      if (d2.cliente?.perfil_cliente !== "empleado") throw new Error(`Esperado perfil=empleado, actual=${d2.cliente?.perfil_cliente}`);
+      // 3. perfil_cliente=empresa → persiste correctamente
+      const { response: r3, data: d3 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST Perfil Empresa", dni_cuit: `pempresa-${suf}`, activo: true, perfil_cliente: "empresa"
+      }, token);
+      if (!r3.ok) throw new Error(`Perfil empresa fallo: ${d3?.message}`);
+      if (d3.cliente?.perfil_cliente !== "empresa") throw new Error(`Esperado perfil=empresa, actual=${d3.cliente?.perfil_cliente}`);
+      // 4. actualizar perfil → guarda correctamente
+      const clienteId = d1.cliente?.id;
+      const { response: r4, data: d4 } = await requestJson(baseUrl, "PUT", `/clientes/${clienteId}`, {
+        nombre: "TEST Perfil Normal", dni_cuit: `pnorm-${suf}`, activo: true, perfil_cliente: "empresa"
+      }, token);
+      if (!r4.ok) throw new Error(`Update perfil fallo: ${d4?.message}`);
+      if (d4.cliente?.perfil_cliente !== "empresa") throw new Error(`Update perfil: esperado empresa, actual=${d4.cliente?.perfil_cliente}`);
+      // 5. valor inválido → normaliza a "normal"
+      const { response: r5, data: d5 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST Perfil Invalido", dni_cuit: `pinv-${suf}`, activo: true, perfil_cliente: "invalido_xyz"
+      }, token);
+      if (!r5.ok) throw new Error(`Perfil inválido fallo crear: ${d5?.message}`);
+      if (d5.cliente?.perfil_cliente !== "normal") throw new Error(`Valor inválido debe normalizar a normal, actual=${d5.cliente?.perfil_cliente}`);
+      // GET /clientes devuelve perfil_cliente
+      const { data: lista } = await requestJson(baseUrl, "GET", "/clientes?include_inactive=1", null, token);
+      const clienteEnLista = (lista || []).find(c => Number(c.id) === Number(d2.cliente?.id));
+      if (!clienteEnLista) throw new Error("Cliente empleado no encontrado en listado");
+      if (clienteEnLista.perfil_cliente !== "empleado") throw new Error(`GET /clientes debe devolver perfil_cliente=empleado, actual=${clienteEnLista.perfil_cliente}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testDniCuitUnico() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -8976,6 +9026,7 @@ async function testLogsTemporalesRemovidos() {
   await testCompuestosLegacyEndpointSDManejaStock0();
   await testBatchLegacyLimitadoAManeja0RendimientoMayor1();
   await testProduccionExcluyeCombos();
+  await testPerfilCliente();
   await testDniCuitUnico();
   await testClienteSuspendido();
   await testEstadoPorVencerFrontend();

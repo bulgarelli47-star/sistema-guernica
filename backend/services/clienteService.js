@@ -1,11 +1,17 @@
 const { allQuery, getQuery, runQuery } = require("../db");
 const TIPOS_CUENTA_CORRIENTE_PERMITIDOS = new Set(["cliente", "personal", "interna", "produccion", "cortesia"]);
+const PERFILES_CLIENTE_PERMITIDOS = new Set(["normal", "empleado", "empresa"]);
 
 const TIPOS_CLIENTE_PERMITIDOS = new Set(["cliente", "colaborador", "dueño", "negocio"]);
 
 function normalizarTipoCliente(valor) {
   const tipo = String(valor || "").trim().toLowerCase();
   return TIPOS_CLIENTE_PERMITIDOS.has(tipo) ? tipo : "cliente";
+}
+
+function normalizarPerfilCliente(valor) {
+  const perfil = String(valor || "").trim().toLowerCase();
+  return PERFILES_CLIENTE_PERMITIDOS.has(perfil) ? perfil : "normal";
 }
 
 function normalizarTipoCuentaCorriente(valor) {
@@ -36,7 +42,8 @@ function parseClientePayload(body) {
     moneda: String(body.moneda || "ARS").trim().toUpperCase(),
     habilita_cuenta_corriente: body.habilita_cuenta_corriente === false || Number(body.habilita_cuenta_corriente) === 0 ? 0 : 1,
     activo: body.activo === false || Number(body.activo) === 0 ? 0 : 1,
-    suspendido: body.suspendido === true || body.suspendido === 1 || body.suspendido === "1" ? 1 : 0
+    suspendido: body.suspendido === true || body.suspendido === 1 || body.suspendido === "1" ? 1 : 0,
+    perfil_cliente: normalizarPerfilCliente(body.perfil_cliente)
   };
 }
 

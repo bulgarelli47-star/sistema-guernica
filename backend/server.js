@@ -510,6 +510,7 @@ async function ensureClientesSchema() {
   await ensureColumn("clientes", "notas", "TEXT");
   await ensureColumn("clientes", "foto_url", "TEXT");
   await ensureColumn("clientes", "suspendido", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn("clientes", "perfil_cliente", "TEXT NOT NULL DEFAULT 'normal'");
 }
 
 async function ensureConfiguracionSchema() {
@@ -5317,8 +5318,8 @@ app.post("/clientes", async (req, res) => {
       `INSERT INTO clientes
        (nombre, dni_cuit, tipo_persona, tipo_cliente, tipo_cuenta_corriente, telefono, email, contacto, direccion, localidad, codigo_postal,
         alias, observaciones, notas, foto_url, limite_fiado, dias_vencimiento, dia_vencimiento_fijo, moneda,
-        habilita_cuenta_corriente, activo, suspendido)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        habilita_cuenta_corriente, activo, suspendido, perfil_cliente)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         clienteData.nombre,
         clienteData.dni_cuit,
@@ -5341,7 +5342,8 @@ app.post("/clientes", async (req, res) => {
         clienteData.moneda,
         clienteData.habilita_cuenta_corriente,
         clienteData.activo,
-        clienteData.suspendido
+        clienteData.suspendido,
+        clienteData.perfil_cliente
       ]
     );
 
@@ -5377,7 +5379,7 @@ app.put("/clientes/:id", async (req, res) => {
        SET nombre = ?, dni_cuit = ?, tipo_persona = ?, tipo_cliente = ?, tipo_cuenta_corriente = ?, telefono = ?, email = ?, contacto = ?,
            direccion = ?, localidad = ?, codigo_postal = ?, alias = ?, observaciones = ?, notas = ?, foto_url = ?,
            limite_fiado = ?, dias_vencimiento = ?, dia_vencimiento_fijo = ?, moneda = ?,
-           habilita_cuenta_corriente = ?, activo = ?, suspendido = ?
+           habilita_cuenta_corriente = ?, activo = ?, suspendido = ?, perfil_cliente = ?
        WHERE id = ?`,
       [
         clienteData.nombre,
@@ -5402,6 +5404,7 @@ app.put("/clientes/:id", async (req, res) => {
         clienteData.habilita_cuenta_corriente,
         clienteData.activo,
         clienteData.suspendido,
+        clienteData.perfil_cliente,
         clienteId
       ]
     );
