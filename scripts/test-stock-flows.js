@@ -483,16 +483,46 @@ async function testRecetaSinStockBloqueaMovimientoManual() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
   try {
-    await prepareDb(dbPath, [
-      ["UPDATE productos SET stock = 5000 WHERE id = 3"],
-      ["UPDATE productos SET stock = 22 WHERE id = 4"]
-    ]);
-
+    await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
-      const beforeTomate = (await getProduct(baseUrl, token, 3)).stock;
-      const beforeSalsa = (await getProduct(baseUrl, token, 4)).stock;
-      const result = await requestJson(baseUrl, "POST", "/productos/4/movimientos-stock", {
+      const catId = await crearCategoria(baseUrl, token, "TEST RecetaSinStockFisico");
+
+      // Ingrediente físico con stock propio
+      const ingId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Ingrediente RecetaSinStock",
+        categoria: "TEST RecetaSinStockFisico",
+        categoria_id: catId,
+        stock: 5000,
+        maneja_stock: true
+      });
+
+      // Receta sin stock propio: tipo=compuesto, maneja_stock=false
+      const recetaId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Receta Sin Stock Fisico",
+        categoria: "TEST RecetaSinStockFisico",
+        categoria_id: catId,
+        tipo: "compuesto",
+        maneja_stock: false,
+        stock: 0,
+        componentes: [{ producto_id: ingId, cantidad: 1 }],
+        costos_extra: []
+      });
+
+      // Verificar que el producto tiene los atributos esperados antes del POST
+      const receta = await getProduct(baseUrl, token, recetaId);
+      if (!receta) throw new Error("Receta de prueba no encontrada en GET /productos");
+      if (String(receta.tipo || "").toLowerCase() !== "compuesto") {
+        throw new Error(`Receta debe ser tipo=compuesto, actual=${receta.tipo}`);
+      }
+      if (Number(receta.maneja_stock) !== 0) {
+        throw new Error(`Receta sin stock debe tener maneja_stock=0, actual=${receta.maneja_stock}`);
+      }
+
+      const beforeReceta = Number(receta.stock || 0);
+      const beforeIng = Number((await getProduct(baseUrl, token, ingId))?.stock || 0);
+
+      const result = await requestJson(baseUrl, "POST", `/productos/${recetaId}/movimientos-stock`, {
         tipo_movimiento: "egreso",
         cantidad: 1,
         motivo: "TEST receta sin stock no ajustable",
@@ -500,8 +530,8 @@ async function testRecetaSinStockBloqueaMovimientoManual() {
       }, token);
 
       assertEqual(result.response.status, 400, "Receta sin stock propio no debe recibir movimiento manual");
-      assertEqual((await getProduct(baseUrl, token, 4)).stock, beforeSalsa, "Salsa lista debe conservar stock en 0");
-      assertEqual((await getProduct(baseUrl, token, 3)).stock, beforeTomate, "Movimiento bloqueado no debe consumir tomate");
+      assertEqual((await getProduct(baseUrl, token, recetaId)).stock, beforeReceta, "Receta debe conservar stock tras bloqueo");
+      assertEqual((await getProduct(baseUrl, token, ingId)).stock, beforeIng, "Ingrediente no debe verse afectado por movimiento bloqueado");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
