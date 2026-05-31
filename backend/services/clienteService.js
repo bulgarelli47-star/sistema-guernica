@@ -43,7 +43,8 @@ function parseClientePayload(body) {
     habilita_cuenta_corriente: body.habilita_cuenta_corriente === false || Number(body.habilita_cuenta_corriente) === 0 ? 0 : 1,
     activo: body.activo === false || Number(body.activo) === 0 ? 0 : 1,
     suspendido: body.suspendido === true || body.suspendido === 1 || body.suspendido === "1" ? 1 : 0,
-    perfil_cliente: normalizarPerfilCliente(body.perfil_cliente)
+    perfil_cliente: normalizarPerfilCliente(body.perfil_cliente),
+    permite_excedente: body.permite_excedente === true || body.permite_excedente === 1 || body.permite_excedente === "1" ? 1 : 0
   };
 }
 

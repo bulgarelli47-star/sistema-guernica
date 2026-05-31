@@ -8609,6 +8609,55 @@ async function testStockNegativoNoDuplicaPendiente() {
   }
 }
 
+async function testPermiteExcedente() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      // Crear colaborador para test de rol
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colab Excedente Test", usuario: "colab_exc_test",
+        password: "colab123", confirmar_password: "colab123",
+        rol: "colaborador", activo: true
+      }, token);
+      const colaboradorToken = await login(baseUrl, "colab_exc_test", "colab123");
+      const suf = Date.now();
+      // Test 1: permite_excedente=0, supera límite, sin autorización → 409
+      const { data: d1 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST ExcNO", dni_cuit: `exc-no-${suf}`,
+        habilita_cuenta_corriente: true, activo: true, permite_excedente: false, limite_fiado: 100
+      }, token);
+      const { response: rv1 } = await requestJson(baseUrl, "POST", `/clientes/${d1.cliente?.id}/venta-cuenta`, {
+        total: 200, concepto: "Test sin excedente", autorizar_excedido: false
+      }, token);
+      if (rv1.status !== 409) throw new Error(`Sin permite_excedente y sin autorizar debe dar 409, dio ${rv1.status}`);
+      // Test 2: permite_excedente=1, supera límite, sin autorización → OK
+      const { data: d2 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST ExcSI", dni_cuit: `exc-si-${suf}`,
+        habilita_cuenta_corriente: true, activo: true, permite_excedente: true, limite_fiado: 100
+      }, token);
+      const { response: rv2 } = await requestJson(baseUrl, "POST", `/clientes/${d2.cliente?.id}/venta-cuenta`, {
+        total: 200, concepto: "Test con excedente", autorizar_excedido: false
+      }, token);
+      if (!rv2.ok) throw new Error(`Con permite_excedente=1 y sin autorizar debe OK, dio ${rv2.status}`);
+      // Test 3: permite_excedente=0, colaborador + autorizar_excedido=true → 403
+      const { response: rv3 } = await requestJson(baseUrl, "POST", `/clientes/${d1.cliente?.id}/venta-cuenta`, {
+        total: 50, concepto: "Test colab autorizar", autorizar_excedido: true
+      }, colaboradorToken);
+      if (rv3.status !== 403) throw new Error(`Colaborador con autorizar_excedido=true debe dar 403, dio ${rv3.status}`);
+      // Test 4: permite_excedente=0, admin + autorizar_excedido=true → OK (no 403 por rol)
+      const { response: rv4 } = await requestJson(baseUrl, "POST", `/clientes/${d1.cliente?.id}/venta-cuenta`, {
+        total: 50, concepto: "Test admin autorizar", autorizar_excedido: true
+      }, token);
+      if (rv4.status === 403) throw new Error(`Admin con autorizar_excedido=true no debe dar 403 por rol`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testPerfilCliente() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -9026,6 +9075,7 @@ async function testLogsTemporalesRemovidos() {
   await testCompuestosLegacyEndpointSDManejaStock0();
   await testBatchLegacyLimitadoAManeja0RendimientoMayor1();
   await testProduccionExcluyeCombos();
+  await testPermiteExcedente();
   await testPerfilCliente();
   await testDniCuitUnico();
   await testClienteSuspendido();
