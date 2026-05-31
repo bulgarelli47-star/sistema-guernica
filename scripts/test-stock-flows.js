@@ -8609,6 +8609,44 @@ async function testStockNegativoNoDuplicaPendiente() {
   }
 }
 
+async function testUsaReglasPersonalizadas() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const suf = Date.now();
+      // 1. Sin usa_reglas_personalizadas → default 0
+      const { data: d1, response: r1 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST ReglasDefault", dni_cuit: `rp-def-${suf}`, activo: true
+      }, token);
+      if (!r1.ok) throw new Error(`Crear cliente default fallo: ${d1?.message}`);
+      if (Number(d1.cliente?.usa_reglas_personalizadas) !== 0) throw new Error(`Default debe ser 0, actual=${d1.cliente?.usa_reglas_personalizadas}`);
+      // 2. Con usa_reglas_personalizadas=1 → persiste
+      const { data: d2, response: r2 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST ReglasCustom", dni_cuit: `rp-cus-${suf}`, activo: true, usa_reglas_personalizadas: true
+      }, token);
+      if (!r2.ok) throw new Error(`Crear cliente custom fallo: ${d2?.message}`);
+      if (Number(d2.cliente?.usa_reglas_personalizadas) !== 1) throw new Error(`usa_reglas_personalizadas=1 debe persistir, actual=${d2.cliente?.usa_reglas_personalizadas}`);
+      // 3. Editar y cambiar a 0 → persiste
+      const { data: d3, response: r3 } = await requestJson(baseUrl, "PUT", `/clientes/${d2.cliente?.id}`, {
+        nombre: "TEST ReglasCustom", dni_cuit: `rp-cus-${suf}`, activo: true, usa_reglas_personalizadas: false
+      }, token);
+      if (!r3.ok) throw new Error(`Update a 0 fallo: ${d3?.message}`);
+      if (Number(d3.cliente?.usa_reglas_personalizadas) !== 0) throw new Error(`Update a 0 debe persistir, actual=${d3.cliente?.usa_reglas_personalizadas}`);
+      // 4. Valor inválido → normaliza a 0
+      const { data: d4, response: r4 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST ReglasInvalido", dni_cuit: `rp-inv-${suf}`, activo: true, usa_reglas_personalizadas: "invalido"
+      }, token);
+      if (!r4.ok) throw new Error(`Crear con valor inválido fallo: ${d4?.message}`);
+      if (Number(d4.cliente?.usa_reglas_personalizadas) !== 0) throw new Error(`Valor inválido debe normalizar a 0, actual=${d4.cliente?.usa_reglas_personalizadas}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testRequiereAutorizacion() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -9129,6 +9167,7 @@ async function testLogsTemporalesRemovidos() {
   await testCompuestosLegacyEndpointSDManejaStock0();
   await testBatchLegacyLimitadoAManeja0RendimientoMayor1();
   await testProduccionExcluyeCombos();
+  await testUsaReglasPersonalizadas();
   await testRequiereAutorizacion();
   await testPermiteExcedente();
   await testPerfilCliente();

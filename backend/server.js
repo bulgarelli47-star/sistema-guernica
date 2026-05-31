@@ -513,6 +513,7 @@ async function ensureClientesSchema() {
   await ensureColumn("clientes", "perfil_cliente", "TEXT NOT NULL DEFAULT 'normal'");
   await ensureColumn("clientes", "permite_excedente", "INTEGER NOT NULL DEFAULT 0");
   await ensureColumn("clientes", "requiere_autorizacion", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn("clientes", "usa_reglas_personalizadas", "INTEGER NOT NULL DEFAULT 0");
 }
 
 async function ensureConfiguracionSchema() {
@@ -5326,8 +5327,8 @@ app.post("/clientes", async (req, res) => {
       `INSERT INTO clientes
        (nombre, dni_cuit, tipo_persona, tipo_cliente, tipo_cuenta_corriente, telefono, email, contacto, direccion, localidad, codigo_postal,
         alias, observaciones, notas, foto_url, limite_fiado, dias_vencimiento, dia_vencimiento_fijo, moneda,
-        habilita_cuenta_corriente, activo, suspendido, perfil_cliente, permite_excedente, requiere_autorizacion)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        habilita_cuenta_corriente, activo, suspendido, perfil_cliente, permite_excedente, requiere_autorizacion, usa_reglas_personalizadas)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         clienteData.nombre,
         clienteData.dni_cuit,
@@ -5353,7 +5354,8 @@ app.post("/clientes", async (req, res) => {
         clienteData.suspendido,
         clienteData.perfil_cliente,
         clienteData.permite_excedente,
-        clienteData.requiere_autorizacion
+        clienteData.requiere_autorizacion,
+        clienteData.usa_reglas_personalizadas
       ]
     );
 
@@ -5389,7 +5391,7 @@ app.put("/clientes/:id", async (req, res) => {
        SET nombre = ?, dni_cuit = ?, tipo_persona = ?, tipo_cliente = ?, tipo_cuenta_corriente = ?, telefono = ?, email = ?, contacto = ?,
            direccion = ?, localidad = ?, codigo_postal = ?, alias = ?, observaciones = ?, notas = ?, foto_url = ?,
            limite_fiado = ?, dias_vencimiento = ?, dia_vencimiento_fijo = ?, moneda = ?,
-           habilita_cuenta_corriente = ?, activo = ?, suspendido = ?, perfil_cliente = ?, permite_excedente = ?, requiere_autorizacion = ?
+           habilita_cuenta_corriente = ?, activo = ?, suspendido = ?, perfil_cliente = ?, permite_excedente = ?, requiere_autorizacion = ?, usa_reglas_personalizadas = ?
        WHERE id = ?`,
       [
         clienteData.nombre,
@@ -5417,6 +5419,7 @@ app.put("/clientes/:id", async (req, res) => {
         clienteData.perfil_cliente,
         clienteData.permite_excedente,
         clienteData.requiere_autorizacion,
+        clienteData.usa_reglas_personalizadas,
         clienteId
       ]
     );
