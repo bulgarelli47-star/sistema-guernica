@@ -8579,6 +8579,39 @@ async function testStockNegativoNoDuplicaPendiente() {
   }
 }
 
+async function testEstadoPorVencerFrontend() {
+  // Test file-based: verifica la lógica de "Por vencer" en el código fuente
+  const html = fs.readFileSync(path.join(ROOT, "frontend", "clientes.html"), "utf8");
+  if (!html.includes('"Por vencer"')) throw new Error("Estado 'Por vencer' no encontrado en clientes.html");
+  if (!html.includes("dias*.7")) throw new Error("Regla del 70% (dias*.7) no encontrada en estadoCliente");
+  if (!html.includes("antig<dias")) throw new Error("Condición antig<dias (antes del vencimiento) no encontrada");
+  if (!html.includes('|| e === "Por vencer" ? "warn"')) throw new Error("estadoClass no asigna 'warn' a 'Por vencer'");
+  // Simular la lógica JS directamente en Node para verificar umbrales
+  const n=v=>Number(v||0);
+  const antiguedad=(primera_deuda)=>{if(!primera_deuda)return 0;return Math.floor((Date.now()-new Date(primera_deuda).getTime())/(86400000))};
+  const estadoCliente=(c)=>{
+    if(n(c.activo)!==1)return "Inactivo";
+    if(n(c.deuda_actual)<=0)return "Sin deuda";
+    const dias=n(c.dias_vencimiento||30);
+    const antig=c._antig??0; // usamos _antig para simular
+    if(antig>=dias*.7&&antig<dias)return "Por vencer";
+    if(antig>dias)return "Vencido";
+    return "OK";
+  };
+  // dias=30, antig=21 (70%) → Por vencer
+  if(estadoCliente({activo:1,deuda_actual:100,dias_vencimiento:30,_antig:21})!=="Por vencer")
+    throw new Error("antig=21, dias=30 debe dar 'Por vencer'");
+  // dias=30, antig=30 NO es vencido (>30 lo es), antig=31 sí
+  if(estadoCliente({activo:1,deuda_actual:100,dias_vencimiento:30,_antig:31})!=="Vencido")
+    throw new Error("antig=31, dias=30 debe dar 'Vencido'");
+  // dias=30, antig=29 → Por vencer (>=21 y <30)
+  if(estadoCliente({activo:1,deuda_actual:100,dias_vencimiento:30,_antig:29})!=="Por vencer")
+    throw new Error("antig=29, dias=30 debe dar 'Por vencer'");
+  // dias=30, antig=10 (antes del 70%) → OK
+  if(estadoCliente({activo:1,deuda_actual:100,dias_vencimiento:30,_antig:10})!=="OK")
+    throw new Error("antig=10, dias=30 debe dar 'OK' (no llega al 70%)");
+}
+
 async function testAutorizarExcedenteRequiereRolSuperior() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -8837,6 +8870,7 @@ async function testLogsTemporalesRemovidos() {
   await testCompuestosLegacyEndpointSDManejaStock0();
   await testBatchLegacyLimitadoAManeja0RendimientoMayor1();
   await testProduccionExcluyeCombos();
+  await testEstadoPorVencerFrontend();
   await testAutorizarExcedenteRequiereRolSuperior();
   await testStockNegativoNoCreaPendienteSiConfigFalse();
   await testStockNegativoCreaPendienteConConfigTrue();
