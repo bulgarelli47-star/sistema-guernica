@@ -8579,6 +8579,48 @@ async function testStockNegativoNoDuplicaPendiente() {
   }
 }
 
+async function testAutorizarExcedenteRequiereRolSuperior() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      // Crear colaborador
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colab CC Test", usuario: "colab_cc_test",
+        password: "colab123", confirmar_password: "colab123",
+        rol: "colaborador", activo: true
+      }, adminToken);
+      const colaboradorToken = await login(baseUrl, "colab_cc_test", "colab123");
+      // Crear cliente con límite de $100
+      const { data: cd } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "Cliente Limite Test", dni_cuit: `lim-${Date.now()}`,
+        limite_fiado: 100, habilita_cuenta_corriente: true, activo: true
+      }, adminToken);
+      const clienteId = cd.cliente?.id;
+      if (!clienteId) throw new Error("No se pudo crear cliente para test de excedente");
+      // Colaborador + autorizar_excedido=true → debe dar 403
+      const { response: r403 } = await requestJson(baseUrl, "POST", `/clientes/${clienteId}/venta-cuenta`, {
+        total: 200, concepto: "Test excedente colab", autorizar_excedido: true
+      }, colaboradorToken);
+      if (r403.status !== 403) throw new Error(`Colaborador con autorizar_excedido=true debe dar 403, dio ${r403.status}`);
+      // Admin + autorizar_excedido=true → NO debe dar 403 por rol
+      const { response: rAdmin } = await requestJson(baseUrl, "POST", `/clientes/${clienteId}/venta-cuenta`, {
+        total: 200, concepto: "Test excedente admin", autorizar_excedido: true
+      }, adminToken);
+      if (rAdmin.status === 403) throw new Error(`Admin con autorizar_excedido=true NO debe dar 403 por rol`);
+      // Colaborador sin autorizar + dentro del límite → no debe dar 403
+      const { response: rDentro } = await requestJson(baseUrl, "POST", `/clientes/${clienteId}/venta-cuenta`, {
+        total: 50, concepto: "Test dentro limite", autorizar_excedido: false
+      }, colaboradorToken);
+      if (rDentro.status === 403) throw new Error("Colaborador sin autorizar_excedido no debe dar 403");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testGuardarComponentesDuplicadosSumaYDedup() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -8795,6 +8837,7 @@ async function testLogsTemporalesRemovidos() {
   await testCompuestosLegacyEndpointSDManejaStock0();
   await testBatchLegacyLimitadoAManeja0RendimientoMayor1();
   await testProduccionExcluyeCombos();
+  await testAutorizarExcedenteRequiereRolSuperior();
   await testStockNegativoNoCreaPendienteSiConfigFalse();
   await testStockNegativoCreaPendienteConConfigTrue();
   await testStockExactoNoCreaPendiente();

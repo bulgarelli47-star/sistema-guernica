@@ -4184,6 +4184,9 @@ app.post("/clientes/:id/venta-cuenta", async (req, res) => {
   if (total <= 0 || items.some((item) => !item.nombre_producto || item.cantidad <= 0)) {
     return res.status(400).json({ message: "Venta a cuenta invalida" });
   }
+  if (autorizarExcedido && !["admin", "encargado"].includes(req.usuario?.rol)) {
+    return res.status(403).json({ message: "Solo encargado o admin puede autorizar excedentes" });
+  }
 
   try {
     const cliente = await getClienteConMetricas(clienteId);
