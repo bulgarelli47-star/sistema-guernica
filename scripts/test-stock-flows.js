@@ -8609,6 +8609,40 @@ async function testStockNegativoNoDuplicaPendiente() {
   }
 }
 
+async function testDniCuitUnico() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const dni = `20300111222-${Date.now()}`;
+      // Primer cliente con ese DNI → debe crear OK
+      const { response: r1, data: d1 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "Cliente DNI Test A", dni_cuit: dni, activo: true
+      }, token);
+      if (!r1.ok) throw new Error(`Primer cliente con DNI debe crearse OK, dio ${r1.status}: ${d1?.message}`);
+      // Segundo cliente con mismo DNI → debe fallar (409)
+      const { response: r2 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "Cliente DNI Test B", dni_cuit: dni, activo: true
+      }, token);
+      if (r2.status !== 409) throw new Error(`Segundo cliente con mismo DNI debe dar 409, dio ${r2.status}`);
+      // Múltiples clientes sin DNI deben permitirse
+      const { response: rA } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "Cliente Sin DNI A", dni_cuit: "", activo: true
+      }, token);
+      const { response: rB } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "Cliente Sin DNI B", dni_cuit: "", activo: true
+      }, token);
+      // Sin DNI vacío puede rechazarse por obligatorio — solo verificamos que no es error de unicidad (409)
+      if (rA.status === 409) throw new Error("Cliente sin DNI no debe fallar por unicidad");
+      if (rB.status === 409) throw new Error("Segundo cliente sin DNI no debe fallar por unicidad");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testClienteSuspendido() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -8942,6 +8976,7 @@ async function testLogsTemporalesRemovidos() {
   await testCompuestosLegacyEndpointSDManejaStock0();
   await testBatchLegacyLimitadoAManeja0RendimientoMayor1();
   await testProduccionExcluyeCombos();
+  await testDniCuitUnico();
   await testClienteSuspendido();
   await testEstadoPorVencerFrontend();
   await testAutorizarExcedenteRequiereRolSuperior();

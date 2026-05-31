@@ -492,6 +492,7 @@ async function initDatabase() {
     await runQuery("CREATE INDEX IF NOT EXISTS idx_detalle_ventas_venta ON detalle_ventas(venta_id)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_producto ON movimientos_stock(producto_id)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_movimientos_caja ON caja_movimientos(caja_id)");
+    await runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_dni_cuit_unique ON clientes(dni_cuit) WHERE dni_cuit IS NOT NULL AND TRIM(dni_cuit) != ''");
 
     const existingUser = await getQuery(
       "SELECT * FROM usuarios WHERE usuario = ?",
