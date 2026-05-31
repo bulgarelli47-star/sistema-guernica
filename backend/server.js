@@ -509,6 +509,7 @@ async function ensureClientesSchema() {
   await ensureColumn("clientes", "habilita_cuenta_corriente", "INTEGER NOT NULL DEFAULT 1");
   await ensureColumn("clientes", "notas", "TEXT");
   await ensureColumn("clientes", "foto_url", "TEXT");
+  await ensureColumn("clientes", "suspendido", "INTEGER NOT NULL DEFAULT 0");
 }
 
 async function ensureConfiguracionSchema() {
@@ -4196,6 +4197,9 @@ app.post("/clientes/:id/venta-cuenta", async (req, res) => {
     if (Number(cliente.habilita_cuenta_corriente) !== 1) {
       return res.status(400).json({ message: "El cliente no tiene cuenta corriente habilitada" });
     }
+    if (Number(cliente.suspendido) === 1) {
+      return res.status(403).json({ message: "Cliente suspendido: solo se permiten cobros" });
+    }
     const deudaProyectada = Number(cliente.deuda_actual || 0) + total;
     if (Number(cliente.limite_fiado || 0) > 0 && deudaProyectada > Number(cliente.limite_fiado) && !autorizarExcedido) {
       return res.status(409).json({ message: "La venta excede el limite de credito del cliente" });
@@ -5313,8 +5317,8 @@ app.post("/clientes", async (req, res) => {
       `INSERT INTO clientes
        (nombre, dni_cuit, tipo_persona, tipo_cliente, tipo_cuenta_corriente, telefono, email, contacto, direccion, localidad, codigo_postal,
         alias, observaciones, notas, foto_url, limite_fiado, dias_vencimiento, dia_vencimiento_fijo, moneda,
-        habilita_cuenta_corriente, activo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        habilita_cuenta_corriente, activo, suspendido)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         clienteData.nombre,
         clienteData.dni_cuit,
@@ -5336,7 +5340,8 @@ app.post("/clientes", async (req, res) => {
         clienteData.dia_vencimiento_fijo,
         clienteData.moneda,
         clienteData.habilita_cuenta_corriente,
-        clienteData.activo
+        clienteData.activo,
+        clienteData.suspendido
       ]
     );
 
@@ -5372,7 +5377,7 @@ app.put("/clientes/:id", async (req, res) => {
        SET nombre = ?, dni_cuit = ?, tipo_persona = ?, tipo_cliente = ?, tipo_cuenta_corriente = ?, telefono = ?, email = ?, contacto = ?,
            direccion = ?, localidad = ?, codigo_postal = ?, alias = ?, observaciones = ?, notas = ?, foto_url = ?,
            limite_fiado = ?, dias_vencimiento = ?, dia_vencimiento_fijo = ?, moneda = ?,
-           habilita_cuenta_corriente = ?, activo = ?
+           habilita_cuenta_corriente = ?, activo = ?, suspendido = ?
        WHERE id = ?`,
       [
         clienteData.nombre,
@@ -5396,6 +5401,7 @@ app.put("/clientes/:id", async (req, res) => {
         clienteData.moneda,
         clienteData.habilita_cuenta_corriente,
         clienteData.activo,
+        clienteData.suspendido,
         clienteId
       ]
     );

@@ -35,7 +35,8 @@ function parseClientePayload(body) {
     dia_vencimiento_fijo: body.dia_vencimiento_fijo ? Number(body.dia_vencimiento_fijo) : null,
     moneda: String(body.moneda || "ARS").trim().toUpperCase(),
     habilita_cuenta_corriente: body.habilita_cuenta_corriente === false || Number(body.habilita_cuenta_corriente) === 0 ? 0 : 1,
-    activo: body.activo === false || Number(body.activo) === 0 ? 0 : 1
+    activo: body.activo === false || Number(body.activo) === 0 ? 0 : 1,
+    suspendido: body.suspendido === true || body.suspendido === 1 || body.suspendido === "1" ? 1 : 0
   };
 }
 

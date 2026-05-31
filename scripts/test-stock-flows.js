@@ -8579,6 +8579,48 @@ async function testStockNegativoNoDuplicaPendiente() {
   }
 }
 
+async function testClienteSuspendido() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      // Crear cliente activo normal
+      const { data: cd } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "Cliente Suspendido Test", dni_cuit: `susp-${Date.now()}`,
+        habilita_cuenta_corriente: true, activo: true, suspendido: false
+      }, token);
+      const clienteId = cd.cliente?.id;
+      if (!clienteId) throw new Error("No se pudo crear cliente para test suspendido");
+      // GET /clientes devuelve suspendido
+      const { data: lista } = await requestJson(baseUrl, "GET", "/clientes?include_inactive=1", null, token);
+      const clienteEnLista = lista.find(c => Number(c.id) === Number(clienteId));
+      if (!clienteEnLista) throw new Error("Cliente no encontrado en lista");
+      if (clienteEnLista.suspendido === undefined) throw new Error("Campo suspendido ausente en GET /clientes");
+      assertEqual(Number(clienteEnLista.suspendido), 0, "Cliente no suspendido debe tener suspendido=0");
+      // Suspender el cliente
+      const { response: rEdit, data: editData } = await requestJson(baseUrl, "PUT", `/clientes/${clienteId}`, {
+        nombre: "Cliente Suspendido Test", dni_cuit: `susp-${clienteId}`,
+        habilita_cuenta_corriente: true, activo: true, suspendido: true
+      }, token);
+      if (!rEdit.ok) throw new Error(`PUT /clientes suspender fallo: ${editData?.message}`);
+      assertEqual(Number(editData.cliente?.suspendido), 1, "Cliente editado debe tener suspendido=1");
+      // Venta a cuenta con cliente suspendido → debe dar 403
+      const { response: rVenta } = await requestJson(baseUrl, "POST", `/clientes/${clienteId}/venta-cuenta`, {
+        total: 50, concepto: "Test suspendido", autorizar_excedido: false
+      }, token);
+      if (rVenta.status !== 403) throw new Error(`Venta a cuenta con cliente suspendido debe dar 403, dio ${rVenta.status}`);
+      // Verificar estado frontend: suspendido=1 → "Suspendida"
+      const html = fs.readFileSync(path.join(ROOT, "frontend", "clientes.html"), "utf8");
+      if (!html.includes('"Suspendida"')) throw new Error("Estado 'Suspendida' no encontrado en clientes.html");
+      if (!html.includes('n(c.suspendido)===1')) throw new Error("Condición suspendido===1 no encontrada en estadoCliente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testEstadoPorVencerFrontend() {
   // Test file-based: verifica la lógica de "Por vencer" en el código fuente
   const html = fs.readFileSync(path.join(ROOT, "frontend", "clientes.html"), "utf8");
@@ -8870,6 +8912,7 @@ async function testLogsTemporalesRemovidos() {
   await testCompuestosLegacyEndpointSDManejaStock0();
   await testBatchLegacyLimitadoAManeja0RendimientoMayor1();
   await testProduccionExcluyeCombos();
+  await testClienteSuspendido();
   await testEstadoPorVencerFrontend();
   await testAutorizarExcedenteRequiereRolSuperior();
   await testStockNegativoNoCreaPendienteSiConfigFalse();

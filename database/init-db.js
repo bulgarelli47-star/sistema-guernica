@@ -208,6 +208,7 @@ async function initDatabase() {
     await ensureColumn("clientes", "moneda", "TEXT NOT NULL DEFAULT 'ARS'");
     await ensureColumn("clientes", "habilita_cuenta_corriente", "INTEGER NOT NULL DEFAULT 1");
     await ensureColumn("clientes", "notas", "TEXT");
+    await ensureColumn("clientes", "suspendido", "INTEGER NOT NULL DEFAULT 0");
 
     await runQuery(`
       CREATE TABLE IF NOT EXISTS detalle_ventas (
