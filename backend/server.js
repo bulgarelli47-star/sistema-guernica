@@ -512,6 +512,7 @@ async function ensureClientesSchema() {
   await ensureColumn("clientes", "suspendido", "INTEGER NOT NULL DEFAULT 0");
   await ensureColumn("clientes", "perfil_cliente", "TEXT NOT NULL DEFAULT 'normal'");
   await ensureColumn("clientes", "permite_excedente", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn("clientes", "requiere_autorizacion", "INTEGER NOT NULL DEFAULT 0");
 }
 
 async function ensureConfiguracionSchema() {
@@ -4202,6 +4203,9 @@ app.post("/clientes/:id/venta-cuenta", async (req, res) => {
     if (Number(cliente.suspendido) === 1) {
       return res.status(403).json({ message: "Cliente suspendido: solo se permiten cobros" });
     }
+    if (Number(cliente.requiere_autorizacion) === 1 && !["admin", "encargado"].includes(req.usuario?.rol)) {
+      return res.status(403).json({ message: "Esta cuenta requiere autorización de encargado o admin" });
+    }
     const deudaProyectada = Number(cliente.deuda_actual || 0) + total;
     if (Number(cliente.limite_fiado || 0) > 0 && deudaProyectada > Number(cliente.limite_fiado)) {
       const excedentPermitido = Number(cliente.permite_excedente) === 1 || autorizarExcedido;
@@ -5322,8 +5326,8 @@ app.post("/clientes", async (req, res) => {
       `INSERT INTO clientes
        (nombre, dni_cuit, tipo_persona, tipo_cliente, tipo_cuenta_corriente, telefono, email, contacto, direccion, localidad, codigo_postal,
         alias, observaciones, notas, foto_url, limite_fiado, dias_vencimiento, dia_vencimiento_fijo, moneda,
-        habilita_cuenta_corriente, activo, suspendido, perfil_cliente, permite_excedente)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        habilita_cuenta_corriente, activo, suspendido, perfil_cliente, permite_excedente, requiere_autorizacion)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         clienteData.nombre,
         clienteData.dni_cuit,
@@ -5348,7 +5352,8 @@ app.post("/clientes", async (req, res) => {
         clienteData.activo,
         clienteData.suspendido,
         clienteData.perfil_cliente,
-        clienteData.permite_excedente
+        clienteData.permite_excedente,
+        clienteData.requiere_autorizacion
       ]
     );
 
@@ -5384,7 +5389,7 @@ app.put("/clientes/:id", async (req, res) => {
        SET nombre = ?, dni_cuit = ?, tipo_persona = ?, tipo_cliente = ?, tipo_cuenta_corriente = ?, telefono = ?, email = ?, contacto = ?,
            direccion = ?, localidad = ?, codigo_postal = ?, alias = ?, observaciones = ?, notas = ?, foto_url = ?,
            limite_fiado = ?, dias_vencimiento = ?, dia_vencimiento_fijo = ?, moneda = ?,
-           habilita_cuenta_corriente = ?, activo = ?, suspendido = ?, perfil_cliente = ?, permite_excedente = ?
+           habilita_cuenta_corriente = ?, activo = ?, suspendido = ?, perfil_cliente = ?, permite_excedente = ?, requiere_autorizacion = ?
        WHERE id = ?`,
       [
         clienteData.nombre,
@@ -5411,6 +5416,7 @@ app.put("/clientes/:id", async (req, res) => {
         clienteData.suspendido,
         clienteData.perfil_cliente,
         clienteData.permite_excedente,
+        clienteData.requiere_autorizacion,
         clienteId
       ]
     );

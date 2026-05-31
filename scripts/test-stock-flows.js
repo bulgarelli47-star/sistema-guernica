@@ -8609,6 +8609,60 @@ async function testStockNegativoNoDuplicaPendiente() {
   }
 }
 
+async function testRequiereAutorizacion() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colab Req Auth", usuario: "colab_req_auth",
+        password: "colab123", confirmar_password: "colab123",
+        rol: "colaborador", activo: true
+      }, token);
+      const colaboradorToken = await login(baseUrl, "colab_req_auth", "colab123");
+      const suf = Date.now();
+      // Cliente con requiere_autorizacion=1
+      const { data: dReq } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST RequiereAuth", dni_cuit: `req-auth-${suf}`,
+        habilita_cuenta_corriente: true, activo: true,
+        requiere_autorizacion: true, limite_fiado: 0
+      }, token);
+      const reqId = dReq.cliente?.id;
+      // Cliente sin requiere_autorizacion=0
+      const { data: dNoReq } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST NoRequiereAuth", dni_cuit: `no-req-${suf}`,
+        habilita_cuenta_corriente: true, activo: true,
+        requiere_autorizacion: false, limite_fiado: 0
+      }, token);
+      const noReqId = dNoReq.cliente?.id;
+      // Test 1: requiere_autorizacion=1 + colaborador → 403
+      const { response: r1 } = await requestJson(baseUrl, "POST", `/clientes/${reqId}/venta-cuenta`, {
+        total: 50, concepto: "Test req auth colab", autorizar_excedido: false
+      }, colaboradorToken);
+      if (r1.status !== 403) throw new Error(`Colaborador con requiere_autorizacion=1 debe dar 403, dio ${r1.status}`);
+      // Test 2: requiere_autorizacion=1 + admin → OK
+      const { response: r2 } = await requestJson(baseUrl, "POST", `/clientes/${reqId}/venta-cuenta`, {
+        total: 50, concepto: "Test req auth admin", autorizar_excedido: false
+      }, token);
+      if (!r2.ok) throw new Error(`Admin con requiere_autorizacion=1 debe OK, dio ${r2.status}`);
+      // Test 3: requiere_autorizacion=0 + colaborador → OK (sin limitaciones de auth)
+      const { response: r3 } = await requestJson(baseUrl, "POST", `/clientes/${noReqId}/venta-cuenta`, {
+        total: 50, concepto: "Test no req colab", autorizar_excedido: false
+      }, colaboradorToken);
+      if (!r3.ok) throw new Error(`Colaborador sin requiere_autorizacion debe OK, dio ${r3.status}`);
+      // Test 4: requiere_autorizacion=0 + colaborador + autorizar_excedido=true → 403 sigue igual (rol check)
+      const { response: r4 } = await requestJson(baseUrl, "POST", `/clientes/${noReqId}/venta-cuenta`, {
+        total: 50, concepto: "Test colab autorizar excedido", autorizar_excedido: true
+      }, colaboradorToken);
+      if (r4.status !== 403) throw new Error(`Colaborador con autorizar_excedido=true debe seguir dando 403, dio ${r4.status}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testPermiteExcedente() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -9075,6 +9129,7 @@ async function testLogsTemporalesRemovidos() {
   await testCompuestosLegacyEndpointSDManejaStock0();
   await testBatchLegacyLimitadoAManeja0RendimientoMayor1();
   await testProduccionExcluyeCombos();
+  await testRequiereAutorizacion();
   await testPermiteExcedente();
   await testPerfilCliente();
   await testDniCuitUnico();
