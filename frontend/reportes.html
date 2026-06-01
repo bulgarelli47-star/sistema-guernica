@@ -791,6 +791,34 @@
     :where(.modal-actions,.dialog-actions,.modal-footer,.modal-header-actions){display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
     :where(.close,.icon-button,.mib.icon-only){display:inline-grid;place-items:center;flex:0 0 auto;border-radius:10px}
     @media(max-width:860px){:where(.modal,.modal-backdrop){padding:10px}.modal>.modal-card,.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{width:min(100%,calc(100vw - 20px));max-height:calc(100vh - 20px);border-radius:16px}:where(.modal-actions,.dialog-actions,.modal-footer){justify-content:stretch}:where(.modal-actions>* , .dialog-actions>* , .modal-footer>*){flex:1 1 140px}}
+
+    /* Constructor Analítico */
+    .modal-constructor { padding: 0; z-index: 100; }
+    .constructor-card { width: 100%; height: 100dvh; max-height: 100dvh; border-radius: 0; display: flex; flex-direction: column; overflow: hidden; background: #fff; }
+    .constructor-header { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 20px; background: var(--header); color: #fff; }
+    .constructor-header h2 { margin: 0; font-size: 20px; color: #fff; font-weight: 900; }
+    .constructor-header p { margin: 4px 0 0; color: rgba(255,255,255,.72); font-size: 13px; }
+    .constructor-header .close { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.22); color: #fff; }
+    .constructor-header .close:hover { background: rgba(255,255,255,.22); }
+    .constructor-layout { flex: 1 1 auto; display: grid; grid-template-columns: 290px minmax(0, 1fr); overflow: hidden; }
+    .constructor-panel-left { border-right: 1px solid var(--border); overflow-y: auto; background: #f8fafc; padding: 16px; display: flex; flex-direction: column; gap: 20px; }
+    .constructor-panel-right { overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 14px; }
+    .constructor-section-title { font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; }
+    .constructor-plantilla-grid { display: grid; gap: 6px; }
+    .constructor-plantilla-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: #fff; cursor: pointer; font-size: 13px; font-weight: 700; color: var(--text); text-align: left; transition: border-color .15s, background .15s, color .15s; }
+    .constructor-plantilla-card:hover { border-color: rgba(109,40,217,.4); background: var(--primary-soft); color: var(--primary); }
+    .constructor-plantilla-card.active { border-color: var(--primary); background: var(--primary); color: #fff; }
+    .constructor-modulo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .constructor-modulo-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px; background: #fff; cursor: pointer; font-size: 12px; font-weight: 800; color: var(--muted); text-align: center; transition: border-color .15s, background .15s, color .15s; }
+    .constructor-modulo-card:hover { border-color: rgba(109,40,217,.4); color: var(--primary); background: var(--primary-soft); }
+    .constructor-modulo-card.active { border-color: var(--primary); background: var(--primary); color: #fff; }
+    .constructor-placeholder { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--muted); text-align: center; padding: 40px; border: 1px dashed var(--border); border-radius: 18px; }
+    .constructor-placeholder strong { display: block; font-size: 17px; color: var(--text); }
+    .constructor-placeholder p { margin: 0; font-size: 14px; }
+    .constructor-selection-card { border: 1px solid var(--border); border-radius: 14px; padding: 12px 16px; background: #fff; display: grid; gap: 4px; }
+    .constructor-selection-card span { font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+    .constructor-selection-card strong { font-size: 16px; color: var(--primary); }
+    @media (max-width: 860px) { .constructor-layout { grid-template-columns: 1fr; } .constructor-panel-right { display: none; } }
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=6" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -851,6 +879,7 @@
             <button class="button secondary" id="actualizar" type="button" title="Recargar datos del periodo seleccionado">Actualizar</button>
             <button class="button ghost" id="exportarRapido" type="button" title="Descarga la tabla de detalle del módulo actual">Excel rápido</button>
             <button class="button ghost" id="abrirExportacion" type="button" title="Elegir módulo, formato y contenido del reporte">Exportar</button>
+            <button class="button secondary" id="abrirConstructorReportes" type="button" title="Constructor analítico de reportes">Construir reporte</button>
           </div>
         </div>
         <div class="filters">
@@ -1019,9 +1048,119 @@
     </div>
   </div>
 
+  <div class="modal modal-constructor" id="modalConstructorReportes" aria-hidden="true">
+    <div class="constructor-card">
+      <header class="constructor-header">
+        <div>
+          <h2>Constructor analítico</h2>
+          <p>Seleccioná una plantilla rápida o configurá un análisis desde cero.</p>
+        </div>
+        <button class="close" id="cerrarConstructorReportes" type="button" aria-label="Cerrar constructor">
+          <span class="app-icon icon-close" aria-hidden="true"></span>
+        </button>
+      </header>
+      <div class="constructor-layout">
+        <aside class="constructor-panel-left">
+          <section>
+            <p class="constructor-section-title">Plantillas rápidas</p>
+            <div class="constructor-plantilla-grid" id="constructorPlantillas">
+              <button class="constructor-plantilla-card" data-plantilla="cierre-diario" type="button">Cierre diario</button>
+              <button class="constructor-plantilla-card" data-plantilla="ventas-del-dia" type="button">Ventas del día</button>
+              <button class="constructor-plantilla-card" data-plantilla="caja-resumida" type="button">Caja resumida</button>
+              <button class="constructor-plantilla-card" data-plantilla="stock-critico" type="button">Stock crítico</button>
+              <button class="constructor-plantilla-card" data-plantilla="clientes-con-deuda" type="button">Clientes con deuda</button>
+              <button class="constructor-plantilla-card" data-plantilla="pagos-pendientes" type="button">Pagos pendientes</button>
+            </div>
+          </section>
+          <section>
+            <p class="constructor-section-title">Módulo</p>
+            <div class="constructor-modulo-grid" id="constructorModulos">
+              <button class="constructor-modulo-card" data-modulo="ventas" type="button">Ventas</button>
+              <button class="constructor-modulo-card" data-modulo="caja" type="button">Caja</button>
+              <button class="constructor-modulo-card" data-modulo="stock" type="button">Stock</button>
+              <button class="constructor-modulo-card" data-modulo="cuentas-corrientes" type="button">Cuentas corrientes</button>
+              <button class="constructor-modulo-card" data-modulo="proveedores-pagos" type="button">Proveedores / Pagos</button>
+            </div>
+          </section>
+        </aside>
+        <main class="constructor-panel-right" id="constructorPreview">
+          <div class="constructor-placeholder">
+            <strong>Seleccioná una plantilla</strong>
+            <p>o comenzá configurando un análisis.</p>
+          </div>
+        </main>
+      </div>
+    </div>
+  </div>
+
   <script src="/kpi-visibility.js?v=2"></script>
   <script>
     const $ = (id) => document.getElementById(id);
+
+    // Constructor Analítico — estado aislado del state principal
+    const constructorState = { plantilla: null, modulo: null };
+    const CONSTRUCTOR_PLANTILLA_LABELS = {
+      "cierre-diario": "Cierre diario",
+      "ventas-del-dia": "Ventas del día",
+      "caja-resumida": "Caja resumida",
+      "stock-critico": "Stock crítico",
+      "clientes-con-deuda": "Clientes con deuda",
+      "pagos-pendientes": "Pagos pendientes"
+    };
+    const CONSTRUCTOR_MODULO_LABELS = {
+      "ventas": "Ventas",
+      "caja": "Caja",
+      "stock": "Stock",
+      "cuentas-corrientes": "Cuentas corrientes",
+      "proveedores-pagos": "Proveedores / Pagos"
+    };
+    function renderConstructorPreview() {
+      const el = $("constructorPreview");
+      if (!el) return;
+      const { plantilla, modulo } = constructorState;
+      if (!plantilla && !modulo) {
+        el.innerHTML = '<div class="constructor-placeholder"><strong>Seleccioná una plantilla</strong><p>o comenzá configurando un análisis.</p></div>';
+        return;
+      }
+      const cards = [];
+      if (plantilla) cards.push(`<div class="constructor-selection-card"><span>Plantilla</span><strong>${CONSTRUCTOR_PLANTILLA_LABELS[plantilla] || plantilla}</strong></div>`);
+      if (modulo) cards.push(`<div class="constructor-selection-card"><span>Módulo</span><strong>${CONSTRUCTOR_MODULO_LABELS[modulo] || modulo}</strong></div>`);
+      el.innerHTML = cards.join("");
+    }
+    function initConstructor() {
+      const modal = $("modalConstructorReportes");
+      const abrirBtn = $("abrirConstructorReportes");
+      const cerrarBtn = $("cerrarConstructorReportes");
+      if (!modal || !abrirBtn) return;
+      function abrirConstructor() { modal.classList.add("open"); modal.setAttribute("aria-hidden", "false"); }
+      function cerrarConstructor() { modal.classList.remove("open"); modal.setAttribute("aria-hidden", "true"); }
+      abrirBtn.addEventListener("click", abrirConstructor);
+      cerrarBtn.addEventListener("click", cerrarConstructor);
+      modal.addEventListener("click", (e) => { if (e.target === modal) cerrarConstructor(); });
+      const plantillasEl = $("constructorPlantillas");
+      const modulosEl = $("constructorModulos");
+      if (plantillasEl) {
+        plantillasEl.addEventListener("click", (e) => {
+          const btn = e.target.closest("[data-plantilla]");
+          if (!btn) return;
+          constructorState.plantilla = btn.dataset.plantilla;
+          plantillasEl.querySelectorAll(".constructor-plantilla-card").forEach((el) => el.classList.remove("active"));
+          btn.classList.add("active");
+          renderConstructorPreview();
+        });
+      }
+      if (modulosEl) {
+        modulosEl.addEventListener("click", (e) => {
+          const btn = e.target.closest("[data-modulo]");
+          if (!btn) return;
+          constructorState.modulo = btn.dataset.modulo;
+          modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+          btn.classList.add("active");
+          renderConstructorPreview();
+        });
+      }
+    }
+
     const money = (value) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS" }).format(Number(value) || 0);
     const fmtDate = (date) => date.toISOString().slice(0, 10);
     const parseDate = (value) => value ? new Date(`${value}T00:00:00`) : null;
@@ -2702,6 +2841,7 @@
       if (id !== "comparacion") { cargarResumenBackend(); cargarReporteVentasBackend(); cargarReporteCajaBackend(); cargarReporteStockBackend(); cargarReporteCuentasCorrientesBackend(); cargarProductosMasVendidos(); cargarProveedoresPagosBackend(); cargarVentasPorDiaBackend(); cargarCuentasCobroBackend(); }
     }));
     $("moduloFiltro").onchange = () => { state.modulo = moduloPermitido($("moduloFiltro").value); $("moduloFiltro").value = state.modulo; render(); };
+    initConstructor();
     setRange("30");
     cargarDatos();
   </script>

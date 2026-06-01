@@ -35,11 +35,12 @@
         </div>
         <div class="breakdown-grid">
           <article class="card finance-block"><h3>Liquidez</h3><div id="liquidezRows"></div><div class="finance-list" id="bancosBilleteras"></div></article>
-          <article class="card finance-block"><h3>Pendientes de cobro</h3><div id="pendientesRows"></div></article>
+          <article class="card finance-block"><h3>Pendientes de cobro</h3><div id="pendientesRows"></div><div id="pendientesExtra"></div></article>
           <article class="card finance-block"><h3>Capital inmovilizado</h3><div id="capitalRows"></div><div class="notice">El stock valorizado no es liquidez.</div></article>
-          <article class="card finance-block"><h3>Pasivos</h3><div id="pasivosRows"></div></article>
+          <article class="card finance-block"><h3>Pasivos</h3><div id="pasivosRows"></div><div id="pasivosEgresos"></div></article>
         </div>
         <article class="card finance-block"><h3>Ingresos del per&iacute;odo</h3><div id="ingresosRows"></div></article>
+        <article class="card finance-block"><h3>Resultado del per&iacute;odo</h3><div id="resultadoRows"></div></article>
         <article class="card finance-block"><div class="section-head"><div><h3>Movimientos no monetarios</h3><p class="message">Consumos absorbidos por el negocio. No afectan caja ni deuda.</p></div></div><div class="non-money-grid" id="cuentaLocalCards"></div><div style="overflow:auto"><table class="mini-table"><thead><tr><th>Fecha</th><th>Integraci&oacute;n</th><th>Producto</th><th>Cantidad</th><th>Responsable</th><th>Costo estimado</th></tr></thead><tbody id="cuentaLocalRecientes"></tbody></table></div></article>
         <article class="card"><div class="section-head"><div><h3>Alertas financieras</h3><p class="message">Limitaciones y advertencias de la lectura actual.</p></div></div><div class="alert-list" id="alertasFinancieras"></div></article>
         <article class="card placeholder">Los gráficos se activarán cuando existan snapshots financieros.</article>
@@ -51,7 +52,9 @@
     const money=new Intl.NumberFormat("es-AR",{style:"currency",currency:"ARS"});
     const fmt=(value)=>money.format(Number(value||0));
     const dateFmt=new Intl.DateTimeFormat("es-AR",{dateStyle:"short",timeStyle:"short"});
+    const LABELS_IMPACTO={"costo_fijo_operativo":"Costo fijo operativo","costo_variable_mercaderia":"Costo variable mercadería","inversion":"Inversión","otro_no_computable":"Otro no computable"};
     function row(label,value){return `<div class="finance-row"><span>${label}</span><strong>${fmt(value)}</strong></div>`}
+    function rowN(label,value){return `<div class="finance-row"><span>${label}</span><strong>${Number(value||0)}</strong></div>`}
     function labelIntegracion(value){return value==="produccion"?"Producci&oacute;n":"Interno / cortes&iacute;a"}
     function renderCuentaLocal(data){
       const cuenta=data?.movimientos_no_monetarios?.cuenta_local||{};
@@ -65,6 +68,7 @@
       $("cuentaLocalRecientes").innerHTML=recientes.length?recientes.map((item)=>`<tr><td>${item.fecha||"-"} ${item.hora||""}</td><td>${labelIntegracion(item.integracion)}</td><td>${item.producto_nombre||"-"}</td><td>${Number(item.cantidad||0).toFixed(2)}</td><td>${item.responsable||"-"}</td><td>${fmt(item.costo_estimado)}</td></tr>`).join(""):'<tr><td colspan="6">Sin movimientos no monetarios en el per&iacute;odo.</td></tr>';
     }
     function renderIngresosPeriodo(data){const ing=data?.ingresos_periodo||{};const el=$("ingresosRows");if(!el)return;el.innerHTML=[row("Ventas cobradas",ing.ventas_cobradas),row("Ventas pendientes",ing.ventas_pendientes),row("Ventas cuenta corriente",ing.ventas_cuenta_corriente),row("Total del período",ing.total_periodo)].join("")}
+    function renderResultadoOperativo(data){const el=$("resultadoRows");if(!el)return;const res=data?.resultado||{},ing=data?.ingresos_periodo||{},pa=data?.pasivos||{};const ro=Number(res.resultado_operativo||0);const color=ro>=0?"var(--success)":"var(--danger)";el.innerHTML=[row("Ingresos cobrados",ing.ventas_cobradas),row("Egresos ejecutados",pa.egresos_ejecutados),`<div class="finance-row"><span>Resultado operativo</span><strong style="text-align:right;font-variant-numeric:tabular-nums;color:${color}">${fmt(ro)}</strong></div>`].join("")}
     function setState(state){["loadingBox","restrictedBox","contentBox"].forEach(id=>$(id).classList.remove("active"));$(state).classList.add("active")}
     function render(data){
       $("fechaCorte").textContent=data.fecha_corte?`Corte ${dateFmt.format(new Date(data.fecha_corte))}`:"Sin fecha de corte";
@@ -77,9 +81,11 @@
       const bancos=Array.isArray(l.bancos_billeteras)?l.bancos_billeteras:[];
       $("bancosBilleteras").innerHTML=bancos.length?bancos.map(item=>`<div class="finance-chip"><span>${item.nombre||"Banco / billetera"}</span><strong>${fmt(item.monto)}</strong></div>`).join(""):'<div class="finance-chip"><span>Bancos / billeteras</span><strong>$0,00</strong></div>';
       $("pendientesRows").innerHTML=[row("Cuentas corrientes clientes",p.cuentas_corrientes_clientes),row("Ventas pendientes",p.ventas_pendientes),row("Acreditaciones pendientes estimadas",p.acreditaciones_pendientes_estimadas),row("Total pendientes",p.total)].join("");
+      const pel=$("pendientesExtra");if(pel)pel.innerHTML=[rowN("Clientes con deuda",p.clientes_con_deuda),rowN("Clientes excedidos",p.clientes_excedidos),row("Cobrado en el período",p.cobrado_periodo)].join("");
       $("capitalRows").innerHTML=[row("Stock físico valorizado",c.stock_fisico_valorizado),row("Estimado receta / rendimiento",c.estimado_receta_rendimiento),row("Total operativo",c.total_operativo)].join("");
       $("pasivosRows").innerHTML=[row("Pagos pendientes",pa.pagos_pendientes),row("Proveedores pendientes",pa.proveedores_pendientes),row("Impuestos estimados",pa.impuestos_estimados),row("Total pasivos",pa.total)].join("");
-      renderCuentaLocal(data);renderIngresosPeriodo(data);
+      const eel=$("pasivosEgresos");if(eel)eel.innerHTML=[row("Egresos ejecutados",pa.egresos_ejecutados),row("IVA crédito fiscal",pa.iva_credito_fiscal)].concat((pa.por_tipo_impacto||[]).map(t=>row(LABELS_IMPACTO[t.tipo_impacto]||t.tipo_impacto,t.total_pagado))).join("");
+      renderCuentaLocal(data);renderIngresosPeriodo(data);renderResultadoOperativo(data);
       const alertas=Array.isArray(data.alertas)?data.alertas:[];
       $("alertasFinancieras").innerHTML=alertas.length?alertas.map(a=>`<div class="alert-item"><strong>${a.codigo||"alerta"}</strong><br><span>${a.mensaje||""}</span></div>`).join(""):'<div class="finance-chip"><span>Sin alertas financieras por ahora.</span></div>';
       setState("contentBox");

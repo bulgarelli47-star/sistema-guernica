@@ -9252,6 +9252,81 @@ async function testFinanzasResumenV15() {
   }
 }
 
+async function testFinanzasResumen20() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+
+      // T1: shape anterior sigue existiendo
+      const r1 = await requestJson(baseUrl, "GET", "/finanzas/resumen", null, token);
+      if (!r1.response.ok) throw new Error(`T1: resumen debe OK, dio ${r1.response.status}`);
+      ["liquidez", "capital_inmovilizado", "movimientos_no_monetarios"].forEach((k) => {
+        if (r1.data?.[k] === undefined) throw new Error(`T1: shape anterior falta clave ${k}`);
+      });
+      if (r1.data?.pendientes_cobro?.total === undefined) throw new Error("T1: pendientes_cobro.total debe existir");
+      if (r1.data?.pasivos?.total === undefined) throw new Error("T1: pasivos.total debe existir");
+
+      // T2: resultado_operativo existe en resultado
+      if (r1.data?.resultado?.resultado_operativo === undefined) {
+        throw new Error("T2: resultado.resultado_operativo debe existir");
+      }
+
+      // T3: pasivos incluye nuevos campos
+      const pas1 = r1.data?.pasivos || {};
+      if (pas1.egresos_ejecutados === undefined) throw new Error("T3: pasivos.egresos_ejecutados debe existir");
+      if (pas1.iva_credito_fiscal === undefined) throw new Error("T3: pasivos.iva_credito_fiscal debe existir");
+      if (!Array.isArray(pas1.por_tipo_impacto)) throw new Error("T3: pasivos.por_tipo_impacto debe ser array");
+
+      // T4: pendientes_cobro incluye nuevos campos
+      const pend1 = r1.data?.pendientes_cobro || {};
+      if (pend1.clientes_con_deuda === undefined) throw new Error("T4: pendientes_cobro.clientes_con_deuda debe existir");
+      if (pend1.clientes_excedidos === undefined) throw new Error("T4: pendientes_cobro.clientes_excedidos debe existir");
+      if (pend1.cobrado_periodo === undefined) throw new Error("T4: pendientes_cobro.cobrado_periodo debe existir");
+
+      // T5: resultado_operativo = ventas_cobradas - egresos_ejecutados
+      const catId = await crearCategoria(baseUrl, token, `Fin20 cat ${Date.now()}`);
+      const prodId = await crearProducto(baseUrl, token, {
+        nombre: "Fin20 prod", categoria_id: catId, precio_venta: 100, stock: 50, maneja_stock: true
+      });
+      // venta cobrada: $100
+      await requestJson(baseUrl, "POST", "/ventas", {
+        tipo: "normal", estado: "cobrada",
+        items: [{ producto_id: prodId, nombre_producto: "Fin20 prod", cantidad: 1, precio_unitario: 100 }],
+        es_cuenta_corriente: false, tipo_cobro: "efectivo", monto_efectivo: 100, monto_debito: 0
+      }, token);
+      // proveedor + pago ejecutado: $40
+      const { data: prvData } = await requestJson(baseUrl, "POST", "/proveedores", {
+        nombre: `Fin20 prov ${Date.now()}`, tipo_impacto: "costo_fijo_operativo", activo: true
+      }, token);
+      const prvId = prvData.proveedor?.id;
+      const hoy = new Date().toISOString().slice(0, 10);
+      await requestJson(baseUrl, "POST", "/pagos", {
+        proveedor_id: prvId, concepto: "Fin20 pago ejecutado",
+        monto_total: 40, tipo_pago: "efectivo",
+        monto_efectivo: 40, monto_debito: 0,
+        fecha: hoy, hora: "12:00:00", estado: "registrado"
+      }, token);
+      const r5 = await requestJson(baseUrl, "GET", "/finanzas/resumen?desde=2020-01-01&hasta=2099-12-31", null, token);
+      const res5 = r5.data?.resultado || {};
+      const pas5 = r5.data?.pasivos || {};
+      const ing5 = r5.data?.ingresos_periodo || {};
+      assertEqual(ing5.ventas_cobradas, 100, "T5: ventas_cobradas debe ser 100");
+      assertEqual(pas5.egresos_ejecutados, 40, "T5: egresos_ejecutados debe ser 40");
+      assertEqual(res5.resultado_operativo, 60, "T5: resultado_operativo debe ser 100-40=60");
+
+      // por_tipo_impacto debe incluir costo_fijo_operativo con total_pagado=40
+      const tipoFijo = pas5.por_tipo_impacto?.find((t) => t.tipo_impacto === "costo_fijo_operativo");
+      if (!tipoFijo) throw new Error("T5: por_tipo_impacto debe incluir costo_fijo_operativo");
+      assertEqual(tipoFijo.total_pagado, 40, "T5: costo_fijo_operativo.total_pagado debe ser 40");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 (async () => {
   await testRecetaSinStockBloqueaMovimientoManual();
   await testRecetaSinStockComoComponenteNoDescuentaDirecto();
@@ -9260,6 +9335,7 @@ async function testFinanzasResumenV15() {
   await testPermisosColaborador();
   await testFinanzasResumenBackendV1();
   await testFinanzasResumenV15();
+  await testFinanzasResumen20();
   await testProduccionV1DominioSeparado();
   await testConsumoTeoricoAgrupadoPorInsumo();
   await testAjustesPendientesStockInfraestructura();

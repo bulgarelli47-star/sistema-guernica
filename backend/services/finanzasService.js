@@ -98,6 +98,9 @@ async function obtenerPendientesCobro({ desde, hasta }, alertas) {
 
   const cuentas = await getReporteCuentasCorrientes({ desde, hasta });
   pendientes.cuentas_corrientes_clientes = round2(cuentas?.resumen?.deuda_total);
+  pendientes.clientes_con_deuda = Number(cuentas?.resumen?.clientes_con_deuda || 0);
+  pendientes.clientes_excedidos = Number(cuentas?.resumen?.clientes_excedidos || 0);
+  pendientes.cobrado_periodo = round2(cuentas?.resumen?.cobrado_periodo);
 
   const ventasWhere = ["COALESCE(tipo, '') = 'pendiente'", "COALESCE(estado, '') = 'pendiente'"];
   const ventasParams = [];
@@ -178,6 +181,15 @@ async function obtenerPasivos({ desde, hasta }, alertas) {
   const pasivos = {
     pagos_pendientes: round2(pagosRows[0]?.total),
     proveedores_pendientes: round2(proveedores?.resumen?.total_pendiente),
+    // egresos_ejecutados: pagos con proveedor en el período. Pagos sin proveedor ejecutados no se incluyen aquí.
+    egresos_ejecutados: round2(proveedores?.resumen?.total_pagado),
+    iva_credito_fiscal: round2(proveedores?.resumen?.iva_credito_fiscal),
+    por_tipo_impacto: (proveedores?.por_impacto || []).map((item) => ({
+      tipo_impacto: String(item.tipo_impacto || "otro_no_computable"),
+      total_pagado: round2(item.total_pagado),
+      total_pendiente: round2(item.total_pendiente),
+      iva_credito_fiscal: round2(item.iva_credito_fiscal)
+    })),
     impuestos_estimados: 0,
     total: 0
   };
@@ -321,7 +333,8 @@ async function getResumenFinanciero({ desde = null, hasta = null } = {}) {
         capitalInmovilizado.stock_fisico_valorizado -
         pasivos.total
       ),
-      deuda_neta: round2(pasivos.total - pendientesCobro.cuentas_corrientes_clientes)
+      deuda_neta: round2(pasivos.total - pendientesCobro.cuentas_corrientes_clientes),
+      resultado_operativo: round2(ingresosPeriodo.ventas_cobradas - pasivos.egresos_ejecutados)
     },
     alertas
   };
