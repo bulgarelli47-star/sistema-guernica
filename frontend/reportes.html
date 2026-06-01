@@ -819,6 +819,20 @@
     .constructor-selection-card span { font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
     .constructor-selection-card strong { font-size: 16px; color: var(--primary); }
     @media (max-width: 860px) { .constructor-layout { grid-template-columns: 1fr; } .constructor-panel-right { display: none; } }
+    .constructor-preview-title { margin-bottom: 4px; }
+    .constructor-preview-title h3 { margin: 0; font-size: 18px; }
+    .constructor-preview-title p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+    .constructor-kpi-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .constructor-kpi-card { border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; background: #fff; display: grid; gap: 4px; }
+    .constructor-kpi-card span { font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+    .constructor-kpi-card strong { font-size: 22px; font-weight: 900; color: var(--text); }
+    .constructor-ranking { display: grid; gap: 6px; }
+    .constructor-ranking-row { display: flex; align-items: center; gap: 10px; border: 1px solid var(--border); border-radius: 12px; background: #fff; padding: 9px 12px; }
+    .constructor-ranking-pos { width: 22px; height: 22px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); font-size: 11px; font-weight: 900; display: grid; place-items: center; flex: 0 0 auto; }
+    .constructor-ranking-name { flex: 1 1 auto; font-size: 13px; font-weight: 700; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .constructor-ranking-val { font-size: 13px; font-weight: 900; color: var(--primary); flex: 0 0 auto; }
+    .constructor-ranking-qty { font-size: 11px; font-weight: 700; color: var(--muted); flex: 0 0 auto; margin-left: 4px; }
+    .constructor-empty { color: var(--muted); font-size: 13px; font-weight: 700; margin: 4px 0; }
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=6" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -1098,7 +1112,7 @@
     const $ = (id) => document.getElementById(id);
 
     // Constructor Analítico — estado aislado del state principal
-    const constructorState = { plantilla: null, modulo: null };
+    const constructorState = { plantilla: null, modulo: null, data: null, loading: false, error: "" };
     const CONSTRUCTOR_PLANTILLA_LABELS = {
       "cierre-diario": "Cierre diario",
       "ventas-del-dia": "Ventas del día",
@@ -1117,15 +1131,66 @@
     function renderConstructorPreview() {
       const el = $("constructorPreview");
       if (!el) return;
-      const { plantilla, modulo } = constructorState;
+      const { plantilla, modulo, loading, error, data } = constructorState;
+
+      if (loading) {
+        el.innerHTML = '<div class="constructor-placeholder"><strong>Cargando vista previa...</strong><p>Consultando datos del módulo.</p></div>';
+        return;
+      }
+      if (error) {
+        el.innerHTML = `<div class="constructor-placeholder"><strong style="color:var(--danger)">Error</strong><p>${error}</p></div>`;
+        return;
+      }
       if (!plantilla && !modulo) {
         el.innerHTML = '<div class="constructor-placeholder"><strong>Seleccioná una plantilla</strong><p>o comenzá configurando un análisis.</p></div>';
+        return;
+      }
+      if (plantilla === "ventas-del-dia" && data) {
+        renderConstructorVentas(el, data);
         return;
       }
       const cards = [];
       if (plantilla) cards.push(`<div class="constructor-selection-card"><span>Plantilla</span><strong>${CONSTRUCTOR_PLANTILLA_LABELS[plantilla] || plantilla}</strong></div>`);
       if (modulo) cards.push(`<div class="constructor-selection-card"><span>Módulo</span><strong>${CONSTRUCTOR_MODULO_LABELS[modulo] || modulo}</strong></div>`);
       el.innerHTML = cards.join("");
+    }
+    function renderConstructorVentas(el, data) {
+      const res = data.resumen || {};
+      const productos = Array.isArray(data.productos_mas_vendidos) ? data.productos_mas_vendidos : [];
+      const kpis = [
+        { label: "Total vendido", value: money(n(res.total_vendido)) },
+        { label: "Ventas", value: n(res.operaciones) },
+        { label: "Ticket promedio", value: money(n(res.ticket_promedio)) },
+        { label: "Total cobrado", value: money(n(res.total_cobrado)) }
+      ];
+      const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong>${k.value}</strong></div>`).join("")}</div>`;
+      let productosHtml;
+      if (productos.length) {
+        productosHtml = `<p class="constructor-section-title">Top productos</p><div class="constructor-ranking">${
+          productos.slice(0, 8).map((p, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${p.nombre || "—"}</span><span class="constructor-ranking-val">${money(n(p.total_vendido))}</span><small class="constructor-ranking-qty">${n(p.cantidad_total)} ud.</small></div>`).join("")
+        }</div>`;
+      } else {
+        productosHtml = `<p class="constructor-section-title">Top productos</p><p class="constructor-empty">Sin datos de productos para el período.</p>`;
+      }
+      const titulo = `<div class="constructor-preview-title"><h3>Ventas del día</h3><p>${data.filtros?.desde || "hoy"}</p></div>`;
+      el.innerHTML = titulo + kpisHtml + productosHtml;
+    }
+    async function cargarConstructorVentas() {
+      const hoy = fmtDate(new Date());
+      constructorState.loading = true;
+      constructorState.error = "";
+      constructorState.data = null;
+      renderConstructorPreview();
+      try {
+        const res = await fetch(`/reportes/ventas?desde=${hoy}&hasta=${hoy}`);
+        if (!res.ok) throw new Error(`${res.status}`);
+        constructorState.data = await res.json();
+        constructorState.loading = false;
+      } catch {
+        constructorState.loading = false;
+        constructorState.error = "No se pudo cargar la plantilla Ventas del día.";
+      }
+      renderConstructorPreview();
     }
     function initConstructor() {
       const modal = $("modalConstructorReportes");
@@ -1144,9 +1209,21 @@
           const btn = e.target.closest("[data-plantilla]");
           if (!btn) return;
           constructorState.plantilla = btn.dataset.plantilla;
+          constructorState.data = null;
+          constructorState.error = "";
           plantillasEl.querySelectorAll(".constructor-plantilla-card").forEach((el) => el.classList.remove("active"));
           btn.classList.add("active");
-          renderConstructorPreview();
+          if (btn.dataset.plantilla === "ventas-del-dia") {
+            constructorState.modulo = "ventas";
+            if (modulosEl) {
+              modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+              const ventasBtn = modulosEl.querySelector('[data-modulo="ventas"]');
+              if (ventasBtn) ventasBtn.classList.add("active");
+            }
+            cargarConstructorVentas();
+          } else {
+            renderConstructorPreview();
+          }
         });
       }
       if (modulosEl) {
