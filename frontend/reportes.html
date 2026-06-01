@@ -833,6 +833,10 @@
     .constructor-ranking-val { font-size: 13px; font-weight: 900; color: var(--primary); flex: 0 0 auto; }
     .constructor-ranking-qty { font-size: 11px; font-weight: 700; color: var(--muted); flex: 0 0 auto; margin-left: 4px; }
     .constructor-empty { color: var(--muted); font-size: 13px; font-weight: 700; margin: 4px 0; }
+    .constructor-metrica-grid { display: grid; gap: 5px; }
+    .constructor-metrica-label { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; background: #fff; cursor: pointer; font-size: 13px; font-weight: 700; color: var(--muted); transition: border-color .15s; user-select: none; }
+    .constructor-metrica-label:has(input:checked) { border-color: var(--primary); color: var(--text); }
+    .constructor-metrica-label input[type="checkbox"] { accent-color: var(--primary); cursor: pointer; flex: 0 0 auto; }
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=6" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -1096,6 +1100,24 @@
               <button class="constructor-modulo-card" data-modulo="proveedores-pagos" type="button">Proveedores / Pagos</button>
             </div>
           </section>
+          <section id="constructorSeccionAnalizar" style="display:none">
+            <p class="constructor-section-title">Analizar por</p>
+            <div class="constructor-modulo-grid" id="constructorDimensiones">
+              <button class="constructor-modulo-card active" data-dimension="producto" type="button">Producto</button>
+              <button class="constructor-modulo-card" data-dimension="metodo" type="button">Método de cobro</button>
+              <button class="constructor-modulo-card" data-dimension="estado" type="button">Estado</button>
+              <button class="constructor-modulo-card" data-dimension="dia" type="button">Día</button>
+            </div>
+          </section>
+          <section id="constructorSeccionMetricas" style="display:none">
+            <p class="constructor-section-title">Métricas</p>
+            <div class="constructor-metrica-grid" id="constructorMetricas">
+              <label class="constructor-metrica-label"><input type="checkbox" value="cantidad" checked> Cantidad</label>
+              <label class="constructor-metrica-label"><input type="checkbox" value="total" checked> Total vendido</label>
+              <label class="constructor-metrica-label"><input type="checkbox" value="ticket"> Ticket promedio</label>
+              <label class="constructor-metrica-label"><input type="checkbox" value="participacion"> Participación %</label>
+            </div>
+          </section>
         </aside>
         <main class="constructor-panel-right" id="constructorPreview">
           <div class="constructor-placeholder">
@@ -1112,7 +1134,7 @@
     const $ = (id) => document.getElementById(id);
 
     // Constructor Analítico — estado aislado del state principal
-    const constructorState = { plantilla: null, modulo: null, data: null, loading: false, error: "" };
+    const constructorState = { plantilla: null, modulo: null, dimension: "producto", metricas: ["cantidad", "total"], data: null, loading: false, error: "" };
     const CONSTRUCTOR_PLANTILLA_LABELS = {
       "cierre-diario": "Cierre diario",
       "ventas-del-dia": "Ventas del día",
@@ -1128,10 +1150,16 @@
       "cuentas-corrientes": "Cuentas corrientes",
       "proveedores-pagos": "Proveedores / Pagos"
     };
+    const DIMENSION_LABELS = { "producto": "Por producto", "metodo": "Por método de cobro", "estado": "Por estado de venta", "dia": "Por día" };
     function renderConstructorPreview() {
       const el = $("constructorPreview");
       if (!el) return;
       const { plantilla, modulo, loading, error, data } = constructorState;
+      const secAnz = $("constructorSeccionAnalizar");
+      const secMet = $("constructorSeccionMetricas");
+      const mostrarAnalisis = modulo === "ventas" && !!data && !loading && !error;
+      if (secAnz) secAnz.style.display = mostrarAnalisis ? "" : "none";
+      if (secMet) secMet.style.display = mostrarAnalisis ? "" : "none";
 
       if (loading) {
         el.innerHTML = '<div class="constructor-placeholder"><strong>Cargando vista previa...</strong><p>Consultando datos del módulo.</p></div>';
@@ -1154,9 +1182,66 @@
       if (modulo) cards.push(`<div class="constructor-selection-card"><span>Módulo</span><strong>${CONSTRUCTOR_MODULO_LABELS[modulo] || modulo}</strong></div>`);
       el.innerHTML = cards.join("");
     }
+    function renderConstructorVentasTabla(data) {
+      const { dimension, metricas } = constructorState;
+      const hasCant = metricas.includes("cantidad");
+      const hasTotal = metricas.includes("total");
+      const hasTick = metricas.includes("ticket");
+      const hasPart = metricas.includes("participacion");
+      const label = DIMENSION_LABELS[dimension] || dimension;
+      let rows, totalG;
+      if (dimension === "producto") {
+        rows = (Array.isArray(data.productos_mas_vendidos) ? data.productos_mas_vendidos : []).slice(0, 10);
+        if (!rows.length) return `<p class="constructor-section-title">${label}</p><p class="constructor-empty">Sin datos de productos para el período.</p>`;
+        totalG = rows.reduce((a, r) => a + n(r.total_vendido), 0);
+        return `<p class="constructor-section-title">${label}</p><div class="constructor-ranking">${rows.map((r, i) => {
+          const p = [];
+          if (hasTotal) p.push(`<span class="constructor-ranking-val">${money(n(r.total_vendido))}</span>`);
+          if (hasCant) p.push(`<small class="constructor-ranking-qty">${n(r.cantidad_total)} ud.</small>`);
+          if (hasTick && n(r.cantidad_total) > 0) p.push(`<small class="constructor-ranking-qty">T: ${money(n(r.total_vendido) / n(r.cantidad_total))}</small>`);
+          if (hasPart && totalG > 0) p.push(`<small class="constructor-ranking-qty">${((n(r.total_vendido) / totalG) * 100).toFixed(1)}%</small>`);
+          return `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${r.nombre || "—"}</span>${p.join("")}</div>`;
+        }).join("")}</div>`;
+      }
+      if (dimension === "metodo") {
+        rows = Array.isArray(data.por_tipo_cobro) ? data.por_tipo_cobro : [];
+        if (!rows.length) return `<p class="constructor-section-title">${label}</p><p class="constructor-empty">Sin datos por método de cobro.</p>`;
+        totalG = rows.reduce((a, r) => a + n(r.total), 0);
+        return `<p class="constructor-section-title">${label}</p><div class="constructor-ranking">${rows.map((r, i) => {
+          const p = [];
+          if (hasTotal) p.push(`<span class="constructor-ranking-val">${money(n(r.total))}</span>`);
+          if (hasCant) p.push(`<small class="constructor-ranking-qty">${n(r.cantidad_ventas)} ventas</small>`);
+          if (hasPart && totalG > 0) p.push(`<small class="constructor-ranking-qty">${((n(r.total) / totalG) * 100).toFixed(1)}%</small>`);
+          return `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${r.tipo_cobro || "—"}</span>${p.join("")}</div>`;
+        }).join("")}</div>`;
+      }
+      if (dimension === "estado") {
+        rows = Array.isArray(data.estados) ? data.estados : [];
+        if (!rows.length) return `<p class="constructor-section-title">${label}</p><p class="constructor-empty">Sin datos por estado.</p>`;
+        totalG = rows.reduce((a, r) => a + n(r.total), 0);
+        return `<p class="constructor-section-title">${label}</p><div class="constructor-ranking">${rows.map((r, i) => {
+          const p = [];
+          if (hasTotal) p.push(`<span class="constructor-ranking-val">${money(n(r.total))}</span>`);
+          if (hasCant) p.push(`<small class="constructor-ranking-qty">${n(r.cantidad)} ventas</small>`);
+          if (hasPart && totalG > 0) p.push(`<small class="constructor-ranking-qty">${((n(r.total) / totalG) * 100).toFixed(1)}%</small>`);
+          return `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${r.estado || "—"}</span>${p.join("")}</div>`;
+        }).join("")}</div>`;
+      }
+      if (dimension === "dia") {
+        rows = Array.isArray(data.por_dia) ? data.por_dia : [];
+        if (!rows.length) return `<p class="constructor-section-title">${label}</p><p class="constructor-empty">Sin datos por día.</p>`;
+        return `<p class="constructor-section-title">${label}</p><div class="constructor-ranking">${rows.map((r, i) => {
+          const p = [];
+          if (hasTotal) p.push(`<span class="constructor-ranking-val">${money(n(r.total))}</span>`);
+          if (hasCant) p.push(`<small class="constructor-ranking-qty">${n(r.cantidad_ventas)} ventas</small>`);
+          if (hasTick) p.push(`<small class="constructor-ranking-qty">T: ${money(n(r.ticket_promedio))}</small>`);
+          return `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${r.fecha || "—"}</span>${p.join("")}</div>`;
+        }).join("")}</div>`;
+      }
+      return `<p class="constructor-empty">Dimensión no disponible.</p>`;
+    }
     function renderConstructorVentas(el, data) {
       const res = data.resumen || {};
-      const productos = Array.isArray(data.productos_mas_vendidos) ? data.productos_mas_vendidos : [];
       const kpis = [
         { label: "Total vendido", value: money(n(res.total_vendido)) },
         { label: "Ventas", value: n(res.operaciones) },
@@ -1164,16 +1249,9 @@
         { label: "Total cobrado", value: money(n(res.total_cobrado)) }
       ];
       const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong>${k.value}</strong></div>`).join("")}</div>`;
-      let productosHtml;
-      if (productos.length) {
-        productosHtml = `<p class="constructor-section-title">Top productos</p><div class="constructor-ranking">${
-          productos.slice(0, 8).map((p, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${p.nombre || "—"}</span><span class="constructor-ranking-val">${money(n(p.total_vendido))}</span><small class="constructor-ranking-qty">${n(p.cantidad_total)} ud.</small></div>`).join("")
-        }</div>`;
-      } else {
-        productosHtml = `<p class="constructor-section-title">Top productos</p><p class="constructor-empty">Sin datos de productos para el período.</p>`;
-      }
-      const titulo = `<div class="constructor-preview-title"><h3>Ventas del día</h3><p>${data.filtros?.desde || "hoy"}</p></div>`;
-      el.innerHTML = titulo + kpisHtml + productosHtml;
+      const dimLabel = DIMENSION_LABELS[constructorState.dimension] || constructorState.dimension;
+      const titulo = `<div class="constructor-preview-title"><h3>Ventas del día</h3><p>${data.filtros?.desde || "hoy"} · ${dimLabel}</p></div>`;
+      el.innerHTML = titulo + kpisHtml + renderConstructorVentasTabla(data);
     }
     async function cargarConstructorVentas() {
       const hoy = fmtDate(new Date());
@@ -1233,6 +1311,31 @@
           constructorState.modulo = btn.dataset.modulo;
           modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
           btn.classList.add("active");
+          renderConstructorPreview();
+        });
+      }
+      const dimensionesEl = $("constructorDimensiones");
+      const metricasEl = $("constructorMetricas");
+      if (dimensionesEl) {
+        dimensionesEl.addEventListener("click", (e) => {
+          const btn = e.target.closest("[data-dimension]");
+          if (!btn) return;
+          constructorState.dimension = btn.dataset.dimension;
+          dimensionesEl.querySelectorAll("[data-dimension]").forEach((el) => el.classList.remove("active"));
+          btn.classList.add("active");
+          renderConstructorPreview();
+        });
+      }
+      if (metricasEl) {
+        metricasEl.addEventListener("change", () => {
+          const checked = [...metricasEl.querySelectorAll("input[type=checkbox]:checked")].map((cb) => cb.value);
+          if (!checked.length) {
+            const totalCb = metricasEl.querySelector('input[value="total"]');
+            if (totalCb) totalCb.checked = true;
+            constructorState.metricas = ["total"];
+          } else {
+            constructorState.metricas = checked;
+          }
           renderConstructorPreview();
         });
       }
