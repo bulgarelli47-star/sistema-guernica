@@ -4225,11 +4225,24 @@ app.post("/clientes/:id/venta-cuenta", async (req, res) => {
     if (Number(cliente.habilita_cuenta_corriente) !== 1) {
       return res.status(400).json({ message: "El cliente no tiene cuenta corriente habilitada" });
     }
+    const configGlobal = await getConfiguracionGlobal();
+    const reglas = resolverReglasCuenta(cliente, configGlobal);
+    if (
+      Number(cliente.suspendido) !== 1 &&
+      Number(cliente.deuda_actual || 0) > 0 &&
+      Boolean(configGlobal.cuentas_desactivar_por_vencimiento) &&
+      cliente.primera_deuda
+    ) {
+      const { fecha: hoy } = getNowParts();
+      const diasDesde = Math.floor((new Date(hoy) - new Date(cliente.primera_deuda)) / 86400000);
+      if (diasDesde >= reglas.dias_vencimiento) {
+        await runQuery("UPDATE clientes SET suspendido = 1 WHERE id = ? AND suspendido = 0", [clienteId]);
+        cliente.suspendido = 1;
+      }
+    }
     if (Number(cliente.suspendido) === 1) {
       return res.status(403).json({ message: "Cliente suspendido: solo se permiten cobros" });
     }
-    const configGlobal = await getConfiguracionGlobal();
-    const reglas = resolverReglasCuenta(cliente, configGlobal);
 
     if (reglas.requiere_autorizacion === 1 && !["admin", "encargado"].includes(req.usuario?.rol)) {
       return res.status(403).json({ message: "Esta cuenta requiere autorización de encargado o admin" });

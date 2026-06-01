@@ -8615,6 +8615,73 @@ function setConfigCC(params) {
   ]);
 }
 
+async function testSuspensionAutomaticaPorMora() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, [
+      ...resetOperationalDataStatements(),
+      ...setConfigCC({ cuentas_desactivar_por_vencimiento: false, cuentas_dias_vencimiento: 30 })
+    ]);
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const suf = Date.now();
+      const crearCliente = async (nombre, dni) => {
+        const { data } = await requestJson(baseUrl, "POST", "/clientes", {
+          nombre, dni_cuit: dni, habilita_cuenta_corriente: true, activo: true, usa_reglas_personalizadas: false
+        }, token);
+        return data.cliente?.id;
+      };
+      const id1 = await crearCliente(`TEST Susp Conf0`, `sc0-${suf}`);
+      const id2 = await crearCliente(`TEST Susp Dentro`, `sden-${suf}`);
+      const id3 = await crearCliente(`TEST Susp Vencido`, `svenc-${suf}`);
+      // Crear deudas para los 3 clientes
+      for (const id of [id1, id2, id3]) {
+        await requestJson(baseUrl, "POST", `/clientes/${id}/venta-cuenta`, { total: 50, concepto: "Deuda inicial" }, token);
+      }
+      // Hacer que la deuda de id3 e id1 sea de hace 60 días
+      await runSql(dbPath, `UPDATE ventas SET fecha = date('now', '-60 days') WHERE cliente_id IN (${id1},${id3}) AND es_cuenta_corriente = 1`);
+
+      // Test 1: config=0 → nunca suspende aunque la deuda esté vencida
+      const d1pre = await allSql(dbPath, "SELECT suspendido FROM clientes WHERE id = ?", [id1]);
+      await requestJson(baseUrl, "POST", `/clientes/${id1}/venta-cuenta`, { total: 10, concepto: "T1" }, token);
+      const d1post = await allSql(dbPath, "SELECT suspendido FROM clientes WHERE id = ?", [id1]);
+      if (Number(d1post[0]?.suspendido) === 1) throw new Error("Test1: config desactivar=false, no debe suspender");
+
+      // Test 2: config=1, cliente dentro del plazo → no suspende
+      await prepareDb(dbPath, setConfigCC({ cuentas_desactivar_por_vencimiento: true }));
+      await requestJson(baseUrl, "POST", `/clientes/${id2}/venta-cuenta`, { total: 10, concepto: "T2" }, token);
+      const d2 = await allSql(dbPath, "SELECT suspendido FROM clientes WHERE id = ?", [id2]);
+      if (Number(d2[0]?.suspendido) === 1) throw new Error("Test2: dentro del plazo, no debe suspender");
+
+      // Test 3: config=1, deuda de 60 días > 30 días → auto-suspende y devuelve 403
+      const { response: r3 } = await requestJson(baseUrl, "POST", `/clientes/${id3}/venta-cuenta`, { total: 10, concepto: "T3" }, token);
+      if (r3.status !== 403) throw new Error(`Test3: cliente vencido debe dar 403 tras auto-suspend, dio ${r3.status}`);
+      const d3 = await allSql(dbPath, "SELECT suspendido FROM clientes WHERE id = ?", [id3]);
+      if (Number(d3[0]?.suspendido) !== 1) throw new Error("Test3: cliente vencido debe quedar suspendido=1 en DB");
+
+      // Test 4: cliente ya suspendido → 403 directo
+      const { response: r4 } = await requestJson(baseUrl, "POST", `/clientes/${id3}/venta-cuenta`, { total: 10, concepto: "T4" }, token);
+      if (r4.status !== 403) throw new Error(`Test4: cliente suspendido debe dar 403, dio ${r4.status}`);
+
+      // Test 5: cobro sigue permitido para cliente suspendido
+      const cuentaRes = await fetch(`${baseUrl}/clientes/${id3}/cuenta-corriente`, { headers: { Authorization: `Bearer ${token}` } });
+      const cuenta = await cuentaRes.json();
+      if (cuenta.ventas_pendientes?.length > 0) {
+        const vp = cuenta.ventas_pendientes[0];
+        const monto = Math.min(10, Number(vp.saldo_pendiente));
+        const { response: r5 } = await requestJson(baseUrl, "POST", `/ventas/${vp.id}/pagar-cuenta-corriente`, {
+          monto_pagado: monto, tipo_cobro: "efectivo", monto_efectivo: monto
+        }, token);
+        if (!r5.ok) throw new Error(`Test5: cobro de cliente suspendido debe ser posible, dio ${r5.status}`);
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testHerenciaReglasGeneralVsPersonalizada() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -9258,6 +9325,7 @@ async function testLogsTemporalesRemovidos() {
   await testCompuestosLegacyEndpointSDManejaStock0();
   await testBatchLegacyLimitadoAManeja0RendimientoMayor1();
   await testProduccionExcluyeCombos();
+  await testSuspensionAutomaticaPorMora();
   await testHerenciaReglasGeneralVsPersonalizada();
   await testUsaReglasPersonalizadas();
   await testRequiereAutorizacion();
