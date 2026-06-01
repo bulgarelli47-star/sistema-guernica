@@ -3943,7 +3943,7 @@ app.post("/ventas", async (req, res) => {
   }
 
   const { fecha, hora } = getNowParts();
-  const usuarioVenta = usuario || "admin";
+  const usuarioVenta = getUsuarioAuditoria(req, usuario || "admin");
   const clienteId = cliente_id ? Number(cliente_id) : null;
   const cobro = tipoVenta === "normal" && !esCuentaCorriente
     ? resolveCobroData(total, tipo_cobro, monto_efectivo, monto_debito)
@@ -3970,19 +3970,50 @@ app.post("/ventas", async (req, res) => {
   }
 
   if (esCuentaCorriente && clienteId) {
-    const clienteCC = await getQuery("SELECT habilita_cuenta_corriente FROM clientes WHERE id = ?", [clienteId]);
-    if (!clienteCC || Number(clienteCC.habilita_cuenta_corriente) !== 1) {
+    const clienteCC = await getClienteConMetricas(clienteId);
+    if (!clienteCC || Number(clienteCC.activo) !== 1) {
+      return res.status(404).json({ message: "Cliente activo no encontrado" });
+    }
+    if (Number(clienteCC.habilita_cuenta_corriente) !== 1) {
       return res.status(400).json({ message: "Este cliente no tiene cuenta corriente habilitada" });
+    }
+    const configCC = await getConfiguracionGlobal();
+    const reglasCC = resolverReglasCuenta(clienteCC, configCC);
+    if (
+      Number(clienteCC.suspendido) !== 1 &&
+      Number(clienteCC.deuda_actual || 0) > 0 &&
+      Boolean(configCC.cuentas_desactivar_por_vencimiento) &&
+      clienteCC.primera_deuda
+    ) {
+      const { fecha: hoyCC } = getNowParts();
+      const diasDesdeCC = Math.floor((new Date(hoyCC) - new Date(clienteCC.primera_deuda)) / 86400000);
+      if (diasDesdeCC >= reglasCC.dias_vencimiento) {
+        await runQuery("UPDATE clientes SET suspendido = 1 WHERE id = ? AND suspendido = 0", [clienteId]);
+        clienteCC.suspendido = 1;
+      }
+    }
+    if (Number(clienteCC.suspendido) === 1) {
+      return res.status(403).json({ message: "Cliente suspendido: solo se permiten cobros" });
+    }
+    if (reglasCC.requiere_autorizacion === 1 && !["admin", "encargado"].includes(req.usuario?.rol)) {
+      return res.status(403).json({ message: "Esta cuenta requiere autorización de encargado o admin" });
+    }
+    const subtotalCC = Number(calculateTotal(itemsNormalizados).toFixed(2));
+    const deudaProyectadaCC = Number(clienteCC.deuda_actual || 0) + subtotalCC;
+    if (reglasCC.limite_fiado > 0 && deudaProyectadaCC > reglasCC.limite_fiado) {
+      const autorizarExcedidoCC = Boolean(req.body.autorizar_excedido);
+      if (reglasCC.permite_excedente !== 1 && !autorizarExcedidoCC) {
+        return res.status(409).json({ message: "La venta excede el limite de credito del cliente" });
+      }
     }
   }
 
-  if (clienteId) {
-    const cliente = await getQuery(
+  if (!esCuentaCorriente && clienteId) {
+    const clienteSimple = await getQuery(
       "SELECT id FROM clientes WHERE id = ? AND activo = 1",
       [clienteId]
     );
-
-    if (!cliente) {
+    if (!clienteSimple) {
       return res.status(400).json({ message: "Cliente invalido" });
     }
   }
@@ -4265,7 +4296,7 @@ app.post("/clientes/:id/venta-cuenta", async (req, res) => {
       [
         fecha,
         hora,
-        "admin",
+        getUsuarioAuditoria(req),
         total,
         "cuenta_corriente",
         "cuenta_corriente_pendiente",

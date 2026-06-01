@@ -9343,8 +9343,197 @@ async function testLogsTemporalesRemovidos() {
   await testConsolidacionComponentesDuplicadosExistentes();
   await testTipoAyudaSinUnidadesHardcodeado();
   await testLogsTemporalesRemovidos();
+  await testVentaCCDesdePostVentasAplicaReglas();
+  await testVentaNormalSigueOK();
+  await testUsuarioVentaNoEsAdmin();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });
+
+async function testVentaNormalSigueOK() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const catId = await crearCategoria(baseUrl, token, "TEST NormalSigueOK");
+      const prodId = await crearProducto(baseUrl, token, {
+        nombre: "TEST prod normal", categoria_id: catId,
+        precio_venta: 100, stock: 50, maneja_stock: true
+      });
+      const { response } = await requestJson(baseUrl, "POST", "/ventas", {
+        tipo: "normal", estado: "registrada",
+        items: [{ producto_id: prodId, nombre_producto: "TEST prod normal", cantidad: 1, precio_unitario: 100 }],
+        es_cuenta_corriente: false,
+        tipo_cobro: "efectivo", monto_efectivo: 100, monto_debito: 0
+      }, token);
+      if (!response.ok) throw new Error(`testVentaNormalSigueOK: venta normal debe OK, dio ${response.status}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testVentaCCDesdePostVentasAplicaReglas() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, [
+      ...resetOperationalDataStatements(),
+      ...setConfigCC({
+        cuentas_desactivar_por_vencimiento: false,
+        cuentas_limite_global_activo: true,
+        cuentas_limite_global_monto: 100,
+        cuentas_dias_vencimiento: 30
+      })
+    ]);
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      // Crear colaborador para tests de rol
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colab CC Ventas", usuario: "colab_cc_v",
+        password: "colab123", confirmar_password: "colab123",
+        rol: "colaborador", activo: true
+      }, token);
+      const colabToken = await login(baseUrl, "colab_cc_v", "colab123");
+
+      const suf = Date.now();
+      const catId = await crearCategoria(baseUrl, token, "TEST CC Ventas");
+      const prodId = await crearProducto(baseUrl, token, {
+        nombre: "TEST prod cc", categoria_id: catId,
+        precio_venta: 50, stock: 9999, maneja_stock: true
+      });
+
+      const ventaCC = (clienteId, tokUsado = token, extras = {}) => requestJson(baseUrl, "POST", "/ventas", {
+        tipo: "normal", estado: "registrada",
+        items: [{ producto_id: prodId, nombre_producto: "TEST prod cc", cantidad: 1, precio_unitario: 50 }],
+        es_cuenta_corriente: true,
+        cliente_id: clienteId,
+        ...extras
+      }, tokUsado);
+
+      // Test 1: cliente suspendido → 403
+      const { data: d1 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST CC Susp Ventas", dni_cuit: `ccsv1-${suf}`,
+        habilita_cuenta_corriente: true, activo: true,
+        usa_reglas_personalizadas: false, suspendido: true
+      }, token);
+      const id1 = d1.cliente?.id;
+      await runSql(dbPath, "UPDATE clientes SET suspendido = 1 WHERE id = ?", [id1]);
+      const { response: r1 } = await ventaCC(id1);
+      if (r1.status !== 403) throw new Error(`Test1 CC suspendido: esperado 403, dio ${r1.status}`);
+
+      // Test 2: requiere_autorizacion=1 + colaborador → 403
+      const { data: d2 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST CC RequiereAuth", dni_cuit: `ccsv2-${suf}`,
+        habilita_cuenta_corriente: true, activo: true,
+        usa_reglas_personalizadas: true, requiere_autorizacion: true, limite_fiado: 9999
+      }, token);
+      const id2 = d2.cliente?.id;
+      const { response: r2 } = await ventaCC(id2, colabToken);
+      if (r2.status !== 403) throw new Error(`Test2 CC requiere_autorizacion+colaborador: esperado 403, dio ${r2.status}`);
+
+      // Test 3: límite excedido sin permite_excedente → 409
+      // usa_reglas_personalizadas=false → usa límite global 100; venta 50 x1 = 50, luego venta 70 → 120 > 100
+      const { data: d3 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST CC LimiteGlobal", dni_cuit: `ccsv3-${suf}`,
+        habilita_cuenta_corriente: true, activo: true,
+        usa_reglas_personalizadas: false
+      }, token);
+      const id3 = d3.cliente?.id;
+      // Primera venta: 50 → OK (deuda 50 < límite 100)
+      const { response: r3a } = await ventaCC(id3);
+      if (!r3a.ok) throw new Error(`Test3a CC limite: primera venta debe OK, dio ${r3a.status}`);
+      // Segunda venta: 50 + deuda 50 = 100, igual al límite → OK (no excede)
+      // Tercera con prod de precio 70: deuda 50 + 70 = 120 > 100 → 409
+      const prodId70 = await crearProducto(baseUrl, token, {
+        nombre: "TEST prod70", categoria_id: catId,
+        precio_venta: 70, stock: 9999, maneja_stock: true
+      });
+      const { response: r3b } = await requestJson(baseUrl, "POST", "/ventas", {
+        tipo: "normal", estado: "registrada",
+        items: [{ producto_id: prodId70, nombre_producto: "TEST prod70", cantidad: 1, precio_unitario: 70 }],
+        es_cuenta_corriente: true, cliente_id: id3
+      }, token);
+      if (r3b.status !== 409) throw new Error(`Test3b CC limite global excedido: esperado 409, dio ${r3b.status}`);
+
+      // Test 4: permite_excedente=1 → OK aunque exceda
+      const { data: d4 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST CC PermiteExc", dni_cuit: `ccsv4-${suf}`,
+        habilita_cuenta_corriente: true, activo: true,
+        usa_reglas_personalizadas: true, permite_excedente: true, limite_fiado: 10
+      }, token);
+      const id4 = d4.cliente?.id;
+      const { response: r4 } = await ventaCC(id4); // venta 50 > límite 10
+      if (!r4.ok) throw new Error(`Test4 CC permite_excedente: esperado OK, dio ${r4.status}`);
+
+      // Test 5: usa_reglas_personalizadas=0 respeta límite global (ya cubierto por Test3, confirmación extra)
+      // Con config límite global activo=true y monto=100, cliente sin reglas propias → límite 100
+      const { data: d5 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST CC ReglaGlobal", dni_cuit: `ccsv5-${suf}`,
+        habilita_cuenta_corriente: true, activo: true,
+        usa_reglas_personalizadas: false
+      }, token);
+      const id5 = d5.cliente?.id;
+      // Venta 50 → OK
+      const { response: r5a } = await ventaCC(id5);
+      if (!r5a.ok) throw new Error(`Test5a CC regla global: primera venta debe OK, dio ${r5a.status}`);
+      // Venta 70 → deuda 50+70=120 > 100 → 409
+      const { response: r5b } = await requestJson(baseUrl, "POST", "/ventas", {
+        tipo: "normal", estado: "registrada",
+        items: [{ producto_id: prodId70, nombre_producto: "TEST prod70", cantidad: 1, precio_unitario: 70 }],
+        es_cuenta_corriente: true, cliente_id: id5
+      }, token);
+      if (r5b.status !== 409) throw new Error(`Test5b CC regla global excedida: esperado 409, dio ${r5b.status}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testUsuarioVentaNoEsAdmin() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      // Crear usuario encargado
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Juan Encargado", usuario: "juan_enc",
+        password: "enc12345", confirmar_password: "enc12345",
+        rol: "encargado", activo: true
+      }, token);
+      const encToken = await login(baseUrl, "juan_enc", "enc12345");
+      // Admin abre caja (encargado no tiene permiso de apertura)
+      await abrirCaja(baseUrl, token, 500);
+      const catId = await crearCategoria(baseUrl, token, "TEST UsuarioReal");
+      const prodId = await crearProducto(baseUrl, token, {
+        nombre: "TEST prod usuario", categoria_id: catId,
+        precio_venta: 20, stock: 100, maneja_stock: true
+      });
+      // Venta hecha con token de encargado — el backend registra req.usuario.usuario
+      const { response, data } = await requestJson(baseUrl, "POST", "/ventas", {
+        tipo: "normal", estado: "registrada",
+        items: [{ producto_id: prodId, nombre_producto: "TEST prod usuario", cantidad: 1, precio_unitario: 20 }],
+        es_cuenta_corriente: false,
+        tipo_cobro: "efectivo", monto_efectivo: 20, monto_debito: 0,
+        usuario: "juan_enc"
+      }, encToken);
+      if (!response.ok) throw new Error(`testUsuarioVentaNoEsAdmin: venta debe OK, dio ${response.status}`);
+      const ventaId = data.venta_id;
+      const rows = await allSql(dbPath, "SELECT usuario FROM ventas WHERE id = ?", [ventaId]);
+      if (!rows[0] || rows[0].usuario === "admin") {
+        throw new Error(`testUsuarioVentaNoEsAdmin: usuario en venta debe ser juan_enc, fue ${rows[0]?.usuario}`);
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}

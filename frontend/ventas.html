@@ -2233,6 +2233,7 @@
     const CONSUMIDOR_FINAL_ID = "1";
 
     function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[raw]||raw}
+    function usuarioActualVentas(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{};return String(u.usuario||"admin")}
     function normalizarVistaOperativa(valor){const v=String(valor??"").replace(/^"+|"+$/g,"").trim().toLowerCase();if(["complejo","completa"].includes(v))return "completa";if(["simple","reducida"].includes(v))return "reducida";return ""}
     function getVistaOperativa(rol,cfg=configVentas,modulo=null){const key=String(rol||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");const canonical={administrador:"admin",dueno:"admin",dueño:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[key]||key;if(canonical==="admin")return "completa";if(modulo){const pm=normalizarVistaOperativa(cfg?.[`vista_operativa_${modulo}_${canonical}`]);if(pm)return pm;}const directa=normalizarVistaOperativa(cfg?.[`vista_operativa_${canonical}`]);if(directa)return directa;const legacy=normalizarVistaOperativa(cfg?.[`dashboard_tipo_${canonical}`]);if(legacy)return legacy;return canonical==="colaborador"?"reducida":"completa"}
     function esVistaReducida(){return getVistaOperativa(rolActual(),configVentas,"ventas")==="reducida"}
@@ -2300,7 +2301,7 @@
           body: JSON.stringify({
             venta_id: Number(ventaId),
             tipo_resolucion: tipoResolucion,
-            usuario: "admin"
+            usuario: usuarioActualVentas()
           })
         });
         const data = await res.json().catch(() => ({}));
@@ -3952,7 +3953,7 @@
 
     function buildVentaPayload() {
       return {
-        usuario: "admin",
+        usuario: usuarioActualVentas(),
         cliente_id: clienteVenta.value && clienteVenta.value !== CONSUMIDOR_FINAL_ID ? clienteVenta.value : null,
         items: ticket.map((item) => ({
           producto_id: item.producto_id || null,

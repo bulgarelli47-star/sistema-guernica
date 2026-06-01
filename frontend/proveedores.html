@@ -511,7 +511,7 @@
         <div class="topbar-divider" aria-hidden="true"></div>
         <div class="topbar-title">
           <h1>Proveedores</h1>
-          <p>Compras, deuda y pagos asociados</p>
+          <p>Compras y pagos registrados</p>
         </div>
       </div>
       <div class="top-actions">
@@ -525,7 +525,7 @@
             <div class="notification-list">
               <div class="notification-item">
                 <strong>Gestión de proveedores</strong>
-                <small>Compras, deuda y pagos asociados disponibles.</small>
+                <small>Compras y pagos registrados disponibles.</small>
               </div>
             </div>
           </div>
@@ -571,7 +571,7 @@
     <main class="main">
       <section class="kpi-grid">
         <div class="kpi"><span>Total proveedores</span><strong id="kpiTotal">0</strong></div>
-        <div class="kpi"><span>Compras del mes</span><strong id="kpiComprasMes">$0.00</strong></div>
+        <div class="kpi"><span>Pagos del mes</span><strong id="kpiComprasMes">$0.00</strong></div>
         <div class="kpi"><span>Pagos realizados</span><strong id="kpiPagosMes">$0.00</strong></div>
         <div class="kpi"><span>Saldo pendiente</span><strong id="kpiSaldo">$0.00</strong></div>
         <div class="kpi"><span>Compras del anio</span><strong id="kpiComprasAnio">$0.00</strong></div>
@@ -621,7 +621,7 @@
                 <th>Teléfono</th>
                 <th>Email</th>
                 <th>Categoria</th>
-                <th class="sortable" data-sort="compras_mes">Compras mes</th>
+                <th class="sortable" data-sort="compras_mes">Pagos mes</th>
                 <th>Impacto</th>
                 <th class="sortable" data-sort="saldo">Saldo pendiente</th>
                 <th class="sortable" data-sort="ultima_compra">Última compra</th>
@@ -1317,7 +1317,7 @@
         <div class="detail-box"><span>Impacto</span><strong>${impactoLabel(proveedor.tipo_impacto)}</strong></div>
         <div class="detail-box"><span>Fiscal</span><strong>${condicionIvaLabel(proveedor.condicion_iva)}</strong><small>${comprobanteLabel(proveedor.tipo_comprobante)}</small></div>
         <div class="detail-box"><span>IVA a favor</span><strong>${permiteIvaFavor(proveedor) ? `${Number(proveedor.iva_alicuota || 0)}%` : "No computa"}</strong></div>
-        <div class="detail-box"><span>Compras mes</span><strong>${money(proveedor.compras_mes)}</strong></div>
+        <div class="detail-box"><span>Pagos mes</span><strong>${money(proveedor.compras_mes)}</strong></div>
         <div class="detail-box"><span>Pagos mes</span><strong>${money(proveedor.pagos_mes)}</strong></div>
         <div class="detail-box"><span>Vencimiento</span><strong>${proveedor.dias_vencimiento || 0} días</strong></div>
       `;
