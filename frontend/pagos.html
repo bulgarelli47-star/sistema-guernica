@@ -826,7 +826,7 @@
             <thead>
               <tr>
                 <th class="sortable active" data-sort="fecha">Fecha</th>
-                <th>Impacto proveedor</th>
+                <th>Tipo de gasto</th>
                 <th class="sortable" data-sort="proveedor">Proveedor</th>
                 <th>Comprobante</th>
                 <th>Forma</th>
@@ -834,7 +834,7 @@
                 <th class="sortable" data-sort="monto">Importe</th>
                 <th>IVA favor</th>
                 <th class="sortable" data-sort="estado">Estado</th>
-                <th>Impacto</th>
+                <th>Canal de pago</th>
               </tr>
             </thead>
             <tbody id="listaPagos">
@@ -1351,7 +1351,7 @@
           <td>${pago.cuenta_cobro_nombre || pago.cuenta_destino || "-"}</td>
           <td>${money(pago.monto_total)}</td>
           <td>${money(ivaFavorPago(pago))}</td>
-          <td><span class="pill ${pendiente ? "pending" : ""}">${pendiente ? "Pendiente" : "Pagado"}</span></td>
+          <td><span class="pill ${pendiente ? "pending" : ""}">${pendiente ? "Pendiente" : "Registrado"}</span></td>
           <td>${impacto}</td>
           <td>${puedeAdministrarPagos() ? `<button type="button" class="button secondary" style="padding:5px 9px;font-size:11px" data-editar-pago="${pago.id}">Editar</button>` : ""}</td>
         `;
