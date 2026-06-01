@@ -544,8 +544,8 @@ async function testRecetaSinStockComoComponenteNoDescuentaDirecto() {
   try {
     await prepareDb(dbPath, [
       ["UPDATE productos SET stock = 5000 WHERE id IN (3, 6)"],
-      ["UPDATE productos SET stock = 1 WHERE id IN (4, 7)"],
-      ["UPDATE productos SET stock = 71, maneja_stock = 1 WHERE id = 9"]
+      ["UPDATE productos SET tipo = 'compuesto', maneja_stock = 0, stock = 0 WHERE id IN (4, 7)"],
+      ["UPDATE productos SET tipo = 'compuesto', maneja_stock = 1, stock = 71 WHERE id = 9"]
     ]);
 
     await withServer(dbPath, async (baseUrl) => {
