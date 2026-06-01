@@ -8609,6 +8609,97 @@ async function testStockNegativoNoDuplicaPendiente() {
   }
 }
 
+function setConfigCC(params) {
+  return Object.entries(params).map(([clave, valor]) => [
+    `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en) VALUES ('${clave}', '${JSON.stringify(valor)}', 'cuentas_corrientes', datetime('now')) ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor, seccion=excluded.seccion, actualizado_en=excluded.actualizado_en`
+  ]);
+}
+
+async function testHerenciaReglasGeneralVsPersonalizada() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    // Config global: limite activo = 100
+    await prepareDb(dbPath, [
+      ...resetOperationalDataStatements(),
+      ...setConfigCC({ cuentas_limite_global_activo: true, cuentas_limite_global_monto: 100, cuentas_dias_vencimiento: 30 })
+    ]);
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colab Herencia", usuario: "colab_herencia",
+        password: "colab123", confirmar_password: "colab123",
+        rol: "colaborador", activo: true
+      }, token);
+      const colabToken = await login(baseUrl, "colab_herencia", "colab123");
+      const suf = Date.now();
+
+      // Test 1: usa_reglas_personalizadas=0 → usa límite global 100. Venta 150 sin auth → 409
+      const { data: d1 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST General Limite", dni_cuit: `gl-${suf}`,
+        habilita_cuenta_corriente: true, activo: true,
+        usa_reglas_personalizadas: false, limite_fiado: 1000
+      }, token);
+      const { response: r1 } = await requestJson(baseUrl, "POST", `/clientes/${d1.cliente?.id}/venta-cuenta`, {
+        total: 150, concepto: "Test general limite", autorizar_excedido: false
+      }, token);
+      if (r1.status !== 409) throw new Error(`Test1: usa_reglas_personalizadas=0 límite global 100, venta 150 debe dar 409, dio ${r1.status}`);
+
+      // Test 2: usa_reglas_personalizadas=1 → usa límite propio 1000. Venta 150 → OK
+      const { data: d2 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST Propio Limite", dni_cuit: `pl-${suf}`,
+        habilita_cuenta_corriente: true, activo: true,
+        usa_reglas_personalizadas: true, limite_fiado: 1000
+      }, token);
+      const { response: r2 } = await requestJson(baseUrl, "POST", `/clientes/${d2.cliente?.id}/venta-cuenta`, {
+        total: 150, concepto: "Test propio limite", autorizar_excedido: false
+      }, token);
+      if (!r2.ok) throw new Error(`Test2: usa_reglas_personalizadas=1 límite propio 1000, venta 150 debe OK, dio ${r2.status}`);
+
+      // Test 3: usa_reglas_personalizadas=0, límite global desactivado → sin límite. Venta 150 → OK
+      await prepareDb(dbPath, setConfigCC({ cuentas_limite_global_activo: false }));
+      // Necesitamos reiniciar o recargar config... usamos un cliente nuevo en mismo server
+      // El server carga config por petición → cambia en caliente
+      const { data: d3 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST Sin Limite Global", dni_cuit: `slg-${suf}`,
+        habilita_cuenta_corriente: true, activo: true,
+        usa_reglas_personalizadas: false, limite_fiado: 100
+      }, token);
+      const { response: r3 } = await requestJson(baseUrl, "POST", `/clientes/${d3.cliente?.id}/venta-cuenta`, {
+        total: 150, concepto: "Test sin limite global", autorizar_excedido: false
+      }, token);
+      if (!r3.ok) throw new Error(`Test3: límite global desactivado, venta 150 debe OK, dio ${r3.status}`);
+
+      // Reactivar límite para test 4 y 5
+      await prepareDb(dbPath, setConfigCC({ cuentas_limite_global_activo: true, cuentas_limite_global_monto: 1000 }));
+
+      // Test 4: usa_reglas_personalizadas=1 + requiere_autorizacion=1 + colaborador → 403
+      const { data: d4 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST ReqAuth Propio", dni_cuit: `rap-${suf}`,
+        habilita_cuenta_corriente: true, activo: true,
+        usa_reglas_personalizadas: true, requiere_autorizacion: true, limite_fiado: 5000
+      }, token);
+      const { response: r4 } = await requestJson(baseUrl, "POST", `/clientes/${d4.cliente?.id}/venta-cuenta`, {
+        total: 50, concepto: "Test req auth propio colab", autorizar_excedido: false
+      }, colabToken);
+      if (r4.status !== 403) throw new Error(`Test4: usa_reglas_personalizadas=1 requiere_autorizacion=1 colab debe dar 403, dio ${r4.status}`);
+
+      // Test 5: usa_reglas_personalizadas=0 + cliente.requiere_autorizacion=1 + colaborador → OK (regla propia no aplica)
+      const { data: d5 } = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "TEST ReqAuth General", dni_cuit: `rag-${suf}`,
+        habilita_cuenta_corriente: true, activo: true,
+        usa_reglas_personalizadas: false, requiere_autorizacion: true, limite_fiado: 5000
+      }, token);
+      const { response: r5 } = await requestJson(baseUrl, "POST", `/clientes/${d5.cliente?.id}/venta-cuenta`, {
+        total: 50, concepto: "Test req auth general colab", autorizar_excedido: false
+      }, colabToken);
+      if (!r5.ok) throw new Error(`Test5: usa_reglas_personalizadas=0 requiere_autorizacion propio ignorado, colab debe OK, dio ${r5.status}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testUsaReglasPersonalizadas() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -8665,7 +8756,7 @@ async function testRequiereAutorizacion() {
       const { data: dReq } = await requestJson(baseUrl, "POST", "/clientes", {
         nombre: "TEST RequiereAuth", dni_cuit: `req-auth-${suf}`,
         habilita_cuenta_corriente: true, activo: true,
-        requiere_autorizacion: true, limite_fiado: 0
+        usa_reglas_personalizadas: true, requiere_autorizacion: true, limite_fiado: 0
       }, token);
       const reqId = dReq.cliente?.id;
       // Cliente sin requiere_autorizacion=0
@@ -8719,7 +8810,7 @@ async function testPermiteExcedente() {
       // Test 1: permite_excedente=0, supera límite, sin autorización → 409
       const { data: d1 } = await requestJson(baseUrl, "POST", "/clientes", {
         nombre: "TEST ExcNO", dni_cuit: `exc-no-${suf}`,
-        habilita_cuenta_corriente: true, activo: true, permite_excedente: false, limite_fiado: 100
+        habilita_cuenta_corriente: true, activo: true, usa_reglas_personalizadas: true, permite_excedente: false, limite_fiado: 100
       }, token);
       const { response: rv1 } = await requestJson(baseUrl, "POST", `/clientes/${d1.cliente?.id}/venta-cuenta`, {
         total: 200, concepto: "Test sin excedente", autorizar_excedido: false
@@ -8728,7 +8819,7 @@ async function testPermiteExcedente() {
       // Test 2: permite_excedente=1, supera límite, sin autorización → OK
       const { data: d2 } = await requestJson(baseUrl, "POST", "/clientes", {
         nombre: "TEST ExcSI", dni_cuit: `exc-si-${suf}`,
-        habilita_cuenta_corriente: true, activo: true, permite_excedente: true, limite_fiado: 100
+        habilita_cuenta_corriente: true, activo: true, usa_reglas_personalizadas: true, permite_excedente: true, limite_fiado: 100
       }, token);
       const { response: rv2 } = await requestJson(baseUrl, "POST", `/clientes/${d2.cliente?.id}/venta-cuenta`, {
         total: 200, concepto: "Test con excedente", autorizar_excedido: false
@@ -9167,6 +9258,7 @@ async function testLogsTemporalesRemovidos() {
   await testCompuestosLegacyEndpointSDManejaStock0();
   await testBatchLegacyLimitadoAManeja0RendimientoMayor1();
   await testProduccionExcluyeCombos();
+  await testHerenciaReglasGeneralVsPersonalizada();
   await testUsaReglasPersonalizadas();
   await testRequiereAutorizacion();
   await testPermiteExcedente();

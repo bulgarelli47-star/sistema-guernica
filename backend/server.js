@@ -4177,6 +4177,30 @@ app.get("/clientes/:id/movimientos-cuenta-corriente", async (req, res) => {
   }
 });
 
+function resolverReglasCuenta(cliente, config) {
+  if (Number(cliente.usa_reglas_personalizadas) === 1) {
+    return {
+      origen: "cliente",
+      limite_fiado: Number(cliente.limite_fiado || 0),
+      dias_vencimiento: Number(cliente.dias_vencimiento || 30),
+      permite_excedente: Number(cliente.permite_excedente || 0),
+      requiere_autorizacion: Number(cliente.requiere_autorizacion || 0),
+      interes_mora_activo: false,
+      interes_mora: 0
+    };
+  }
+  const limiteActivo = Boolean(config.cuentas_limite_global_activo);
+  return {
+    origen: "general",
+    limite_fiado: limiteActivo ? Number(config.cuentas_limite_global_monto || 0) : 0,
+    dias_vencimiento: Number(config.cuentas_dias_vencimiento || 30),
+    permite_excedente: 0,
+    requiere_autorizacion: 0,
+    interes_mora_activo: Boolean(config.cuentas_interes_mora_activo),
+    interes_mora: Number(config.cuentas_interes_mora || 0)
+  };
+}
+
 app.post("/clientes/:id/venta-cuenta", async (req, res) => {
   const clienteId = Number(req.params.id);
   const total = Number(req.body.total) || 0;
@@ -4204,12 +4228,15 @@ app.post("/clientes/:id/venta-cuenta", async (req, res) => {
     if (Number(cliente.suspendido) === 1) {
       return res.status(403).json({ message: "Cliente suspendido: solo se permiten cobros" });
     }
-    if (Number(cliente.requiere_autorizacion) === 1 && !["admin", "encargado"].includes(req.usuario?.rol)) {
+    const configGlobal = await getConfiguracionGlobal();
+    const reglas = resolverReglasCuenta(cliente, configGlobal);
+
+    if (reglas.requiere_autorizacion === 1 && !["admin", "encargado"].includes(req.usuario?.rol)) {
       return res.status(403).json({ message: "Esta cuenta requiere autorización de encargado o admin" });
     }
     const deudaProyectada = Number(cliente.deuda_actual || 0) + total;
-    if (Number(cliente.limite_fiado || 0) > 0 && deudaProyectada > Number(cliente.limite_fiado)) {
-      const excedentPermitido = Number(cliente.permite_excedente) === 1 || autorizarExcedido;
+    if (reglas.limite_fiado > 0 && deudaProyectada > reglas.limite_fiado) {
+      const excedentPermitido = reglas.permite_excedente === 1 || autorizarExcedido;
       if (!excedentPermitido) {
         return res.status(409).json({ message: "La venta excede el limite de credito del cliente" });
       }
