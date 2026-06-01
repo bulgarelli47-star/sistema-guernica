@@ -9195,6 +9195,63 @@ async function testLogsTemporalesRemovidos() {
   if (html.includes('"ADD COMPONENTE"')) throw new Error("Log temporal ADD COMPONENTE no fue removido");
 }
 
+async function testFinanzasResumenV15() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+
+      // T1: sin fechas, ingresos_periodo existe en la respuesta
+      const r1 = await requestJson(baseUrl, "GET", "/finanzas/resumen", null, token);
+      if (!r1.response.ok) throw new Error(`T1: sin fechas debe OK, dio ${r1.response.status}`);
+      if (r1.data?.ingresos_periodo === undefined) throw new Error("T1: ingresos_periodo debe existir en resumen");
+
+      // T2: con desde/hasta responde OK
+      const r2 = await requestJson(baseUrl, "GET", "/finanzas/resumen?desde=2020-01-01&hasta=2099-12-31", null, token);
+      if (!r2.response.ok) throw new Error(`T2: con fechas debe OK, dio ${r2.response.status}`);
+
+      // T3: las 4 claves de ingresos_periodo existen
+      const ing3 = r2.data?.ingresos_periodo || {};
+      ["ventas_cobradas", "ventas_pendientes", "ventas_cuenta_corriente", "total_periodo"].forEach((k) => {
+        if (ing3[k] === undefined) throw new Error(`T3: ingresos_periodo debe incluir la clave ${k}`);
+      });
+
+      // T4: total_periodo no doble cuenta — crear 1 cobrada (100) + 1 pendiente (100) = 200
+      const catId = await crearCategoria(baseUrl, token, `FinV15 ${Date.now()}`);
+      const prodId = await crearProducto(baseUrl, token, {
+        nombre: "FinV15 prod", categoria_id: catId, precio_venta: 100, stock: 50, maneja_stock: true
+      });
+      await requestJson(baseUrl, "POST", "/ventas", {
+        tipo: "normal", estado: "cobrada",
+        items: [{ producto_id: prodId, nombre_producto: "FinV15 prod", cantidad: 1, precio_unitario: 100 }],
+        es_cuenta_corriente: false, tipo_cobro: "efectivo", monto_efectivo: 100, monto_debito: 0
+      }, token);
+      await requestJson(baseUrl, "POST", "/ventas", {
+        tipo: "pendiente", estado: "pendiente",
+        items: [{ producto_id: prodId, nombre_producto: "FinV15 prod", cantidad: 1, precio_unitario: 100 }],
+        es_cuenta_corriente: false
+      }, token);
+      const r4 = await requestJson(baseUrl, "GET", "/finanzas/resumen?desde=2020-01-01&hasta=2099-12-31", null, token);
+      const ing4 = r4.data?.ingresos_periodo || {};
+      assertEqual(ing4.total_periodo, 200, "T4: total_periodo debe ser suma directa sin doble conteo (100+100=200)");
+      assertEqual(ing4.ventas_cobradas, 100, "T4: ventas_cobradas debe ser 100");
+      assertEqual(ing4.ventas_pendientes, 100, "T4: ventas_pendientes debe ser 100");
+
+      // T5: pasivos no duplica pagos con/sin proveedor — con BD limpia ambos son 0
+      const r5 = await requestJson(baseUrl, "GET", "/finanzas/resumen", null, token);
+      const pas = r5.data?.pasivos || {};
+      if (pas.pagos_pendientes === undefined) throw new Error("T5: pasivos.pagos_pendientes debe existir");
+      if (pas.proveedores_pendientes === undefined) throw new Error("T5: pasivos.proveedores_pendientes debe existir");
+      assertEqual(pas.pagos_pendientes, 0, "T5: pagos_pendientes sin pagos debe ser 0");
+      assertEqual(pas.proveedores_pendientes, 0, "T5: proveedores_pendientes sin pagos debe ser 0");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 (async () => {
   await testRecetaSinStockBloqueaMovimientoManual();
   await testRecetaSinStockComoComponenteNoDescuentaDirecto();
@@ -9202,6 +9259,7 @@ async function testLogsTemporalesRemovidos() {
   await testAnularRecetaSinStockCancelaPendienteSinReponerAprobado();
   await testPermisosColaborador();
   await testFinanzasResumenBackendV1();
+  await testFinanzasResumenV15();
   await testProduccionV1DominioSeparado();
   await testConsumoTeoricoAgrupadoPorInsumo();
   await testAjustesPendientesStockInfraestructura();

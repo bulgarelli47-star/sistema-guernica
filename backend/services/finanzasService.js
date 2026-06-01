@@ -123,6 +123,33 @@ async function obtenerPendientesCobro({ desde, hasta }, alertas) {
   return pendientes;
 }
 
+async function obtenerIngresosPeriodo({ desde, hasta }) {
+  const where = ["COALESCE(estado, '') != 'anulado'"];
+  const params = [];
+  if (desde) { where.push("fecha >= ?"); params.push(desde); }
+  if (hasta) { where.push("fecha <= ?"); params.push(hasta); }
+
+  const rows = await allQuery(
+    `SELECT
+       COALESCE(SUM(CASE WHEN estado = 'cobrada' THEN total ELSE 0 END), 0) AS ventas_cobradas,
+       COALESCE(SUM(CASE WHEN estado = 'pendiente' AND COALESCE(es_cuenta_corriente, 0) = 0 THEN total ELSE 0 END), 0) AS ventas_pendientes,
+       COALESCE(SUM(CASE WHEN COALESCE(es_cuenta_corriente, 0) = 1 THEN total ELSE 0 END), 0) AS ventas_cuenta_corriente,
+       COALESCE(SUM(total), 0) AS total_periodo
+     FROM ventas
+     WHERE ${where.join(" AND ")}`,
+    params
+  );
+
+  const row = rows[0] || {};
+  // total_periodo es SUM directo sin CASE: una venta CC cobrada se cuenta una sola vez
+  return {
+    ventas_cobradas: round2(row.ventas_cobradas),
+    ventas_pendientes: round2(row.ventas_pendientes),
+    ventas_cuenta_corriente: round2(row.ventas_cuenta_corriente),
+    total_periodo: round2(row.total_periodo)
+  };
+}
+
 async function obtenerCapitalInmovilizado({ desde, hasta }) {
   const stock = await getReporteStock({ desde, hasta });
   const stockFisico = round2(stock?.resumen?.stock_valorizado_fisico);
@@ -136,6 +163,9 @@ async function obtenerCapitalInmovilizado({ desde, hasta }) {
 
 async function obtenerPasivos({ desde, hasta }, alertas) {
   const proveedores = await getResumenProveedoresPagos({ desde, hasta });
+  // Sin doble conteo: pagos_pendientes filtra proveedor_id IS NULL (pagos sin proveedor asignado).
+  // proveedores_pendientes viene del JOIN desde proveedores — solo captura pagos con proveedor_id asignado.
+  // Los dos conjuntos son disjuntos por construccion.
   const pagosWhere = ["COALESCE(estado, '') = 'pendiente'", "proveedor_id IS NULL"];
   const pagosParams = [];
   if (desde) { pagosWhere.push("fecha >= ?"); pagosParams.push(desde); }
@@ -264,12 +294,13 @@ async function getResumenFinanciero({ desde = null, hasta = null } = {}) {
   const alertas = [];
   const fechaCorte = new Date().toISOString();
 
-  const [liquidez, pendientesCobro, capitalInmovilizado, pasivos, movimientosNoMonetarios] = await Promise.all([
+  const [liquidez, pendientesCobro, capitalInmovilizado, pasivos, movimientosNoMonetarios, ingresosPeriodo] = await Promise.all([
     obtenerLiquidez(alertas),
     obtenerPendientesCobro({ desde, hasta }, alertas),
     obtenerCapitalInmovilizado({ desde, hasta }),
     obtenerPasivos({ desde, hasta }, alertas),
-    obtenerMovimientosNoMonetarios({ desde, hasta })
+    obtenerMovimientosNoMonetarios({ desde, hasta }),
+    obtenerIngresosPeriodo({ desde, hasta })
   ]);
 
   return {
@@ -279,6 +310,7 @@ async function getResumenFinanciero({ desde = null, hasta = null } = {}) {
     pendientes_cobro: pendientesCobro,
     capital_inmovilizado: capitalInmovilizado,
     pasivos,
+    ingresos_periodo: ingresosPeriodo,
     movimientos_no_monetarios: movimientosNoMonetarios,
     resultado: {
       posicion_liquida: round2(liquidez.total),
