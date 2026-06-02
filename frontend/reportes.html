@@ -818,7 +818,7 @@
     .constructor-selection-card { border: 1px solid var(--border); border-radius: 14px; padding: 12px 16px; background: #fff; display: grid; gap: 4px; }
     .constructor-selection-card span { font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
     .constructor-selection-card strong { font-size: 16px; color: var(--primary); }
-    @media (max-width: 860px) { .constructor-layout { grid-template-columns: 1fr; } .constructor-panel-right { display: none; } }
+    @media (max-width: 860px) { .constructor-layout { grid-template-columns: 1fr; overflow-y: auto; } .constructor-panel-left { max-height: 46dvh; border-right: 0; border-bottom: 1px solid var(--border); } .constructor-panel-right { display: flex; min-height: 220px; } }
     .constructor-preview-title { margin-bottom: 4px; }
     .constructor-preview-title h3 { margin: 0; font-size: 18px; }
     .constructor-preview-title p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
@@ -837,6 +837,11 @@
     .constructor-metrica-label { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; background: #fff; cursor: pointer; font-size: 13px; font-weight: 700; color: var(--muted); transition: border-color .15s; user-select: none; }
     .constructor-metrica-label:has(input:checked) { border-color: var(--primary); color: var(--text); }
     .constructor-metrica-label input[type="checkbox"] { accent-color: var(--primary); cursor: pointer; flex: 0 0 auto; }
+    .constructor-plantilla-card { min-height: 42px; }
+    .constructor-modulo-card { min-height: 36px; }
+    .constructor-placeholder-error { border-color: rgba(224,82,82,.28); background: #fff7f7; }
+    .constructor-placeholder-error strong { color: var(--danger); }
+    .constructor-panel-right > p.constructor-section-title { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 2px; }
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=6" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -1070,8 +1075,8 @@
     <div class="constructor-card">
       <header class="constructor-header">
         <div>
-          <h2>Constructor analítico</h2>
-          <p>Seleccioná una plantilla rápida o configurá un análisis desde cero.</p>
+          <h2>Constructor Analítico</h2>
+          <p>Construí una lectura rápida usando plantillas operativas.</p>
         </div>
         <button class="close" id="cerrarConstructorReportes" type="button" aria-label="Cerrar constructor">
           <span class="app-icon icon-close" aria-hidden="true"></span>
@@ -1162,11 +1167,11 @@
       if (secMet) secMet.style.display = mostrarAnalisis ? "" : "none";
 
       if (loading) {
-        el.innerHTML = '<div class="constructor-placeholder"><strong>Cargando vista previa...</strong><p>Consultando datos del módulo.</p></div>';
+        el.innerHTML = '<div class="constructor-placeholder"><strong>Cargando...</strong><p>Consultando datos del módulo.</p></div>';
         return;
       }
       if (error) {
-        el.innerHTML = `<div class="constructor-placeholder"><strong style="color:var(--danger)">Error</strong><p>${error}</p></div>`;
+        el.innerHTML = `<div class="constructor-placeholder constructor-placeholder-error"><strong>No se pudo cargar esta plantilla.</strong><p>${error}</p></div>`;
         return;
       }
       if (!plantilla && !modulo) {
