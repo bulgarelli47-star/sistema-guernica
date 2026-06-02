@@ -1186,6 +1186,10 @@
         renderConstructorCierreDiario(el, data);
         return;
       }
+      if (plantilla === "caja-resumida" && data) {
+        renderConstructorCajaResumida(el, data);
+        return;
+      }
       if (plantilla === "stock-critico" && data) {
         renderConstructorStockCritico(el, data);
         return;
@@ -1381,6 +1385,48 @@
       }
       renderConstructorPreview();
     }
+    function renderConstructorCajaResumida(el, data) {
+      const cj = data?.caja?.caja || data?.caja || {};
+      const estadoRaw = String(cj.estado || "").toLowerCase();
+      const estadoLabel = estadoRaw === "abierta" ? "Abierta" : estadoRaw === "cerrada" ? "Cerrada" : "Sin datos";
+      const kpis = [
+        { label: "Estado", value: estadoLabel },
+        { label: "Monto apertura", value: money(n(cj.monto_apertura || cj.monto_caja_apertura)) },
+        { label: "Efectivo esperado", value: money(n(cj.efectivo_esperado)) },
+        { label: "Efectivo contado", value: money(n(cj.efectivo_contado)) },
+        { label: "Diferencia", value: money(n(cj.diferencia)) }
+      ];
+      const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong>${k.value}</strong></div>`).join("")}</div>`;
+      const cuentas = Array.isArray(data?.cuentas) ? data.cuentas : [];
+      const cuentasHtml = cuentas.length
+        ? `<p class="constructor-section-title">Cuentas / terminales</p><div class="constructor-ranking">${cuentas.map((c, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${c.cuenta_nombre || c.nombre || "—"}</span><span class="constructor-ranking-val">${money(n(c.ingresos || c.monto_real || c.total || 0))}</span></div>`).join("")}</div>`
+        : `<p class="constructor-section-title">Cuentas / terminales</p><p class="constructor-empty">Sin datos de cuentas para esta caja.</p>`;
+      const titulo = `<div class="constructor-preview-title"><h3>Caja resumida</h3><p>Estado actual de la caja</p></div>`;
+      el.innerHTML = titulo + kpisHtml + cuentasHtml;
+    }
+    async function cargarConstructorCajaResumida() {
+      constructorState.loading = true;
+      constructorState.error = "";
+      constructorState.data = null;
+      renderConstructorPreview();
+      try {
+        const [cajaRes, cuentasRes] = await Promise.all([
+          fetch("/caja/resumen"),
+          fetch("/caja/resumen/cuentas").catch(() => null)
+        ]);
+        const caja = cajaRes.ok ? await cajaRes.json() : null;
+        let cuentas = [];
+        if (cuentasRes && cuentasRes.ok) {
+          try { const raw = await cuentasRes.json(); cuentas = Array.isArray(raw) ? raw : []; } catch { cuentas = []; }
+        }
+        constructorState.data = { caja, cuentas };
+        constructorState.loading = false;
+      } catch {
+        constructorState.loading = false;
+        constructorState.error = "No se pudo cargar la plantilla Caja resumida.";
+      }
+      renderConstructorPreview();
+    }
     function renderConstructorClientesDeuda(el, data) {
       const res = data?.resumen || {};
       const clientes = Array.isArray(data?.clientes) ? data.clientes : [];
@@ -1501,6 +1547,14 @@
               if (cajaBtn) cajaBtn.classList.add("active");
             }
             cargarConstructorCierreDiario();
+          } else if (btn.dataset.plantilla === "caja-resumida") {
+            constructorState.modulo = "caja";
+            if (modulosEl) {
+              modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+              const cajaBtn = modulosEl.querySelector('[data-modulo="caja"]');
+              if (cajaBtn) cajaBtn.classList.add("active");
+            }
+            cargarConstructorCajaResumida();
           } else if (btn.dataset.plantilla === "stock-critico") {
             constructorState.modulo = "stock";
             if (modulosEl) {
