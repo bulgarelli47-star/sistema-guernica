@@ -9339,6 +9339,157 @@ async function testFinanzasResumen20() {
   }
 }
 
+async function testRecetaSnapshotNoGeneraParaProductoSimple() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const catId = await crearCategoria(baseUrl, token, `SnapSimple ${Date.now()}`);
+      const prodId = await crearProducto(baseUrl, token, {
+        nombre: "SnapSimple prod", categoria_id: catId, precio_venta: 80, stock: 50, maneja_stock: true
+      });
+      await abrirCaja(baseUrl, token, 500);
+      const { response: vRes, data: vData } = await requestJson(baseUrl, "POST", "/ventas", {
+        tipo: "normal", estado: "cobrada",
+        items: [{ producto_id: prodId, nombre_producto: "SnapSimple prod", cantidad: 1, precio_unitario: 80 }],
+        es_cuenta_corriente: false, tipo_cobro: "efectivo", monto_efectivo: 80, monto_debito: 0
+      }, token);
+      if (!vRes.ok) throw new Error(`SnapSimple: venta debe OK, dio ${vRes.status}`);
+      const rows = await allSql(dbPath, "SELECT * FROM detalle_venta_receta_snapshot WHERE venta_id = ?", [vData.venta_id]);
+      assertEqual(rows.length, 0, "SnapSimple: producto simple no debe generar snapshot de receta");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testRecetaSnapshotAnulacionPendienteLimpia() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const catId = await crearCategoria(baseUrl, token, `SnapPend ${Date.now()}`);
+      const insumoId = await crearProducto(baseUrl, token, {
+        nombre: "SnapPend insumo", categoria_id: catId, precio_venta: 50, stock: 200, maneja_stock: true
+      });
+      const { data: compData } = await requestJson(baseUrl, "POST", "/productos_compuestos", {
+        nombre: "SnapPend compuesto", categoria_id: catId,
+        tipo: "compuesto", maneja_stock: false, stock: 0,
+        precio_venta: 150, precio_compra: 0, costo_final: 0,
+        componentes: [{ producto_id: insumoId, cantidad: 1 }],
+        costos_extra: [], usuario: "admin"
+      }, token);
+      const compId = compData.id;
+      if (!compId) throw new Error("SnapPend: compuesto no creado");
+      const { response: vRes, data: vData } = await requestJson(baseUrl, "POST", "/ventas", {
+        tipo: "pendiente", estado: "pendiente",
+        identificador_pendiente: `snap-pend-${Date.now()}`,
+        items: [{ producto_id: compId, nombre_producto: "SnapPend compuesto", cantidad: 1, precio_unitario: 150 }],
+        es_cuenta_corriente: false
+      }, token);
+      if (!vRes.ok) throw new Error(`SnapPend: venta pendiente debe OK, dio ${vRes.status}`);
+      const ventaId = vData.venta_id;
+      const antes = await allSql(dbPath, "SELECT * FROM detalle_venta_receta_snapshot WHERE venta_id = ?", [ventaId]);
+      if (!antes.length) throw new Error("SnapPend: snapshot debe existir antes de anular");
+      const { response: anularR } = await requestJson(baseUrl, "POST", `/ventas/${ventaId}/anular`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anularR.ok) throw new Error(`SnapPend: anulacion debe OK, dio ${anularR.status}`);
+      const despues = await allSql(dbPath, "SELECT * FROM detalle_venta_receta_snapshot WHERE venta_id = ?", [ventaId]);
+      assertEqual(despues.length, 0, "SnapPend: snapshot debe borrarse al anular pendiente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testRecetaSnapshotAnulacionCobradaLimpia() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const catId = await crearCategoria(baseUrl, token, `SnapCob ${Date.now()}`);
+      const insumoId = await crearProducto(baseUrl, token, {
+        nombre: "SnapCob insumo", categoria_id: catId, precio_venta: 50, stock: 200, maneja_stock: true
+      });
+      const { data: compData } = await requestJson(baseUrl, "POST", "/productos_compuestos", {
+        nombre: "SnapCob compuesto", categoria_id: catId,
+        tipo: "compuesto", maneja_stock: false, stock: 0,
+        precio_venta: 150, precio_compra: 0, costo_final: 0,
+        componentes: [{ producto_id: insumoId, cantidad: 1 }],
+        costos_extra: [], usuario: "admin"
+      }, token);
+      const compId = compData.id;
+      if (!compId) throw new Error("SnapCob: compuesto no creado");
+      await abrirCaja(baseUrl, token, 500);
+      const { response: vRes, data: vData } = await requestJson(baseUrl, "POST", "/ventas", {
+        tipo: "normal", estado: "cobrada",
+        items: [{ producto_id: compId, nombre_producto: "SnapCob compuesto", cantidad: 1, precio_unitario: 150 }],
+        es_cuenta_corriente: false, tipo_cobro: "efectivo", monto_efectivo: 150, monto_debito: 0
+      }, token);
+      if (!vRes.ok) throw new Error(`SnapCob: venta cobrada debe OK, dio ${vRes.status}`);
+      const ventaId = vData.venta_id;
+      const antes = await allSql(dbPath, "SELECT * FROM detalle_venta_receta_snapshot WHERE venta_id = ?", [ventaId]);
+      if (!antes.length) throw new Error("SnapCob: snapshot debe existir antes de anular");
+      const { response: anularR } = await requestJson(baseUrl, "POST", `/ventas/${ventaId}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anularR.ok) throw new Error(`SnapCob: anulacion cobrada debe OK, dio ${anularR.status}`);
+      const despues = await allSql(dbPath, "SELECT * FROM detalle_venta_receta_snapshot WHERE venta_id = ?", [ventaId]);
+      assertEqual(despues.length, 0, "SnapCob: snapshot debe borrarse al anular cobrada");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testEndpointRecetaSnapshotVenta() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const catId = await crearCategoria(baseUrl, token, `SnapEP ${Date.now()}`);
+      const insumoId = await crearProducto(baseUrl, token, {
+        nombre: "SnapEP insumo", categoria_id: catId, precio_venta: 50, stock: 200, maneja_stock: true
+      });
+      const { data: compData } = await requestJson(baseUrl, "POST", "/productos_compuestos", {
+        nombre: "SnapEP compuesto", categoria_id: catId,
+        tipo: "compuesto", maneja_stock: false, stock: 0,
+        precio_venta: 150, precio_compra: 0, costo_final: 0,
+        componentes: [{ producto_id: insumoId, cantidad: 0.5 }],
+        costos_extra: [], usuario: "admin"
+      }, token);
+      const compId = compData.id;
+      if (!compId) throw new Error("SnapEP: compuesto no creado");
+      await abrirCaja(baseUrl, token, 500);
+      const { response: vRes, data: vData } = await requestJson(baseUrl, "POST", "/ventas", {
+        tipo: "normal", estado: "cobrada",
+        items: [{ producto_id: compId, nombre_producto: "SnapEP compuesto", cantidad: 2, precio_unitario: 150 }],
+        es_cuenta_corriente: false, tipo_cobro: "efectivo", monto_efectivo: 300, monto_debito: 0
+      }, token);
+      if (!vRes.ok) throw new Error(`SnapEP: venta debe OK, dio ${vRes.status}`);
+      const ventaId = vData.venta_id;
+      const { response: snapR, data: snapData } = await requestJson(baseUrl, "GET", `/ventas/${ventaId}/receta-snapshot`, null, token);
+      if (!snapR.ok) throw new Error(`SnapEP: GET receta-snapshot debe OK, dio ${snapR.status}`);
+      if (!Array.isArray(snapData.snapshots)) throw new Error("SnapEP: snapshots debe ser array");
+      if (!snapData.snapshots.length) throw new Error("SnapEP: snapshots no debe estar vacío");
+      const snap = snapData.snapshots[0];
+      if (Number(snap.componente_id) !== Number(insumoId)) throw new Error(`SnapEP: componente_id esperado ${insumoId}, actual ${snap.componente_id}`);
+      assertEqual(snap.cantidad_total, 1.0, "SnapEP: cantidad_total debe ser 0.5 * 2 = 1.0");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testRecetaSnapshotGuardadoEnVenta() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -9407,6 +9558,10 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await testFinanzasResumenV15();
   await testFinanzasResumen20();
   await testRecetaSnapshotGuardadoEnVenta();
+  await testRecetaSnapshotNoGeneraParaProductoSimple();
+  await testRecetaSnapshotAnulacionPendienteLimpia();
+  await testRecetaSnapshotAnulacionCobradaLimpia();
+  await testEndpointRecetaSnapshotVenta();
   await testProduccionV1DominioSeparado();
   await testConsumoTeoricoAgrupadoPorInsumo();
   await testAjustesPendientesStockInfraestructura();

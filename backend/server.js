@@ -5832,6 +5832,7 @@ app.post("/ventas/:id/anular", async (req, res) => {
       usuario: getUsuarioAuditoria(req),
       observaciones_admin: "Cancelado por anulacion de ticket pendiente"
     });
+    await borrarRecetaSnapshotVenta(items);
 
     await runQuery(
       `UPDATE ventas
@@ -5947,6 +5948,7 @@ app.post("/ventas/:id/anular-cobrada", async (req, res) => {
       usuario: getUsuarioAuditoria(req),
       observaciones_admin: "Cancelado por anulacion de venta cobrada"
     });
+    await borrarRecetaSnapshotVenta(items);
 
     await runQuery(
       `UPDATE ventas
@@ -5988,6 +5990,23 @@ app.post("/ventas/:id/anular-cobrada", async (req, res) => {
 
     logError("Error al anular ticket cobrado:", error);
     return res.status(500).json({ message: "Error al anular ticket cobrado" });
+  }
+});
+
+app.get("/ventas/:id/receta-snapshot", async (req, res) => {
+  const ventaId = Number(req.params.id);
+  try {
+    const snapshots = await allQuery(
+      `SELECT *
+       FROM detalle_venta_receta_snapshot
+       WHERE venta_id = ?
+       ORDER BY detalle_venta_id ASC, componente_nombre_snapshot ASC`,
+      [ventaId]
+    );
+    return res.json({ venta_id: ventaId, snapshots });
+  } catch (error) {
+    logError("Error al obtener snapshot de receta:", error);
+    return res.status(500).json({ message: "Error al obtener snapshot de receta" });
   }
 });
 
