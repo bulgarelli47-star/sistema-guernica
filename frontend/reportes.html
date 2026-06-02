@@ -1185,6 +1185,10 @@
         renderConstructorStockCritico(el, data);
         return;
       }
+      if (plantilla === "clientes-con-deuda" && data) {
+        renderConstructorClientesDeuda(el, data);
+        return;
+      }
       const cards = [];
       if (plantilla) cards.push(`<div class="constructor-selection-card"><span>Plantilla</span><strong>${CONSTRUCTOR_PLANTILLA_LABELS[plantilla] || plantilla}</strong></div>`);
       if (modulo) cards.push(`<div class="constructor-selection-card"><span>Módulo</span><strong>${CONSTRUCTOR_MODULO_LABELS[modulo] || modulo}</strong></div>`);
@@ -1368,6 +1372,48 @@
       }
       renderConstructorPreview();
     }
+    function renderConstructorClientesDeuda(el, data) {
+      const res = data?.resumen || {};
+      const clientes = Array.isArray(data?.clientes) ? data.clientes : [];
+      const kpis = [
+        { label: "Deuda total", value: money(n(res.deuda_total)) },
+        { label: "Clientes con deuda", value: n(res.clientes_con_deuda) },
+        { label: "Clientes excedidos", value: n(res.clientes_excedidos) },
+        { label: "Cobrado en período", value: money(n(res.cobrado_periodo)) }
+      ];
+      const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong>${k.value}</strong></div>`).join("")}</div>`;
+      let tablaHtml;
+      if (clientes.length) {
+        const filas = clientes.slice(0, 20).map((c) => {
+          const excedido = !!c.excedido;
+          const color = excedido ? "var(--danger)" : "var(--warning)";
+          const estadoLabel = excedido ? "Excedido" : "Con deuda";
+          const detalle = c.primera_deuda ? `Desde ${c.primera_deuda}` : "";
+          return `<div class="constructor-ranking-row"><span class="constructor-ranking-name">${c.nombre || "—"}<small style="color:var(--muted);display:block;font-size:11px">${detalle}</small></span><span class="constructor-ranking-val">${money(n(c.deuda_actual))}</span><small class="constructor-ranking-qty" style="color:${color};font-weight:900">${estadoLabel}</small></div>`;
+        });
+        tablaHtml = `<p class="constructor-section-title">Clientes con deuda (${clientes.length})</p><div class="constructor-ranking">${filas.join("")}</div>`;
+      } else {
+        tablaHtml = `<p class="constructor-section-title">Clientes con deuda</p><p class="constructor-empty">Sin clientes con deuda activa.</p>`;
+      }
+      const titulo = `<div class="constructor-preview-title"><h3>Clientes con deuda</h3><p>Estado actual de cuentas corrientes</p></div>`;
+      el.innerHTML = titulo + kpisHtml + tablaHtml;
+    }
+    async function cargarConstructorClientesDeuda() {
+      constructorState.loading = true;
+      constructorState.error = "";
+      constructorState.data = null;
+      renderConstructorPreview();
+      try {
+        const res = await fetch("/reportes/cuentas-corrientes?estado=con_deuda&activo=1");
+        if (!res.ok) throw new Error(`${res.status}`);
+        constructorState.data = await res.json();
+        constructorState.loading = false;
+      } catch {
+        constructorState.loading = false;
+        constructorState.error = "No se pudo cargar la plantilla Clientes con deuda.";
+      }
+      renderConstructorPreview();
+    }
     function initConstructor() {
       const modal = $("modalConstructorReportes");
       const abrirBtn = $("abrirConstructorReportes");
@@ -1413,6 +1459,14 @@
               if (stockBtn) stockBtn.classList.add("active");
             }
             cargarConstructorStockCritico();
+          } else if (btn.dataset.plantilla === "clientes-con-deuda") {
+            constructorState.modulo = "cuentas-corrientes";
+            if (modulosEl) {
+              modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+              const ccBtn = modulosEl.querySelector('[data-modulo="cuentas-corrientes"]');
+              if (ccBtn) ccBtn.classList.add("active");
+            }
+            cargarConstructorClientesDeuda();
           } else {
             renderConstructorPreview();
           }
