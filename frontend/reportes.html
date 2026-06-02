@@ -1177,6 +1177,10 @@
         renderConstructorVentas(el, data);
         return;
       }
+      if (plantilla === "cierre-diario" && data) {
+        renderConstructorCierreDiario(el, data);
+        return;
+      }
       const cards = [];
       if (plantilla) cards.push(`<div class="constructor-selection-card"><span>Plantilla</span><strong>${CONSTRUCTOR_PLANTILLA_LABELS[plantilla] || plantilla}</strong></div>`);
       if (modulo) cards.push(`<div class="constructor-selection-card"><span>Módulo</span><strong>${CONSTRUCTOR_MODULO_LABELS[modulo] || modulo}</strong></div>`);
@@ -1270,6 +1274,53 @@
       }
       renderConstructorPreview();
     }
+    function renderConstructorCierreDiario(el, data) {
+      const res = data?.resumen || {};
+      const cajaRaw = data?.caja || {};
+      const hoy = fmtDate(new Date());
+      const kpis = [
+        { label: "Ventas del día", value: money(n(res.ventas_totales)) },
+        { label: "Ticket promedio", value: money(n(res.ticket_promedio)) },
+        { label: "Egresos sistema", value: money(n(res.pagos_totales)) },
+        { label: "Resultado del día", value: money(n(res.balance_general)) }
+      ];
+      const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong>${k.value}</strong></div>`).join("")}</div>`;
+      // /caja/resumen puede devolver distintas shapes — acceso defensivo
+      const cj = cajaRaw.caja || cajaRaw;
+      const estadoRaw = String(cj.estado || "").toLowerCase();
+      const estadoLabel = estadoRaw === "abierta" ? "Abierta" : estadoRaw === "cerrada" ? "Cerrada" : "Sin datos";
+      const cajaFields = [
+        { label: "Estado", value: estadoLabel },
+        { label: "Monto apertura", value: money(n(cj.monto_apertura || cj.monto_caja_apertura)) },
+        { label: "Efectivo esperado", value: money(n(cj.efectivo_esperado)) },
+        { label: "Efectivo contado", value: money(n(cj.efectivo_contado)) },
+        { label: "Diferencia", value: money(n(cj.diferencia)) }
+      ];
+      const cajaHtml = `<p class="constructor-section-title">Caja actual</p><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">${cajaFields.map((f) => `<div class="constructor-selection-card"><span>${f.label}</span><strong>${f.value}</strong></div>`).join("")}</div>`;
+      const titulo = `<div class="constructor-preview-title"><h3>Cierre diario</h3><p>${hoy}</p></div>`;
+      el.innerHTML = titulo + kpisHtml + cajaHtml;
+    }
+    async function cargarConstructorCierreDiario() {
+      const hoy = fmtDate(new Date());
+      constructorState.loading = true;
+      constructorState.error = "";
+      constructorState.data = null;
+      renderConstructorPreview();
+      try {
+        const [resRes, cajaRes] = await Promise.all([
+          fetch(`/reportes/resumen?desde=${hoy}&hasta=${hoy}`),
+          fetch("/caja/resumen")
+        ]);
+        const resumen = resRes.ok ? await resRes.json() : null;
+        const caja = cajaRes.ok ? await cajaRes.json() : null;
+        constructorState.data = { resumen, caja };
+        constructorState.loading = false;
+      } catch {
+        constructorState.loading = false;
+        constructorState.error = "No se pudo cargar la plantilla Cierre diario.";
+      }
+      renderConstructorPreview();
+    }
     function initConstructor() {
       const modal = $("modalConstructorReportes");
       const abrirBtn = $("abrirConstructorReportes");
@@ -1299,6 +1350,14 @@
               if (ventasBtn) ventasBtn.classList.add("active");
             }
             cargarConstructorVentas();
+          } else if (btn.dataset.plantilla === "cierre-diario") {
+            constructorState.modulo = "caja";
+            if (modulosEl) {
+              modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+              const cajaBtn = modulosEl.querySelector('[data-modulo="caja"]');
+              if (cajaBtn) cajaBtn.classList.add("active");
+            }
+            cargarConstructorCierreDiario();
           } else {
             renderConstructorPreview();
           }
