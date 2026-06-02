@@ -305,6 +305,27 @@ async function initDatabase() {
     await runQuery("CREATE INDEX IF NOT EXISTS idx_detalle_venta_componentes_snapshot_detalle ON detalle_venta_componentes_snapshot(detalle_venta_id)");
 
     await runQuery(`
+      CREATE TABLE IF NOT EXISTS detalle_venta_receta_snapshot (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        venta_id INTEGER NOT NULL,
+        detalle_venta_id INTEGER NOT NULL,
+        producto_vendido_id INTEGER NOT NULL,
+        componente_id INTEGER NOT NULL,
+        componente_nombre_snapshot TEXT NOT NULL,
+        cantidad_por_porcion REAL NOT NULL DEFAULT 0,
+        cantidad_total REAL NOT NULL DEFAULT 0,
+        unidad TEXT NOT NULL DEFAULT 'un',
+        costo_unitario_snapshot REAL NOT NULL DEFAULT 0,
+        costo_total_snapshot REAL NOT NULL DEFAULT 0,
+        FOREIGN KEY (venta_id) REFERENCES ventas(id),
+        FOREIGN KEY (detalle_venta_id) REFERENCES detalle_ventas(id)
+      )
+    `);
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_dvrs_venta ON detalle_venta_receta_snapshot(venta_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_dvrs_detalle ON detalle_venta_receta_snapshot(detalle_venta_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_dvrs_componente ON detalle_venta_receta_snapshot(componente_id)");
+
+    await runQuery(`
       CREATE TABLE IF NOT EXISTS pagos_cuenta_corriente (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         venta_id INTEGER NOT NULL,

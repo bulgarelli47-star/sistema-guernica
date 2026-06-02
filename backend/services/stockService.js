@@ -378,6 +378,65 @@ async function applyStockDiff(oldItems, newItems) {
   }
 }
 
+async function guardarRecetaSnapshotVenta(ventaId, detalles = []) {
+  // ventaId debe ser explícito — los objetos detalle no siempre lo llevan
+  if (!ventaId || !Array.isArray(detalles)) return;
+
+  for (const detalle of detalles) {
+    const detalleId = Number(detalle.id || detalle.detalle_venta_id || 0);
+    if (!detalleId || !detalle.producto_id) continue;
+
+    const producto = await getQuery(
+      "SELECT tipo FROM productos WHERE id = ?",
+      [Number(detalle.producto_id)]
+    );
+    if (!producto || normalizarTipoProducto(producto.tipo) !== "compuesto") continue;
+
+    const componentes = await getComponentesProductoCompuesto(detalle.producto_id);
+    if (!componentes.length) continue;
+
+    const cantidadVendida = Number(detalle.cantidad || 1);
+
+    for (const comp of componentes) {
+      const costoUnitario = await getCostoConsumoUnitarioProducto(comp.producto_id, comp);
+      const cantidadPorPorcion = Number(comp.cantidad || 0);
+      const cantidadTotal = Number((cantidadPorPorcion * cantidadVendida).toFixed(4));
+
+      await runQuery(
+        `INSERT INTO detalle_venta_receta_snapshot
+         (venta_id, detalle_venta_id, producto_vendido_id, componente_id,
+          componente_nombre_snapshot, cantidad_por_porcion, cantidad_total, unidad,
+          costo_unitario_snapshot, costo_total_snapshot)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          Number(ventaId),
+          detalleId,
+          Number(detalle.producto_id),
+          Number(comp.producto_id),
+          String(comp.producto_nombre || ""),
+          Number(cantidadPorPorcion.toFixed(4)),
+          cantidadTotal,
+          String(comp.unidad_medida || "un"),
+          Number(costoUnitario.toFixed(4)),
+          Number((costoUnitario * cantidadTotal).toFixed(2))
+        ]
+      );
+    }
+  }
+}
+
+async function borrarRecetaSnapshotVenta(detalles = []) {
+  const ids = detalles
+    .map((d) => Number(d.detalle_venta_id ?? d.id ?? 0))
+    .filter(Boolean);
+  if (!ids.length) return;
+  const placeholders = ids.map(() => "?").join(",");
+  await runQuery(
+    `DELETE FROM detalle_venta_receta_snapshot WHERE detalle_venta_id IN (${placeholders})`,
+    ids
+  );
+}
+
 async function consolidarComponentesDuplicados() {
   const duplicados = await allQuery(
     `SELECT producto_compuesto_id, producto_id, SUM(cantidad) AS cantidad_total, COUNT(*) AS total_filas
@@ -432,5 +491,7 @@ module.exports = {
   descontarComponentesReceta,
   applyStockChange,
   applyStockForNewItems,
-  applyStockDiff
+  applyStockDiff,
+  guardarRecetaSnapshotVenta,
+  borrarRecetaSnapshotVenta
 };

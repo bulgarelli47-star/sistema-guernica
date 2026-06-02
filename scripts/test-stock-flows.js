@@ -16,9 +16,12 @@ function runSql(dbPath, sql, params = []) {
   return new Promise((resolve, reject) => {
     const db = new sqlite3.Database(dbPath);
     db.run(sql, params, function (error) {
-      db.close();
-      if (error) reject(error);
-      else resolve(this);
+      const result = this;
+      db.close((closeErr) => {
+        if (error) reject(error);
+        else if (closeErr) reject(closeErr);
+        else resolve(result);
+      });
     });
   });
 }
@@ -27,9 +30,11 @@ function allSql(dbPath, sql, params = []) {
   return new Promise((resolve, reject) => {
     const db = new sqlite3.Database(dbPath);
     db.all(sql, params, (error, rows) => {
-      db.close();
-      if (error) reject(error);
-      else resolve(rows);
+      db.close((closeErr) => {
+        if (error) reject(error);
+        else if (closeErr) reject(closeErr);
+        else resolve(rows);
+      });
     });
   });
 }
@@ -9219,20 +9224,24 @@ async function testFinanzasResumenV15() {
       });
 
       // T4: total_periodo no doble cuenta — crear 1 cobrada (100) + 1 pendiente (100) = 200
+      await abrirCaja(baseUrl, token, 1000);
       const catId = await crearCategoria(baseUrl, token, `FinV15 ${Date.now()}`);
       const prodId = await crearProducto(baseUrl, token, {
         nombre: "FinV15 prod", categoria_id: catId, precio_venta: 100, stock: 50, maneja_stock: true
       });
-      await requestJson(baseUrl, "POST", "/ventas", {
+      const { response: venta1 } = await requestJson(baseUrl, "POST", "/ventas", {
         tipo: "normal", estado: "cobrada",
         items: [{ producto_id: prodId, nombre_producto: "FinV15 prod", cantidad: 1, precio_unitario: 100 }],
         es_cuenta_corriente: false, tipo_cobro: "efectivo", monto_efectivo: 100, monto_debito: 0
       }, token);
-      await requestJson(baseUrl, "POST", "/ventas", {
+      if (!venta1.ok) throw new Error(`T4: venta cobrada debe responder OK. Status=${venta1.status}`);
+      const { response: venta2 } = await requestJson(baseUrl, "POST", "/ventas", {
         tipo: "pendiente", estado: "pendiente",
+        identificador_pendiente: `FinV15-pend-${Date.now()}`,
         items: [{ producto_id: prodId, nombre_producto: "FinV15 prod", cantidad: 1, precio_unitario: 100 }],
         es_cuenta_corriente: false
       }, token);
+      if (!venta2.ok) throw new Error(`T4: venta pendiente debe responder OK. Status=${venta2.status}`);
       const r4 = await requestJson(baseUrl, "GET", "/finanzas/resumen?desde=2020-01-01&hasta=2099-12-31", null, token);
       const ing4 = r4.data?.ingresos_periodo || {};
       assertEqual(ing4.total_periodo, 200, "T4: total_periodo debe ser suma directa sin doble conteo (100+100=200)");
@@ -9287,28 +9296,31 @@ async function testFinanzasResumen20() {
       if (pend1.cobrado_periodo === undefined) throw new Error("T4: pendientes_cobro.cobrado_periodo debe existir");
 
       // T5: resultado_operativo = ventas_cobradas - egresos_ejecutados
+      await abrirCaja(baseUrl, token, 1000);
       const catId = await crearCategoria(baseUrl, token, `Fin20 cat ${Date.now()}`);
       const prodId = await crearProducto(baseUrl, token, {
         nombre: "Fin20 prod", categoria_id: catId, precio_venta: 100, stock: 50, maneja_stock: true
       });
       // venta cobrada: $100
-      await requestJson(baseUrl, "POST", "/ventas", {
+      const { response: ventaRes } = await requestJson(baseUrl, "POST", "/ventas", {
         tipo: "normal", estado: "cobrada",
         items: [{ producto_id: prodId, nombre_producto: "Fin20 prod", cantidad: 1, precio_unitario: 100 }],
         es_cuenta_corriente: false, tipo_cobro: "efectivo", monto_efectivo: 100, monto_debito: 0
       }, token);
+      if (!ventaRes.ok) throw new Error(`T5: venta debe responder OK. Status=${ventaRes.status}`);
       // proveedor + pago ejecutado: $40
       const { data: prvData } = await requestJson(baseUrl, "POST", "/proveedores", {
         nombre: `Fin20 prov ${Date.now()}`, tipo_impacto: "costo_fijo_operativo", activo: true
       }, token);
       const prvId = prvData.proveedor?.id;
       const hoy = new Date().toISOString().slice(0, 10);
-      await requestJson(baseUrl, "POST", "/pagos", {
+      const { response: pagoRes } = await requestJson(baseUrl, "POST", "/pagos", {
         proveedor_id: prvId, concepto: "Fin20 pago ejecutado",
         monto_total: 40, tipo_pago: "efectivo",
         monto_efectivo: 40, monto_debito: 0,
         fecha: hoy, hora: "12:00:00", estado: "registrado"
       }, token);
+      if (!pagoRes.ok) throw new Error(`T5: pago debe responder OK. Status=${pagoRes.status}`);
       const r5 = await requestJson(baseUrl, "GET", "/finanzas/resumen?desde=2020-01-01&hasta=2099-12-31", null, token);
       const res5 = r5.data?.resultado || {};
       const pas5 = r5.data?.pasivos || {};
@@ -9327,6 +9339,64 @@ async function testFinanzasResumen20() {
   }
 }
 
+async function testRecetaSnapshotGuardadoEnVenta() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+
+      // Crear insumo con stock
+      const catId = await crearCategoria(baseUrl, token, `SnapReceta cat ${Date.now()}`);
+      const insumoId = await crearProducto(baseUrl, token, {
+        nombre: "SnapReceta insumo", categoria_id: catId,
+        precio_venta: 50, stock: 200, maneja_stock: true
+      });
+
+      // Crear producto compuesto con el insumo (200g por porción)
+      const { data: compData } = await requestJson(baseUrl, "POST", "/productos_compuestos", {
+        nombre: "SnapReceta compuesto", categoria_id: catId,
+        tipo: "compuesto", maneja_stock: false, stock: 0,
+        precio_venta: 150, precio_compra: 0, costo_final: 0,
+        componentes: [{ producto_id: insumoId, cantidad: 0.2 }],
+        costos_extra: [], usuario: "admin"
+      }, token);
+      const compId = compData.id;
+      if (!compId) throw new Error("testRecetaSnapshotGuardadoEnVenta: producto compuesto no creado");
+
+      // Venta con el compuesto
+      await abrirCaja(baseUrl, token, 1000);
+      const { response: vRes, data: vData } = await requestJson(baseUrl, "POST", "/ventas", {
+        tipo: "normal", estado: "cobrada",
+        items: [{ producto_id: compId, nombre_producto: "SnapReceta compuesto", cantidad: 2, precio_unitario: 150 }],
+        es_cuenta_corriente: false, tipo_cobro: "efectivo", monto_efectivo: 300, monto_debito: 0
+      }, token);
+      if (!vRes.ok) throw new Error(`testRecetaSnapshotGuardadoEnVenta: venta debe OK, dio ${vRes.status}`);
+      const ventaId = vData.venta_id;
+
+      // Verificar que el snapshot existe en la tabla
+      const rows = await allSql(
+        dbPath,
+        "SELECT * FROM detalle_venta_receta_snapshot WHERE venta_id = ?",
+        [ventaId]
+      );
+      if (!rows.length) throw new Error("testRecetaSnapshotGuardadoEnVenta: snapshot no fue guardado");
+
+      const snap = rows[0];
+      if (Number(snap.componente_id) !== Number(insumoId)) {
+        throw new Error(`testRecetaSnapshotGuardadoEnVenta: componente_id esperado ${insumoId}, actual ${snap.componente_id}`);
+      }
+      // cantidad_por_porcion = 0.2 (configurado en la receta)
+      // cantidad_total = 0.2 * 2 (cantidad vendida) = 0.4
+      assertEqual(snap.cantidad_por_porcion, 0.2, "snapshot: cantidad_por_porcion debe ser 0.2");
+      assertEqual(snap.cantidad_total, 0.4, "snapshot: cantidad_total debe ser 0.4 (0.2 * 2 ventas)");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 (async () => {
   await testRecetaSinStockBloqueaMovimientoManual();
   await testRecetaSinStockComoComponenteNoDescuentaDirecto();
@@ -9336,6 +9406,7 @@ async function testFinanzasResumen20() {
   await testFinanzasResumenBackendV1();
   await testFinanzasResumenV15();
   await testFinanzasResumen20();
+  await testRecetaSnapshotGuardadoEnVenta();
   await testProduccionV1DominioSeparado();
   await testConsumoTeoricoAgrupadoPorInsumo();
   await testAjustesPendientesStockInfraestructura();
