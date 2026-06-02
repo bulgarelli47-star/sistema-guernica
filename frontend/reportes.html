@@ -1181,6 +1181,10 @@
         renderConstructorCierreDiario(el, data);
         return;
       }
+      if (plantilla === "stock-critico" && data) {
+        renderConstructorStockCritico(el, data);
+        return;
+      }
       const cards = [];
       if (plantilla) cards.push(`<div class="constructor-selection-card"><span>Plantilla</span><strong>${CONSTRUCTOR_PLANTILLA_LABELS[plantilla] || plantilla}</strong></div>`);
       if (modulo) cards.push(`<div class="constructor-selection-card"><span>Módulo</span><strong>${CONSTRUCTOR_MODULO_LABELS[modulo] || modulo}</strong></div>`);
@@ -1321,6 +1325,49 @@
       }
       renderConstructorPreview();
     }
+    function renderConstructorStockCritico(el, data) {
+      const res = data?.resumen || {};
+      const alertas = Array.isArray(data?.alertas) ? data.alertas : [];
+      const kpis = [
+        { label: "Bajo stock", value: n(res.bajo_stock) },
+        { label: "Sin stock", value: n(res.sin_stock) },
+        { label: "Total en alerta", value: alertas.length },
+        { label: "Valor inventario", value: money(n(res.stock_valorizado_fisico)) }
+      ];
+      const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong>${k.value}</strong></div>`).join("")}</div>`;
+      let tablaHtml;
+      if (alertas.length) {
+        const filas = alertas.slice(0, 20).map((p) => {
+          const stockActual = n(p.stock_fisico ?? p.stock);
+          const stockMin = n(p.stock_minimo);
+          const estado = String(p.estado_stock || "").toLowerCase();
+          const estadoLabel = estado === "sin_stock" ? "Sin stock" : estado === "bajo_stock" ? "Bajo stock" : estado || "—";
+          const colorEstado = estado === "sin_stock" ? "var(--danger)" : "var(--warning)";
+          return `<div class="constructor-ranking-row"><span class="constructor-ranking-name">${p.nombre || "—"}<small style="color:var(--muted);display:block;font-size:11px">${p.categoria || ""}</small></span><span class="constructor-ranking-val" style="font-size:12px;font-weight:800">${stockActual} / ${stockMin}</span><small class="constructor-ranking-qty" style="color:${colorEstado};font-weight:900">${estadoLabel}</small></div>`;
+        });
+        tablaHtml = `<p class="constructor-section-title">Productos en alerta (${alertas.length})</p><div class="constructor-ranking">${filas.join("")}</div>`;
+      } else {
+        tablaHtml = `<p class="constructor-section-title">Productos en alerta</p><p class="constructor-empty">Sin productos en alerta de stock.</p>`;
+      }
+      const titulo = `<div class="constructor-preview-title"><h3>Stock crítico</h3><p>Estado actual del inventario</p></div>`;
+      el.innerHTML = titulo + kpisHtml + tablaHtml;
+    }
+    async function cargarConstructorStockCritico() {
+      constructorState.loading = true;
+      constructorState.error = "";
+      constructorState.data = null;
+      renderConstructorPreview();
+      try {
+        const res = await fetch("/reportes/stock?activo=1");
+        if (!res.ok) throw new Error(`${res.status}`);
+        constructorState.data = await res.json();
+        constructorState.loading = false;
+      } catch {
+        constructorState.loading = false;
+        constructorState.error = "No se pudo cargar la plantilla Stock crítico.";
+      }
+      renderConstructorPreview();
+    }
     function initConstructor() {
       const modal = $("modalConstructorReportes");
       const abrirBtn = $("abrirConstructorReportes");
@@ -1358,6 +1405,14 @@
               if (cajaBtn) cajaBtn.classList.add("active");
             }
             cargarConstructorCierreDiario();
+          } else if (btn.dataset.plantilla === "stock-critico") {
+            constructorState.modulo = "stock";
+            if (modulosEl) {
+              modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+              const stockBtn = modulosEl.querySelector('[data-modulo="stock"]');
+              if (stockBtn) stockBtn.classList.add("active");
+            }
+            cargarConstructorStockCritico();
           } else {
             renderConstructorPreview();
           }
