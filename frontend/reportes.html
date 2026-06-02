@@ -1189,6 +1189,10 @@
         renderConstructorClientesDeuda(el, data);
         return;
       }
+      if (plantilla === "pagos-pendientes" && data) {
+        renderConstructorPagosPendientes(el, data);
+        return;
+      }
       const cards = [];
       if (plantilla) cards.push(`<div class="constructor-selection-card"><span>Plantilla</span><strong>${CONSTRUCTOR_PLANTILLA_LABELS[plantilla] || plantilla}</strong></div>`);
       if (modulo) cards.push(`<div class="constructor-selection-card"><span>Módulo</span><strong>${CONSTRUCTOR_MODULO_LABELS[modulo] || modulo}</strong></div>`);
@@ -1414,6 +1418,47 @@
       }
       renderConstructorPreview();
     }
+    function renderConstructorPagosPendientes(el, data) {
+      const res = data?.resumen || {};
+      const proveedores = Array.isArray(data?.proveedores) ? data.proveedores : [];
+      const porImpacto = Array.isArray(data?.por_impacto) ? data.por_impacto : [];
+      const pagos = Array.isArray(data?.pagos) ? data.pagos : [];
+      const conPendiente = proveedores.filter((p) => n(p.total_pendiente) > 0).sort((a, b) => n(b.total_pendiente) - n(a.total_pendiente));
+      const pagosPendienteCount = pagos.filter((p) => String(p.estado || "").toLowerCase() === "pendiente").length;
+      const kpis = [
+        { label: "Total pendiente", value: money(n(res.total_pendiente)) },
+        { label: "Pagos pendientes", value: pagosPendienteCount || conPendiente.length },
+        { label: "Proveedores con deuda", value: conPendiente.length },
+        { label: "Pagos registrados", value: n(res.pagos_periodo) }
+      ];
+      const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong>${k.value}</strong></div>`).join("")}</div>`;
+      const IMPACTO_LABELS = { "costo_fijo_operativo": "Costo fijo operativo", "costo_variable_mercaderia": "Costo variable mercadería", "inversion": "Inversión", "otro_no_computable": "Otro no computable" };
+      const impactoConPendiente = porImpacto.filter((t) => n(t.total_pendiente) > 0);
+      const impactoHtml = impactoConPendiente.length
+        ? `<p class="constructor-section-title">Distribución por tipo de gasto</p><div class="constructor-ranking">${impactoConPendiente.map((t, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${IMPACTO_LABELS[t.tipo_impacto] || t.tipo_impacto || "—"}</span><span class="constructor-ranking-val">${money(n(t.total_pendiente))}</span></div>`).join("")}</div>`
+        : `<p class="constructor-section-title">Distribución por tipo de gasto</p><p class="constructor-empty">Sin datos por tipo de gasto.</p>`;
+      const provHtml = conPendiente.length
+        ? `<p class="constructor-section-title">Proveedores con deuda (${conPendiente.length})</p><div class="constructor-ranking">${conPendiente.slice(0, 20).map((p, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${p.proveedor_nombre || "—"}<small style="color:var(--muted);display:block;font-size:11px">${IMPACTO_LABELS[p.tipo_impacto] || p.tipo_impacto || "—"}</small></span><span class="constructor-ranking-val">${money(n(p.total_pendiente))}</span></div>`).join("")}</div>`
+        : `<p class="constructor-section-title">Proveedores con deuda</p><p class="constructor-empty">Sin pagos pendientes.</p>`;
+      const titulo = `<div class="constructor-preview-title"><h3>Pagos pendientes</h3><p>Estado actual de compromisos abiertos</p></div>`;
+      el.innerHTML = titulo + kpisHtml + impactoHtml + provHtml;
+    }
+    async function cargarConstructorPagosPendientes() {
+      constructorState.loading = true;
+      constructorState.error = "";
+      constructorState.data = null;
+      renderConstructorPreview();
+      try {
+        const res = await fetch("/reportes/proveedores-pagos");
+        if (!res.ok) throw new Error(`${res.status}`);
+        constructorState.data = await res.json();
+        constructorState.loading = false;
+      } catch {
+        constructorState.loading = false;
+        constructorState.error = "No se pudo cargar la plantilla Pagos pendientes.";
+      }
+      renderConstructorPreview();
+    }
     function initConstructor() {
       const modal = $("modalConstructorReportes");
       const abrirBtn = $("abrirConstructorReportes");
@@ -1467,6 +1512,14 @@
               if (ccBtn) ccBtn.classList.add("active");
             }
             cargarConstructorClientesDeuda();
+          } else if (btn.dataset.plantilla === "pagos-pendientes") {
+            constructorState.modulo = "proveedores-pagos";
+            if (modulosEl) {
+              modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+              const pagosBtn = modulosEl.querySelector('[data-modulo="proveedores-pagos"]');
+              if (pagosBtn) pagosBtn.classList.add("active");
+            }
+            cargarConstructorPagosPendientes();
           } else {
             renderConstructorPreview();
           }
