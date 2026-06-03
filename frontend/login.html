@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Ingresar - Atlas OS</title>
   <style>
+    @font-face {
+      font-family: "Brimstone";
+      src: url("/fonts/BRIMRG__.TTF") format("truetype");
+      font-weight: normal;
+      font-style: normal;
+      font-display: swap;
+    }
+
     :root {
       --header: #16052e;
       --primary: #6d28d9;
@@ -94,9 +102,9 @@
 
     .brand strong {
       display: block;
-      font-family: "Space Grotesk", "Inter", "Segoe UI", Arial, sans-serif;
+      font-family: "Brimstone", "Space Grotesk", "Inter", sans-serif;
       font-size: 20px;
-      font-weight: 800;
+      font-weight: normal;
       letter-spacing: 0.06em;
       text-transform: uppercase;
     }
@@ -295,7 +303,7 @@
     <section class="brand-panel" aria-label="Atlas OS">
       <div class="brand">
         <div class="logo">
-          <img src="/atlas-iso.png" alt="Atlas OS" width="48" height="48" style="object-fit:contain;">
+          <img src="/atlas-iso.png" alt="Atlas OS" width="58" height="58" style="object-fit:cover;border-radius:18px;">
         </div>
         <div>
           <strong>ATLAS OS</strong>
