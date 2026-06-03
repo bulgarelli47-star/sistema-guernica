@@ -1744,7 +1744,7 @@
                 <h3 id="ticketTitle">Consumidor Final</h3>
               </div>
               <div class="ticket-actions">
-                <button type="button" class="button secondary quick-action" id="abrirCliente">F3 Cliente</button>
+                <button type="button" class="button secondary quick-action" id="abrirCliente">Cliente</button>
                 <button type="button" class="button secondary quick-action" id="irClientes">+ Cliente nuevo</button>
               </div>
             </div>
@@ -3642,23 +3642,7 @@
           .map((producto) => getCategoriaProducto(producto))
           .filter(Boolean)
       )).sort((a, b) => a.localeCompare(b));
-      const seleccionadas = pizarraCategoriasSeleccionadas();
-
-      if (!seleccionadas.length) {
-        const fallback = ["Bebidas", "Cervezas", "Gaseosas", "Licores", "Snacks", "Golosinas"];
-        fallback.forEach((categoria) => {
-          if (!dynamic.includes(categoria)) {
-            dynamic.push(categoria);
-          }
-        });
-        return base.concat(dynamic);
-      }
-
-      const permitidas = dynamic.filter((categoria) => {
-        const normalizada = normalizarBusqueda(categoria);
-        return seleccionadas.some((item) => normalizada.includes(item));
-      });
-      return base.concat(permitidas);
+      return base.concat(dynamic);
     }
 
     function getQuickCategories(categories) {
@@ -3692,6 +3676,7 @@
         selectedCategory = categoria;
         renderCategoryPills();
         filtrarProductos();
+        actualizarVistaBuscador();
         categoryFilterPopup.classList.remove("open");
       });
       container.appendChild(button);
@@ -3734,15 +3719,20 @@
         return nombre.includes(termino) || categoria.includes(termino) || codigo.includes(termino);
       }
 
+      if (selectedCategory !== "Todos") {
+        ultimaTodosProductos = productosCargados.filter((producto) => coincideTermino(producto) && filtrarPorCategoria(producto));
+        return;
+      }
+
       // Grid principal: Tienda filtra por categoría. Sin término respeta la configuración legacy dashboard_pizarra_*; con término busca en todo.
       const productosFiltrados = productosCargados.filter((producto) => {
-        if (!termino && !productoEnPizarraDirecta(producto)) return false;
+        if (!termino && selectedCategory === "Todos" && !productoEnPizarraDirecta(producto)) return false;
         return coincideTermino(producto) && filtrarPorCategoria(producto);
       });
 
       // Más vendidos: de TODOS los productos (no solo Tienda), con ventas reales > 0.
       const vendidos = productosCargados
-        .filter(p => !Number(p.es_combo) && Number(p.total_vendido || 0) > 0 && coincideTermino(p))
+        .filter(p => !Number(p.es_combo) && Number(p.total_vendido || 0) > 0 && coincideTermino(p) && filtrarPorCategoria(p))
         .sort((a, b) => Number(b.total_vendido || 0) - Number(a.total_vendido || 0));
       ultimaVistaVendidos = vendidos;
       renderProductSection(
@@ -3754,7 +3744,7 @@
       // Combos: solo es_combo=1 (no aplica_para_combo). Grid muestra 5, "Ver más" muestra todos.
       const todosLosCombos = productosCargados.filter((producto) => {
         if (!Number(producto.es_combo)) return false;
-        return coincideTermino(producto);
+        return coincideTermino(producto) && filtrarPorCategoria(producto);
       });
       ultimaVistaCombos = todosLosCombos;
       renderProductSection(productosCombo, ultimaVistaCombos.slice(0, 5), "Sin combos. En Stock activá el check 'Combo' en un producto.");
@@ -3767,15 +3757,18 @@
       renderProductSection(productosSugeridos, ultimaVistaSugeridos.slice(0, 5), "Sin sugerencias disponibles.");
 
       // Ver todos: todos los productos sin filtro de Tienda
-      ultimaTodosProductos = productosCargados.filter((producto) => coincideTermino(producto));
+      ultimaTodosProductos = productosCargados.filter((producto) => coincideTermino(producto) && filtrarPorCategoria(producto));
     }
 
     function actualizarVistaBuscador() {
       const termino = buscadorProductos.value.trim();
+      const terminoNormalizado = normalizarBusqueda(termino);
+      const tieneCategoria = selectedCategory !== "Todos";
       const searchContainer = document.getElementById("searchResultsContainer");
       const sectionsContainer = document.getElementById("sectionsContainer");
+      const title = searchContainer.querySelector(".section-title");
 
-      if (!termino) {
+      if (!termino && !tieneCategoria) {
         searchContainer.style.display = "none";
         sectionsContainer.style.display = "";
         return;
@@ -3783,13 +3776,16 @@
 
       sectionsContainer.style.display = "none";
       searchContainer.style.display = "";
+      if (title) {
+        title.textContent = tieneCategoria ? `Productos de ${selectedCategory}` : "Resultados de búsqueda";
+      }
 
       const resultados = productosCargados.filter((producto) => {
         const nombre = normalizarBusqueda(producto.nombre);
         const categoria = normalizarBusqueda(getCategoriaProducto(producto));
         const codigo = normalizarBusqueda(producto.codigo || producto.codigo_barras || String(producto.id));
-        const t = normalizarBusqueda(termino);
-        return nombre.includes(t) || categoria.includes(t) || codigo.includes(t);
+        const coincide = !terminoNormalizado || nombre.includes(terminoNormalizado) || categoria.includes(terminoNormalizado) || codigo.includes(terminoNormalizado);
+        return coincide && filtrarPorCategoria(producto);
       });
 
       const count = document.getElementById("searchResultsCount");
@@ -3799,9 +3795,15 @@
 
       const grid = document.getElementById("searchResultsGrid");
       grid.innerHTML = "";
+      grid.className = tieneCategoria ? "product-grid" : "";
 
       if (!resultados.length) {
-        grid.innerHTML = '<div class="empty-state">No se encontraron productos.</div>';
+        grid.innerHTML = `<div class="empty-state">${tieneCategoria ? "No hay productos en esta categoría." : "No se encontraron productos."}</div>`;
+        return;
+      }
+
+      if (tieneCategoria) {
+        resultados.forEach((producto) => grid.appendChild(buildProductCard(producto)));
         return;
       }
 
@@ -4824,11 +4826,6 @@
     });
 
     document.addEventListener("keydown", function (event) {
-      if (event.key === "F3") {
-        event.preventDefault();
-        abrirClienteSelector();
-      }
-
       if (event.key === "F5") {
         event.preventDefault();
         abrirGuardarPendienteModal();
