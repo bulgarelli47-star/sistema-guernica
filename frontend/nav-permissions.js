@@ -51,28 +51,46 @@
   }
 
   function getBusinessName(config) {
-    return String(config.negocio_nombre_comercial || config.ticket_nombre || "Guernica Bar").trim() || "Guernica Bar";
+    return String(config.negocio_nombre_comercial || config.ticket_nombre || "Mi Negocio").trim() || "Mi Negocio";
   }
 
   function applyBrandTypography() {
-    if (document.getElementById("guernica-brand-typography")) return;
+    if (document.getElementById("atlas-brand-typography")) return;
+    // Fuente Space Grotesk solo para el nombre del sistema ATLAS OS
     const style = document.createElement("style");
-    style.id = "guernica-brand-typography";
+    style.id = "atlas-brand-typography";
     style.textContent = `
+      @font-face {
+        font-family: "Brimstone";
+        src: url("/fonts/BRIMRG__.TTF") format("truetype");
+        font-weight: normal;
+        font-style: normal;
+        font-display: swap;
+      }
       .logo-text strong {
-        font-family: "Inter", "Segoe UI", Arial, sans-serif;
-        font-size: 18px;
+        font-family: "Brimstone", "Space Grotesk", "Inter", sans-serif;
+        font-size: 17px;
         font-weight: 800;
-        letter-spacing: 0;
-        text-transform: none;
+        letter-spacing: .06em;
+        text-transform: uppercase;
         line-height: 1.05;
       }
       .logo-text small {
-        font-family: "Inter", "Segoe UI", Arial, sans-serif;
-        font-size: 12px;
-        font-weight: 600;
-        letter-spacing: .03em;
-        text-transform: lowercase;
+        font-family: "Segoe UI", Arial, sans-serif;
+        font-size: 10px;
+        font-weight: 500;
+        letter-spacing: .01em;
+        text-transform: none;
+        opacity: .78;
+      }
+      .branch-label {
+        display: block;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .07em;
+        opacity: .55;
+        margin-bottom: 2px;
       }
     `;
     document.head.appendChild(style);
@@ -81,37 +99,14 @@
   function applyBusinessBranding(config) {
     applyBrandTypography();
     const businessName = getBusinessName(config);
-    const logoUrl = String(config.negocio_logo_url || "").trim();
-    const initial = businessName.charAt(0).toUpperCase() || "G";
 
-    document.querySelectorAll(".logo-text strong").forEach((node) => {
-      node.textContent = businessName;
-    });
-
-    document.querySelectorAll(".logo-text small").forEach((node) => {
-      node.textContent = "gestión";
-    });
-
+    // Solo actualiza la tarjeta del comercio en el sidebar — no toca el logo Atlas OS
     document.querySelectorAll(".branch-card strong").forEach((node) => {
       node.textContent = businessName;
     });
 
-    const logoEscala = Math.min(200, Math.max(50, Number(config.negocio_logo_escala) || 100));
-    document.querySelectorAll(".logo-mark").forEach((node) => {
-      if (logoUrl) {
-        node.textContent = "";
-        node.style.backgroundImage = `url("${logoUrl}")`;
-        node.style.backgroundSize = `${logoEscala}%`;
-        node.style.backgroundPosition = "center";
-        node.style.backgroundRepeat = "no-repeat";
-        node.style.backgroundColor = "#ffffff";
-      } else {
-        node.style.backgroundImage = "";
-        node.style.backgroundRepeat = "";
-        node.style.backgroundSize = "";
-        node.textContent = initial;
-      }
-    });
+    // El logo del comercio (negocio_logo_url) se reserva para tickets/comprobantes.
+    // El logo-mark del header siempre muestra el isotipo Atlas OS.
   }
 
   function paymentConfigKey(payment) {
