@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="320">
+  <defs>
+    <!-- Sombra sutil, universo cromático del sistema -->
+    <filter id="s" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="3" stdDeviation="6"
+                    flood-color="#6F6587" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+
+  <!-- Celda A (0,0): normal, opacidad base -->
+  <image href="/atla-iso.png"
+         x="20" y="20" width="120" height="120"
+         opacity="0.18"/>
+
+  <!-- Celda B (160,0): invertido 180° -->
+  <image href="/atla-iso.png"
+         x="180" y="20" width="120" height="120"
+         opacity="0.16"
+         transform="rotate(180 240 80)"/>
+
+  <!-- Celda C (0,160): invertido 180° -->
+  <image href="/atla-iso.png"
+         x="20" y="180" width="120" height="120"
+         opacity="0.16"
+         transform="rotate(180 80 240)"/>
+
+  <!-- Celda D (160,160): normal + profundidad sutil (~20% del total) -->
+  <image href="/atla-iso.png"
+         x="180" y="180" width="120" height="120"
+         opacity="0.23"
+         filter="url(#s)"/>
+</svg>
