@@ -1,32 +1,41 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="320" height="320">
   <defs>
-    <!-- Sombra sutil, universo cromático del sistema -->
-    <filter id="s" x="-25%" y="-25%" width="150%" height="150%">
-      <feDropShadow dx="0" dy="3" stdDeviation="6"
-                    flood-color="#6F6587" flood-opacity="0.22"/>
+    <!--
+      Isotipo Atlas — tres pilares isométricos, dibujado como polígonos nativos SVG.
+      No depende de imágenes externas: funciona siempre como CSS background.
+      viewBox 0 0 160 150  |  isotype bounding box: x=20-140 (120px), y=25-115 (90px)
+      Escala base: 12px/unidad  |  Centro: (80, 85) en coordenadas del símbolo
+    -->
+    <symbol id="p" viewBox="0 0 160 150">
+      <!-- Pilar superior (eje vertical) -->
+      <polygon points="80,25 104,37 80,49 56,37" fill="#6F6587" fill-opacity=".40"/>
+      <polygon points="80,73 104,85 104,37 80,25" fill="#6F6587" fill-opacity=".32"/>
+      <polygon points="104,85 80,97 80,49 104,37" fill="#6F6587" fill-opacity=".22"/>
+      <!-- Pilar inferior derecho -->
+      <polygon points="104,61 140,79 116,91 80,73" fill="#6F6587" fill-opacity=".40"/>
+      <polygon points="104,85 140,103 140,79 104,61" fill="#6F6587" fill-opacity=".32"/>
+      <polygon points="140,103 116,115 116,91 140,79" fill="#6F6587" fill-opacity=".22"/>
+      <!-- Pilar inferior izquierdo -->
+      <polygon points="56,61 80,73 44,91 20,79" fill="#6F6587" fill-opacity=".40"/>
+      <polygon points="56,85 80,97 80,73 56,61" fill="#6F6587" fill-opacity=".32"/>
+      <polygon points="80,97 44,115 44,91 80,73" fill="#6F6587" fill-opacity=".22"/>
+    </symbol>
+    <!-- Sombra cromática: mismo universo #6F6587, sin negro -->
+    <filter id="sd" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5"
+                    flood-color="#9b8fc4" flood-opacity="0.20"/>
     </filter>
   </defs>
 
-  <!-- Celda A (0,0): normal, opacidad base -->
-  <image href="/atla-iso.png"
-         x="20" y="20" width="120" height="120"
-         opacity="0.18"/>
+  <!-- Celda A (arriba-izquierda): normal -->
+  <use href="#p" transform="translate(0 5)" width="160" height="150"/>
 
-  <!-- Celda B (160,0): invertido 180° -->
-  <image href="/atla-iso.png"
-         x="180" y="20" width="120" height="120"
-         opacity="0.16"
-         transform="rotate(180 240 80)"/>
+  <!-- Celda B (arriba-derecha): rotado 180° -->
+  <use href="#p" transform="translate(160 5) rotate(180 80 70)" width="160" height="150"/>
 
-  <!-- Celda C (0,160): invertido 180° -->
-  <image href="/atla-iso.png"
-         x="20" y="180" width="120" height="120"
-         opacity="0.16"
-         transform="rotate(180 80 240)"/>
+  <!-- Celda C (abajo-izquierda): rotado 180° -->
+  <use href="#p" transform="translate(0 165) rotate(180 80 70)" width="160" height="150"/>
 
-  <!-- Celda D (160,160): normal + profundidad sutil (~20% del total) -->
-  <image href="/atla-iso.png"
-         x="180" y="180" width="120" height="120"
-         opacity="0.23"
-         filter="url(#s)"/>
+  <!-- Celda D (abajo-derecha): normal + sombra sutil (~20% del patrón) -->
+  <use href="#p" transform="translate(160 165)" width="160" height="150" filter="url(#sd)"/>
 </svg>

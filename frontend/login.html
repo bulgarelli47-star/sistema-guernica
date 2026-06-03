@@ -27,12 +27,26 @@
       padding: 22px;
       color: var(--text);
       font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-      background:
-        linear-gradient(135deg, rgba(18, 6, 31, 0.90), rgba(109, 40, 217, 0.62)),
-        url("/atla-trama.svg") #12061F;
-      background-size: cover, 320px 320px;
-      background-position: center, 0 0;
-      background-repeat: no-repeat, repeat;
+      background-color: #12061F;
+      position: relative;
+    }
+    /* Capa 0: trama institucional repetida, detrás del overlay */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      background: url("/atla-trama.svg") repeat 0 0 / 320px 320px;
+      pointer-events: none;
+    }
+    /* Capa 1: overlay oscuro/degradado, deja visible la trama */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: 1;
+      background: linear-gradient(135deg, rgba(18,6,31,0.76) 0%, rgba(88,28,135,0.52) 100%);
+      pointer-events: none;
     }
 
     button, input { font: inherit; }
@@ -47,6 +61,8 @@
       background: rgba(255, 255, 255, 0.1);
       box-shadow: var(--shadow);
       backdrop-filter: blur(16px);
+      position: relative;
+      z-index: 2;
     }
 
     .brand-panel {
