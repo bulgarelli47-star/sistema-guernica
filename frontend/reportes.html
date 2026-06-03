@@ -840,6 +840,7 @@
     .constructor-plantilla-card { min-height: 42px; }
     .constructor-modulo-card { min-height: 36px; }
     .constructor-date-input { border: 1px solid var(--border); border-radius: 10px; padding: 7px 9px; font-size: 13px; background: #fff; outline: none; color: var(--text); width: 100%; }
+    .constructor-footer { flex: 0 0 auto; padding: 10px 20px; border-top: 1px solid var(--border); background: #fff; display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
     .constructor-placeholder-error { border-color: rgba(224,82,82,.28); background: #fff7f7; }
     .constructor-placeholder-error strong { color: var(--danger); }
     .constructor-panel-right > p.constructor-section-title { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 2px; }
@@ -1139,6 +1140,9 @@
           </div>
         </main>
       </div>
+      <footer class="constructor-footer">
+        <button class="button secondary" id="exportarConstructorCsv" type="button" disabled>Exportar CSV</button>
+      </footer>
     </div>
   </div>
 
@@ -1169,6 +1173,8 @@
     function renderConstructorPreview() {
       const el = $("constructorPreview");
       if (!el) return;
+      const exportBtn = $("exportarConstructorCsv");
+      if (exportBtn) exportBtn.disabled = !constructorState.data || !!constructorState.loading;
       const { plantilla, modulo, loading, error, data } = constructorState;
       const secAnz = $("constructorSeccionAnalizar");
       const secMet = $("constructorSeccionMetricas");
@@ -1525,6 +1531,67 @@
       }
       renderConstructorPreview();
     }
+    function _csvEscape(val) { if (val == null) return ""; const s = String(val); return (s.includes(",") || s.includes('"') || s.includes("\n")) ? `"${s.replace(/"/g, '""')}"` : s; }
+    function getConstructorRowsParaExportar() {
+      const { plantilla, data } = constructorState;
+      if (!data) return [];
+      if (plantilla === "ventas-del-dia") {
+        const dim = constructorState.dimension;
+        if (dim === "producto") return Array.isArray(data.productos_mas_vendidos) ? data.productos_mas_vendidos : [];
+        if (dim === "metodo") return Array.isArray(data.por_tipo_cobro) ? data.por_tipo_cobro : [];
+        if (dim === "estado") return Array.isArray(data.estados) ? data.estados : [];
+        if (dim === "dia") return Array.isArray(data.por_dia) ? data.por_dia : [];
+        return [];
+      }
+      if (plantilla === "cierre-diario") {
+        const res = data.resumen || {};
+        const cj = data.caja?.caja || data.caja || {};
+        return [
+          { concepto: "Ventas del período", valor: n(res.ventas_totales) },
+          { concepto: "Egresos del período", valor: n(res.pagos_totales) },
+          { concepto: "Resultado", valor: n(res.balance_general) },
+          { concepto: "Ticket promedio", valor: n(res.ticket_promedio) },
+          { concepto: "Estado caja", valor: String(cj.estado || "") },
+          { concepto: "Efectivo esperado", valor: n(cj.efectivo_esperado) },
+          { concepto: "Efectivo contado", valor: n(cj.efectivo_contado) },
+          { concepto: "Diferencia caja", valor: n(cj.diferencia) }
+        ];
+      }
+      if (plantilla === "caja-resumida") {
+        const cj = data.caja?.caja || data.caja || {};
+        const base = [
+          { concepto: "Estado", valor: String(cj.estado || "") },
+          { concepto: "Monto apertura", valor: n(cj.monto_apertura || cj.monto_caja_apertura) },
+          { concepto: "Efectivo esperado", valor: n(cj.efectivo_esperado) },
+          { concepto: "Efectivo contado", valor: n(cj.efectivo_contado) },
+          { concepto: "Diferencia", valor: n(cj.diferencia) }
+        ];
+        const cuentas = Array.isArray(data.cuentas) ? data.cuentas : [];
+        return cuentas.length ? base.concat(cuentas.map((c) => ({ concepto: c.cuenta_nombre || c.nombre || "—", ingresos: n(c.ingresos || c.monto_real || c.total || 0) }))) : base;
+      }
+      if (plantilla === "stock-critico") return Array.isArray(data.alertas) ? data.alertas : [];
+      if (plantilla === "clientes-con-deuda") return Array.isArray(data.clientes) ? data.clientes : [];
+      if (plantilla === "pagos-pendientes") {
+        const provs = Array.isArray(data.proveedores) ? data.proveedores.filter((p) => n(p.total_pendiente) > 0) : [];
+        if (provs.length) return provs;
+        return Array.isArray(data.por_impacto) ? data.por_impacto.filter((t) => n(t.total_pendiente) > 0) : [];
+      }
+      return [];
+    }
+    function exportarConstructorCsv() {
+      const rows = getConstructorRowsParaExportar();
+      if (!rows.length) { alert("No hay datos para exportar."); return; }
+      const keys = Object.keys(rows[0]);
+      const csvLines = [keys.map(_csvEscape).join(","), ...rows.map((row) => keys.map((k) => _csvEscape(row[k])).join(","))];
+      const { desde, hasta } = getConstructorRango();
+      const nombre = `constructor_${constructorState.plantilla || "reporte"}_${desde}_${hasta}.csv`;
+      const blob = new Blob([csvLines.join("\n")], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = nombre;
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+    }
     function initConstructor() {
       const modal = $("modalConstructorReportes");
       const abrirBtn = $("abrirConstructorReportes");
@@ -1641,6 +1708,8 @@
       if (hastaEl) { hastaEl.value = hoyInit; constructorState.hasta = hoyInit; }
       if (desdeEl) { desdeEl.addEventListener("input", () => { constructorState.desde = desdeEl.value || fmtDate(new Date()); recargarPlantillaActual(); }); }
       if (hastaEl) { hastaEl.addEventListener("input", () => { constructorState.hasta = hastaEl.value || constructorState.desde || fmtDate(new Date()); recargarPlantillaActual(); }); }
+      const exportCsvBtn = $("exportarConstructorCsv");
+      if (exportCsvBtn) exportCsvBtn.addEventListener("click", exportarConstructorCsv);
     }
 
     const money = (value) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS" }).format(Number(value) || 0);

@@ -294,22 +294,6 @@ async function descontarStockPropioProducto(productoId, producto, deltaCantidad,
   return descontarStockFisicoProducto(productoId, producto, deltaCantidad, comoComponente);
 }
 
-async function descontarComponentesReceta(productoId, deltaCantidad, visited) {
-  const componentes = await getComponentesProductoCompuesto(productoId);
-
-  if (!componentes.length) {
-    return;
-  }
-
-  for (const componente of componentes) {
-    await applyStockChange(
-      componente.producto_id,
-      Number(deltaCantidad || 0) * Number(componente.cantidad || 0),
-      { comoComponente: true, visited: new Set(visited) }
-    );
-  }
-}
-
 async function applyStockChange(productoId, deltaCantidad, options = {}) {
   if (!productoId || deltaCantidad === 0) {
     return;
@@ -488,7 +472,6 @@ module.exports = {
   calcularCostoProductoCompuestoPayload,
   descontarStockFisicoProducto,
   descontarStockPropioProducto,
-  descontarComponentesReceta,
   applyStockChange,
   applyStockForNewItems,
   applyStockDiff,
