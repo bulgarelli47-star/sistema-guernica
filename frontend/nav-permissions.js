@@ -184,5 +184,129 @@
     }
   }
 
+  // ── Sidebar minimizable ────────────────────────────────────────────────────
+  function initSidebarToggle() {
+    if (document.getElementById("atlas-sidebar-toggle")) return;
+    const sidebar = document.querySelector(".sidebar");
+    if (!sidebar) return;
+
+    // Inject CSS (once per page)
+    if (!document.getElementById("atlas-sidebar-collapse-css")) {
+      const s = document.createElement("style");
+      s.id = "atlas-sidebar-collapse-css";
+      s.textContent = `
+        /* Tab button: solapa pegada al borde derecho del sidebar */
+        #atlas-sidebar-toggle {
+          position: absolute;
+          right: -25px;
+          top: 72px;
+          width: 25px;
+          height: 52px;
+          border: 1px solid var(--border, #e5e7eb);
+          border-left: 0;
+          border-radius: 0 8px 8px 0;
+          background: var(--sidebar, #ffffff);
+          color: var(--muted, #6b7280);
+          cursor: pointer;
+          font-size: 15px;
+          font-weight: 900;
+          z-index: 40;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 3px 0 8px rgba(0,0,0,.07);
+          transition: background .15s, color .15s;
+          line-height: 1;
+          padding: 0;
+        }
+        #atlas-sidebar-toggle:hover {
+          background: var(--primary-soft, #f0e5ff);
+          color: var(--primary, #6d28d9);
+        }
+
+        /* Collapsed: grid column override */
+        body.sidebar-collapsed .app-shell {
+          grid-template-columns: 72px minmax(0, 1fr);
+        }
+        body.sidebar-collapsed .sidebar {
+          padding: 12px 4px;
+        }
+        body.sidebar-collapsed .nav-title {
+          display: none;
+        }
+        body.sidebar-collapsed .nav a {
+          justify-content: center;
+          padding: 12px 0;
+          gap: 0;
+        }
+        body.sidebar-collapsed .nav a span:not([class*="nav-icon"]):not([class*="app-icon"]) {
+          display: none;
+        }
+        body.sidebar-collapsed .branch-card {
+          display: none;
+        }
+
+        /* Mobile: revert completely */
+        @media (max-width: 860px) {
+          body.sidebar-collapsed .app-shell {
+            grid-template-columns: 1fr;
+          }
+          body.sidebar-collapsed .sidebar {
+            padding: 20px 18px 24px;
+          }
+          body.sidebar-collapsed .nav-title { display: block; }
+          body.sidebar-collapsed .nav a {
+            justify-content: flex-start;
+            padding: 12px 14px;
+            gap: 12px;
+          }
+          body.sidebar-collapsed .nav a span:not([class*="nav-icon"]):not([class*="app-icon"]) {
+            display: inline;
+          }
+          body.sidebar-collapsed .branch-card { display: block; }
+          #atlas-sidebar-toggle { display: none; }
+        }
+      `;
+      document.head.appendChild(s);
+    }
+
+    // Add title attributes to nav links for tooltip when collapsed
+    sidebar.querySelectorAll(".nav a").forEach((a) => {
+      const textSpan = [...a.querySelectorAll("span")].find(
+        (s) => !s.className.includes("nav-icon") && !s.className.includes("app-icon")
+      );
+      if (textSpan && !a.title) a.title = textSpan.textContent.trim();
+    });
+
+    // Create tab toggle button
+    const btn = document.createElement("button");
+    btn.id = "atlas-sidebar-toggle";
+    btn.type = "button";
+
+    const collapsed = localStorage.getItem("atlasSidebarCollapsed") === "true";
+    if (collapsed) document.body.classList.add("sidebar-collapsed");
+    // ‹ = collapse direction  ›  = expand direction
+    btn.textContent = collapsed ? "›" : "‹";
+    btn.title = collapsed ? "Expandir sidebar" : "Colapsar sidebar";
+
+    btn.addEventListener("click", () => {
+      if (window.innerWidth <= 860) return;
+      const isNowCollapsed = document.body.classList.toggle("sidebar-collapsed");
+      localStorage.setItem("atlasSidebarCollapsed", String(isNowCollapsed));
+      btn.textContent = isNowCollapsed ? "›" : "‹";
+      btn.title = isNowCollapsed ? "Expandir sidebar" : "Colapsar sidebar";
+    });
+
+    // Ensure sidebar is a positioned context (for absolute button).
+    // If already sticky/absolute/fixed, those already act as positioning context — don't override.
+    const sidebarPos = window.getComputedStyle(sidebar).position;
+    if (sidebarPos === "static") sidebar.style.position = "relative";
+    sidebar.style.zIndex = "10";
+
+    // Append to sidebar (absolutely positioned, no flow impact)
+    sidebar.appendChild(btn);
+  }
+
+  document.addEventListener("DOMContentLoaded", initSidebarToggle);
   document.addEventListener("DOMContentLoaded", applySidebarPermissions);
 })();
