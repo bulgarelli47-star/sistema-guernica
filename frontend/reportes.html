@@ -839,6 +839,7 @@
     .constructor-metrica-label input[type="checkbox"] { accent-color: var(--primary); cursor: pointer; flex: 0 0 auto; }
     .constructor-plantilla-card { min-height: 42px; }
     .constructor-modulo-card { min-height: 36px; }
+    .constructor-date-input { border: 1px solid var(--border); border-radius: 10px; padding: 7px 9px; font-size: 13px; background: #fff; outline: none; color: var(--text); width: 100%; }
     .constructor-placeholder-error { border-color: rgba(224,82,82,.28); background: #fff7f7; }
     .constructor-placeholder-error strong { color: var(--danger); }
     .constructor-panel-right > p.constructor-section-title { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 2px; }
@@ -1123,6 +1124,13 @@
               <label class="constructor-metrica-label"><input type="checkbox" value="participacion"> Participación %</label>
             </div>
           </section>
+          <section>
+            <p class="constructor-section-title">Período</p>
+            <div style="display:grid;gap:6px">
+              <label style="display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--muted)">Desde<input type="date" id="constructorDesde" class="constructor-date-input"></label>
+              <label style="display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--muted)">Hasta<input type="date" id="constructorHasta" class="constructor-date-input"></label>
+            </div>
+          </section>
         </aside>
         <main class="constructor-panel-right" id="constructorPreview">
           <div class="constructor-placeholder">
@@ -1139,7 +1147,7 @@
     const $ = (id) => document.getElementById(id);
 
     // Constructor Analítico — estado aislado del state principal
-    const constructorState = { plantilla: null, modulo: null, dimension: "producto", metricas: ["cantidad", "total"], data: null, loading: false, error: "" };
+    const constructorState = { plantilla: null, modulo: null, dimension: "producto", metricas: ["cantidad", "total"], desde: "", hasta: "", data: null, loading: false, error: "" };
     const CONSTRUCTOR_PLANTILLA_LABELS = {
       "cierre-diario": "Cierre diario",
       "ventas-del-dia": "Ventas del día",
@@ -1156,6 +1164,8 @@
       "proveedores-pagos": "Proveedores / Pagos"
     };
     const DIMENSION_LABELS = { "producto": "Por producto", "metodo": "Por método de cobro", "estado": "Por estado de venta", "dia": "Por día" };
+    function getConstructorRango() { const hoy = fmtDate(new Date()); return { desde: constructorState.desde || hoy, hasta: constructorState.hasta || constructorState.desde || hoy }; }
+    function recargarPlantillaActual() { const { plantilla } = constructorState; if (!plantilla) return; if (plantilla === "ventas-del-dia") cargarConstructorVentas(); else if (plantilla === "cierre-diario") cargarConstructorCierreDiario(); else if (plantilla === "clientes-con-deuda") cargarConstructorClientesDeuda(); else if (plantilla === "pagos-pendientes") cargarConstructorPagosPendientes(); }
     function renderConstructorPreview() {
       const el = $("constructorPreview");
       if (!el) return;
@@ -1275,17 +1285,19 @@
       ];
       const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong>${k.value}</strong></div>`).join("")}</div>`;
       const dimLabel = DIMENSION_LABELS[constructorState.dimension] || constructorState.dimension;
-      const titulo = `<div class="constructor-preview-title"><h3>Ventas del día</h3><p>${data.filtros?.desde || "hoy"} · ${dimLabel}</p></div>`;
+      const { desde: rDesde, hasta: rHasta } = getConstructorRango();
+      const periodoV = rDesde === rHasta ? rDesde : `${rDesde} → ${rHasta}`;
+      const titulo = `<div class="constructor-preview-title"><h3>Ventas</h3><p>${periodoV} · ${dimLabel}</p></div>`;
       el.innerHTML = titulo + kpisHtml + renderConstructorVentasTabla(data);
     }
     async function cargarConstructorVentas() {
-      const hoy = fmtDate(new Date());
+      const { desde, hasta } = getConstructorRango();
       constructorState.loading = true;
       constructorState.error = "";
       constructorState.data = null;
       renderConstructorPreview();
       try {
-        const res = await fetch(`/reportes/ventas?desde=${hoy}&hasta=${hoy}`);
+        const res = await fetch(`/reportes/ventas?desde=${desde}&hasta=${hasta}`);
         if (!res.ok) throw new Error(`${res.status}`);
         constructorState.data = await res.json();
         constructorState.loading = false;
@@ -1298,7 +1310,8 @@
     function renderConstructorCierreDiario(el, data) {
       const res = data?.resumen || {};
       const cajaRaw = data?.caja || {};
-      const hoy = fmtDate(new Date());
+      const { desde, hasta } = getConstructorRango();
+      const periodoLabel = desde === hasta ? desde : `${desde} → ${hasta}`;
       const kpis = [
         { label: "Ventas del día", value: money(n(res.ventas_totales)) },
         { label: "Ticket promedio", value: money(n(res.ticket_promedio)) },
@@ -1318,18 +1331,18 @@
         { label: "Diferencia", value: money(n(cj.diferencia)) }
       ];
       const cajaHtml = `<p class="constructor-section-title">Caja actual</p><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">${cajaFields.map((f) => `<div class="constructor-selection-card"><span>${f.label}</span><strong>${f.value}</strong></div>`).join("")}</div>`;
-      const titulo = `<div class="constructor-preview-title"><h3>Cierre diario</h3><p>${hoy}</p></div>`;
+      const titulo = `<div class="constructor-preview-title"><h3>Cierre diario</h3><p>${periodoLabel}</p></div>`;
       el.innerHTML = titulo + kpisHtml + cajaHtml;
     }
     async function cargarConstructorCierreDiario() {
-      const hoy = fmtDate(new Date());
+      const { desde, hasta } = getConstructorRango();
       constructorState.loading = true;
       constructorState.error = "";
       constructorState.data = null;
       renderConstructorPreview();
       try {
         const [resRes, cajaRes] = await Promise.all([
-          fetch(`/reportes/resumen?desde=${hoy}&hasta=${hoy}`),
+          fetch(`/reportes/resumen?desde=${desde}&hasta=${hasta}`),
           fetch("/caja/resumen")
         ]);
         const resumen = resRes.ok ? await resRes.json() : null;
@@ -1459,7 +1472,8 @@
       constructorState.data = null;
       renderConstructorPreview();
       try {
-        const res = await fetch("/reportes/cuentas-corrientes?estado=con_deuda&activo=1");
+        const { desde, hasta } = getConstructorRango();
+        const res = await fetch(`/reportes/cuentas-corrientes?estado=con_deuda&activo=1&desde=${desde}&hasta=${hasta}`);
         if (!res.ok) throw new Error(`${res.status}`);
         constructorState.data = await res.json();
         constructorState.loading = false;
@@ -1500,7 +1514,8 @@
       constructorState.data = null;
       renderConstructorPreview();
       try {
-        const res = await fetch("/reportes/proveedores-pagos");
+        const { desde, hasta } = getConstructorRango();
+        const res = await fetch(`/reportes/proveedores-pagos?desde=${desde}&hasta=${hasta}`);
         if (!res.ok) throw new Error(`${res.status}`);
         constructorState.data = await res.json();
         constructorState.loading = false;
@@ -1619,6 +1634,13 @@
           renderConstructorPreview();
         });
       }
+      const desdeEl = $("constructorDesde");
+      const hastaEl = $("constructorHasta");
+      const hoyInit = fmtDate(new Date());
+      if (desdeEl) { desdeEl.value = hoyInit; constructorState.desde = hoyInit; }
+      if (hastaEl) { hastaEl.value = hoyInit; constructorState.hasta = hoyInit; }
+      if (desdeEl) { desdeEl.addEventListener("input", () => { constructorState.desde = desdeEl.value || fmtDate(new Date()); recargarPlantillaActual(); }); }
+      if (hastaEl) { hastaEl.addEventListener("input", () => { constructorState.hasta = hastaEl.value || constructorState.desde || fmtDate(new Date()); recargarPlantillaActual(); }); }
     }
 
     const money = (value) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS" }).format(Number(value) || 0);

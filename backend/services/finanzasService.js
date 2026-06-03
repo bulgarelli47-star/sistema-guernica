@@ -178,11 +178,23 @@ async function obtenerPasivos({ desde, hasta }, alertas) {
     pagosParams
   );
 
+  // Pagos ejecutados sin proveedor (alquileres, sueldos, gastos varios sin proveedor asignado)
+  const ejecutadosWhere = ["COALESCE(estado, '') != 'pendiente'", "proveedor_id IS NULL"];
+  const ejecutadosParams = [];
+  if (desde) { ejecutadosWhere.push("fecha >= ?"); ejecutadosParams.push(desde); }
+  if (hasta) { ejecutadosWhere.push("fecha <= ?"); ejecutadosParams.push(hasta); }
+  const ejecutadosRows = await allQuery(
+    `SELECT COALESCE(SUM(monto_total), 0) AS total FROM pagos WHERE ${ejecutadosWhere.join(" AND ")}`,
+    ejecutadosParams
+  );
+  const pagosEjecutadosSinProveedor = round2(ejecutadosRows[0]?.total);
+
   const pasivos = {
     pagos_pendientes: round2(pagosRows[0]?.total),
     proveedores_pendientes: round2(proveedores?.resumen?.total_pendiente),
-    // egresos_ejecutados: pagos con proveedor en el período. Pagos sin proveedor ejecutados no se incluyen aquí.
-    egresos_ejecutados: round2(proveedores?.resumen?.total_pagado),
+    // egresos_ejecutados: pagos con proveedor + pagos ejecutados sin proveedor en el período.
+    pagos_ejecutados_sin_proveedor: pagosEjecutadosSinProveedor,
+    egresos_ejecutados: round2(round2(proveedores?.resumen?.total_pagado) + pagosEjecutadosSinProveedor),
     iva_credito_fiscal: round2(proveedores?.resumen?.iva_credito_fiscal),
     por_tipo_impacto: (proveedores?.por_impacto || []).map((item) => ({
       tipo_impacto: String(item.tipo_impacto || "otro_no_computable"),
