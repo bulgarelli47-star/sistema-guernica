@@ -972,7 +972,7 @@
           <div class="toolbar">
             <button class="button secondary" id="actualizar" type="button" title="Recargar datos del periodo seleccionado">Actualizar</button>
             <button class="button ghost" id="exportarRapido" type="button" title="Descarga la tabla de detalle del módulo actual">Excel rápido</button>
-            <button class="button ghost" id="abrirExportacion" type="button" title="Elegir módulo, formato y contenido del reporte">Exportar</button>
+            <button class="button ghost" id="abrirExportacion" type="button" title="Explorar datos, generar y exportar reporte">Exportar / Explorar</button>
             <button class="button secondary" id="abrirConstructorReportes" type="button" title="Constructor analítico de reportes">Construir reporte</button>
           </div>
         </div>
@@ -1008,7 +1008,7 @@
       <section class="kpis lineal" id="kpis"></section>
       <section class="card report-nav-panel">
         <div class="report-block-title">
-          <div><h2>Exportar por módulo</h2><p>Elegí una card para configurar el reporte.</p></div>
+          <div><h2>Módulos</h2><p>Elegí un módulo para explorar sus datos y visuales.</p></div>
         </div>
         <div class="module-kpis" id="moduleKpis"></div>
       </section>
@@ -1016,7 +1016,7 @@
         <div class="section-head">
           <div>
             <h2 id="moduloSeleccionadoTitulo">Reporte seleccionado</h2>
-            <p id="moduloActualAyuda">Seleccioná un módulo para configurar su exportación.</p>
+            <p id="moduloActualAyuda">Seleccioná un módulo para ver sus datos y análisis.</p>
           </div>
           <button class="button" id="configurarExportacionModulo" type="button">Configurar exportación</button>
         </div>
@@ -1090,10 +1090,6 @@
             <tbody id="detalleBody"></tbody>
           </table>
         </div>
-        <div class="report-export-actions">
-          <button class="button success" id="exportarRapidoFinal" type="button">Excel rápido</button>
-          <button class="button" id="abrirExportacionFinal" type="button">Exportar</button>
-        </div>
       </section>
     </main>
   </div>
@@ -1144,7 +1140,7 @@
       <header class="constructor-header">
         <div>
           <h2>Constructor Analítico</h2>
-          <p>Construí una lectura rápida usando plantillas operativas.</p>
+          <p>Análisis por plantilla o módulo. Exportá el resultado como CSV.</p>
         </div>
         <button class="close" id="cerrarConstructorReportes" type="button" aria-label="Cerrar constructor">
           <span class="app-icon icon-close" aria-hidden="true"></span>
@@ -2463,7 +2459,6 @@
           state.modulo = button.dataset.modulo;
           $("moduloFiltro").value = state.modulo;
           render();
-          abrirExportacion("excel", state.modulo);
         };
       });
     }
@@ -3053,7 +3048,7 @@
         tituloSeleccionado.textContent = label;
       }
       if (ayudaModulo) {
-        ayudaModulo.textContent = `${meta.descripcion} Configurá PDF o Excel desde el modal exportable.`;
+        ayudaModulo.textContent = `${meta.descripcion} Usá Exportar / Explorar para generar el reporte.`;
       }
       $("tituloReporteSeleccionado").textContent = "Visualizaciones";
       $("descripcionReporteSeleccionado").textContent = `${meta.titulo}. ${meta.descripcion}`;
@@ -3451,8 +3446,6 @@
     $("actualizar").onclick = cargarDatos;
     $("abrirExportacion").onclick = () => abrirExportacion();
     $("exportarRapido").onclick = exportarRapidoExcel;
-    $("abrirExportacionFinal").onclick = () => abrirExportacion();
-    $("exportarRapidoFinal").onclick = exportarRapidoExcel;
     $("configurarExportacionModulo").onclick = () => abrirExportacion("excel", state.modulo);
     $("cerrarExportacion").onclick = () => $("modalExportacion").classList.remove("open");
     $("cancelarExportacion").onclick = () => $("modalExportacion").classList.remove("open");
