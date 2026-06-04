@@ -1589,6 +1589,7 @@
     :where(.modal-actions,.dialog-actions,.modal-footer,.modal-header-actions){display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
     :where(.close,.icon-button,.mib.icon-only){display:inline-grid;place-items:center;flex:0 0 auto;border-radius:10px}
     @media(max-width:860px){:where(.modal,.modal-backdrop){padding:10px}.modal>.modal-card,.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{width:min(100%,calc(100vw - 20px));max-height:calc(100vh - 20px);border-radius:16px}:where(.modal-actions,.dialog-actions,.modal-footer){justify-content:stretch}:where(.modal-actions>* , .dialog-actions>* , .modal-footer>*){flex:1 1 140px}}
+    .atlas-modal-card{padding:0;overflow:hidden;background:#f8fafc}.atlas-modal-card>.modal-header{margin:0;border:0;border-radius:0;padding:16px 18px;background:linear-gradient(135deg,#16052e 0%,#2a1450 100%);color:#fff;box-shadow:none}.atlas-modal-card>.modal-header p{color:rgba(255,255,255,.72)}.atlas-modal-card .modal-body,.atlas-modal-card .cobro-modal-body{padding:16px 18px;background:#f8fafc}.atlas-modal-card .checkout-section,.atlas-modal-card .support-card,.atlas-modal-card .client-select-card{border:1px solid var(--border);border-radius:16px;background:#fff;box-shadow:0 10px 24px rgba(17,24,39,.04)}.atlas-modal-close{width:38px;height:38px;border-radius:10px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.1);color:#fff;display:inline-grid;place-items:center;cursor:pointer}.atlas-modal-card>.modal-footer,.atlas-modal-card>.inline-actions{margin:0;padding:12px 18px;border-top:1px solid var(--border);background:#fff}.atlas-modal-card>.modal-footer[aria-hidden="true"]{display:none}.cobro-modal-card.atlas-modal-card{width:min(720px,100%);max-height:calc(100vh - 56px);display:grid;grid-template-rows:auto minmax(0,1fr) auto}.cobro-modal-card.atlas-modal-card .cobro-modal-body{overflow:auto}.payment-button.disabled-by-account{opacity:.45}.payment-button.disabled-by-account::after{content:"Sin cuenta";font-size:10px;color:var(--danger);font-weight:800;margin-top:2px}.client-select-card{padding:14px}.client-select-card .field{margin-top:8px}
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=8" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -1884,13 +1885,13 @@
   </div>
 
   <div class="modal" id="modalCobroVenta">
-    <div class="modal-card cobro-modal-card">
+    <div class="modal-card cobro-modal-card atlas-modal-card">
       <div class="modal-header">
         <div>
           <h3>Configurar cobro</h3>
           <p>Selecciona el método y completa los datos necesarios para cobrar.</p>
         </div>
-        <button type="button" class="button secondary" id="cerrarConfigCobro">Cerrar</button>
+        <button type="button" class="atlas-modal-close" id="cerrarConfigCobro" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
       <div class="cobro-modal-body">
         <section class="checkout-section payment-section">
@@ -1948,9 +1949,7 @@
             </div>
             <div id="cuentaCobroVentaWrap" class="hidden">
               <label class="muted" for="cuentaCobroVenta">Cuenta / terminal</label>
-              <select id="cuentaCobroVenta" class="field">
-                <option value="">Sin asignar</option>
-              </select>
+              <select id="cuentaCobroVenta" class="field"></select>
             </div>
             <div id="cuotasVentaWrap" class="hidden">
               <label class="muted" for="cuotasVenta">Cuotas</label>
@@ -1993,12 +1992,13 @@
   </div>
 
   <div class="modal" id="modalPendientes">
-    <div class="modal-card">
+    <div class="modal-card atlas-modal-card">
       <div class="modal-header">
         <div>
           <h3>Tickets pendientes</h3>
           <p>Abrí, cobrá o anulá pendientes sin ocupar la pantalla principal.</p>
         </div>
+        <button type="button" class="atlas-modal-close" id="cerrarModalPendientes" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
       <div class="modal-body">
       <div class="modal-body-grid">
@@ -2013,9 +2013,7 @@
         </article>
       </div>
       </div>
-      <div class="modal-footer modal-actions">
-        <button type="button" class="button secondary" id="cerrarModalPendientes">Cerrar</button>
-      </div>
+      <div class="modal-footer modal-actions" aria-hidden="true"></div>
     </div>
   </div>
 
@@ -2040,21 +2038,23 @@
   </div>
 
   <div class="modal" id="modalCliente">
-    <div class="modal-card compact">
+    <div class="modal-card compact atlas-modal-card">
       <div class="modal-header">
         <div>
           <h3>Seleccionar cliente</h3>
           <p>Elegí un cliente cargado para este ticket.</p>
         </div>
+        <button type="button" class="atlas-modal-close" id="cerrarModalCliente" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
       <div class="modal-body">
-        <label class="muted" for="clienteVentaModal">Cliente</label>
-        <select id="clienteVentaModal" class="field" style="margin-top: 8px;">
-          <option value="">Consumidor Final</option>
-        </select>
+        <div class="client-select-card">
+          <label class="muted" for="clienteVentaModal">Cliente</label>
+          <select id="clienteVentaModal" class="field">
+            <option value="">Consumidor Final</option>
+          </select>
+        </div>
       </div>
       <div class="modal-footer modal-actions">
-        <button type="button" class="button secondary" id="cerrarModalCliente">Cerrar</button>
         <button type="button" class="button secondary" id="cancelarCliente">Cancelar</button>
         <button type="button" class="button success" id="confirmarCliente">Aplicar</button>
       </div>
@@ -2239,6 +2239,7 @@
     let selectedCategory = "Todos";
     let selectedPaymentMode = "efectivo";
     let tiposPagoVentas = [];
+    let cuentasCobroVentasPorTipo = new Map();
     let recargoVentaActual = { porcentaje: 0, monto: 0, cuotas: null, total: 0 };
     let notificationCounter = 0;
     let ultimaVistaVendidos = [];
@@ -2345,7 +2346,7 @@
 
     function mostrarMensaje(texto, esError = false, opciones = {}) {
       const textoNormalizado = String(texto || "").toLowerCase();
-      const debeNotificar = [
+      const debeNotificar = opciones.notificar === true || [
         "venta registrada",
         "ticket pendiente guardado",
         "ticket pendiente cobrado",
@@ -2442,6 +2443,38 @@
       mostrarToastSistema.timer = setTimeout(() => {
         toast.className = `ventas-toast-sistema ${esError ? "error" : "success"}`;
       }, 2800);
+    }
+
+    function obtenerMensajeBackend(data, fallback = "") {
+      if (typeof data === "string") return data;
+      return data?.message || data?.error || data?.detalle || data?.detail || fallback;
+    }
+
+    function mensajeOperativoCuentaCorriente(mensajeBackend = "") {
+      const mensaje = String(mensajeBackend || "").trim();
+      const normalizado = norm(mensaje);
+      if (normalizado.includes("suspendido")) {
+        return "No se pudo realizar la operación. El cliente se encuentra suspendido para nuevas ventas a cuenta.";
+      }
+      if (normalizado.includes("no tiene cuenta corriente habilitada") || normalizado.includes("cuenta corriente habilitada") || normalizado.includes("cuenta corriente deshabilitada")) {
+        return "No se pudo realizar la operación. El cliente no tiene habilitada la cuenta corriente.";
+      }
+      if (normalizado.includes("excede") || normalizado.includes("limite de credito") || normalizado.includes("limite disponible")) {
+        return "No se pudo realizar la operación. La venta supera el límite de crédito permitido.";
+      }
+      if (normalizado.includes("requiere autorizacion") || normalizado.includes("autorizacion de encargado") || normalizado.includes("autorizacion de admin")) {
+        return "No se pudo realizar la operación. Este cliente requiere autorización para nuevas ventas a cuenta.";
+      }
+      return mensaje ? `No se pudo realizar la operación. ${mensaje}` : "No se pudo realizar la operación de cuenta corriente.";
+    }
+
+    function notificarBloqueoCuentaCorrienteVentas(mensajeBackend) {
+      const mensaje = mensajeOperativoCuentaCorriente(mensajeBackend);
+      mostrarToastSistema(mensaje, true);
+    }
+
+    function mostrarErrorCuentaCorriente(mensajeBackend) {
+      notificarBloqueoCuentaCorrienteVentas(mensajeBackend);
     }
 
     function escapeHtml(value) {
@@ -2741,9 +2774,7 @@
       const nombreCliente = esConsumidorFinal
         ? "Consumidor Final"
         : option?.dataset?.nombreCliente || option?.textContent || "Cliente seleccionado";
-      const tipoCuenta = !esConsumidorFinal ? tipoCuentaCorrienteLabel(option?.dataset?.tipoCuentaCorriente) : "";
-      const tipoComercial = !esConsumidorFinal ? tipoClienteComercialLabel(option?.dataset?.tipoCliente) : "";
-      const etiquetaCliente = tipoCuenta ? `${nombreCliente} - Comercial: ${tipoComercial} - Operativa: ${tipoCuenta}` : nombreCliente;
+      const etiquetaCliente = nombreCliente;
       clienteResumen.innerText = etiquetaCliente;
       ticketTitle.innerText = etiquetaCliente;
       const tipoCuentaRaw = String(option?.dataset?.tipoCuentaCorriente || "cliente").trim().toLowerCase();
@@ -3240,15 +3271,19 @@
 
     async function cargarCuentasCobroVenta(tipo, selected = "") {
       if (!cuentaCobroVenta || !cuentaCobroVentaWrap) return;
-      cuentaCobroVenta.innerHTML = '<option value="">Sin asignar</option>';
+      cuentaCobroVenta.innerHTML = "";
       cuentaCobroVentaWrap.classList.add("hidden");
-      if (!tipo || tipo === "cuenta_corriente") return;
-      const tipoCuenta = tipo === "mixto" ? "debito" : tipo;
+      if (!tipo || tipo === "cuenta_corriente" || !metodoPagoRequiereCuenta(tipo)) return;
+      const tipoCuenta = tipoCuentaCobroParaMetodo(tipo);
       try {
         const res = await fetch(`/cuentas_cobro/tipo/${encodeURIComponent(tipoCuenta)}`);
         if (!res.ok) throw new Error("fallo");
         const cuentas = await res.json();
-        if (!Array.isArray(cuentas) || !cuentas.length) return;
+        cuentasCobroVentasPorTipo.set(tipoCuenta, Array.isArray(cuentas) ? cuentas : []);
+        if (!Array.isArray(cuentas) || !cuentas.length) {
+          actualizarCobroNormalUI();
+          return;
+        }
         cuentas.forEach((cuenta) => {
           const opt = document.createElement("option");
           opt.value = cuenta.id;
@@ -3259,19 +3294,39 @@
           opt.dataset.posId = cuenta.pos_id || "";
           cuentaCobroVenta.appendChild(opt);
         });
-        cuentaCobroVenta.value = selected ? String(selected) : "";
+        cuentaCobroVenta.value = selected && [...cuentaCobroVenta.options].some((opt) => opt.value === String(selected)) ? String(selected) : String(cuentas[0].id);
         cuentaCobroVentaWrap.classList.remove("hidden");
         actualizarCobroNormalUI();
       } catch {
         cuentaCobroVenta.value = "";
+        cuentasCobroVentasPorTipo.set(tipoCuenta, []);
+        actualizarCobroNormalUI();
       }
+    }
+
+    function tipoCuentaCobroParaMetodo(tipo) {
+      return String(tipo || "").trim().toLowerCase() === "mixto" ? "debito" : String(tipo || "").trim().toLowerCase();
+    }
+
+    function metodoPagoRequiereCuenta(tipo) {
+      const codigo = String(tipo || "").trim().toLowerCase();
+      return Boolean(codigo && !["efectivo", "cuenta_corriente"].includes(codigo));
+    }
+
+    function metodoPagoTieneCuenta(tipo) {
+      if (!metodoPagoRequiereCuenta(tipo)) return true;
+      const cuentas = cuentasCobroVentasPorTipo.get(tipoCuentaCobroParaMetodo(tipo));
+      return Array.isArray(cuentas) && cuentas.length > 0;
     }
 
     function actualizarCobroNormalUI() {
       document.querySelectorAll(".payment-button").forEach((button) => {
         const tipo = button.dataset.payment;
         const bloquearCuentaCorriente = currentPendingId && tipo === "cuenta_corriente";
-        button.disabled = Boolean(bloquearCuentaCorriente);
+        const bloquearSinCuenta = metodoPagoRequiereCuenta(tipo) && !metodoPagoTieneCuenta(tipo);
+        button.disabled = Boolean(bloquearCuentaCorriente || bloquearSinCuenta);
+        button.classList.toggle("disabled-by-account", Boolean(bloquearSinCuenta));
+        button.title = bloquearSinCuenta ? "No hay cuenta o terminal configurada para este método." : "";
         button.classList.toggle("active", tipo === selectedPaymentMode);
       });
 
@@ -3283,7 +3338,7 @@
 
       montosMixtosNormal.classList.toggle("hidden", !esMixto);
       recibidoWrapper.classList.toggle("hidden", !esEfectivo);
-      cuentaCobroVentaWrap?.classList.toggle("hidden", cuentaCorrienteActiva || cuentaCobroVenta.options.length <= 1);
+      cuentaCobroVentaWrap?.classList.toggle("hidden", cuentaCorrienteActiva || !metodoPagoRequiereCuenta(tipoCobroNormal.value) || cuentaCobroVenta.options.length === 0);
       if (cuotasVenta && cuotasVentaWrap) {
         cuotasVentaWrap.classList.toggle("hidden", cuentaCorrienteActiva || esMixto || cuotasConfig.length === 0);
         const valorActual = cuotasVenta.value;
@@ -3938,6 +3993,21 @@
       actualizarResumenCobroTicket();
     }
 
+    async function cargarDisponibilidadCuentasCobroVentas() {
+      const codigos = new Set((tiposPagoVentas.length ? tiposPagoVentas : [{ codigo: "debito" }, { codigo: "transferencia" }, { codigo: "mixto" }])
+        .map((tipo) => tipoCuentaCobroParaMetodo(tipo.codigo))
+        .filter((codigo) => metodoPagoRequiereCuenta(codigo)));
+      await Promise.all([...codigos].map(async (codigo) => {
+        try {
+          const res = await fetch(`/cuentas_cobro/tipo/${encodeURIComponent(codigo)}`);
+          const data = res.ok ? await res.json() : [];
+          cuentasCobroVentasPorTipo.set(codigo, Array.isArray(data) ? data : []);
+        } catch {
+          cuentasCobroVentasPorTipo.set(codigo, []);
+        }
+      }));
+    }
+
     async function cargarTiposPagoVentas() {
       try {
         const res = await fetch("/tipos_pago");
@@ -3946,6 +4016,7 @@
       } catch {
         tiposPagoVentas = [];
       }
+      await cargarDisponibilidadCuentasCobroVentas();
       renderMetodosPagoVentas();
       actualizarCobroNormalUI();
     }
@@ -3993,13 +4064,11 @@
             return;
           }
           const option = document.createElement("option");
-          const tipoCuenta = tipoCuentaCorrienteLabel(cliente.tipo_cuenta_corriente);
-          const tipoComercial = tipoClienteComercialLabel(cliente.tipo_cliente);
           option.value = cliente.id;
           option.dataset.tipoCuentaCorriente = cliente.tipo_cuenta_corriente || "cliente";
           option.dataset.tipoCliente = cliente.tipo_cliente || "cliente";
           option.dataset.nombreCliente = cliente.nombre || "";
-          option.textContent = `${cliente.nombre} - Comercial: ${tipoComercial} - Operativa: ${tipoCuenta}`;
+          option.textContent = cliente.nombre || "Cliente";
           clienteVenta.appendChild(option);
           clienteVentaModal.appendChild(option.cloneNode(true));
         });
@@ -4179,7 +4248,7 @@
 
         if (esCuentaCorriente.checked) {
           if (!clienteVenta.value) {
-            mostrarMensaje("La cuenta corriente requiere cliente asociado", true);
+            mostrarErrorCuentaCorriente("La cuenta corriente requiere cliente asociado");
             return;
           }
         } else {
@@ -4233,7 +4302,11 @@
         const data = await res.json();
 
         if (!res.ok) {
-          mostrarMensaje(data.message || "Error al registrar venta", true);
+          if (esCuentaCorriente.checked) {
+            mostrarErrorCuentaCorriente(obtenerMensajeBackend(data, "No se pudo registrar la venta a cuenta corriente."));
+          } else {
+            mostrarToastSistema(obtenerMensajeBackend(data, "Error al registrar venta"), true);
+          }
           return;
         }
 
@@ -4420,7 +4493,11 @@
         const data = await res.json();
 
         if (!res.ok) {
-          mostrarMensaje(data.message || "Error al cobrar pendiente", true);
+          if (String(tipoCobro || "").toLowerCase() === "cuenta_corriente") {
+            mostrarErrorCuentaCorriente(obtenerMensajeBackend(data, "No se pudo cobrar el pendiente a cuenta corriente."));
+          } else {
+            mostrarToastSistema(obtenerMensajeBackend(data, "Error al cobrar pendiente"), true);
+          }
           return;
         }
 
@@ -4848,7 +4925,7 @@
     paymentButtons.addEventListener("click", function (event) {
       const button = event.target.closest(".payment-button");
 
-      if (!button) {
+      if (!button || button.disabled) {
         return;
       }
 
