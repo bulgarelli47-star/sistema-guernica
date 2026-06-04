@@ -70,7 +70,8 @@ const {
   getProductosMasVendidos,
   getResumenProveedoresPagos,
   getVentasPorDia,
-  getResumenCuentasCobro
+  getResumenCuentasCobro,
+  getReporteModificadores
 } = require("./services/reportesService");
 const {
   getResumenFinanciero
@@ -6366,6 +6367,17 @@ app.get("/reportes/cuentas-cobro", async (req, res) => {
   } catch (error) {
     logError("Error al obtener reporte de cuentas de cobro:", error);
     return res.status(500).json({ message: "Error al obtener reporte de cuentas de cobro" });
+  }
+});
+
+app.get("/reportes/modificadores", async (req, res) => {
+  if (!asegurarAccesoReporte(req, res, "ventas")) return;
+  const { desde = null, hasta = null } = req.query;
+  try {
+    return res.json(await getReporteModificadores({ desde, hasta }));
+  } catch (error) {
+    logError("Error al obtener reporte de modificadores:", error);
+    return res.status(500).json({ message: "Error al obtener reporte de modificadores" });
   }
 });
 

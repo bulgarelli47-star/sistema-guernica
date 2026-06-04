@@ -1658,6 +1658,137 @@ async function getResumenCuentasCobro({ desde = null, hasta = null } = {}) {
     .sort((a, b) => b.balance - a.balance);
 }
 
+async function getReporteModificadores({ desde = null, hasta = null } = {}) {
+  const fechaWhere = [];
+  const fechaParams = [];
+  if (desde) { fechaWhere.push("v.fecha >= ?"); fechaParams.push(desde); }
+  if (hasta) { fechaWhere.push("v.fecha <= ?"); fechaParams.push(hasta); }
+
+  const fechaJoin = fechaWhere.length ? "AND " + fechaWhere.join(" AND ") : "";
+
+  const baseConditions = [
+    "COALESCE(v.estado, '') != 'anulado'",
+    "COALESCE(v.tipo, '') != 'test_modificadores'",
+    ...fechaWhere
+  ];
+  const baseSql = baseConditions.join(" AND ");
+
+  const [
+    modificadoresRows,
+    ingredientesRows,
+    combosRows,
+    productosConModsRows
+  ] = await Promise.all([
+    allQuery(
+      `SELECT
+         dvm.modificador_id,
+         dvm.nombre AS nombre_modificador,
+         dvm.tipo,
+         COUNT(*) AS veces_elegido,
+         COALESCE(SUM(dvm.cantidad), 0) AS cantidad_total,
+         COALESCE(SUM(dvm.precio_extra * dvm.cantidad), 0) AS total_facturado,
+         COUNT(DISTINCT dv.venta_id) AS ventas_distintas
+       FROM detalle_venta_modificadores dvm
+       JOIN detalle_ventas dv ON dv.id = dvm.detalle_venta_id
+       JOIN ventas v ON v.id = dv.venta_id
+       WHERE ${baseSql}
+       GROUP BY dvm.modificador_id, dvm.nombre, dvm.tipo
+       ORDER BY veces_elegido DESC`,
+      fechaParams
+    ),
+    allQuery(
+      `SELECT
+         dvi.nombre AS nombre_ingrediente,
+         dvi.tipo,
+         COUNT(*) AS veces,
+         COALESCE(SUM(dvi.cantidad), 0) AS cantidad_total,
+         COUNT(DISTINCT dv.venta_id) AS ventas_distintas
+       FROM detalle_venta_ingredientes dvi
+       JOIN detalle_ventas dv ON dv.id = dvi.detalle_venta_id
+       JOIN ventas v ON v.id = dv.venta_id
+       WHERE COALESCE(v.estado, '') != 'anulado'
+         AND dvi.tipo = 'quitar'
+         ${fechaJoin}
+       GROUP BY dvi.nombre, dvi.tipo
+       ORDER BY veces DESC`,
+      fechaParams
+    ),
+    allQuery(
+      `SELECT
+         dv.producto_id,
+         dv.nombre_producto,
+         COUNT(DISTINCT v.id) AS ventas_distintas,
+         COALESCE(SUM(dv.cantidad), 0) AS unidades_vendidas,
+         COALESCE(SUM(dv.subtotal), 0) AS total_facturado
+       FROM detalle_ventas dv
+       JOIN ventas v ON v.id = dv.venta_id
+       JOIN productos p ON p.id = dv.producto_id
+       WHERE p.es_combo = 1
+         AND COALESCE(v.estado, '') != 'anulado'
+         ${fechaJoin}
+       GROUP BY dv.producto_id, dv.nombre_producto
+       ORDER BY total_facturado DESC`,
+      fechaParams
+    ),
+    allQuery(
+      `SELECT
+         dv.producto_id,
+         dv.nombre_producto,
+         COUNT(dvm.id) AS total_modificadores,
+         COUNT(DISTINCT v.id) AS ventas_distintas,
+         COALESCE(SUM(dvm.precio_extra * dvm.cantidad), 0) AS total_facturado_modificadores
+       FROM detalle_ventas dv
+       JOIN ventas v ON v.id = dv.venta_id
+       JOIN detalle_venta_modificadores dvm ON dvm.detalle_venta_id = dv.id
+       WHERE ${baseSql}
+       GROUP BY dv.producto_id, dv.nombre_producto
+       ORDER BY total_modificadores DESC`,
+      fechaParams
+    )
+  ]);
+
+  const modificadoresMasUsados = modificadoresRows.map((row) => ({
+    nombre_modificador: row.nombre_modificador,
+    tipo: row.tipo,
+    veces_elegido: Number(row.veces_elegido || 0),
+    cantidad_total: round2(row.cantidad_total),
+    total_facturado: round2(row.total_facturado),
+    ventas_distintas: Number(row.ventas_distintas || 0)
+  }));
+
+  return {
+    filtros: { desde, hasta },
+    modificadores_mas_usados: modificadoresMasUsados,
+    extras_mas_facturan: modificadoresMasUsados
+      .filter((m) => m.total_facturado > 0)
+      .sort((a, b) => b.total_facturado - a.total_facturado),
+    opciones_sin_impacto: modificadoresMasUsados
+      .filter((m) => m.tipo === "observacion")
+      .sort((a, b) => b.veces_elegido - a.veces_elegido),
+    ingredientes_mas_quitados: ingredientesRows.map((row) => ({
+      nombre_ingrediente: row.nombre_ingrediente,
+      tipo: row.tipo,
+      veces: Number(row.veces || 0),
+      cantidad_total: round2(row.cantidad_total),
+      ventas_distintas: Number(row.ventas_distintas || 0)
+    })),
+    combos_mas_vendidos: combosRows.map((row) => ({
+      producto_id: row.producto_id == null ? null : Number(row.producto_id),
+      nombre_producto: row.nombre_producto,
+      ventas_distintas: Number(row.ventas_distintas || 0),
+      unidades_vendidas: round2(row.unidades_vendidas),
+      total_facturado: round2(row.total_facturado)
+    })),
+    productos_con_mas_modificadores: productosConModsRows.map((row) => ({
+      producto_id: row.producto_id == null ? null : Number(row.producto_id),
+      nombre_producto: row.nombre_producto,
+      total_modificadores: Number(row.total_modificadores || 0),
+      ventas_distintas: Number(row.ventas_distintas || 0),
+      total_facturado_modificadores: round2(row.total_facturado_modificadores)
+    }))
+  };
+}
+
 module.exports = {
   getResumenReportes,
   getReporteVentas,
@@ -1667,5 +1798,6 @@ module.exports = {
   getProductosMasVendidos,
   getResumenProveedoresPagos,
   getVentasPorDia,
-  getResumenCuentasCobro
+  getResumenCuentasCobro,
+  getReporteModificadores
 };
