@@ -133,7 +133,9 @@ async function getReporteVentas({ desde = null, hasta = null, estado = null } = 
     porDia,
     porTipoCobroRows,
     productosMasVendidos,
-    estadosRows
+    estadosRows,
+    porFranjaRows,
+    porUsuarioRows
   ] = await Promise.all([
     allQuery(
       `SELECT
@@ -220,6 +222,34 @@ async function getReporteVentas({ desde = null, hasta = null, estado = null } = 
        GROUP BY estado
        ORDER BY cantidad DESC`,
       todas.params
+    ),
+    allQuery(
+      `SELECT
+         CAST(SUBSTR(v.hora, 1, 2) AS INTEGER) AS hora_num,
+         PRINTF('%02d:00 - %02d:00',
+           CAST(SUBSTR(v.hora, 1, 2) AS INTEGER),
+           CAST(SUBSTR(v.hora, 1, 2) AS INTEGER) + 1
+         ) AS franja,
+         COUNT(*) AS cantidad_ventas,
+         COALESCE(SUM(v.total), 0) AS total_vendido,
+         COALESCE(SUM(v.total) / NULLIF(COUNT(*), 0), 0) AS ticket_promedio
+       FROM ventas v
+       WHERE ${productivasSql}
+       GROUP BY hora_num
+       ORDER BY hora_num ASC`,
+      productivas.params
+    ),
+    allQuery(
+      `SELECT
+         COALESCE(v.usuario, 'Sin usuario') AS usuario_nombre,
+         COUNT(*) AS cantidad_ventas,
+         COALESCE(SUM(v.total), 0) AS total_vendido,
+         COALESCE(SUM(v.total) / NULLIF(COUNT(*), 0), 0) AS ticket_promedio
+       FROM ventas v
+       WHERE ${productivasSql}
+       GROUP BY usuario_nombre
+       ORDER BY total_vendido DESC`,
+      productivas.params
     )
   ]);
 
@@ -284,6 +314,19 @@ async function getReporteVentas({ desde = null, hasta = null, estado = null } = 
       estado: row.estado,
       cantidad: Number(row.cantidad || 0),
       total: round2(row.total)
+    })),
+    por_franja_horaria: porFranjaRows.map((row) => ({
+      franja: row.franja,
+      hora: Number(row.hora_num),
+      cantidad_ventas: Number(row.cantidad_ventas || 0),
+      total_vendido: round2(row.total_vendido),
+      ticket_promedio: round2(row.ticket_promedio)
+    })),
+    por_usuario: porUsuarioRows.map((row) => ({
+      usuario_nombre: row.usuario_nombre,
+      cantidad_ventas: Number(row.cantidad_ventas || 0),
+      total_vendido: round2(row.total_vendido),
+      ticket_promedio: round2(row.ticket_promedio)
     }))
   };
 }
