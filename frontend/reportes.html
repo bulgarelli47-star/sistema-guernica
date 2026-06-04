@@ -912,6 +912,16 @@
     .constructor-footer { flex: 0 0 auto; padding: 10px 20px; border-top: 1px solid var(--border); background: #fff; display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
     .constructor-placeholder-error { border-color: rgba(224,82,82,.28); background: #fff7f7; }
     .constructor-placeholder-error strong { color: var(--danger); }
+    .constructor-vista-list { display: grid; gap: 5px; }
+    .constructor-vista-item { display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 10px; background: #fff; padding: 6px 8px; cursor: pointer; transition: border-color .15s, background .15s; }
+    .constructor-vista-item:hover { border-color: rgba(109,40,217,.4); background: var(--primary-soft); }
+    .constructor-vista-name { flex: 1 1 auto; font-size: 12px; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .constructor-vista-item:hover .constructor-vista-name { color: var(--primary); }
+    .constructor-vista-remove { flex: 0 0 auto; width: 18px; height: 18px; border: none; background: transparent; color: var(--muted); cursor: pointer; border-radius: 4px; font-size: 14px; line-height: 1; display: grid; place-items: center; padding: 0; }
+    .constructor-vista-remove:hover { background: rgba(224,82,82,.12); color: var(--danger); }
+    .constructor-vista-empty { font-size: 12px; color: var(--muted); font-weight: 600; margin: 0; padding: 4px 0; }
+    .constructor-vista-guardar { width: 100%; border: 1px dashed rgba(109,40,217,.35); background: transparent; color: var(--primary); border-radius: 10px; padding: 6px 10px; font-size: 12px; font-weight: 800; cursor: pointer; margin-top: 6px; transition: background .15s, border-color .15s; }
+    .constructor-vista-guardar:hover { background: var(--primary-soft); border-color: var(--primary); }
     .constructor-panel-right > p.constructor-section-title { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 2px; }
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=6" />
@@ -1148,6 +1158,13 @@
       </header>
       <div class="constructor-layout">
         <aside class="constructor-panel-left">
+          <section>
+            <p class="constructor-section-title">Vistas guardadas</p>
+            <div class="constructor-vista-list" id="constructorVistasGuardadas">
+              <p class="constructor-vista-empty">Sin vistas guardadas.</p>
+            </div>
+            <button class="constructor-vista-guardar" id="guardarVistaConstructor" type="button">+ Guardar vista actual</button>
+          </section>
           <section>
             <p class="constructor-section-title">Plantillas rápidas</p>
             <div class="constructor-plantilla-grid" id="constructorPlantillas">
@@ -1908,6 +1925,100 @@
       document.body.appendChild(a); a.click();
       setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
     }
+    // ── Vistas guardadas del constructor ───────────────────────
+    const LS_VISTAS = "guernica_constructor_vistas";
+    const MAX_VISTAS = 20;
+    function leerVistasGuardadas() {
+      try { return JSON.parse(localStorage.getItem(LS_VISTAS) || "[]"); } catch { return []; }
+    }
+    function guardarVistasGuardadas(vistas) {
+      localStorage.setItem(LS_VISTAS, JSON.stringify(vistas));
+    }
+    function renderVistasGuardadas() {
+      const el = $("constructorVistasGuardadas");
+      if (!el) return;
+      const vistas = leerVistasGuardadas();
+      if (!vistas.length) {
+        el.innerHTML = '<p class="constructor-vista-empty">Sin vistas guardadas.</p>';
+        return;
+      }
+      el.innerHTML = vistas.map((v) =>
+        `<div class="constructor-vista-item" data-vista-id="${v.id}" role="button" tabindex="0" title="Cargar: ${v.nombre}">` +
+        `<span class="constructor-vista-name">${v.nombre}</span>` +
+        `<button class="constructor-vista-remove" data-remove-vista="${v.id}" type="button" title="Eliminar vista" aria-label="Eliminar vista">&#x2715;</button>` +
+        `</div>`
+      ).join("");
+    }
+    function guardarVistaActual() {
+      if (!constructorState.plantilla) {
+        alert("Elegí una plantilla antes de guardar la vista.");
+        return;
+      }
+      const nombre = window.prompt("Nombre de la vista:");
+      if (!nombre || !nombre.trim()) return;
+      const vistas = leerVistasGuardadas();
+      if (vistas.length >= MAX_VISTAS) {
+        alert(`Límite de ${MAX_VISTAS} vistas alcanzado. Eliminá alguna antes de guardar.`);
+        return;
+      }
+      const nueva = {
+        id: "vista_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+        nombre: nombre.trim(),
+        plantilla: constructorState.plantilla,
+        modulo: constructorState.modulo,
+        dimension: constructorState.dimension,
+        metricas: [...constructorState.metricas],
+        creadoEn: new Date().toISOString()
+      };
+      vistas.push(nueva);
+      guardarVistasGuardadas(vistas);
+      renderVistasGuardadas();
+    }
+    function cargarVistaGuardada(id) {
+      const vistas = leerVistasGuardadas();
+      const vista = vistas.find((v) => v.id === id);
+      if (!vista) return;
+      constructorState.plantilla = vista.plantilla;
+      constructorState.modulo = vista.modulo || null;
+      constructorState.dimension = vista.dimension || "producto";
+      constructorState.metricas = Array.isArray(vista.metricas) && vista.metricas.length ? [...vista.metricas] : ["cantidad", "total"];
+      constructorState.data = null;
+      constructorState.error = "";
+      actualizarUIConstructorDesdeState();
+      recargarPlantillaActual();
+    }
+    function eliminarVistaGuardada(id) {
+      if (!confirm("¿Eliminar esta vista guardada?")) return;
+      const vistas = leerVistasGuardadas().filter((v) => v.id !== id);
+      guardarVistasGuardadas(vistas);
+      renderVistasGuardadas();
+    }
+    function actualizarUIConstructorDesdeState() {
+      const plantillasEl = $("constructorPlantillas");
+      const modulosEl = $("constructorModulos");
+      const dimensionesEl = $("constructorDimensiones");
+      const metricasEl = $("constructorMetricas");
+      if (plantillasEl) {
+        plantillasEl.querySelectorAll(".constructor-plantilla-card").forEach((btn) => {
+          btn.classList.toggle("active", btn.dataset.plantilla === constructorState.plantilla);
+        });
+      }
+      if (modulosEl) {
+        modulosEl.querySelectorAll(".constructor-modulo-card").forEach((btn) => {
+          btn.classList.toggle("active", btn.dataset.modulo === constructorState.modulo);
+        });
+      }
+      if (dimensionesEl) {
+        dimensionesEl.querySelectorAll("[data-dimension]").forEach((btn) => {
+          btn.classList.toggle("active", btn.dataset.dimension === constructorState.dimension);
+        });
+      }
+      if (metricasEl) {
+        metricasEl.querySelectorAll("input[type=checkbox]").forEach((cb) => {
+          cb.checked = constructorState.metricas.includes(cb.value);
+        });
+      }
+    }
     function initConstructor() {
       const modal = $("modalConstructorReportes");
       const abrirBtn = $("abrirConstructorReportes");
@@ -2063,6 +2174,19 @@
       if (hastaEl) { hastaEl.addEventListener("input", () => { constructorState.hasta = hastaEl.value || constructorState.desde || fmtDate(new Date()); recargarPlantillaActual(); }); }
       const exportCsvBtn = $("exportarConstructorCsv");
       if (exportCsvBtn) exportCsvBtn.addEventListener("click", exportarConstructorCsv);
+      // Vistas guardadas
+      const guardarVistaBtn = $("guardarVistaConstructor");
+      if (guardarVistaBtn) guardarVistaBtn.addEventListener("click", guardarVistaActual);
+      const vistasEl = $("constructorVistasGuardadas");
+      if (vistasEl) {
+        vistasEl.addEventListener("click", (e) => {
+          const removeBtn = e.target.closest("[data-remove-vista]");
+          if (removeBtn) { e.stopPropagation(); eliminarVistaGuardada(removeBtn.dataset.removeVista); return; }
+          const item = e.target.closest("[data-vista-id]");
+          if (item) cargarVistaGuardada(item.dataset.vistaId);
+        });
+      }
+      renderVistasGuardadas();
     }
 
     const money = (value) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS" }).format(Number(value) || 0);
