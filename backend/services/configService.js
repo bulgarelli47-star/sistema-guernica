@@ -263,7 +263,14 @@ const CONFIGURACION_DEFAULTS = {
   reporte_backup_ultimo_nombre: { seccion: "reportes", valor: "" },
   seguridad_backup_auto: { seccion: "seguridad", valor: false },
   seguridad_backup_frecuencia: { seccion: "seguridad", valor: "diario" },
-  seguridad_ultimo_backup: { seccion: "seguridad", valor: "" }
+  seguridad_ultimo_backup: { seccion: "seguridad", valor: "" },
+  finanzas_costo_alquiler_mensual: { seccion: "finanzas", valor: 0 },
+  finanzas_costo_servicios_mensual: { seccion: "finanzas", valor: 0 },
+  finanzas_costo_sueldos_mensual: { seccion: "finanzas", valor: 0 },
+  finanzas_costo_impuestos_mensual: { seccion: "finanzas", valor: 0 },
+  finanzas_costo_expensas_mensual: { seccion: "finanzas", valor: 0 },
+  finanzas_costo_otros_mensual: { seccion: "finanzas", valor: 0 },
+  finanzas_costos_observaciones: { seccion: "finanzas", valor: "" }
 };
 
 function serializarConfigValor(valor) {

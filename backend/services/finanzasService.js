@@ -9,6 +9,7 @@ const {
   getUltimaCajaRegistrada,
   getConciliacionesCuentaDestino
 } = require("./cajaService");
+const { getConfiguracionGlobal } = require("./configService");
 
 function round2(value) {
   return Number(Number(value || 0).toFixed(2));
@@ -314,19 +315,56 @@ async function obtenerMovimientosNoMonetarios({ desde, hasta } = {}) {
   return base;
 }
 
+async function obtenerCostosOperativosFijos({ desde, hasta }) {
+  const config = await getConfiguracionGlobal();
+  const alquiler_mensual = round2(config.finanzas_costo_alquiler_mensual);
+  const servicios_mensual = round2(config.finanzas_costo_servicios_mensual);
+  const sueldos_mensual = round2(config.finanzas_costo_sueldos_mensual);
+  const impuestos_mensual = round2(config.finanzas_costo_impuestos_mensual);
+  const expensas_mensual = round2(config.finanzas_costo_expensas_mensual);
+  const otros_mensual = round2(config.finanzas_costo_otros_mensual);
+  const total_mensual = round2(alquiler_mensual + servicios_mensual + sueldos_mensual + impuestos_mensual + expensas_mensual + otros_mensual);
+  const promedio_diario = round2(total_mensual / 30);
+
+  let dias_periodo = 30;
+  if (desde && hasta) {
+    const d = new Date(desde);
+    const h = new Date(hasta);
+    const diff = Math.round((h - d) / (1000 * 60 * 60 * 24)) + 1;
+    if (diff > 0) dias_periodo = diff;
+  }
+
+  return {
+    alquiler_mensual,
+    servicios_mensual,
+    sueldos_mensual,
+    impuestos_mensual,
+    expensas_mensual,
+    otros_mensual,
+    observaciones: String(config.finanzas_costos_observaciones || ""),
+    total_mensual,
+    promedio_diario,
+    dias_periodo,
+    costo_proporcional_periodo: round2(promedio_diario * dias_periodo),
+    estado: total_mensual > 0 ? "configurado" : "incompleto"
+  };
+}
+
 async function getResumenFinanciero({ desde = null, hasta = null } = {}) {
   const alertas = [];
   const fechaCorte = new Date().toISOString();
 
-  const [liquidez, pendientesCobro, capitalInmovilizado, pasivos, movimientosNoMonetarios, ingresosPeriodo] = await Promise.all([
+  const [liquidez, pendientesCobro, capitalInmovilizado, pasivos, movimientosNoMonetarios, ingresosPeriodo, costosOperativosFijos] = await Promise.all([
     obtenerLiquidez(alertas),
     obtenerPendientesCobro({ desde, hasta }, alertas),
     obtenerCapitalInmovilizado({ desde, hasta }),
     obtenerPasivos({ desde, hasta }, alertas),
     obtenerMovimientosNoMonetarios({ desde, hasta }),
-    obtenerIngresosPeriodo({ desde, hasta })
+    obtenerIngresosPeriodo({ desde, hasta }),
+    obtenerCostosOperativosFijos({ desde, hasta })
   ]);
 
+  const resultado_operativo = round2(ingresosPeriodo.ventas_cobradas - pasivos.egresos_ejecutados);
   return {
     fecha_corte: fechaCorte,
     filtros: { desde, hasta },
@@ -336,6 +374,7 @@ async function getResumenFinanciero({ desde = null, hasta = null } = {}) {
     pasivos,
     ingresos_periodo: ingresosPeriodo,
     movimientos_no_monetarios: movimientosNoMonetarios,
+    costos_operativos_fijos: costosOperativosFijos,
     resultado: {
       posicion_liquida: round2(liquidez.total),
       masa_monetaria_bruta: round2(liquidez.total + pendientesCobro.total + capitalInmovilizado.total_operativo),
@@ -346,7 +385,8 @@ async function getResumenFinanciero({ desde = null, hasta = null } = {}) {
         pasivos.total
       ),
       deuda_neta: round2(pasivos.total - pendientesCobro.cuentas_corrientes_clientes),
-      resultado_operativo: round2(ingresosPeriodo.ventas_cobradas - pasivos.egresos_ejecutados)
+      resultado_operativo,
+      resultado_neto_estimado: round2(resultado_operativo - costosOperativosFijos.costo_proporcional_periodo)
     },
     alertas
   };
