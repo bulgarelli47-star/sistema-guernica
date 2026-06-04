@@ -1618,6 +1618,10 @@
       const kpis = [
         { label: "Deuda total", value: money(n(res.deuda_total)) },
         { label: "Clientes con deuda", value: n(res.clientes_con_deuda) },
+        { label: "Deuda vencida", value: money(n(res.deuda_vencida)) },
+        { label: "Deuda no vencida", value: money(n(res.deuda_no_vencida)) },
+        { label: "Con deuda vencida", value: n(res.clientes_con_deuda_vencida ?? 0) },
+        { label: "Requieren autorización", value: n(res.clientes_requieren_autorizacion ?? 0) },
         { label: "Clientes excedidos", value: n(res.clientes_excedidos) },
         { label: "Cobrado en período", value: money(n(res.cobrado_periodo)) }
       ];
@@ -1626,10 +1630,20 @@
       if (clientes.length) {
         const filas = clientes.slice(0, 20).map((c) => {
           const excedido = !!c.excedido;
-          const color = excedido ? "var(--danger)" : "var(--warning)";
-          const estadoLabel = excedido ? "Excedido" : "Con deuda";
+          const tieneVencida = n(c.deuda_vencida) > 0;
+          const suspendido = !!c.suspendido;
+          const reqAuth = !!c.requiere_autorizacion;
+          let estadoColor = "var(--warning)";
+          let estadoLabel = "Con deuda";
+          if (excedido) { estadoColor = "var(--danger)"; estadoLabel = "Excedido"; }
+          else if (tieneVencida) { estadoColor = "var(--danger)"; estadoLabel = "Vencida"; }
           const detalle = c.primera_deuda ? `Desde ${c.primera_deuda}` : "";
-          return `<div class="constructor-ranking-row"><span class="constructor-ranking-name">${c.nombre || "—"}<small style="color:var(--muted);display:block;font-size:11px">${detalle}</small></span><span class="constructor-ranking-val">${money(n(c.deuda_actual))}</span><small class="constructor-ranking-qty" style="color:${color};font-weight:900">${estadoLabel}</small></div>`;
+          const vencidaStr = tieneVencida ? `Vencida: ${money(n(c.deuda_vencida))} · ${n(c.dias_max_en_deuda)}d · ${n(c.ventas_vencidas)} v.` : "";
+          const badges = [
+            suspendido ? `<small style="color:var(--danger);font-weight:900;margin-right:4px">Suspendido</small>` : "",
+            reqAuth ? `<small style="color:var(--warning);font-weight:900;margin-right:4px">Auth</small>` : ""
+          ].filter(Boolean).join("");
+          return `<div class="constructor-ranking-row"><span class="constructor-ranking-name">${c.nombre || "—"}${detalle ? `<small style="color:var(--muted);display:block;font-size:11px">${detalle}</small>` : ""}${vencidaStr ? `<small style="color:var(--danger);display:block;font-size:11px">${vencidaStr}</small>` : ""}${badges ? `<span>${badges}</span>` : ""}</span><span class="constructor-ranking-val">${money(n(c.deuda_actual))}</span><small class="constructor-ranking-qty" style="color:${estadoColor};font-weight:900">${estadoLabel}</small></div>`;
         });
         tablaHtml = `<p class="constructor-section-title">Clientes con deuda (${clientes.length})</p><div class="constructor-ranking">${filas.join("")}</div>`;
       } else {
@@ -1963,7 +1977,21 @@
         return cuentas.length ? base.concat(cuentas.map((c) => ({ concepto: c.cuenta_nombre || c.nombre || "—", ingresos: n(c.ingresos || c.monto_real || c.total || 0) }))) : base;
       }
       if (plantilla === "stock-critico") return Array.isArray(data.alertas) ? data.alertas : [];
-      if (plantilla === "clientes-con-deuda") return Array.isArray(data.clientes) ? data.clientes : [];
+      if (plantilla === "clientes-con-deuda") {
+        return (Array.isArray(data.clientes) ? data.clientes : []).map((c) => ({
+          nombre: c.nombre || "",
+          deuda_actual: n(c.deuda_actual),
+          deuda_vencida: n(c.deuda_vencida),
+          deuda_no_vencida: n(c.deuda_no_vencida),
+          dias_max_en_deuda: n(c.dias_max_en_deuda),
+          ventas_vencidas: n(c.ventas_vencidas),
+          primera_deuda: c.primera_deuda || "",
+          excedido: c.excedido ? "Sí" : "No",
+          suspendido: c.suspendido ? "Sí" : "No",
+          requiere_autorizacion: c.requiere_autorizacion ? "Sí" : "No",
+          habilita_cuenta_corriente: c.habilita_cuenta_corriente ? "Sí" : "No"
+        }));
+      }
       if (plantilla === "pagos-pendientes") {
         const provs = Array.isArray(data.proveedores) ? data.proveedores.filter((p) => n(p.total_pendiente) > 0) : [];
         if (provs.length) return provs;
