@@ -17,6 +17,7 @@
   <link rel="stylesheet" href="/nav-icons.css?v=7" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
   <script src="/auth-interceptor.js"></script>
+  <script src="/kpi-visibility.js?v=6"></script>
 </head>
 <body>
   <header class="site-header"><div class="topbar"><div class="topbar-left"><div class="brand-block"><div class="logo-mark" style="overflow:hidden;padding:0;background:#fff;"><img src="/atlas-iso.png" alt="Atlas OS" style="width:100%;height:100%;object-fit:cover;display:block;"></div><div class="logo-text"><strong>ATLAS OS</strong><small>El sistema que sostiene tu negocio</small></div></div><div class="topbar-divider"></div><div class="topbar-title"><h1>Finanzas</h1><p>Lectura empresarial actual</p></div></div><div class="top-actions"><div class="chip">Ayuda</div><div class="user-box"><div class="avatar">U</div><div><strong>Usuario</strong><small>Dueño</small></div><span class="app-icon icon-chevron" aria-hidden="true"></span></div></div></div></header>
@@ -33,6 +34,14 @@
           <article class="card kpi"><span>Patrimonio operativo estimado</span><strong id="kpiPatrimonio">$0,00</strong><small>Lectura aproximada de operación.</small></article>
           <article class="card kpi"><span>Deuda neta</span><strong id="kpiDeudaNeta">$0,00</strong><small>Pasivos menos pendientes cobrables.</small></article>
         </div>
+        <article class="card finance-block" id="costosOperativosCard">
+          <div class="section-head"><div><h3>Costos operativos fijos</h3><p class="message" id="costosEstado">Sin configurar.</p></div><button class="button secondary" type="button" id="btnAbrirCostos">Configurar costos</button></div>
+          <div class="non-money-grid" style="margin-top:14px">
+            <div class="non-money-card"><span>Total mensual</span><strong class="money-value" id="infoCostoMensual">$0,00</strong></div>
+            <div class="non-money-card"><span>Promedio diario</span><strong class="money-value" id="infoCostoPromedio">$0,00</strong></div>
+            <div class="non-money-card"><span>Proporcional al per&iacute;odo</span><strong class="money-value" id="infoCostoProporcional">$0,00</strong></div>
+          </div>
+        </article>
         <div class="breakdown-grid">
           <article class="card finance-block"><h3>Liquidez</h3><div id="liquidezRows"></div><div class="finance-list" id="bancosBilleteras"></div></article>
           <article class="card finance-block"><h3>Pendientes de cobro</h3><div id="pendientesRows"></div><div id="pendientesExtra"></div></article>
@@ -47,28 +56,61 @@
       </section>
     </main>
   </div>
+  <div id="costosModal" style="display:none;position:fixed;inset:0;z-index:100;background:rgba(16,5,46,.56);overflow:auto;align-items:flex-start;justify-content:center;padding:32px 16px">
+    <div style="width:100%;max-width:520px;margin:0 auto">
+      <div class="card" style="border-radius:22px;padding:28px">
+        <div class="section-head" style="margin-bottom:20px">
+          <div><h3>Costos operativos fijos</h3><p class="message">Estimaci&oacute;n mensual para calcular mejor el resultado neto del comercio.</p></div>
+          <button type="button" id="btnCerrarCostos" style="background:none;border:1px solid var(--border);border-radius:999px;width:36px;height:36px;display:grid;place-items:center;color:var(--muted);cursor:pointer;font-size:18px;flex-shrink:0">&#x2715;</button>
+        </div>
+        <div class="notice" style="margin-bottom:20px">Los costos fijos son una estimaci&oacute;n mensual. No reemplazan pagos registrados.</div>
+        <div style="display:grid;gap:14px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <label style="display:grid;gap:5px;font-size:13px;font-weight:700"><span>Alquiler</span><input type="number" id="costo_alquiler" class="field-date" style="padding:9px 12px" min="0" step="0.01" placeholder="0"></label>
+            <label style="display:grid;gap:5px;font-size:13px;font-weight:700"><span>Servicios</span><input type="number" id="costo_servicios" class="field-date" style="padding:9px 12px" min="0" step="0.01" placeholder="0"></label>
+            <label style="display:grid;gap:5px;font-size:13px;font-weight:700"><span>Sueldos / empleados</span><input type="number" id="costo_sueldos" class="field-date" style="padding:9px 12px" min="0" step="0.01" placeholder="0"></label>
+            <label style="display:grid;gap:5px;font-size:13px;font-weight:700"><span>Impuestos</span><input type="number" id="costo_impuestos" class="field-date" style="padding:9px 12px" min="0" step="0.01" placeholder="0"></label>
+            <label style="display:grid;gap:5px;font-size:13px;font-weight:700"><span>Expensas</span><input type="number" id="costo_expensas" class="field-date" style="padding:9px 12px" min="0" step="0.01" placeholder="0"></label>
+            <label style="display:grid;gap:5px;font-size:13px;font-weight:700"><span>Otros</span><input type="number" id="costo_otros" class="field-date" style="padding:9px 12px" min="0" step="0.01" placeholder="0"></label>
+          </div>
+          <label style="display:grid;gap:5px;font-size:13px;font-weight:700"><span>Observaciones</span><textarea id="costo_observaciones" class="field-date" style="padding:9px 12px;min-height:68px;resize:vertical;font:inherit" placeholder="Notas opcionales..."></textarea></label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px;background:#f9fafb;border-radius:14px;border:1px solid var(--border)">
+            <div style="display:grid;gap:4px"><span style="color:var(--muted);font-size:11px;font-weight:900;text-transform:uppercase">Total mensual</span><strong class="money-value" id="modalTotalMensual" style="font-size:20px">$0,00</strong></div>
+            <div style="display:grid;gap:4px"><span style="color:var(--muted);font-size:11px;font-weight:900;text-transform:uppercase">Promedio diario</span><strong class="money-value" id="modalPromedioDiario" style="font-size:20px">$0,00</strong></div>
+          </div>
+          <div style="display:flex;gap:10px;justify-content:flex-end">
+            <button class="button secondary" type="button" id="btnCancelarCostos">Cancelar</button>
+            <button class="button" type="button" id="btnGuardarCostos">Guardar costos</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
   <script>
     const $=(id)=>document.getElementById(id);
     const money=new Intl.NumberFormat("es-AR",{style:"currency",currency:"ARS"});
     const fmt=(value)=>money.format(Number(value||0));
     const dateFmt=new Intl.DateTimeFormat("es-AR",{dateStyle:"short",timeStyle:"short"});
     const LABELS_IMPACTO={"costo_fijo_operativo":"Costo fijo operativo","costo_variable_mercaderia":"Costo variable mercadería","inversion":"Inversión","otro_no_computable":"Otro no computable"};
-    function row(label,value){return `<div class="finance-row"><span>${label}</span><strong>${fmt(value)}</strong></div>`}
+    function row(label,value){return `<div class="finance-row"><span>${label}</span><strong class="money-value">${fmt(value)}</strong></div>`}
     function rowN(label,value){return `<div class="finance-row"><span>${label}</span><strong>${Number(value||0)}</strong></div>`}
     function labelIntegracion(value){return value==="produccion"?"Producci&oacute;n":"Interno / cortes&iacute;a"}
     function renderCuentaLocal(data){
       const cuenta=data?.movimientos_no_monetarios?.cuenta_local||{};
       const prod=cuenta.produccion||{}, interno=cuenta.interno_cortesia||{};
       $("cuentaLocalCards").innerHTML=[
-        `<div class="non-money-card"><span>Producci&oacute;n absorbida</span><strong>${fmt(prod.costo_estimado)}</strong><small>${Number(prod.movimientos||0)} movimiento(s) · ${Number(prod.unidades||0).toFixed(2)} unidad(es)</small></div>`,
-        `<div class="non-money-card"><span>Interno / cortes&iacute;a</span><strong>${fmt(interno.costo_estimado)}</strong><small>${Number(interno.movimientos||0)} movimiento(s) · ${Number(interno.unidades||0).toFixed(2)} unidad(es)</small></div>`,
-        `<div class="non-money-card"><span>Total absorbido</span><strong>${fmt(cuenta.total_absorbido)}</strong><small>No afecta caja ni deuda cobrable.</small></div>`
+        `<div class="non-money-card"><span>Producci&oacute;n absorbida</span><strong class="money-value">${fmt(prod.costo_estimado)}</strong><small>${Number(prod.movimientos||0)} movimiento(s) · ${Number(prod.unidades||0).toFixed(2)} unidad(es)</small></div>`,
+        `<div class="non-money-card"><span>Interno / cortes&iacute;a</span><strong class="money-value">${fmt(interno.costo_estimado)}</strong><small>${Number(interno.movimientos||0)} movimiento(s) · ${Number(interno.unidades||0).toFixed(2)} unidad(es)</small></div>`,
+        `<div class="non-money-card"><span>Total absorbido</span><strong class="money-value">${fmt(cuenta.total_absorbido)}</strong><small>No afecta caja ni deuda cobrable.</small></div>`
       ].join("");
       const recientes=Array.isArray(cuenta.movimientos_recientes)?cuenta.movimientos_recientes:[];
-      $("cuentaLocalRecientes").innerHTML=recientes.length?recientes.map((item)=>`<tr><td>${item.fecha||"-"} ${item.hora||""}</td><td>${labelIntegracion(item.integracion)}</td><td>${item.producto_nombre||"-"}</td><td>${Number(item.cantidad||0).toFixed(2)}</td><td>${item.responsable||"-"}</td><td>${fmt(item.costo_estimado)}</td></tr>`).join(""):'<tr><td colspan="6">Sin movimientos no monetarios en el per&iacute;odo.</td></tr>';
+      $("cuentaLocalRecientes").innerHTML=recientes.length?recientes.map((item)=>`<tr><td>${item.fecha||"-"} ${item.hora||""}</td><td>${labelIntegracion(item.integracion)}</td><td>${item.producto_nombre||"-"}</td><td>${Number(item.cantidad||0).toFixed(2)}</td><td>${item.responsable||"-"}</td><td><span class="money-value">${fmt(item.costo_estimado)}</span></td></tr>`).join(""):'<tr><td colspan="6">Sin movimientos no monetarios en el per&iacute;odo.</td></tr>';
     }
     function renderIngresosPeriodo(data){const ing=data?.ingresos_periodo||{};const el=$("ingresosRows");if(!el)return;el.innerHTML=[row("Ventas cobradas",ing.ventas_cobradas),row("Ventas pendientes",ing.ventas_pendientes),row("Ventas cuenta corriente",ing.ventas_cuenta_corriente),row("Total del período",ing.total_periodo)].join("")}
-    function renderResultadoOperativo(data){const el=$("resultadoRows");if(!el)return;const res=data?.resultado||{},ing=data?.ingresos_periodo||{},pa=data?.pasivos||{};const ro=Number(res.resultado_operativo||0);const color=ro>=0?"var(--success)":"var(--danger)";el.innerHTML=[row("Ingresos cobrados",ing.ventas_cobradas),row("Egresos ejecutados",pa.egresos_ejecutados),`<div class="finance-row"><span>Resultado operativo</span><strong style="text-align:right;font-variant-numeric:tabular-nums;color:${color}">${fmt(ro)}</strong></div>`].join("")}
+    function renderResultadoOperativo(data){const el=$("resultadoRows");if(!el)return;const res=data?.resultado||{},ing=data?.ingresos_periodo||{},pa=data?.pasivos||{},cf=data?.costos_operativos_fijos||{};const ro=Number(res.resultado_operativo||0);const rne=Number(res.resultado_neto_estimado||0);const colorRo=ro>=0?"var(--success)":"var(--danger)";const colorRne=rne>=0?"var(--success)":"var(--danger)";el.innerHTML=[row("Ingresos cobrados",ing.ventas_cobradas),row("Egresos ejecutados",pa.egresos_ejecutados),`<div class="finance-row"><span>Resultado operativo</span><strong class="money-value" style="text-align:right;font-variant-numeric:tabular-nums;color:${colorRo}">${fmt(ro)}</strong></div>`,row("Costo fijo proporcional del período",cf.costo_proporcional_periodo),`<div class="finance-row"><span>Resultado neto estimado</span><strong class="money-value" style="text-align:right;font-variant-numeric:tabular-nums;color:${colorRne}">${fmt(rne)}</strong></div>`].join("")}
+    let _lastCostos={};
+    function renderCostosOperativos(data){const cf=data?.costos_operativos_fijos||{};_lastCostos=cf;const el=$("costosEstado");if(el)el.textContent=cf.estado==="configurado"?`Configurado · ${cf.dias_periodo||30} día(s) en el período.`:"Sin configurar. Configurá costos para calcular el resultado neto.";const elM=$("infoCostoMensual");if(elM)elM.textContent=fmt(cf.total_mensual);const elP=$("infoCostoPromedio");if(elP)elP.textContent=fmt(cf.promedio_diario);const elC=$("infoCostoProporcional");if(elC)elC.textContent=fmt(cf.costo_proporcional_periodo);}
+    function calcularTotalModal(){const ids=["costo_alquiler","costo_servicios","costo_sueldos","costo_impuestos","costo_expensas","costo_otros"];const total=ids.reduce((acc,id)=>{const el=$(id);return acc+(el?Number(el.value||0):0);},0);const elT=$("modalTotalMensual");if(elT)elT.textContent=fmt(total);const elD=$("modalPromedioDiario");if(elD)elD.textContent=fmt(total/30);}
     function setState(state){["loadingBox","restrictedBox","contentBox"].forEach(id=>$(id).classList.remove("active"));$(state).classList.add("active")}
     function render(data){
       $("fechaCorte").textContent=data.fecha_corte?`Corte ${dateFmt.format(new Date(data.fecha_corte))}`:"Sin fecha de corte";
@@ -79,16 +121,17 @@
       const l=data.liquidez||{},p=data.pendientes_cobro||{},c=data.capital_inmovilizado||{},pa=data.pasivos||{};
       $("liquidezRows").innerHTML=[row("Efectivo contado",l.efectivo_contado),row("Caja cambio",l.caja_cambio),row("Caja grande / resguardado",l.caja_grande_resguardado),row("Cuentas digitales conciliadas",l.cuentas_digitales_conciliadas),row("Total liquidez",l.total)].join("");
       const bancos=Array.isArray(l.bancos_billeteras)?l.bancos_billeteras:[];
-      $("bancosBilleteras").innerHTML=bancos.length?bancos.map(item=>`<div class="finance-chip"><span>${item.nombre||"Banco / billetera"}</span><strong>${fmt(item.monto)}</strong></div>`).join(""):'<div class="finance-chip"><span>Bancos / billeteras</span><strong>$0,00</strong></div>';
+      $("bancosBilleteras").innerHTML=bancos.length?bancos.map(item=>`<div class="finance-chip"><span>${item.nombre||"Banco / billetera"}</span><strong class="money-value">${fmt(item.monto)}</strong></div>`).join(""):'<div class="finance-chip"><span>Bancos / billeteras</span><strong class="money-value">$0,00</strong></div>';
       $("pendientesRows").innerHTML=[row("Cuentas corrientes clientes",p.cuentas_corrientes_clientes),row("Ventas pendientes",p.ventas_pendientes),row("Acreditaciones pendientes estimadas",p.acreditaciones_pendientes_estimadas),row("Total pendientes",p.total)].join("");
       const pel=$("pendientesExtra");if(pel)pel.innerHTML=[rowN("Clientes con deuda",p.clientes_con_deuda),rowN("Clientes excedidos",p.clientes_excedidos),row("Cobrado en el período",p.cobrado_periodo)].join("");
       $("capitalRows").innerHTML=[row("Stock físico valorizado",c.stock_fisico_valorizado),row("Estimado receta / rendimiento",c.estimado_receta_rendimiento),row("Total operativo",c.total_operativo)].join("");
       $("pasivosRows").innerHTML=[row("Pagos pendientes",pa.pagos_pendientes),row("Proveedores pendientes",pa.proveedores_pendientes),row("Impuestos estimados",pa.impuestos_estimados),row("Total pasivos",pa.total)].join("");
       const eel=$("pasivosEgresos");if(eel)eel.innerHTML=[row("Egresos ejecutados",pa.egresos_ejecutados),row("IVA crédito fiscal",pa.iva_credito_fiscal)].concat((pa.por_tipo_impacto||[]).map(t=>row(LABELS_IMPACTO[t.tipo_impacto]||t.tipo_impacto,t.total_pagado))).join("");
-      renderCuentaLocal(data);renderIngresosPeriodo(data);renderResultadoOperativo(data);
+      renderCuentaLocal(data);renderIngresosPeriodo(data);renderResultadoOperativo(data);renderCostosOperativos(data);
       const alertas=Array.isArray(data.alertas)?data.alertas:[];
       $("alertasFinancieras").innerHTML=alertas.length?alertas.map(a=>`<div class="alert-item"><strong>${a.codigo||"alerta"}</strong><br><span>${a.mensaje||""}</span></div>`).join(""):'<div class="finance-chip"><span>Sin alertas financieras por ahora.</span></div>';
       setState("contentBox");
+      window.dispatchEvent(new CustomEvent("guernica:kpi-visibility-sync",{detail:{storageKey:"guernica_kpis_finanzas"}}));
     }
     async function cargarFinanzas(){
       setState("loadingBox");
@@ -108,6 +151,12 @@
     }
     $("actualizarFinanzas").onclick=cargarFinanzas;
     cargarFinanzas();
+    $("btnAbrirCostos").onclick=function(){$("costo_alquiler").value=Number(_lastCostos.alquiler_mensual||0);$("costo_servicios").value=Number(_lastCostos.servicios_mensual||0);$("costo_sueldos").value=Number(_lastCostos.sueldos_mensual||0);$("costo_impuestos").value=Number(_lastCostos.impuestos_mensual||0);$("costo_expensas").value=Number(_lastCostos.expensas_mensual||0);$("costo_otros").value=Number(_lastCostos.otros_mensual||0);$("costo_observaciones").value=_lastCostos.observaciones||"";calcularTotalModal();$("costosModal").style.display="flex";};
+    ["btnCerrarCostos","btnCancelarCostos"].forEach(id=>{$(id).onclick=()=>{$("costosModal").style.display="none";};});
+    $("costosModal").onclick=function(e){if(e.target===this)this.style.display="none";};
+    ["costo_alquiler","costo_servicios","costo_sueldos","costo_impuestos","costo_expensas","costo_otros"].forEach(id=>{const el=$(id);if(el)el.oninput=calcularTotalModal;});
+    $("btnGuardarCostos").onclick=async function(){const btn=this;btn.disabled=true;btn.textContent="Guardando...";try{const config={finanzas_costo_alquiler_mensual:Number($("costo_alquiler").value||0),finanzas_costo_servicios_mensual:Number($("costo_servicios").value||0),finanzas_costo_sueldos_mensual:Number($("costo_sueldos").value||0),finanzas_costo_impuestos_mensual:Number($("costo_impuestos").value||0),finanzas_costo_expensas_mensual:Number($("costo_expensas").value||0),finanzas_costo_otros_mensual:Number($("costo_otros").value||0),finanzas_costos_observaciones:$("costo_observaciones").value||""};const res=await fetch("/configuracion",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({config})});if(!res.ok)throw new Error("No se pudo guardar la configuración");$("costosModal").style.display="none";cargarFinanzas();}catch(e){alert(e.message||"Error al guardar costos");}finally{btn.disabled=false;btn.textContent="Guardar costos";}};
+    if(window.initKpiVisibility){window.initKpiVisibility({gridSelector:".kpi-grid",storageKey:"guernica_kpis_finanzas",enabled:true,defaultDisplay:"grid",targetSelectors:[".main"],sensitiveSelectors:["#kpiPosicionLiquida","#kpiMasaBruta","#kpiPatrimonio","#kpiDeudaNeta",".money-value","[data-sensitive='money']"]});}
   </script>
   <script src="/nav-permissions.js?v=7" defer></script>
   <script src="/user-menu.js?v=7" defer></script>
