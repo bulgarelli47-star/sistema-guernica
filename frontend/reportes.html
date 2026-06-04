@@ -659,6 +659,83 @@
       color: var(--text);
       font-size: 20px;
     }
+    /* ── Export modal Atlas UI ───────────────────────────────── */
+    .export-modal-atlas {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 0;
+      max-height: min(92vh, 720px);
+      width: min(640px, 100%);
+    }
+    .export-modal-atlas > .modal-head {
+      flex: 0 0 auto;
+      position: static;
+      margin: 0;
+      padding: 14px 18px;
+      background: linear-gradient(135deg, #16052e 0%, #2a1450 100%);
+      color: #fff;
+      border: none;
+      border-radius: 0;
+      box-shadow: none;
+    }
+    .export-modal-atlas > .modal-head h2 { color: #fff; margin: 0; }
+    .export-modal-atlas > .modal-head .close {
+      background: rgba(255,255,255,.1);
+      border-color: rgba(255,255,255,.22);
+      color: #fff;
+      border-radius: 10px;
+    }
+    .export-modal-atlas > .modal-head .close:hover {
+      background: rgba(255,255,255,.16);
+      border-color: rgba(255,255,255,.36);
+    }
+    .export-modal-atlas > .modal-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      padding: 16px 18px;
+      gap: 10px;
+    }
+    .export-modal-atlas > .modal-footer {
+      flex: 0 0 auto;
+      margin: 0;
+      padding: 12px 18px;
+      border-top: 1px solid var(--border);
+      background: #fff;
+    }
+    .export-filters-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .export-filters-grid select,
+    .export-filters-grid input[type="date"] {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: #fff;
+      border-radius: 10px;
+      padding: 8px 10px;
+      font: inherit;
+      font-size: 13px;
+      outline: none;
+    }
+    .export-option {
+      padding: 8px 10px !important;
+      gap: 8px !important;
+      border-radius: 10px !important;
+      font-size: 13px;
+      align-items: center;
+    }
+    .export-option small { font-size: 11px !important; margin-top: 1px !important; }
+    .export-notes { display: none; grid-column: 1/-1; gap: 7px; }
+    .export-notes.obs-active { display: grid; }
+    @media (max-width: 640px) {
+      .export-filters-grid { grid-template-columns: 1fr; }
+      .export-modal-atlas > .modal-head { padding: 12px 14px; }
+      .export-modal-atlas > .modal-body { padding: 12px 14px; }
+      .export-modal-atlas > .modal-footer { padding: 10px 14px; }
+    }
     .check-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1022,41 +1099,38 @@
   </div>
 
   <div class="modal" id="modalExportacion">
-    <div class="modal-card">
+    <div class="modal-card export-modal-atlas">
       <div class="modal-head">
         <div>
           <h2>Exportar reporte</h2>
-          <p class="message" id="mensajeExportacion">Elegí módulo, formato y rango. PDF abre una vista imprimible del navegador.</p>
         </div>
         <button class="close" id="cerrarExportacion" type="button" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
       <div class="modal-body">
-      <div class="filters">
-        <label>Módulo
-          <select id="exportModulo">
-            <option value="generales">Generales</option>
-            <option value="ventas">Ventas</option>
-            <option value="caja">Caja</option>
-            <option value="stock">Stock</option>
-            <option value="cuentas-corrientes">Cuentas corrientes</option>
-            <option value="proveedores-pagos">Proveedores y pagos</option>
-          </select>
-        </label>
-        <label>Formato
-          <select id="exportFormato">
-            <option value="excel">Excel</option>
-            <option value="pdf">PDF</option>
-          </select>
-          <span class="export-format-help" id="exportFormatoAyuda">Excel descarga datos en un archivo compatible con planillas.</span>
-        </label>
-        <label>Desde<input id="exportDesde" type="date"></label>
-        <label>Hasta<input id="exportHasta" type="date"></label>
-      </div>
-      <div class="check-grid" id="exportContenido"></div>
-      <div class="empty export-file-state">
-        <strong id="nombreArchivo">Nombre automático pendiente.</strong>
-        <span id="estadoExportacionArchivo">Listo para generar.</span>
-      </div>
+        <div class="export-filters-grid">
+          <label>Módulo
+            <select id="exportModulo">
+              <option value="generales">Generales</option>
+              <option value="ventas">Ventas</option>
+              <option value="caja">Caja</option>
+              <option value="stock">Stock</option>
+              <option value="cuentas-corrientes">Cuentas corrientes</option>
+              <option value="proveedores-pagos">Proveedores y pagos</option>
+            </select>
+          </label>
+          <label>Formato
+            <select id="exportFormato">
+              <option value="excel">Excel</option>
+              <option value="pdf">PDF</option>
+            </select>
+          </label>
+          <label>Desde<input id="exportDesde" type="date"></label>
+          <label>Hasta<input id="exportHasta" type="date"></label>
+        </div>
+        <div class="check-grid" id="exportContenido"></div>
+        <p class="message" id="mensajeExportacion" style="min-height:18px;margin:0"></p>
+        <strong id="nombreArchivo" style="display:none"></strong>
+        <span id="estadoExportacionArchivo" style="display:none"></span>
       </div>
       <div class="modal-footer modal-actions">
         <button class="button ghost" id="cancelarExportacion" type="button">Cancelar</button>
@@ -2351,7 +2425,9 @@
       $("kpis").innerHTML = datos.map(([icon, label, value, delta]) => {
         const cls = delta > 0 ? "up" : delta < 0 ? "down" : "";
         const sign = delta > 0 ? "+" : "";
-        return `<article class="kpi" data-export="${state.modulo}"><div class="kpi-icon">${icon}</div><span>${label}</span><strong>${value}</strong><div class="delta ${cls}">${sign}${delta.toFixed(1)}% vs filtro</div></article>`;
+        const isMoney = typeof value === "string" && value.startsWith("$");
+        const strongCls = isMoney ? ' class="money-value"' : "";
+        return `<article class="kpi" data-export="${state.modulo}"><div class="kpi-icon">${icon}</div><span>${label}</span><strong${strongCls}>${value}</strong><div class="delta ${cls}">${sign}${delta.toFixed(1)}% vs filtro</div></article>`;
       }).join("");
     }
 
@@ -2378,7 +2454,9 @@
           id === "stock" ? (data["Bajo stock"] ?? "-") :
           id === "cuentas-corrientes" ? (data["Deuda total"] || "-") :
           (data["Total pagado"] || "-");
-        return `<button class="module-kpi ${state.modulo===id?"active":""}" data-modulo="${id}" type="button"><span class="module-icon">${moduloIconos[id]}</span><span><strong>${label}</strong><small>${value}</small></span></button>`;
+        const isMoneyVal = typeof value === "string" && value.startsWith("$");
+        const smallCls = isMoneyVal ? ' class="money-value"' : "";
+        return `<button class="module-kpi ${state.modulo===id?"active":""}" data-modulo="${id}" type="button"><span class="module-icon">${moduloIconos[id]}</span><span><strong>${label}</strong><small${smallCls}>${value}</small></span></button>`;
       }).join("");
       document.querySelectorAll(".module-kpi").forEach((button) => {
         button.onclick = () => {
@@ -3011,11 +3089,12 @@
       renderModulo();
       window.initKpiVisibility?.({
         gridSelector: "#kpis",
-        targetSelectors: ["#kpis", "#kpiChartsRow"],
+        targetSelectors: ["#kpis", "#kpiChartsRow", "#moduleKpis"],
         storageKey: "guernica_kpis_reportes",
         barId: "kpiToggleBarReportes",
         buttonId: "toggleKpisBtnReportes"
       });
+      window.dispatchEvent(new CustomEvent("guernica:kpi-visibility-sync", { detail: { storageKey: "guernica_kpis_reportes" } }));
       setMessage("Reportes actualizados.", "ok");
     }
 
@@ -3063,6 +3142,13 @@
       });
       $("exportObservaciones")?.addEventListener("input", guardarPreferenciasExportacion);
       guardarPreferenciasExportacion();
+      const syncObsVis = () => {
+        const obsChk = document.querySelector('.export-content-check[value="observaciones"]');
+        const obsNotes = document.querySelector('.export-notes');
+        if (obsNotes && obsChk) obsNotes.classList.toggle("obs-active", obsChk.checked);
+      };
+      syncObsVis();
+      document.querySelector('.export-content-check[value="observaciones"]')?.addEventListener("change", syncObsVis);
     }
 
     function escaparTextarea(value) {
