@@ -378,7 +378,37 @@
 
     .payment-form-compact {
       display: grid;
+      gap: 12px;
+    }
+
+    .payment-section {
+      display: grid;
       gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #ffffff;
+      box-shadow: 0 10px 24px rgba(17, 24, 39, 0.04);
+    }
+
+    .payment-section-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .payment-section-head h3 {
+      margin: 0;
+      font-size: 14px;
+    }
+
+    .payment-section-head small {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .04em;
     }
 
     .payment-row {
@@ -395,7 +425,7 @@
     .method-buttons,
     .state-buttons {
       display: flex;
-      gap: 8px;
+      gap: 6px;
       flex-wrap: wrap;
     }
 
@@ -404,11 +434,12 @@
       border: 1px solid var(--border);
       background: #ffffff;
       color: var(--text);
-      border-radius: 12px;
-      padding: 10px 13px;
+      border-radius: 999px;
+      padding: 8px 12px;
       cursor: pointer;
       font-weight: 900;
-      min-width: 88px;
+      min-width: 76px;
+      min-height: 36px;
     }
 
     .method-button.active,
@@ -428,6 +459,89 @@
       background: rgba(217, 154, 33, 0.14);
       color: var(--warning);
       border-color: rgba(217, 154, 33, 0.28);
+    }
+
+    .payment-state-field {
+      order: -1;
+    }
+
+    .payment-state-method-row {
+      grid-template-columns: 1fr;
+    }
+
+    .payment-method-field,
+    #bloqueMixto,
+    #cuentaCobroPagoWrap {
+      grid-column: 1 / -1;
+    }
+
+    .payment-method-panel {
+      display: contents;
+    }
+
+    .payment-method-field {
+      padding: 12px;
+      border: 1px solid #ebe5f6;
+      border-radius: 12px;
+      background: #fbfaff;
+    }
+
+    #pagoModal .payment-modal-card {
+      width: min(820px, 100%);
+      max-height: calc(100vh - 56px);
+      overflow: hidden;
+      padding: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      background: #f8fafc;
+    }
+
+    #pagoModal .modal-header {
+      margin: 0;
+      padding: 16px 18px;
+      border: 0;
+      border-radius: 0;
+      background: linear-gradient(135deg, #16052e 0%, #2a1450 100%);
+      color: #fff;
+    }
+
+    #pagoModal .modal-header h2 {
+      margin: 0;
+    }
+
+    #pagoModal .modal-header .payment-modal-subtitle {
+      margin: 4px 0 0;
+      color: rgba(255, 255, 255, .72);
+      font-size: 12px;
+    }
+
+    #pagoModal .modal-header .message {
+      margin: 6px 0 0;
+      min-height: 16px;
+      color: rgba(255, 255, 255, .8);
+    }
+
+    #pagoModal .close-button {
+      border-color: rgba(255, 255, 255, .22);
+      background: rgba(255, 255, 255, .1);
+      color: #fff;
+      box-shadow: none;
+    }
+
+    #pagoModal .modal-body {
+      min-height: 0;
+      overflow: auto;
+      padding: 16px 18px 18px;
+      background: #f8fafc;
+    }
+
+    #pagoModal .modal-footer {
+      margin: 0;
+      padding: 12px 18px;
+      border-top: 1px solid var(--border);
+      background: rgba(255, 255, 255, .96);
+      justify-content: flex-end;
+      box-shadow: 0 -8px 22px rgba(17, 24, 39, .04);
     }
 
     .full { grid-column: 1 / -1; }
@@ -867,16 +981,24 @@
   </div>
 
   <div class="modal-backdrop" id="pagoModal" aria-hidden="true">
-    <article class="modal-card" role="dialog" aria-modal="true" aria-labelledby="pagoModalTitulo">
+    <article class="modal-card payment-modal-card" role="dialog" aria-modal="true" aria-labelledby="pagoModalTitulo">
       <div class="modal-header">
         <div>
           <h2 id="pagoModalTitulo">Registrar pago</h2>
+          <p class="payment-modal-subtitle">Registro de salida de dinero, proveedor y estado del pago.</p>
           <p class="message" id="mensaje"></p>
         </div>
         <button type="button" class="close-button" id="cerrarPagoModal" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
       <div class="modal-body">
       <div class="payment-form-compact">
+        <section class="payment-section">
+          <div class="payment-section-head">
+            <div>
+              <small>Datos del pago</small>
+              <h3>Comprobante e importe</h3>
+            </div>
+          </div>
         <div class="payment-row">
         <label>Fecha
           <input type="date" id="fechaPago" class="field" />
@@ -902,8 +1024,18 @@
           <input type="number" id="montoTotal" class="field" placeholder="0.00" step="0.01" min="0" />
         </label>
         </div>
-        <div class="payment-row two">
-          <label>Método de pago
+        </section>
+
+        <section class="payment-section payment-flow-section">
+          <div class="payment-section-head">
+            <div>
+              <small>Estado del pago</small>
+              <h3>Definir si impacta ahora</h3>
+            </div>
+          </div>
+        <div class="payment-row two payment-state-method-row">
+          <div class="payment-method-panel" id="formaPagoSection">
+          <label class="payment-method-field">Método de pago
             <input type="hidden" id="tipoPago" value="efectivo" />
             <div class="method-buttons" id="metodosPagoBotones">
               <button type="button" class="method-button active" data-metodo-pago="efectivo">EFT</button>
@@ -911,10 +1043,10 @@
               <button type="button" class="method-button" data-metodo-pago="mixto">MIXTO</button>
             </div>
           </label>
-          <label>Acción
+          <label class="payment-state-field">Estado del pago
             <input type="hidden" id="estadoPago" value="registrado" />
             <div class="state-buttons" id="estadoPagoBotones">
-              <button type="button" class="state-button pay active" data-estado-pago="registrado">Pagar</button>
+              <button type="button" class="state-button pay active" data-estado-pago="registrado">Pagado ahora</button>
               <button type="button" class="state-button pending" data-estado-pago="pendiente">Pendiente</button>
             </div>
           </label>
@@ -932,6 +1064,8 @@
             <option value="">Sin asignar</option>
           </select>
         </label>
+          </div>
+        </section>
         <input type="hidden" id="comprobante" value="comprobante" />
         <input type="hidden" id="cuentaDestino" value="" />
         <input type="hidden" id="referencia" value="" />
@@ -1117,9 +1251,26 @@
       return Number((apertura + Number(resumen.total_efectivo || 0) - Number(resumen.total_pagos_efectivo || 0)).toFixed(2));
     }
 
-    function actualizarBloqueMixto() {
-      bloqueMixto.classList.toggle("hidden", tipoPago.value !== "mixto");
+    function requiereCuentaCobroMetodoPago(metodo) {
+      const tipo = String(metodo || "").toLowerCase();
+      if (!tipo || tipo === "efectivo" || tipo === "cuenta_corriente") return false;
+      return true;
+    }
+
+    function actualizarBloquesPago() {
+      const registrado = estadoPago.value === "registrado";
+      const metodo = tipoPago.value;
+      const metodoPagoWrap = tipoPago.closest("label");
+      if (metodoPagoWrap) metodoPagoWrap.classList.toggle("hidden", !registrado);
+      bloqueMixto.classList.toggle("hidden", !(registrado && metodo === "mixto"));
+      const tieneCuentas = cuentaCobroPago && cuentaCobroPago.options.length > 1;
+      const mostrarCuenta = registrado && requiereCuentaCobroMetodoPago(metodo) && tieneCuentas;
+      if (cuentaCobroPagoWrap) cuentaCobroPagoWrap.classList.toggle("hidden", !mostrarCuenta);
       actualizarImpacto();
+    }
+
+    function actualizarBloqueMixto() {
+      actualizarBloquesPago();
     }
 
     function setMetodoPago(metodo) {
@@ -1127,7 +1278,7 @@
       document.querySelectorAll("[data-metodo-pago]").forEach((button) => {
         button.classList.toggle("active", button.dataset.metodoPago === metodo);
       });
-      actualizarBloqueMixto();
+      actualizarBloquesPago();
       cargarCuentasCobroPago(metodo);
     }
 
@@ -1136,13 +1287,19 @@
       cuentaCobroPago.innerHTML = '<option value="">Sin asignar</option>';
       cuentaCobroPagoWrap.classList.add("hidden");
       cuentasCobroPagoActuales = [];
-      if (!metodo) return;
+      if (!metodo) {
+        actualizarBloquesPago();
+        return;
+      }
       const tipoCuenta = metodo === "mixto" ? "debito" : metodo;
       try {
         const res = await fetch(`/cuentas_cobro/tipo/${encodeURIComponent(tipoCuenta)}`);
         if (!res.ok) throw new Error("fallo");
         const cuentas = await res.json();
-        if (!Array.isArray(cuentas) || !cuentas.length) return;
+        if (!Array.isArray(cuentas) || !cuentas.length) {
+          actualizarBloquesPago();
+          return;
+        }
         cuentasCobroPagoActuales = cuentas;
         cuentas.forEach((cuenta) => {
           const opt = document.createElement("option");
@@ -1152,8 +1309,10 @@
         });
         cuentaCobroPago.value = selected ? String(selected) : "";
         cuentaCobroPagoWrap.classList.remove("hidden");
+        actualizarBloquesPago();
       } catch {
         cuentaCobroPago.value = "";
+        actualizarBloquesPago();
       }
     }
 
@@ -1190,7 +1349,7 @@
       document.querySelectorAll("[data-estado-pago]").forEach((button) => {
         button.classList.toggle("active", button.dataset.estadoPago === estado);
       });
-      actualizarImpacto();
+      actualizarBloquesPago();
     }
 
     function getMontoImpacto() {
@@ -1530,9 +1689,12 @@
         });
         if (!tipos.find((t) => t.codigo === actual)) {
           setMetodoPago(tipos[0].codigo);
+        } else {
+          actualizarBloquesPago();
         }
       } catch {
         // fallback: mantener botones hardcodeados
+        actualizarBloquesPago();
       }
     }
 
