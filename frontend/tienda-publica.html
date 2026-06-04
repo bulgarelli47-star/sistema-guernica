@@ -525,9 +525,10 @@
     const container = $("extrasGrupos");
     container.innerHTML = "";
 
-    const checkMods = extrasModificadores.filter(m => m.tipo !== "observacion");
+    const opciones = extrasModificadores.filter(m => String(m.tipo || "").toLowerCase() === "observacion");
+    const checkMods = extrasModificadores.filter(m => String(m.tipo || "").toLowerCase() !== "observacion");
 
-    if (!checkMods.length) {
+    if (!opciones.length && !checkMods.length) {
       const msg = document.createElement("div");
       msg.className = "extras-sin-mods";
       msg.textContent = "Sin extras disponibles para este producto.";
@@ -536,20 +537,24 @@
       return;
     }
 
+    function renderGrupoModificadores(tituloTexto, mods) {
+      if (!mods.length) return;
     const grupo = document.createElement("div");
     grupo.className = "extras-grupo";
 
     const titulo = document.createElement("div");
     titulo.className = "extras-grupo-titulo";
-    titulo.textContent = "Extras y modificaciones";
+      titulo.textContent = tituloTexto;
     grupo.appendChild(titulo);
 
-    checkMods.forEach(m => {
+      mods.forEach(m => {
+      const esOpcion = String(m.tipo || "").toLowerCase() === "observacion";
       const lbl = document.createElement("label");
       lbl.className = "extras-chk-label";
 
       const chk = document.createElement("input");
-      chk.type = "checkbox";
+      chk.type = esOpcion ? "radio" : "checkbox";
+      if (esOpcion) chk.name = `opcion-producto-${extrasProducto?.id || "actual"}`;
       chk.className = "extras-chk";
       chk.dataset.modId = m.modificador_id;
       chk.addEventListener("change", actualizarPrecioExtras);
@@ -559,7 +564,7 @@
 
       const nom = document.createElement("div");
       nom.className = "extras-nombre";
-      nom.textContent = m.nombre;
+        nom.textContent = String(m.tipo || "").toLowerCase() === "observacion" ? `Opción: ${m.nombre}` : m.nombre;
       info.appendChild(nom);
 
       if (Number(m.precio_extra) > 0) {
@@ -575,6 +580,10 @@
     });
 
     container.appendChild(grupo);
+    }
+
+    renderGrupoModificadores("Opciones del producto", opciones);
+    renderGrupoModificadores("Extras / cambios", checkMods);
     actualizarPrecioExtras();
   }
 
@@ -738,7 +747,7 @@
       if (tipo === "quitar") {
         opciones.push(`Sin ${nombre}${sufijoCantidad}`);
       } else if (tipo === "observacion") {
-        opciones.push(nombre);
+        opciones.push(`Opción: ${nombre}`);
       } else {
         opciones.push(`${nombre}${sufijoCantidad}${sufijoPrecio}`);
       }

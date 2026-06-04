@@ -2592,10 +2592,12 @@
 
     function renderOpcionModificadorVenta(modificador) {
       const sinImpacto = esModificadorSinImpacto(modificador);
+      const inputType = sinImpacto ? "radio" : "checkbox";
+      const inputName = sinImpacto ? `mod-opcion-${productoModificadoresActual?.id || "actual"}` : "";
       return `
         <div class="modifier-option${sinImpacto ? " no-impact" : ""}" data-modificador-id="${modificador.id}">
           <span class="modifier-option-main">
-            <input type="checkbox" data-mod-check>
+            <input type="${inputType}" ${inputName ? `name="${inputName}"` : ""} data-mod-check>
             <span>
               <strong>${escapeHtml(modificador.nombre)}</strong>
               <small>${sinImpacto ? "Opci\u00f3n sin impacto" : `${escapeHtml(modificador.tipo)}${Number(modificador.precio_extra || 0) ? ` \u00b7 +$${formatearNumero(modificador.precio_extra)}` : ""}`}</small>
@@ -2634,9 +2636,9 @@
       listaModificadoresVenta.querySelectorAll(".modifier-option").forEach((opt) => {
         opt.addEventListener("click", (e) => {
           if (e.target.closest("[data-mod-cantidad]")) return;
-          if (e.target.type === "checkbox") return;
+          if (e.target.matches("[data-mod-check]")) return;
           const check = opt.querySelector("[data-mod-check]");
-          if (check) { check.checked = !check.checked; actualizarTotalModalModificadores(); }
+          if (check) { check.checked = check.type === "radio" ? true : !check.checked; actualizarTotalModalModificadores(); }
         });
       });
       listaModificadoresVenta.querySelectorAll("input").forEach((input) => {

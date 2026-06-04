@@ -157,7 +157,7 @@
 
     function renderOpcionesPedidoItem(item){
       const ingredientes=(item.ingredientes||[]).filter(i=>String(i.tipo||"").toLowerCase()==="quitar").map(i=>`<div style="font-size:12px;color:var(--muted);margin-top:2px">- Sin ${i.nombre||i.ingrediente_nombre_snapshot||""}</div>`).join("");
-      const modificadores=(item.modificadores||[]).map(m=>{const precio=n(m.precio_extra);return`<div style="font-size:12px;color:var(--primary);margin-top:2px">+ ${m.nombre||m.modificador_nombre_snapshot||""}${precio>0?" (+"+money(precio)+")":""}</div>`}).join("");
+      const modificadores=(item.modificadores||[]).map(m=>{const precio=n(m.precio_extra);const tipo=String(m.tipo||m.tipo_snapshot||"").toLowerCase();const nombre=m.nombre||m.modificador_nombre_snapshot||"";if(tipo==="observacion")return`<div style="font-size:12px;color:var(--primary);margin-top:2px">Opción: ${nombre}</div>`;if(tipo==="quitar")return`<div style="font-size:12px;color:var(--muted);margin-top:2px">- Sin ${nombre}</div>`;return`<div style="font-size:12px;color:var(--primary);margin-top:2px">+ ${nombre}${precio>0?" (+"+money(precio)+")":""}</div>`}).join("");
       return ingredientes+modificadores;
     }
 
