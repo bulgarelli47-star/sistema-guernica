@@ -868,7 +868,7 @@
     function getVistaOperativa(rol,cfg=configProveedores,modulo=null){const key=String(rol||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");const canonical={administrador:"admin",dueno:"admin",dueño:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[key]||key;if(canonical==="admin")return "completa";if(modulo){const pm=normalizarVistaOperativa(cfg?.[`vista_operativa_${modulo}_${canonical}`]);if(pm)return pm;}const directa=normalizarVistaOperativa(cfg?.[`vista_operativa_${canonical}`]);if(directa)return directa;const legacy=normalizarVistaOperativa(cfg?.[`dashboard_tipo_${canonical}`]);if(legacy)return legacy;return canonical==="colaborador"?"reducida":"completa"}
     function esVistaReducida(){return getVistaOperativa(rolActual(),configProveedores,"proveedores")==="reducida"}
     function aplicarVistaOperativaProveedores(){document.body.classList.toggle("vista-reducida",esVistaReducida())}
-    function mostrarKpisComplejos(config){aplicarVistaOperativaProveedores();const complejo=getVistaOperativa(rolActual(),config)==="completa";if(window.initKpiVisibility){window.initKpiVisibility({storageKey:"guernica_kpis_proveedores",enabled:complejo})}else if(kpiGrid){kpiGrid.style.display=complejo?"grid":"none"}}
+    function mostrarKpisComplejos(config){aplicarVistaOperativaProveedores();const complejo=getVistaOperativa(rolActual(),config)==="completa";if(window.initKpiVisibility){window.initKpiVisibility({gridSelector:".kpi-grid",storageKey:"guernica_kpis_proveedores",enabled:complejo,defaultDisplay:"grid",sensitiveSelectors:["#kpiComprasMes","#kpiPagosMes","#kpiSaldo","#kpiComprasAnio"]})}else if(kpiGrid){kpiGrid.style.display=complejo?"grid":"none"}}
 
     function hoyISO() {
       return new Date().toISOString().slice(0, 10);
@@ -1054,6 +1054,7 @@
     function renderizarProveedores() {
       const items = getProveedoresFiltrados();
       renderKpis(proveedores);
+      window.dispatchEvent(new CustomEvent("guernica:kpi-visibility-sync", { detail: { storageKey: "guernica_kpis_proveedores" } }));
       tablaProveedores.innerHTML = "";
 
       if (items.length === 0) {
