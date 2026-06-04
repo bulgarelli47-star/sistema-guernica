@@ -1590,6 +1590,7 @@
     :where(.close,.icon-button,.mib.icon-only){display:inline-grid;place-items:center;flex:0 0 auto;border-radius:10px}
     @media(max-width:860px){:where(.modal,.modal-backdrop){padding:10px}.modal>.modal-card,.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{width:min(100%,calc(100vw - 20px));max-height:calc(100vh - 20px);border-radius:16px}:where(.modal-actions,.dialog-actions,.modal-footer){justify-content:stretch}:where(.modal-actions>* , .dialog-actions>* , .modal-footer>*){flex:1 1 140px}}
     .atlas-modal-card{padding:0;overflow:hidden;background:#f8fafc}.atlas-modal-card>.modal-header{margin:0;border:0;border-radius:0;padding:16px 18px;background:linear-gradient(135deg,#16052e 0%,#2a1450 100%);color:#fff;box-shadow:none}.atlas-modal-card>.modal-header p{color:rgba(255,255,255,.72)}.atlas-modal-card .modal-body,.atlas-modal-card .cobro-modal-body{padding:16px 18px;background:#f8fafc}.atlas-modal-card .checkout-section,.atlas-modal-card .support-card,.atlas-modal-card .client-select-card{border:1px solid var(--border);border-radius:16px;background:#fff;box-shadow:0 10px 24px rgba(17,24,39,.04)}.atlas-modal-close{width:38px;height:38px;border-radius:10px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.1);color:#fff;display:inline-grid;place-items:center;cursor:pointer}.atlas-modal-card>.modal-footer,.atlas-modal-card>.inline-actions{margin:0;padding:12px 18px;border-top:1px solid var(--border);background:#fff}.atlas-modal-card>.modal-footer[aria-hidden="true"]{display:none}.cobro-modal-card.atlas-modal-card{width:min(720px,100%);max-height:calc(100vh - 56px);display:grid;grid-template-rows:auto minmax(0,1fr) auto}.cobro-modal-card.atlas-modal-card .cobro-modal-body{overflow:auto}.payment-button.disabled-by-account{opacity:.45}.payment-button.disabled-by-account::after{content:"Sin cuenta";font-size:10px;color:var(--danger);font-weight:800;margin-top:2px}.client-select-card{padding:14px}.client-select-card .field{margin-top:8px}
+    .cobro-system-message{margin:0 18px 12px;padding:11px 13px;border-radius:12px;border:1px solid rgba(224,82,82,.28);background:rgba(224,82,82,.1);color:#991b1b;font-weight:800;font-size:13px;line-height:1.35}.cobro-system-message.hidden{display:none}
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=8" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -1958,6 +1959,7 @@
           </div>
         </section>
       </div>
+      <div id="mensajeCobroVenta" class="cobro-system-message hidden" role="status" aria-live="polite"></div>
       <div class="inline-actions">
         <button type="button" class="button secondary hidden" id="enviarPointModal">Enviar a terminal</button>
         <button type="button" class="button success" id="confirmarConfigCobro">Confirmar cobro</button>
@@ -2183,6 +2185,7 @@
     const resumenCobroRecargoLinea = document.getElementById("resumenCobroRecargoLinea");
     const resumenCobroRecargo = document.getElementById("resumenCobroRecargo");
     const resumenCobroTotal = document.getElementById("resumenCobroTotal");
+    const mensajeCobroVenta = document.getElementById("mensajeCobroVenta");
     const pointActionsTicket = document.getElementById("pointActionsTicket");
     const enviarPointTicket = document.getElementById("enviarPointTicket");
     const enviarPointModal = document.getElementById("enviarPointModal");
@@ -2468,8 +2471,22 @@
       return mensaje ? `No se pudo realizar la operación. ${mensaje}` : "No se pudo realizar la operación de cuenta corriente.";
     }
 
+    function mostrarMensajeCobroVenta(mensaje, esError = false) {
+      if (!mensajeCobroVenta) return;
+      mensajeCobroVenta.textContent = mensaje || "";
+      mensajeCobroVenta.classList.toggle("hidden", !mensaje);
+      mensajeCobroVenta.style.borderColor = esError ? "rgba(224,82,82,.28)" : "rgba(34,163,90,.28)";
+      mensajeCobroVenta.style.background = esError ? "rgba(224,82,82,.1)" : "rgba(34,163,90,.1)";
+      mensajeCobroVenta.style.color = esError ? "#991b1b" : "#166534";
+    }
+
+    function limpiarMensajeCobroVenta() {
+      mostrarMensajeCobroVenta("", false);
+    }
+
     function notificarBloqueoCuentaCorrienteVentas(mensajeBackend) {
       const mensaje = mensajeOperativoCuentaCorriente(mensajeBackend);
+      mostrarMensajeCobroVenta(mensaje, true);
       mostrarToastSistema(mensaje, true);
     }
 
@@ -3018,6 +3035,7 @@
     }
 
     function abrirModalCobroVenta() {
+      limpiarMensajeCobroVenta();
       actualizarCobroNormalUI();
       abrirModal(modalCobroVenta);
       window.setTimeout(() => {
@@ -4215,6 +4233,7 @@
     }
 
     async function registrarVenta() {
+      limpiarMensajeCobroVenta();
       if (ticket.length === 0) {
         mostrarMensaje("Agrega al menos un producto al ticket", true);
         return;
@@ -4270,10 +4289,11 @@
         }
 
         if (currentPendingId) {
+          const tipoCobroPendiente = esCuentaCorriente.checked ? "cuenta_corriente" : cobro.tipo_cobro;
           await cobrarPendiente(
             currentPendingId,
             total,
-            cobro.tipo_cobro,
+            tipoCobroPendiente,
             cobro.monto_efectivo,
             cobro.monto_debito,
             cuentaCobroVenta?.value || null
@@ -4299,7 +4319,7 @@
           })
         });
 
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
 
         if (!res.ok) {
           if (esCuentaCorriente.checked) {
@@ -4323,7 +4343,11 @@
         await cargarPendientes();
       } catch (error) {
         console.error("Error al registrar venta:", error);
-        mostrarMensaje("Error al conectar con el servidor", true);
+        if (esCuentaCorriente.checked || selectedPaymentMode === "cuenta_corriente") {
+          notificarBloqueoCuentaCorrienteVentas(error?.message || "No se pudo conectar con el servidor.");
+        } else {
+          mostrarMensaje("Error al conectar con el servidor", true);
+        }
       } finally {
         botonRegistrar.disabled = false;
         if (confirmarConfigCobro) confirmarConfigCobro.disabled = false;
@@ -4490,7 +4514,7 @@
           })
         });
 
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
 
         if (!res.ok) {
           if (String(tipoCobro || "").toLowerCase() === "cuenta_corriente") {
@@ -4516,7 +4540,11 @@
         await cargarHistorialAnulados();
       } catch (error) {
         console.error("Error al cobrar pendiente:", error);
-        mostrarMensaje("Error al cobrar el ticket pendiente", true);
+        if (String(tipoCobro || "").toLowerCase() === "cuenta_corriente") {
+          notificarBloqueoCuentaCorrienteVentas(error?.message || "No se pudo cobrar el pendiente a cuenta corriente.");
+        } else {
+          mostrarMensaje("Error al cobrar el ticket pendiente", true);
+        }
       }
     }
 
@@ -4728,6 +4756,7 @@
     }
 
     function setPaymentMode(mode) {
+      limpiarMensajeCobroVenta();
       selectedPaymentMode = mode;
 
       if (mode === "cuenta_corriente") {
