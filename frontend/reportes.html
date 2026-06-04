@@ -1178,6 +1178,7 @@
               <button class="constructor-plantilla-card" data-plantilla="caja-movimientos" type="button">Movimientos de caja</button>
               <button class="constructor-plantilla-card" data-plantilla="proveedores-ranking" type="button">Ranking proveedores</button>
               <button class="constructor-plantilla-card" data-plantilla="stock-rotacion" type="button">Rotación de stock</button>
+              <button class="constructor-plantilla-card" data-plantilla="extras-combos" type="button">Extras y combos</button>
             </div>
           </section>
           <section>
@@ -1245,7 +1246,8 @@
       "resumen-ejecutivo": "Resumen dueño",
       "caja-movimientos": "Movimientos de caja",
       "proveedores-ranking": "Ranking proveedores",
-      "stock-rotacion": "Rotación de stock"
+      "stock-rotacion": "Rotación de stock",
+      "extras-combos": "Extras y combos"
     };
     const CONSTRUCTOR_MODULO_LABELS = {
       "ventas": "Ventas",
@@ -1284,7 +1286,7 @@
       }
       return null;
     }
-    function recargarPlantillaActual() { const { plantilla } = constructorState; if (!plantilla) return; if (plantilla === "ventas-del-dia") cargarConstructorVentas(); else if (plantilla === "cierre-diario") cargarConstructorCierreDiario(); else if (plantilla === "clientes-con-deuda") cargarConstructorClientesDeuda(); else if (plantilla === "pagos-pendientes") cargarConstructorPagosPendientes(); else if (plantilla === "resumen-ejecutivo") cargarConstructorResumenEjecutivo(); else if (plantilla === "caja-movimientos") cargarConstructorCajaMovimientos(); else if (plantilla === "proveedores-ranking") cargarConstructorProveedoresRanking(); else if (plantilla === "stock-rotacion") cargarConstructorStockRotacion(); }
+    function recargarPlantillaActual() { const { plantilla } = constructorState; if (!plantilla) return; if (plantilla === "ventas-del-dia") cargarConstructorVentas(); else if (plantilla === "cierre-diario") cargarConstructorCierreDiario(); else if (plantilla === "clientes-con-deuda") cargarConstructorClientesDeuda(); else if (plantilla === "pagos-pendientes") cargarConstructorPagosPendientes(); else if (plantilla === "resumen-ejecutivo") cargarConstructorResumenEjecutivo(); else if (plantilla === "caja-movimientos") cargarConstructorCajaMovimientos(); else if (plantilla === "proveedores-ranking") cargarConstructorProveedoresRanking(); else if (plantilla === "stock-rotacion") cargarConstructorStockRotacion(); else if (plantilla === "extras-combos") cargarConstructorExtrasCombos(); }
     function renderConstructorPreview() {
       const el = $("constructorPreview");
       if (!el) return;
@@ -1347,6 +1349,10 @@
       }
       if (plantilla === "stock-rotacion" && data) {
         renderConstructorStockRotacion(el, data);
+        return;
+      }
+      if (plantilla === "extras-combos" && data) {
+        renderConstructorExtrasCombos(el, data);
         return;
       }
       const cards = [];
@@ -1837,6 +1843,87 @@
       const catHtml = porCategoria.length ? `<p class="constructor-section-title">Por categoría</p><div class="constructor-ranking">${porCategoria.slice(0, 8).map((c, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${c.categoria || "Sin categoría"}</span><span class="constructor-ranking-val">${money(n(c.stock_valorizado_fisico))}</span><small class="constructor-ranking-qty">${n(c.productos)} prod.</small></div>`).join("")}</div>` : "";
       el.innerHTML = titulo + kpisHtml + rotanHtml + sinMovHtml + catHtml;
     }
+    async function cargarConstructorExtrasCombos() {
+      const { desde, hasta } = getConstructorRango();
+      constructorState.loading = true;
+      constructorState.error = "";
+      constructorState.data = null;
+      renderConstructorPreview();
+      try {
+        const res = await fetch(`/reportes/modificadores?desde=${desde}&hasta=${hasta}`);
+        if (!res.ok) throw new Error(`${res.status}`);
+        constructorState.data = await res.json();
+        constructorState.loading = false;
+      } catch {
+        constructorState.loading = false;
+        constructorState.error = "No se pudo cargar la plantilla Extras y combos.";
+      }
+      renderConstructorPreview();
+    }
+    function renderConstructorExtrasCombos(el, data) {
+      const { desde, hasta } = getConstructorRango();
+      const periodoLabel = desde === hasta ? desde : `${desde} → ${hasta}`;
+      const titulo = `<div class="constructor-preview-title"><h3>Extras y combos</h3><p>${periodoLabel}</p></div>`;
+      const emptyMsg = (msg) => `<p class="constructor-empty">${msg}</p>`;
+      const sectionTitle = (t) => `<p class="constructor-section-title">${t}</p>`;
+      function rankingMods(rows, nombreKey, cols) {
+        if (!rows.length) return "";
+        return `<div class="constructor-ranking">${rows.slice(0, 15).map((r, i) => {
+          const parts = cols.map((c) => c.isVal
+            ? `<span class="constructor-ranking-val">${c.fmt ? c.fmt(r[c.key]) : r[c.key]}</span>`
+            : `<small class="constructor-ranking-qty">${c.label ? c.label + ": " : ""}${c.fmt ? c.fmt(r[c.key]) : r[c.key]}</small>`);
+          return `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${r[nombreKey] || "—"}</span>${parts.join("")}</div>`;
+        }).join("")}${rows.length > 15 ? `<div class="constructor-empty">y ${rows.length - 15} más</div>` : ""}</div>`;
+      }
+      const modsUsados = Array.isArray(data?.modificadores_mas_usados) ? data.modificadores_mas_usados : [];
+      const extrasFacturan = Array.isArray(data?.extras_mas_facturan) ? data.extras_mas_facturan : [];
+      const opcionesSI = Array.isArray(data?.opciones_sin_impacto) ? data.opciones_sin_impacto : [];
+      const ingredientes = Array.isArray(data?.ingredientes_mas_quitados) ? data.ingredientes_mas_quitados : [];
+      const combos = Array.isArray(data?.combos_mas_vendidos) ? data.combos_mas_vendidos : [];
+      const prodMods = Array.isArray(data?.productos_con_mas_modificadores) ? data.productos_con_mas_modificadores : [];
+      const secMods = sectionTitle(`Modificadores más usados`) +
+        (modsUsados.length
+          ? rankingMods(modsUsados, "nombre_modificador", [
+              { key: "tipo", label: "tipo" },
+              { key: "veces_elegido", isVal: true },
+              { key: "total_facturado", isVal: true, fmt: money }
+            ])
+          : emptyMsg("Sin modificadores registrados en el período."));
+      const secExtras = sectionTitle("Extras que más facturan") +
+        (extrasFacturan.length
+          ? rankingMods(extrasFacturan, "nombre_modificador", [
+              { key: "veces_elegido", label: "veces" },
+              { key: "total_facturado", isVal: true, fmt: money }
+            ])
+          : emptyMsg("Sin extras con precio en el período."));
+      const secOpciones = sectionTitle("Opciones sin impacto más elegidas") +
+        (opcionesSI.length
+          ? rankingMods(opcionesSI, "nombre_modificador", [
+              { key: "veces_elegido", isVal: true }
+            ])
+          : emptyMsg("Todavía no hay opciones sin impacto registradas."));
+      const secIngs = sectionTitle("Ingredientes más quitados") +
+        (ingredientes.length
+          ? rankingMods(ingredientes, "nombre_ingrediente", [
+              { key: "veces", isVal: true }
+            ])
+          : emptyMsg("Sin ingredientes quitados en el período."));
+      const secCombos = sectionTitle("Combos más vendidos") +
+        (combos.length
+          ? rankingMods(combos, "nombre_producto", [
+              { key: "unidades_vendidas", label: "uds." },
+              { key: "total_facturado", isVal: true, fmt: money }
+            ])
+          : emptyMsg("Sin combos vendidos en el período."));
+      const secProdMods = sectionTitle("Productos con más modificadores") +
+        (prodMods.length
+          ? rankingMods(prodMods, "nombre_producto", [
+              { key: "total_modificadores", label: "mods" },
+              { key: "total_facturado_modificadores", isVal: true, fmt: money }
+            ])
+          : emptyMsg("Sin datos de productos con modificadores."));
+      el.innerHTML = titulo + secMods + secExtras + secOpciones + secIngs + secCombos + secProdMods;
+    }
     function _csvEscape(val) { if (val == null) return ""; const s = String(val); return (s.includes(",") || s.includes('"') || s.includes("\n")) ? `"${s.replace(/"/g, '""')}"` : s; }
     function getConstructorRowsParaExportar() {
       const { plantilla, data } = constructorState;
@@ -1908,6 +1995,22 @@
       if (plantilla === "stock-rotacion") {
         const productos = Array.isArray(data.productos) ? data.productos : [];
         return productos.filter((p) => n(p.items_vendidos) > 0).sort((a, b) => n(b.items_vendidos) - n(a.items_vendidos));
+      }
+      if (plantilla === "extras-combos") {
+        const rows = [];
+        (Array.isArray(data.modificadores_mas_usados) ? data.modificadores_mas_usados : []).forEach((r) =>
+          rows.push({ seccion: "Modificadores más usados", nombre: r.nombre_modificador, tipo: r.tipo, veces: r.veces_elegido, total: r.total_facturado }));
+        (Array.isArray(data.extras_mas_facturan) ? data.extras_mas_facturan : []).forEach((r) =>
+          rows.push({ seccion: "Extras que más facturan", nombre: r.nombre_modificador, tipo: r.tipo, veces: r.veces_elegido, total: r.total_facturado }));
+        (Array.isArray(data.opciones_sin_impacto) ? data.opciones_sin_impacto : []).forEach((r) =>
+          rows.push({ seccion: "Opciones sin impacto", nombre: r.nombre_modificador, tipo: r.tipo, veces: r.veces_elegido, total: 0 }));
+        (Array.isArray(data.ingredientes_mas_quitados) ? data.ingredientes_mas_quitados : []).forEach((r) =>
+          rows.push({ seccion: "Ingredientes más quitados", nombre: r.nombre_ingrediente, tipo: r.tipo, veces: r.veces, total: 0 }));
+        (Array.isArray(data.combos_mas_vendidos) ? data.combos_mas_vendidos : []).forEach((r) =>
+          rows.push({ seccion: "Combos más vendidos", nombre: r.nombre_producto, tipo: "combo", veces: n(r.unidades_vendidas), total: r.total_facturado }));
+        (Array.isArray(data.productos_con_mas_modificadores) ? data.productos_con_mas_modificadores : []).forEach((r) =>
+          rows.push({ seccion: "Productos con más modificadores", nombre: r.nombre_producto, tipo: "producto", veces: r.total_modificadores, total: r.total_facturado_modificadores }));
+        return rows;
       }
       return [];
     }
@@ -2125,6 +2228,14 @@
               if (stockBtn) stockBtn.classList.add("active");
             }
             cargarConstructorStockRotacion();
+          } else if (btn.dataset.plantilla === "extras-combos") {
+            constructorState.modulo = "ventas";
+            if (modulosEl) {
+              modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+              const ventasBtn = modulosEl.querySelector('[data-modulo="ventas"]');
+              if (ventasBtn) ventasBtn.classList.add("active");
+            }
+            cargarConstructorExtrasCombos();
           } else {
             renderConstructorPreview();
           }
