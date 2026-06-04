@@ -1415,6 +1415,24 @@
       margin: 12px 0;
     }
 
+    .modifier-group {
+      display: grid;
+      gap: 8px;
+    }
+
+    .modifier-group + .modifier-group {
+      margin-top: 12px;
+    }
+
+    .modifier-group-title {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
     .modifier-option {
       border: 1px solid var(--border);
       border-radius: 12px;
@@ -1425,6 +1443,12 @@
       gap: 8px;
       align-items: center;
       background: #ffffff;
+    }
+
+    .modifier-option.no-impact {
+      grid-template-columns: minmax(0, 1fr);
+      background: #fbfffc;
+      border-color: rgba(34, 163, 90, .22);
     }
 
     .modifier-option-main {
@@ -2562,6 +2586,26 @@
         });
     }
 
+    function esModificadorSinImpacto(modificador) {
+      return String(modificador?.tipo || "").toLowerCase() === "observacion";
+    }
+
+    function renderOpcionModificadorVenta(modificador) {
+      const sinImpacto = esModificadorSinImpacto(modificador);
+      return `
+        <div class="modifier-option${sinImpacto ? " no-impact" : ""}" data-modificador-id="${modificador.id}">
+          <span class="modifier-option-main">
+            <input type="checkbox" data-mod-check>
+            <span>
+              <strong>${escapeHtml(modificador.nombre)}</strong>
+              <small>${sinImpacto ? "Opci\u00f3n sin impacto" : `${escapeHtml(modificador.tipo)}${Number(modificador.precio_extra || 0) ? ` \u00b7 +$${formatearNumero(modificador.precio_extra)}` : ""}`}</small>
+            </span>
+          </span>
+          ${sinImpacto ? "" : '<input class="field" type="number" min="1" step="1" value="1" data-mod-cantidad>'}
+        </div>
+      `;
+    }
+
     function renderModalModificadores(producto, modificadores) {
       productoModificadoresActual = producto;
       modificadoresDisponiblesActuales = (Array.isArray(modificadores) ? modificadores : [])
@@ -2581,6 +2625,12 @@
           <input class="field" type="number" min="1" step="1" value="1" data-mod-cantidad>
         </div>
       `).join("");
+      const opciones = modificadoresDisponiblesActuales.filter(esModificadorSinImpacto);
+      const extras = modificadoresDisponiblesActuales.filter((modificador) => !esModificadorSinImpacto(modificador));
+      listaModificadoresVenta.innerHTML = [
+        opciones.length ? `<section class="modifier-group"><h4 class="modifier-group-title">Opciones del producto</h4>${opciones.map(renderOpcionModificadorVenta).join("")}</section>` : "",
+        extras.length ? `<section class="modifier-group"><h4 class="modifier-group-title">Extras / cambios</h4>${extras.map(renderOpcionModificadorVenta).join("")}</section>` : ""
+      ].filter(Boolean).join("");
       listaModificadoresVenta.querySelectorAll(".modifier-option").forEach((opt) => {
         opt.addEventListener("click", (e) => {
           if (e.target.closest("[data-mod-cantidad]")) return;
@@ -3076,6 +3126,12 @@
       };
     }
 
+    function renderModificadorTicketImpreso(mod) {
+      if (mod.tipo === "observacion") return `<br><small>Opcion: ${escapeHtml(mod.nombre)}</small>`;
+      if (mod.tipo === "quitar") return `<br><small>Sin: ${escapeHtml(mod.nombre)}</small>`;
+      return `<br><small>+ ${escapeHtml(mod.nombre)} x${formatearNumero(mod.cantidad)}</small>`;
+    }
+
     function imprimirTicketComercio(ticketData) {
       const cfg = configVentas || {};
       const nombre = cfg.ticket_nombre || cfg.negocio_nombre_comercial || "Guernica Bar";
@@ -3097,7 +3153,7 @@
       const itemsHtml = mostrarItems
         ? ticketData.items.map((item) => `
             <tr>
-              <td>${escapeHtml(item.nombre)}<br><small>${formatearNumero(item.cantidad)} x $${formatearNumero(item.precio)}</small>${normalizarModificadoresTicket(item.modificadores).map((mod) => `<br><small>+ ${escapeHtml(mod.nombre)} x${formatearNumero(mod.cantidad)}</small>`).join("")}</td>
+              <td>${escapeHtml(item.nombre)}<br><small>${formatearNumero(item.cantidad)} x $${formatearNumero(item.precio)}</small>${normalizarModificadoresTicket(item.modificadores).map(renderModificadorTicketImpreso).join("")}</td>
               <td class="right">$${formatearNumero(item.subtotal)}</td>
             </tr>
           `).join("")
@@ -3335,7 +3391,7 @@
           ...ingredientes
             .filter((ingrediente) => ingrediente.tipo === "quitar")
             .map((ingrediente) => `<li>Sin: ${escapeHtml(ingrediente.nombre)}</li>`),
-          ...modificadores.map((mod) => mod.tipo === "observacion" ? `<li>Nota: ${escapeHtml(mod.nombre)}</li>` : mod.tipo === "quitar" ? `<li>Sin: ${escapeHtml(mod.nombre)}</li>` : `<li>+ ${escapeHtml(mod.nombre)} x${Number.isInteger(Number(mod.cantidad)) ? Number(mod.cantidad) : formatearNumero(mod.cantidad)}</li>`)
+          ...modificadores.map((mod) => mod.tipo === "observacion" ? `<li>Opcion: ${escapeHtml(mod.nombre)}</li>` : mod.tipo === "quitar" ? `<li>Sin: ${escapeHtml(mod.nombre)}</li>` : `<li>+ ${escapeHtml(mod.nombre)} x${Number.isInteger(Number(mod.cantidad)) ? Number(mod.cantidad) : formatearNumero(mod.cantidad)}</li>`)
         ];
         const modsHtml = personalizaciones.length
           ? `<ul class="ticket-modifiers">${personalizaciones.join("")}</ul>`
