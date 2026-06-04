@@ -1735,6 +1735,12 @@
       line-height: 1.35;
     }
 
+    .stock-pending-notice.ok {
+      background: #f0fdf4;
+      border-color: rgba(34, 163, 90, .28);
+      color: #166534;
+    }
+
     .stock-pending-card {
       min-height: 100%;
     }
@@ -2038,6 +2044,10 @@
       gap: 6px;
     }
 
+    #tab-apertura-cierre .cash-close-metrics {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
     #tab-apertura-cierre .operational-metric {
       border: 1px solid var(--border);
       border-radius: 10px;
@@ -2229,9 +2239,16 @@
 
     #tab-apertura-cierre .closure-quick-grid {
       display: grid;
-      grid-template-columns: minmax(260px, 1fr) minmax(220px, .7fr) minmax(220px, .7fr);
+      grid-template-columns: minmax(0, 1fr);
       gap: 10px;
       align-items: stretch;
+    }
+
+    #tab-apertura-cierre .closure-state-actions {
+      display: grid;
+      grid-template-columns: minmax(0, 1.6fr) minmax(220px, .7fr);
+      gap: 10px;
+      align-items: start;
     }
 
     #tab-apertura-cierre .closure-quick-card {
@@ -2245,6 +2262,12 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
       justify-items: start;
+    }
+
+    #tab-apertura-cierre .cash-actions-inline {
+      display: grid;
+      gap: 7px;
+      align-content: start;
     }
 
     #tab-apertura-cierre .closure-quick-actions .button,
@@ -2314,8 +2337,13 @@
 
     #tab-apertura-cierre .closure-prep-grid {
       display: grid;
-      grid-template-columns: minmax(220px, .75fr) minmax(320px, 1.25fr) minmax(220px, .75fr);
+      grid-template-columns: minmax(0, 1.35fr) minmax(240px, .65fr);
       gap: 10px;
+    }
+
+    #tab-apertura-cierre .closure-prep-grid > .operational-card:first-child,
+    #tab-apertura-cierre .closure-prep-grid > .non-monetary-card {
+      grid-column: 1 / -1;
     }
 
     #tab-apertura-cierre .closure-summary-grid {
@@ -2574,12 +2602,23 @@
       width: min(960px, 100%);
     }
 
+    #modalArqueoEfectivo .modal-card.cash-audit-modal-card {
+      padding: 0;
+      overflow: hidden;
+      background: #f8fafc;
+      max-height: calc(100vh - 40px);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+
     #modalArqueoEfectivo .modal-header {
       align-items: center;
       gap: 10px;
       margin: 0;
-      padding: 9px 12px;
-      background: linear-gradient(135deg, rgba(109, 40, 217, 0.14), rgba(34, 163, 90, 0.1));
+      padding: 16px 18px;
+      background: linear-gradient(135deg, #16052e 0%, #2a1450 100%);
+      color: #fff;
+      border-bottom: 0;
     }
 
     #modalArqueoEfectivo .modal-header > div:first-child {
@@ -2588,6 +2627,10 @@
 
     #modalArqueoEfectivo .modal-header h3 {
       margin: 0;
+    }
+
+    #modalArqueoEfectivo .modal-header .muted {
+      color: rgba(255, 255, 255, .72);
     }
 
     #modalArqueoEfectivo .modal-header-actions {
@@ -2606,11 +2649,10 @@
       white-space: nowrap;
     }
 
-    #modalArqueoEfectivo #editarArqueoVisual,
     #modalArqueoEfectivo #cerrarModalArqueoEfectivo {
-      border-color: transparent;
-      background: rgba(255, 255, 255, 0.55);
-      color: var(--muted);
+      border-color: rgba(255, 255, 255, .22);
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
       box-shadow: none;
     }
 
@@ -2625,6 +2667,12 @@
     #modalArqueoEfectivo .modal-body {
       display: grid;
       gap: 12px;
+      padding: 16px 18px;
+      padding-bottom: 24px;
+      background: #f8fafc;
+      min-height: 0;
+      overflow: auto;
+      overscroll-behavior: contain;
     }
 
     #modalArqueoEfectivo .audit-modal-layout {
@@ -2641,10 +2689,28 @@
       border: 1px solid var(--border);
       border-radius: 14px;
       background: #ffffff;
+      box-shadow: 0 10px 26px rgba(31, 41, 55, .06);
     }
 
     .audit-modal-section.secondary {
-      background: #fafafe;
+      background: #ffffff;
+    }
+
+    .audit-summary-panel {
+      border-color: #ebe5f6;
+      background: #fff;
+    }
+
+    #modalArqueoEfectivo .modal-footer {
+      position: sticky;
+      bottom: 0;
+      z-index: 4;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px 18px;
+      border-top: 1px solid var(--border);
+      background: rgba(255, 255, 255, .96);
+      backdrop-filter: blur(8px);
     }
 
     .audit-modal-section.technical {
@@ -2748,9 +2814,9 @@
 
     #modalArqueoEfectivo .denomination-grid {
       grid-template-columns: 1fr;
-      max-height: none;
-      overflow: visible;
-      padding-right: 0;
+      max-height: min(52vh, 560px);
+      overflow: auto;
+      padding-right: 4px;
     }
 
     #modalArqueoEfectivo .denomination-summary {
@@ -3237,6 +3303,21 @@
     .saldo-inicial-row input { width: 130px; min-width: 0; }
     /* ── Toggle arrastre + contexto ───────────────────────────── */
     .concil-movimiento-context { font-size: 12px; color: var(--muted); padding: 6px 10px; background: #f8fafc; border-radius: 10px; border: 1px solid var(--border); }
+    #modalConciliacionCuenta .modal-card.concil-modal-card { padding: 0; overflow: hidden; background: #f8fafc; max-height: calc(100vh - 40px); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+    #modalConciliacionCuenta .concil-modal-header { margin: 0; padding: 16px 18px; background: linear-gradient(135deg, #16052e 0%, #2a1450 100%); color: #fff; border: 0; border-radius: 0; }
+    #modalConciliacionCuenta .concil-modal-header h3 { margin: 0; font-size: 18px; }
+    #modalConciliacionCuenta .concil-modal-header p { display: none; }
+    #modalConciliacionCuenta .concil-header-subtitle { margin-top: 4px; color: rgba(255, 255, 255, .72); font-size: 12px; }
+    #modalConciliacionCuenta .concil-modal-header .button { border-color: rgba(255, 255, 255, .22); background: rgba(255, 255, 255, .1); color: #fff; box-shadow: none; }
+    #modalConciliacionCuenta .concil-modal-body { display: grid; gap: 14px; min-height: 0; overflow: auto; padding: 14px 18px 18px; background: #f8fafc; }
+    #modalConciliacionCuenta .concil-primary-grid,
+    #modalConciliacionCuenta .concil-panel,
+    #modalConciliacionCuenta .concil-calc-detail { margin: 0; padding: 14px; border: 1px solid var(--border); border-radius: 14px; background: #fff; box-shadow: 0 10px 24px rgba(17,24,39,.04); }
+    #modalConciliacionCuenta .concil-primary-grid,
+    #modalConciliacionCuenta .concil-calc-detail .field-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+    #modalConciliacionCuenta .concil-calc-detail summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 900; }
+    #modalConciliacionCuenta .concil-calc-detail[open] summary { margin-bottom: 12px; }
+    #modalConciliacionCuenta .concil-modal-footer { margin: 0; padding: 12px 18px; border-top: 1px solid var(--border); background: rgba(255, 255, 255, .96); backdrop-filter: blur(8px); justify-content: space-between; }
     .concil-cierre-toggle { width: 100%; text-align: left; border: 1px dashed var(--border); border-radius: 10px; background: #fafafe; color: var(--muted); padding: 8px 12px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 8px; }
     .concil-cierre-toggle:hover { background: var(--primary-soft); color: var(--primary); border-color: var(--primary); }
     .concil-cierre-toggle .toggle-icon { transition: transform .2s; font-style: normal; }
@@ -3341,8 +3422,10 @@
       .cash-audit-flow,
       .audit-final-grid,
       #tab-apertura-cierre .closure-quick-grid,
+      #tab-apertura-cierre .closure-state-actions,
       #tab-apertura-cierre .closure-prep-grid,
       #tab-apertura-cierre .closure-summary-grid,
+      #tab-apertura-cierre .cash-close-metrics,
       #tab-apertura-cierre .non-monetary-metrics,
       .closure-overview-grid,
       .closure-work-grid,
@@ -4112,6 +4195,8 @@
             <h3 style="margin: 0;">Estado y acciones rápidas</h3>
             <div class="closure-quick-grid">
               <section class="operational-card">
+                <div class="closure-state-actions">
+                  <div>
                 <div class="cash-state-head">
                   <div class="cash-state-title closed" id="aperturaEstadoHeader"><span class="online-dot closed" id="aperturaEstadoDot"></span><span id="aperturaEstadoTitulo">Caja cerrada</span></div>
                   <button type="button" class="button secondary compact" id="verDetalleApertura">Ver detalles de apertura</button>
@@ -4131,6 +4216,17 @@
                   </label>
                   <strong id="aperturaEstadoTexto" hidden>Sin caja activa</strong>
                 </div>
+                  </div>
+                  <div class="cash-actions-inline">
+                    <h4 style="margin: 0;">Acciones de caja</h4>
+                    <div class="muted">Movimientos manuales del turno.</div>
+                    <div class="closure-quick-actions">
+                      <button type="button" class="button success-soft compact" id="ingresarDineroVisual">+ Ingresar dinero</button>
+                      <button type="button" class="button warning-soft compact" id="retirarDineroVisual">- Retirar dinero</button>
+                    </div>
+                    <div class="closure-action-note">Usá estas acciones para movimientos manuales que no provienen de ventas ni pagos.</div>
+                  </div>
+                </div>
                 <details id="saldosInicialesSection" class="saldos-apertura-section" hidden>
                   <summary>Saldos iniciales por cuenta</summary>
                   <p class="section-note">Si hubo turno anterior, los saldos arrastrados se pre-cargaron. Podés corregirlos o dejar en 0.</p>
@@ -4138,16 +4234,6 @@
                 </details>
                 <button type="button" class="button success" id="abrirCaja">Abrir caja</button>
                 <span class="apertura-open-badge">Caja ya abierta</span>
-              </section>
-
-              <section class="operational-card">
-                <h4 style="margin: 0;">Acciones de caja</h4>
-                <div class="muted">Movimientos manuales del turno.</div>
-                <div class="closure-quick-actions">
-                  <button type="button" class="button success-soft compact" id="ingresarDineroVisual">+ Ingresar dinero</button>
-                  <button type="button" class="button warning-soft compact" id="retirarDineroVisual">- Retirar dinero</button>
-                </div>
-                <div class="closure-action-note">Usá estas acciones para movimientos manuales que no provienen de ventas ni pagos.</div>
               </section>
             </div>
           </article>
@@ -4163,9 +4249,11 @@
                   </div>
                   <button type="button" class="button secondary compact" id="editarArqueoEfectivoCierre">Editar arqueo efectivo</button>
                 </div>
-                <div class="operational-metrics">
+                <div class="operational-metrics cash-close-metrics">
                   <div class="operational-metric"><span>Estado</span><strong id="cierreArqueoEfectivoEstado">Pendiente</strong></div>
                   <div class="operational-metric"><span>Diferencia efectivo</span><strong id="cierreDiferenciaEfectivoOperativo">$0.00</strong></div>
+                  <div class="operational-metric"><span>Caja cambio</span><strong id="cierreCajaCambioOperativo">$0.00</strong></div>
+                  <div class="operational-metric"><span>Caja grande / resguardado</span><strong id="cierreCajaGrandeOperativo">$0.00</strong></div>
                 </div>
               </section>
 
@@ -4273,8 +4361,6 @@
                   <div class="closure-real-card"><span>Diferencia cuentas</span><strong id="cierreDiferenciaDigitalReal">$0.00</strong></div>
                   <div class="closure-real-card total"><span>Total esperado</span><strong id="cierreTotalEsperadoReal">$0.00</strong></div>
                   <div class="closure-real-card total"><span>Total real</span><strong id="cierreTotalRealContado">$0.00</strong></div>
-                  <div class="closure-real-card"><span>Caja cambio</span><strong id="cierreCajaCambioOperativo">$0.00</strong></div>
-                  <div class="closure-real-card"><span>Caja grande / retiro</span><strong id="cierreCajaGrandeOperativo">$0.00</strong></div>
                 </div>
               </div>
             </details>
@@ -4444,7 +4530,7 @@
           </article>
 
           <article class="card audit-card">
-            <h3>B) Cuentas digitales</h3>
+            <h3>Cuentas digitales</h3>
             <div class="accounts-table" id="cuentasDigitalesBody"></div>
             <details class="audit-technical-detail" id="arqueoSistemaLegacyWrap">
               <summary>Ver movimientos brutos del turno</summary>
@@ -4460,7 +4546,7 @@
           </article>
 
           <article class="card audit-card">
-            <h3>C) Resumen final</h3>
+            <h3>Resumen final</h3>
             <div class="audit-final-grid">
               <div class="audit-final-block">
                 <small>Efectivo</small>
@@ -4655,20 +4741,29 @@
       </div>
 
       <div class="modal" id="modalArqueoEfectivo">
-        <div class="modal-card modal-card-wide">
+        <div class="modal-card modal-card-wide cash-audit-modal-card">
           <div class="modal-header">
             <div>
               <h3 style="margin: 0;">Arqueo efectivo</h3>
               <div class="muted">Control físico de billetes, caja cambio y dinero resguardado.</div>
             </div>
-            <div class="modal-header-actions audit-modal-actions">
-              <button type="button" class="button secondary" id="editarArqueoVisual">Editar arqueo</button>
-              <button type="button" class="button secondary" id="guardarArqueoVisual">Guardar arqueo</button>
-              <button type="button" class="button warning" id="registrarArqueoVisual">Registrar arqueo</button>
-              <button type="button" class="button secondary compact" id="cerrarModalArqueoEfectivo">Cerrar</button>
-            </div>
+            <button type="button" class="button secondary compact" id="cerrarModalArqueoEfectivo">Cerrar</button>
           </div>
           <div class="modal-body cash-audit-modal-grid">
+            <section class="audit-modal-section audit-summary-panel">
+              <div class="audit-modal-section-head">
+                <div>
+                  <span>Resumen del control</span>
+                  <h4>Esperado, contado y diferencia</h4>
+                </div>
+              </div>
+              <div class="audit-mini-grid">
+                <div class="audit-primary-kpi"><small>Total contado</small><strong id="modalArqueoContado">$0.00</strong></div>
+                <div><small>Diferencia</small><strong id="modalArqueoDiferencia">$0.00</strong></div>
+                <div><small>Esperado por sistema</small><strong id="modalArqueoEsperado">$0.00</strong></div>
+                <div><small>Con esto arrancÃ³ el dÃ­a</small><strong id="modalArqueoSaldoInicial">$0.00</strong></div>
+              </div>
+            </section>
             <div class="audit-modal-layout">
               <section class="audit-modal-section">
                 <div class="audit-modal-section-head">
@@ -4696,18 +4791,14 @@
                 <div class="denomination-summary">
                   <div class="mini-card"><span>Caja cambio</span><strong>$<span id="totalCambioRomaneo">0.00</span></strong></div>
                   <div class="mini-card"><span>Caja grande / resguardado</span><strong>$<span id="totalRetiroRomaneo">0.00</span></strong></div>
-                  <div class="mini-card"><span>Total contado</span><strong id="modalArqueoContado">$0.00</strong></div>
                   <label class="mini-card"><span>Saldo aportado al cierre</span><input class="field" id="saldoFisicoRealManual" type="number" step="0.01" min="0" placeholder="Manual"></label>
-                  <div class="mini-card reduced-sensitive-saldo"><span>Arrastra al próximo día</span><strong>$<span id="cajaInicioCambio">0.00</span></strong></div>
+                  <div class="mini-card reduced-sensitive-saldo"><span>Saldo inicial próximo turno</span><strong>$<span id="cajaInicioCambio">0.00</span></strong></div>
                 </div>
               </section>
             </div>
 
             <div class="audit-technical-hidden" hidden>
               <div class="audit-mini-grid">
-                <div><small>Diferencia</small><strong id="modalArqueoDiferencia">$0.00</strong></div>
-                <div><small>Esperado por sistema</small><strong id="modalArqueoEsperado">$0.00</strong></div>
-                <div><small>Con esto arrancó el día</small><strong id="modalArqueoSaldoInicial">$0.00</strong></div>
                 <div><small>Ventas efectivo</small><strong id="modalArqueoVentasEfectivo">$0.00</strong></div>
                 <div><small>Pagos / egresos efectivo</small><strong id="modalArqueoPagosEfectivo">$0.00</strong></div>
               </div>
@@ -4720,22 +4811,31 @@
               </label>
             </details>
           </div>
+          <div class="modal-footer modal-actions audit-modal-actions">
+            <div class="muted">Guardá el control o registralo para dejarlo preparado para cierre.</div>
+            <div class="modal-header-actions">
+              <button type="button" class="button secondary" id="editarArqueoVisual">Editar arqueo</button>
+              <button type="button" class="button secondary" id="guardarArqueoVisual">Guardar arqueo</button>
+              <button type="button" class="button warning" id="registrarArqueoVisual">Registrar arqueo</button>
+            </div>
+          </div>
         </div>
       </div>
 
       <div class="modal" id="modalConciliacionCuenta">
-        <div class="modal-card">
-          <div class="daily-card-header">
+        <div class="modal-card concil-modal-card">
+          <div class="modal-header concil-modal-header">
+            <div>
             <h3 id="conciliacionCuentaTitulo">Conciliar cuenta</h3>
+            <div class="concil-header-subtitle">Controla el saldo real y la diferencia contra el sistema.</div>
+            <p>Controlá el saldo real y definí cómo inicia el próximo turno.</p>
+            </div>
             <button type="button" class="button secondary compact" id="cerrarModalConciliacionCuenta">Cerrar</button>
           </div>
           <input type="hidden" id="conciliacionCajaId" />
           <input type="hidden" id="conciliacionCuentaId" />
-          <div class="field-grid">
-            <label>
-              <span id="conciliacionMontoSistemaLabel">Esperado por sistema</span>
-              <input type="number" id="conciliacionMontoSistema" class="field" step="0.01" readonly />
-            </label>
+          <div class="concil-modal-body">
+          <div class="field-grid concil-primary-grid">
             <label>
               <span id="conciliacionMontoRealLabel">Real conciliado</span>
               <input type="number" id="conciliacionMontoReal" class="field" step="0.01" />
@@ -4751,7 +4851,9 @@
           </div>
 
           <div id="conciliacionDestinoSection" class="concil-destino-section" hidden>
-            <div class="concil-sep"><span>Saldos de cuenta</span></div>
+            <details class="concil-calc-detail">
+              <summary>Ver detalle del calculo</summary>
+              <div class="concil-sep"><span>Saldos de cuenta</span></div>
 
             <div class="field-grid two">
               <label>
@@ -4761,7 +4863,13 @@
               </label>
               <div></div>
             </div>
+            <details class="concil-calc-detail">
+              <summary>Ver detalle del cálculo</summary>
             <div class="field-grid">
+              <label>
+                <span id="conciliacionMontoSistemaLabel">Esperado por sistema</span>
+                <input type="number" id="conciliacionMontoSistema" class="field" step="0.01" readonly />
+              </label>
               <label>
                 <span>+ Ingresos del sistema</span>
                 <input type="number" id="conciliacionIngresosDestino" class="field" step="0.01" readonly />
@@ -4779,6 +4887,11 @@
               Sin saldo inicial — el saldo esperado es solo el movimiento del turno.
             </small>
 
+            </details>
+
+            </details>
+
+            <div hidden>
             <button type="button" id="toggleCierreSection" class="concil-cierre-toggle">
               <em class="toggle-icon">&#9654;</em>
               <span>Definir qué pasa con el saldo al cerrar</span>
@@ -4800,15 +4913,17 @@
                 </label>
               </div>
               <div class="concil-saldo-arrastrado">
-                <span>Saldo a arrastrar al próximo turno</span>
+                <span>Saldo inicial próximo turno</span>
                 <strong id="conciliacionSaldoArrastradoDisplay">$0.00</strong>
               </div>
             </div>
+            </div>
+          </div>
           </div>
 
-          <div class="daily-card-header">
+          <div class="modal-footer modal-actions concil-modal-footer">
             <div class="muted">Esperado viene del sistema; real es el control manual. No modifica movimientos ni cierres.</div>
-            <button type="button" class="button success" id="guardarConciliacionCuenta">Guardar conciliacion</button>
+            <button type="button" class="button success" id="guardarConciliacionCuenta">Guardar conciliación</button>
           </div>
         </div>
       </div>
@@ -5234,7 +5349,11 @@
         "main #arqueoDigitalReal",
         "main #arqueoDiferenciaDigital",
         "main #resultadoDiferenciaEfectivo",
-        "main #resultadoDiferenciaDigital"
+        "main #resultadoDiferenciaDigital",
+        "main #aperturaMontoInicial",
+        "main #aperturaIngresos",
+        "main #aperturaEgresos",
+        "main #aperturaSaldoActual"
       ].join(",")).forEach((node) => {
         if (!node.dataset.kpiOriginalValue) node.dataset.kpiOriginalValue = node.textContent;
         node.textContent = "****";
@@ -8090,7 +8209,12 @@
         const data = await res.json();
         const pendientes = Number(data.pendientes || 0);
         if (pendientes > 0) {
+          aviso.classList.remove("ok");
           if (numero) numero.textContent = String(pendientes);
+          if (numero) numero.hidden = false;
+          aviso.querySelector(".stock-pending-notice-icon").textContent = "⚠";
+          aviso.querySelector("strong").textContent = "Hay diferencias operativas pendientes.";
+          aviso.querySelector(".stock-pending-actions").hidden = false;
           texto.textContent = `${pendientes} ajuste${pendientes !== 1 ? "s" : ""} pendiente${pendientes !== 1 ? "s" : ""} requiere${pendientes !== 1 ? "n" : ""} revisión operativa.`;
           aviso.hidden = false;
           if (cierreAjustesEstado) cierreAjustesEstado.textContent = `${pendientes} pendiente${pendientes !== 1 ? "s" : ""}`;
@@ -8099,7 +8223,13 @@
             cierreWarningAjustes.innerHTML = `<span>Ajustes pendientes</span><strong>${pendientes} pendiente${pendientes !== 1 ? "s" : ""}</strong>`;
           }
         } else {
-          aviso.hidden = true;
+          aviso.classList.add("ok");
+          if (numero) numero.hidden = true;
+          aviso.querySelector(".stock-pending-notice-icon").textContent = "✓";
+          aviso.querySelector("strong").textContent = "Sin ajustes pendientes";
+          aviso.querySelector(".stock-pending-actions").hidden = true;
+          texto.textContent = "Todo en orden.";
+          aviso.hidden = false;
           if (cierreAjustesEstado) cierreAjustesEstado.textContent = "OK";
           if (cierreWarningAjustes) {
             cierreWarningAjustes.className = "closure-warning ok";
@@ -8133,7 +8263,11 @@
           "#arqueoDigitalReal",
           "#arqueoDiferenciaDigital",
           "#resultadoDiferenciaEfectivo",
-          "#resultadoDiferenciaDigital"
+          "#resultadoDiferenciaDigital",
+          "#aperturaMontoInicial",
+          "#aperturaIngresos",
+          "#aperturaEgresos",
+          "#aperturaSaldoActual"
         ]
       });
       ubicarBotonVisibilidadCaja();
