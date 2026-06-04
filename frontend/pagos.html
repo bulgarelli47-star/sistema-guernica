@@ -528,6 +528,19 @@
       box-shadow: none;
     }
 
+    #pagoModal .header-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    #pagoModal .header-actions .close-button.success {
+      background: var(--success);
+      border-color: var(--success);
+    }
+
     #pagoModal .modal-body {
       min-height: 0;
       overflow: auto;
@@ -542,6 +555,10 @@
       background: rgba(255, 255, 255, .96);
       justify-content: flex-end;
       box-shadow: 0 -8px 22px rgba(17, 24, 39, .04);
+    }
+
+    #pagoModal .modal-footer[aria-hidden="true"] {
+      display: none;
     }
 
     .full { grid-column: 1 / -1; }
@@ -988,7 +1005,11 @@
           <p class="payment-modal-subtitle">Registro de salida de dinero, proveedor y estado del pago.</p>
           <p class="message" id="mensaje"></p>
         </div>
-        <button type="button" class="close-button" id="cerrarPagoModal" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+        <div class="header-actions">
+          <button type="button" class="close-button success" id="guardarPago" title="Confirmar" aria-label="Confirmar"><span class="app-icon icon-check" aria-hidden="true"></span></button>
+          <button type="button" class="close-button" id="limpiarPago" title="Limpiar" aria-label="Limpiar"><span class="app-icon icon-broom" aria-hidden="true"></span></button>
+          <button type="button" class="close-button" id="cerrarPagoModal" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+        </div>
       </div>
       <div class="modal-body">
       <div class="payment-form-compact">
@@ -1073,10 +1094,7 @@
         <textarea id="observaciones" class="field hidden"></textarea>
       </div>
       </div>
-      <div class="modal-footer modal-actions">
-        <button type="button" class="button success" id="guardarPago">Confirmar</button>
-        <button type="button" class="button secondary" id="limpiarPago">Limpiar</button>
-      </div>
+      <div class="modal-footer modal-actions" aria-hidden="true"></div>
     </article>
   </div>
 
