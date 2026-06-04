@@ -1157,6 +1157,10 @@
               <button class="constructor-plantilla-card" data-plantilla="stock-critico" type="button">Stock crítico</button>
               <button class="constructor-plantilla-card" data-plantilla="clientes-con-deuda" type="button">Clientes con deuda</button>
               <button class="constructor-plantilla-card" data-plantilla="pagos-pendientes" type="button">Pagos pendientes</button>
+              <button class="constructor-plantilla-card" data-plantilla="resumen-ejecutivo" type="button">Resumen dueño</button>
+              <button class="constructor-plantilla-card" data-plantilla="caja-movimientos" type="button">Movimientos de caja</button>
+              <button class="constructor-plantilla-card" data-plantilla="proveedores-ranking" type="button">Ranking proveedores</button>
+              <button class="constructor-plantilla-card" data-plantilla="stock-rotacion" type="button">Rotación de stock</button>
             </div>
           </section>
           <section>
@@ -1220,7 +1224,11 @@
       "caja-resumida": "Caja resumida",
       "stock-critico": "Stock crítico",
       "clientes-con-deuda": "Clientes con deuda",
-      "pagos-pendientes": "Pagos pendientes"
+      "pagos-pendientes": "Pagos pendientes",
+      "resumen-ejecutivo": "Resumen dueño",
+      "caja-movimientos": "Movimientos de caja",
+      "proveedores-ranking": "Ranking proveedores",
+      "stock-rotacion": "Rotación de stock"
     };
     const CONSTRUCTOR_MODULO_LABELS = {
       "ventas": "Ventas",
@@ -1231,7 +1239,35 @@
     };
     const DIMENSION_LABELS = { "producto": "Por producto", "metodo": "Por método de cobro", "estado": "Por estado de venta", "dia": "Por día" };
     function getConstructorRango() { const hoy = fmtDate(new Date()); return { desde: constructorState.desde || hoy, hasta: constructorState.hasta || constructorState.desde || hoy }; }
-    function recargarPlantillaActual() { const { plantilla } = constructorState; if (!plantilla) return; if (plantilla === "ventas-del-dia") cargarConstructorVentas(); else if (plantilla === "cierre-diario") cargarConstructorCierreDiario(); else if (plantilla === "clientes-con-deuda") cargarConstructorClientesDeuda(); else if (plantilla === "pagos-pendientes") cargarConstructorPagosPendientes(); }
+    function constructorRangoCoincideConDashboard() {
+      return constructorState.desde === $("desde").value &&
+             constructorState.hasta  === $("hasta").value;
+    }
+    function getDatosConstructorDesdeState(plantilla) {
+      const rangoOk = constructorRangoCoincideConDashboard();
+      if (plantilla === "ventas-del-dia") {
+        return (rangoOk && state.reporteVentasBackend) ? state.reporteVentasBackend : null;
+      }
+      if (plantilla === "pagos-pendientes") {
+        return (rangoOk && state.proveedoresPagosBackend) ? state.proveedoresPagosBackend : null;
+      }
+      if (plantilla === "stock-critico") {
+        return state.reporteStockBackend || null;
+      }
+      if (plantilla === "clientes-con-deuda") {
+        if (!rangoOk || !state.reporteCuentasCorrientesBackend) return null;
+        const d = state.reporteCuentasCorrientesBackend;
+        return { ...d, clientes: (d.clientes || []).filter((c) => Number(c.deuda_actual) > 0) };
+      }
+      if (plantilla === "proveedores-ranking") {
+        return state.proveedoresPagosBackend || null;
+      }
+      if (plantilla === "stock-rotacion") {
+        return state.reporteStockBackend || null;
+      }
+      return null;
+    }
+    function recargarPlantillaActual() { const { plantilla } = constructorState; if (!plantilla) return; if (plantilla === "ventas-del-dia") cargarConstructorVentas(); else if (plantilla === "cierre-diario") cargarConstructorCierreDiario(); else if (plantilla === "clientes-con-deuda") cargarConstructorClientesDeuda(); else if (plantilla === "pagos-pendientes") cargarConstructorPagosPendientes(); else if (plantilla === "resumen-ejecutivo") cargarConstructorResumenEjecutivo(); else if (plantilla === "caja-movimientos") cargarConstructorCajaMovimientos(); else if (plantilla === "proveedores-ranking") cargarConstructorProveedoresRanking(); else if (plantilla === "stock-rotacion") cargarConstructorStockRotacion(); }
     function renderConstructorPreview() {
       const el = $("constructorPreview");
       if (!el) return;
@@ -1278,6 +1314,22 @@
       }
       if (plantilla === "pagos-pendientes" && data) {
         renderConstructorPagosPendientes(el, data);
+        return;
+      }
+      if (plantilla === "resumen-ejecutivo" && data) {
+        renderConstructorResumenEjecutivo(el, data);
+        return;
+      }
+      if (plantilla === "caja-movimientos" && data) {
+        renderConstructorCajaMovimientos(el, data);
+        return;
+      }
+      if (plantilla === "proveedores-ranking" && data) {
+        renderConstructorProveedoresRanking(el, data);
+        return;
+      }
+      if (plantilla === "stock-rotacion" && data) {
+        renderConstructorStockRotacion(el, data);
         return;
       }
       const cards = [];
@@ -1359,6 +1411,14 @@
       el.innerHTML = titulo + kpisHtml + renderConstructorVentasTabla(data);
     }
     async function cargarConstructorVentas() {
+      const cached = getDatosConstructorDesdeState("ventas-del-dia");
+      if (cached) {
+        constructorState.data = cached;
+        constructorState.loading = false;
+        constructorState.error = "";
+        renderConstructorPreview();
+        return;
+      }
       const { desde, hasta } = getConstructorRango();
       constructorState.loading = true;
       constructorState.error = "";
@@ -1399,8 +1459,20 @@
         { label: "Diferencia", value: money(n(cj.diferencia)) }
       ];
       const cajaHtml = `<p class="constructor-section-title">Caja actual</p><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">${cajaFields.map((f) => `<div class="constructor-selection-card"><span>${f.label}</span><strong>${f.value}</strong></div>`).join("")}</div>`;
+      const cuentasExRes = state.reporteCuentasCorrientesBackend?.resumen || {};
+      const provsExRes = state.proveedoresPagosBackend?.resumen || {};
+      const stockExRes = state.reporteStockBackend?.resumen || {};
+      const alertasEx = Array.isArray(state.reporteStockBackend?.alertas) ? state.reporteStockBackend.alertas.length : 0;
+      const ventasEx = Array.isArray(state.reporteVentasBackend?.productos_mas_vendidos) ? state.reporteVentasBackend.productos_mas_vendidos.slice(0, 3) : [];
+      const extraItems = [
+        cuentasExRes.deuda_total != null && { label: "Deuda clientes", value: money(n(cuentasExRes.deuda_total)) },
+        provsExRes.total_pendiente != null && { label: "Deuda proveedores", value: money(n(provsExRes.total_pendiente)) },
+        stockExRes.stock_valorizado_fisico != null && { label: "Stock valorizado", value: money(n(stockExRes.stock_valorizado_fisico)) },
+        alertasEx > 0 && { label: "Alertas stock", value: alertasEx }
+      ].filter(Boolean);
+      const lecturaHtml = extraItems.length ? `<p class="constructor-section-title">Lectura dueño</p><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">${extraItems.map((f) => `<div class="constructor-selection-card"><span>${f.label}</span><strong>${f.value}</strong></div>`).join("")}</div>${ventasEx.length ? `<p class="constructor-section-title">Productos estrella</p><div class="constructor-ranking">${ventasEx.map((p, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${p.nombre || "—"}</span><span class="constructor-ranking-val">${money(n(p.total_vendido))}</span></div>`).join("")}</div>` : ""}` : "";
       const titulo = `<div class="constructor-preview-title"><h3>Cierre diario</h3><p>${periodoLabel}</p></div>`;
-      el.innerHTML = titulo + kpisHtml + cajaHtml;
+      el.innerHTML = titulo + kpisHtml + cajaHtml + lecturaHtml;
     }
     async function cargarConstructorCierreDiario() {
       const { desde, hasta } = getConstructorRango();
@@ -1409,11 +1481,12 @@
       constructorState.data = null;
       renderConstructorPreview();
       try {
+        const resumenCached = constructorRangoCoincideConDashboard() ? state.resumenBackend : null;
         const [resRes, cajaRes] = await Promise.all([
-          fetch(`/reportes/resumen?desde=${desde}&hasta=${hasta}`),
+          resumenCached ? Promise.resolve(null) : fetch(`/reportes/resumen?desde=${desde}&hasta=${hasta}`),
           fetch("/caja/resumen")
         ]);
-        const resumen = resRes.ok ? await resRes.json() : null;
+        const resumen = resumenCached || (resRes && resRes.ok ? await resRes.json() : null);
         const caja = cajaRes.ok ? await cajaRes.json() : null;
         constructorState.data = { resumen, caja };
         constructorState.loading = false;
@@ -1451,6 +1524,14 @@
       el.innerHTML = titulo + kpisHtml + tablaHtml;
     }
     async function cargarConstructorStockCritico() {
+      const cached = getDatosConstructorDesdeState("stock-critico");
+      if (cached) {
+        constructorState.data = cached;
+        constructorState.loading = false;
+        constructorState.error = "";
+        renderConstructorPreview();
+        return;
+      }
       constructorState.loading = true;
       constructorState.error = "";
       constructorState.data = null;
@@ -1535,6 +1616,14 @@
       el.innerHTML = titulo + kpisHtml + tablaHtml;
     }
     async function cargarConstructorClientesDeuda() {
+      const cached = getDatosConstructorDesdeState("clientes-con-deuda");
+      if (cached) {
+        constructorState.data = cached;
+        constructorState.loading = false;
+        constructorState.error = "";
+        renderConstructorPreview();
+        return;
+      }
       constructorState.loading = true;
       constructorState.error = "";
       constructorState.data = null;
@@ -1577,6 +1666,14 @@
       el.innerHTML = titulo + kpisHtml + impactoHtml + provHtml;
     }
     async function cargarConstructorPagosPendientes() {
+      const cached = getDatosConstructorDesdeState("pagos-pendientes");
+      if (cached) {
+        constructorState.data = cached;
+        constructorState.loading = false;
+        constructorState.error = "";
+        renderConstructorPreview();
+        return;
+      }
       constructorState.loading = true;
       constructorState.error = "";
       constructorState.data = null;
@@ -1592,6 +1689,136 @@
         constructorState.error = "No se pudo cargar la plantilla Pagos pendientes.";
       }
       renderConstructorPreview();
+    }
+    function cargarConstructorResumenEjecutivo() {
+      constructorState.loading = false;
+      constructorState.error = "";
+      constructorState.data = {
+        resumen: state.resumenBackend,
+        cuentas: state.reporteCuentasCorrientesBackend,
+        proveedores: state.proveedoresPagosBackend,
+        stock: state.reporteStockBackend,
+        ventas: state.reporteVentasBackend
+      };
+      renderConstructorPreview();
+    }
+    function cargarConstructorCajaMovimientos() {
+      constructorState.loading = false;
+      constructorState.error = "";
+      constructorState.data = { caja: state.reporteCajaBackend, cuentas: state.cuentasCobroBackend };
+      renderConstructorPreview();
+    }
+    function cargarConstructorProveedoresRanking() {
+      constructorState.loading = false;
+      constructorState.error = "";
+      constructorState.data = getDatosConstructorDesdeState("proveedores-ranking") || state.proveedoresPagosBackend;
+      renderConstructorPreview();
+    }
+    function cargarConstructorStockRotacion() {
+      constructorState.loading = false;
+      constructorState.error = "";
+      constructorState.data = getDatosConstructorDesdeState("stock-rotacion") || state.reporteStockBackend;
+      renderConstructorPreview();
+    }
+    function renderConstructorResumenEjecutivo(el, data) {
+      const { desde, hasta } = getConstructorRango();
+      const periodoLabel = desde === hasta ? desde : `${desde} → ${hasta}`;
+      const res = data?.resumen || {};
+      const cuentasRes = data?.cuentas?.resumen || {};
+      const provsRes = data?.proveedores?.resumen || {};
+      const stockRes = data?.stock?.resumen || {};
+      const ventasTop = Array.isArray(data?.ventas?.productos_mas_vendidos) ? data.ventas.productos_mas_vendidos.slice(0, 3) : [];
+      const alertas = Array.isArray(data?.stock?.alertas) ? data.stock.alertas : [];
+      const titulo = `<div class="constructor-preview-title"><h3>Resumen dueño</h3><p>${periodoLabel}</p></div>`;
+      if (res.ventas_totales == null && cuentasRes.deuda_total == null) {
+        el.innerHTML = titulo + '<div class="constructor-placeholder"><strong>Sin datos del período.</strong><p>Actualizá el dashboard para cargar el resumen.</p></div>';
+        return;
+      }
+      const kpis = [
+        { label: "Ventas totales", value: res.ventas_totales != null ? money(n(res.ventas_totales)) : "—" },
+        { label: "Egresos totales", value: res.pagos_totales != null ? money(n(res.pagos_totales)) : "—" },
+        { label: "Resultado", value: res.balance_general != null ? money(n(res.balance_general)) : "—" },
+        { label: "Deuda clientes", value: cuentasRes.deuda_total != null ? money(n(cuentasRes.deuda_total)) : "—" },
+        { label: "Deuda proveedores", value: provsRes.total_pendiente != null ? money(n(provsRes.total_pendiente)) : "—" },
+        { label: "Stock valorizado", value: stockRes.stock_valorizado_fisico != null ? money(n(stockRes.stock_valorizado_fisico)) : "—" }
+      ];
+      const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong>${k.value}</strong></div>`).join("")}</div>`;
+      const estrellaHtml = ventasTop.length ? `<p class="constructor-section-title">Productos estrella</p><div class="constructor-ranking">${ventasTop.map((p, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${p.nombre || "—"}</span><span class="constructor-ranking-val">${money(n(p.total_vendido))}</span><small class="constructor-ranking-qty">${n(p.cantidad_total)} ud.</small></div>`).join("")}</div>` : "";
+      const alertasHtml = alertas.length ? `<p class="constructor-section-title">Alertas de stock (${alertas.length})</p><div class="constructor-ranking">${alertas.slice(0, 5).map((p) => `<div class="constructor-ranking-row"><span class="constructor-ranking-name">${p.nombre || "—"}</span><small class="constructor-ranking-qty" style="color:${p.estado_stock === "sin_stock" ? "var(--danger)" : "var(--warning)"};font-weight:900">${p.estado_stock === "sin_stock" ? "Sin stock" : "Bajo stock"}</small></div>`).join("")}${alertas.length > 5 ? `<div class="constructor-empty">y ${alertas.length - 5} más...</div>` : ""}</div>` : `<p class="constructor-section-title">Alertas de stock</p><p class="constructor-empty">Sin alertas críticas.</p>`;
+      el.innerHTML = titulo + kpisHtml + estrellaHtml + alertasHtml;
+    }
+    function renderConstructorCajaMovimientos(el, data) {
+      const { desde, hasta } = getConstructorRango();
+      const periodoLabel = desde === hasta ? desde : `${desde} → ${hasta}`;
+      const titulo = `<div class="constructor-preview-title"><h3>Movimientos de caja</h3><p>${periodoLabel}</p></div>`;
+      const caja = data?.caja;
+      const cuentas = Array.isArray(data?.cuentas) ? data.cuentas : [];
+      if (!caja) {
+        el.innerHTML = titulo + '<div class="constructor-placeholder"><strong>Sin datos de caja.</strong><p>Actualizá el dashboard para ver movimientos.</p></div>';
+        return;
+      }
+      const res = caja.resumen || {};
+      const kpis = [
+        { label: "Ingresos", value: money(n(res.ingresos)) },
+        { label: "Egresos", value: money(n(res.egresos)) },
+        { label: "Balance", value: money(n(res.balance)) },
+        { label: "IVA a favor", value: money(n(res.iva_credito_fiscal)) }
+      ];
+      const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong>${k.value}</strong></div>`).join("")}</div>`;
+      const ingMet = Array.isArray(caja.ingresos_por_metodo) ? caja.ingresos_por_metodo : [];
+      const ingHtml = ingMet.length ? `<p class="constructor-section-title">Ingresos por método</p><div class="constructor-ranking">${ingMet.map((m, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${m.metodo || "—"}</span><span class="constructor-ranking-val">${money(n(m.total))}</span><small class="constructor-ranking-qty">${n(m.cantidad)} op.</small></div>`).join("")}</div>` : "";
+      const egMet = Array.isArray(caja.egresos_por_metodo) ? caja.egresos_por_metodo : [];
+      const egHtml = egMet.length ? `<p class="constructor-section-title">Egresos por método</p><div class="constructor-ranking">${egMet.map((m, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${m.metodo || "—"}</span><span class="constructor-ranking-val">${money(n(m.total))}</span><small class="constructor-ranking-qty">${n(m.cantidad)} op.</small></div>`).join("")}</div>` : "";
+      const cuentasHtml = cuentas.length ? `<p class="constructor-section-title">Cuentas / terminales</p><div class="constructor-ranking">${cuentas.map((c, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${c.cuenta_nombre || c.nombre || "—"}</span><span class="constructor-ranking-val">${money(n(c.ingresos))}</span><small class="constructor-ranking-qty" style="color:var(--danger)">− ${money(n(c.egresos))}</small></div>`).join("")}</div>` : "";
+      el.innerHTML = titulo + kpisHtml + ingHtml + egHtml + cuentasHtml;
+    }
+    function renderConstructorProveedoresRanking(el, data) {
+      const { desde, hasta } = getConstructorRango();
+      const periodoLabel = desde === hasta ? desde : `${desde} → ${hasta}`;
+      const titulo = `<div class="constructor-preview-title"><h3>Ranking proveedores</h3><p>${periodoLabel}</p></div>`;
+      if (!data) {
+        el.innerHTML = titulo + '<div class="constructor-placeholder"><strong>Sin datos de proveedores.</strong><p>Actualizá el dashboard para cargar los datos.</p></div>';
+        return;
+      }
+      const res = data.resumen || {};
+      const proveedores = Array.isArray(data.proveedores) ? [...data.proveedores].sort((a, b) => n(b.total_pagado) - n(a.total_pagado)) : [];
+      const porImpacto = Array.isArray(data.por_impacto) ? data.por_impacto : [];
+      const IMPACTO_L = { costo_fijo_operativo: "Costo fijo", costo_variable_mercaderia: "Costo variable", inversion: "Inversión", otro_no_computable: "Otro" };
+      const kpis = [
+        { label: "Total pagado", value: money(n(res.total_pagado)) },
+        { label: "Total pendiente", value: money(n(res.total_pendiente)) },
+        { label: "IVA crédito fiscal", value: money(n(res.iva_credito_fiscal)) },
+        { label: "Compras del período", value: money(n(res.compras_periodo)) }
+      ];
+      const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong>${k.value}</strong></div>`).join("")}</div>`;
+      const rankingHtml = proveedores.length ? `<p class="constructor-section-title">Proveedores (por total pagado)</p><div class="constructor-ranking">${proveedores.slice(0, 15).map((p, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${p.proveedor_nombre || "—"}<small style="color:var(--muted);display:block;font-size:11px">${IMPACTO_L[p.tipo_impacto] || p.tipo_impacto || "—"}</small></span><span class="constructor-ranking-val">${money(n(p.total_pagado))}</span>${n(p.total_pendiente) > 0 ? `<small class="constructor-ranking-qty" style="color:var(--danger);font-weight:900">p: ${money(n(p.total_pendiente))}</small>` : ""}</div>`).join("")}</div>` : `<p class="constructor-section-title">Proveedores</p><p class="constructor-empty">Sin proveedores con pagos en el período.</p>`;
+      const impactoHtml = porImpacto.filter((t) => n(t.total_pagado) > 0).length ? `<p class="constructor-section-title">Por tipo de impacto</p><div class="constructor-ranking">${porImpacto.filter((t) => n(t.total_pagado) > 0).map((t, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${IMPACTO_L[t.tipo_impacto] || t.tipo_impacto || "—"}</span><span class="constructor-ranking-val">${money(n(t.total_pagado))}</span>${n(t.total_pendiente) > 0 ? `<small class="constructor-ranking-qty" style="color:var(--danger)">p: ${money(n(t.total_pendiente))}</small>` : ""}</div>`).join("")}</div>` : "";
+      el.innerHTML = titulo + kpisHtml + rankingHtml + impactoHtml;
+    }
+    function renderConstructorStockRotacion(el, data) {
+      const { desde, hasta } = getConstructorRango();
+      const periodoLabel = desde === hasta ? desde : `${desde} → ${hasta}`;
+      const titulo = `<div class="constructor-preview-title"><h3>Rotación de stock</h3><p>${periodoLabel}</p></div>`;
+      if (!data) {
+        el.innerHTML = titulo + '<div class="constructor-placeholder"><strong>Sin datos de stock.</strong><p>Actualizá el dashboard para cargar los datos.</p></div>';
+        return;
+      }
+      const res = data.resumen || {};
+      const productos = Array.isArray(data.productos) ? data.productos : [];
+      const porCategoria = Array.isArray(data.por_categoria) ? data.por_categoria : [];
+      const rotan = [...productos].filter((p) => n(p.items_vendidos) > 0).sort((a, b) => n(b.items_vendidos) - n(a.items_vendidos));
+      const sinMov = productos.filter((p) => n(p.items_vendidos) === 0 && n(p.maneja_stock) === 1 && n(p.activo) !== 0);
+      const kpis = [
+        { label: "Stock valorizado", value: money(n(res.stock_valorizado_fisico)) },
+        { label: "Productos activos", value: n(res.productos_activos) },
+        { label: "Rotan en período", value: rotan.length },
+        { label: "Sin movimiento", value: sinMov.length }
+      ];
+      const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong>${k.value}</strong></div>`).join("")}</div>`;
+      const rotanHtml = rotan.length ? `<p class="constructor-section-title">Más rotan (${rotan.length})</p><div class="constructor-ranking">${rotan.slice(0, 15).map((p, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${p.nombre || "—"}<small style="color:var(--muted);display:block;font-size:11px">${p.categoria || ""}</small></span><span class="constructor-ranking-val">${n(p.items_vendidos)} ud.</span><small class="constructor-ranking-qty">${money(n(p.stock_valorizado_fisico))}</small></div>`).join("")}</div>` : `<p class="constructor-section-title">Más rotan</p><p class="constructor-empty">Sin movimientos registrados en el período.</p>`;
+      const sinMovHtml = sinMov.length ? `<p class="constructor-section-title">Sin movimiento (${sinMov.length})</p><div class="constructor-ranking">${sinMov.slice(0, 10).map((p, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${p.nombre || "—"}</span><span class="constructor-ranking-val">${money(n(p.stock_valorizado_fisico))}</span></div>`).join("")}${sinMov.length > 10 ? `<div class="constructor-empty">y ${sinMov.length - 10} más</div>` : ""}</div>` : "";
+      const catHtml = porCategoria.length ? `<p class="constructor-section-title">Por categoría</p><div class="constructor-ranking">${porCategoria.slice(0, 8).map((c, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${c.categoria || "Sin categoría"}</span><span class="constructor-ranking-val">${money(n(c.stock_valorizado_fisico))}</span><small class="constructor-ranking-qty">${n(c.productos)} prod.</small></div>`).join("")}</div>` : "";
+      el.innerHTML = titulo + kpisHtml + rotanHtml + sinMovHtml + catHtml;
     }
     function _csvEscape(val) { if (val == null) return ""; const s = String(val); return (s.includes(",") || s.includes('"') || s.includes("\n")) ? `"${s.replace(/"/g, '""')}"` : s; }
     function getConstructorRowsParaExportar() {
@@ -1638,6 +1865,33 @@
         if (provs.length) return provs;
         return Array.isArray(data.por_impacto) ? data.por_impacto.filter((t) => n(t.total_pendiente) > 0) : [];
       }
+      if (plantilla === "resumen-ejecutivo") {
+        const res = data.resumen || {};
+        const cuentasRes = data.cuentas?.resumen || {};
+        const provsRes = data.proveedores?.resumen || {};
+        const stockRes = data.stock?.resumen || {};
+        return [
+          { concepto: "Ventas totales", valor: n(res.ventas_totales) },
+          { concepto: "Egresos totales", valor: n(res.pagos_totales) },
+          { concepto: "Resultado", valor: n(res.balance_general) },
+          { concepto: "Deuda clientes", valor: n(cuentasRes.deuda_total) },
+          { concepto: "Deuda proveedores", valor: n(provsRes.total_pendiente) },
+          { concepto: "Stock valorizado", valor: n(stockRes.stock_valorizado_fisico) }
+        ];
+      }
+      if (plantilla === "caja-movimientos") {
+        const ingMet = Array.isArray(data.caja?.ingresos_por_metodo) ? data.caja.ingresos_por_metodo : [];
+        if (ingMet.length) return ingMet;
+        return Array.isArray(data.cuentas) ? data.cuentas : [];
+      }
+      if (plantilla === "proveedores-ranking") {
+        const provs = Array.isArray(data.proveedores) ? [...data.proveedores].sort((a, b) => n(b.total_pagado) - n(a.total_pagado)) : [];
+        return provs.length ? provs : Array.isArray(data.por_impacto) ? data.por_impacto : [];
+      }
+      if (plantilla === "stock-rotacion") {
+        const productos = Array.isArray(data.productos) ? data.productos : [];
+        return productos.filter((p) => n(p.items_vendidos) > 0).sort((a, b) => n(b.items_vendidos) - n(a.items_vendidos));
+      }
       return [];
     }
     function exportarConstructorCsv() {
@@ -1659,7 +1913,16 @@
       const abrirBtn = $("abrirConstructorReportes");
       const cerrarBtn = $("cerrarConstructorReportes");
       if (!modal || !abrirBtn) return;
-      function abrirConstructor() { modal.classList.add("open"); modal.setAttribute("aria-hidden", "false"); }
+      function abrirConstructor() {
+        if (!constructorState._fechasSincronizadas) {
+          const dashDesde = $("desde").value;
+          const dashHasta = $("hasta").value;
+          if (dashDesde && desdeEl) { desdeEl.value = dashDesde; constructorState.desde = dashDesde; }
+          if (dashHasta && hastaEl) { hastaEl.value = dashHasta; constructorState.hasta = dashHasta; }
+          constructorState._fechasSincronizadas = true;
+        }
+        modal.classList.add("open"); modal.setAttribute("aria-hidden", "false");
+      }
       function cerrarConstructor() { modal.classList.remove("open"); modal.setAttribute("aria-hidden", "true"); }
       abrirBtn.addEventListener("click", abrirConstructor);
       cerrarBtn.addEventListener("click", cerrarConstructor);
@@ -1723,6 +1986,34 @@
               if (pagosBtn) pagosBtn.classList.add("active");
             }
             cargarConstructorPagosPendientes();
+          } else if (btn.dataset.plantilla === "resumen-ejecutivo") {
+            constructorState.modulo = null;
+            if (modulosEl) modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+            cargarConstructorResumenEjecutivo();
+          } else if (btn.dataset.plantilla === "caja-movimientos") {
+            constructorState.modulo = "caja";
+            if (modulosEl) {
+              modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+              const cajaBtn = modulosEl.querySelector('[data-modulo="caja"]');
+              if (cajaBtn) cajaBtn.classList.add("active");
+            }
+            cargarConstructorCajaMovimientos();
+          } else if (btn.dataset.plantilla === "proveedores-ranking") {
+            constructorState.modulo = "proveedores-pagos";
+            if (modulosEl) {
+              modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+              const provBtn = modulosEl.querySelector('[data-modulo="proveedores-pagos"]');
+              if (provBtn) provBtn.classList.add("active");
+            }
+            cargarConstructorProveedoresRanking();
+          } else if (btn.dataset.plantilla === "stock-rotacion") {
+            constructorState.modulo = "stock";
+            if (modulosEl) {
+              modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+              const stockBtn = modulosEl.querySelector('[data-modulo="stock"]');
+              if (stockBtn) stockBtn.classList.add("active");
+            }
+            cargarConstructorStockRotacion();
           } else {
             renderConstructorPreview();
           }
