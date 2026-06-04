@@ -237,7 +237,72 @@
     body.vista-reducida table thead tr > *:nth-child(9) {
       display: none;
     }
-    .proveedor-modal { width: min(680px, 100%); }
+    /* ── Proveedor modal Atlas UI ─────────────────────────────── */
+    .proveedor-modal {
+      width: min(720px, 100%);
+      max-height: calc(100vh - 56px);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 0;
+      background: #f8fafc;
+    }
+    .proveedor-modal > .modal-header {
+      flex: 0 0 auto;
+      position: static;
+      top: auto;
+      margin: 0;
+      padding: 14px 18px;
+      background: linear-gradient(135deg, #16052e 0%, #2a1450 100%);
+      color: #fff;
+      border: none;
+      border-radius: 0;
+      box-shadow: none;
+    }
+    .proveedor-modal > .modal-header h2 { color: #fff; }
+    .proveedor-modal > .modal-header p { color: rgba(255,255,255,.72); margin: 4px 0 0; }
+    .proveedor-modal > .modal-header .mib.ghost {
+      background: rgba(255,255,255,.1);
+      border-color: rgba(255,255,255,.22);
+      color: #fff;
+    }
+    .proveedor-modal > .modal-header .mib.ghost:hover {
+      background: rgba(255,255,255,.16);
+      border-color: rgba(255,255,255,.36);
+    }
+    .proveedor-form-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      padding: 16px 18px;
+      display: grid;
+      gap: 12px;
+      align-content: start;
+    }
+    .proveedor-modal > .modal-footer {
+      flex: 0 0 auto;
+      margin: 0;
+      padding: 12px 18px;
+      border-top: 1px solid var(--border);
+      background: #fff;
+    }
+    .proveedor-step {
+      border: 1px solid #dfe4ee;
+      border-radius: 16px;
+      background: #fff;
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+      box-shadow: 0 10px 26px rgba(31,41,55,.06);
+    }
+    .proveedor-step-title {
+      background: #fbfaff;
+      border: 1px solid #ebe5f6;
+      border-radius: 12px;
+      padding: 10px 12px;
+    }
+    .proveedor-step-title h3 { margin: 0; font-size: 15px; color: #24123f; }
+    .proveedor-step-title p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
     .proveedor-form-grid { grid-template-columns: 1.2fr 1fr 1fr; gap: 10px; }
     .commercial-row {
       display: grid;
@@ -258,6 +323,15 @@
       background: #fff;
       color: var(--text);
       font-weight: 900;
+    }
+    @media (max-width: 860px) {
+      .proveedor-modal { max-height: calc(100vh - 20px); }
+      .proveedor-modal > .modal-header { padding: 12px 14px; }
+      .proveedor-form-body { padding: 12px 14px; }
+      .proveedor-modal > .modal-footer { padding: 10px 14px; }
+      .proveedor-modal > .modal-footer .mib { flex: 1 1 140px; }
+      .proveedor-form-grid { grid-template-columns: 1fr !important; }
+      .commercial-row { grid-template-columns: 1fr !important; }
     }
 
     .toolbar {
@@ -646,49 +720,76 @@
 
   <div class="modal" id="modalProveedor" aria-hidden="true">
     <article class="modal-card proveedor-modal" role="dialog" aria-modal="true" aria-labelledby="tituloModalProveedor">
+
       <div class="modal-header">
         <div>
           <h2 id="tituloModalProveedor">Nuevo proveedor</h2>
+          <p>Registrá nombre, condiciones comerciales e impacto en finanzas.</p>
         </div>
         <div class="modal-header-actions">
-          <button type="button" class="mib ok icon-only" id="guardarProveedor" title="Guardar proveedor" aria-label="Guardar proveedor"><span class="app-icon icon-save" aria-hidden="true"></span></button>
-          <button type="button" class="mib ghost icon-only" id="limpiarProveedor" title="Limpiar formulario" aria-label="Limpiar formulario"><span class="app-icon icon-broom" aria-hidden="true"></span></button>
           <button type="button" class="mib ghost icon-only" id="cerrarProveedor" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
         </div>
       </div>
-      <div class="modal-body">
-      <div class="form-grid proveedor-form-grid">
-        <label>Nombre
-          <input type="text" id="nombre" class="field" />
-        </label>
-        <label>Categoria
-          <select id="categoríaProveedor" class="field">
-            <option value="">Sin categoría</option>
-          </select>
-        </label>
-        <label>Alias
-          <input type="text" id="alias" class="field" />
-        </label>
-        <div class="commercial-row full">
-          <strong>Cond. comerciales</strong>
-          <label class="switch-row"><input type="checkbox" id="manejaCuentaCorriente" /> Cta corriente</label>
-          <label>Vencimiento<input type="number" id="diasVencimiento" class="field" min="0" step="1" placeholder="Tiempo"></label>
-        </div>
-        <div class="commercial-row full">
-          <strong>Datos fiscales</strong>
-          <label>Condición IVA<select id="condicionIva" class="field"><option value="responsable_inscripto">Responsable inscripto</option><option value="monotributo">Monotributo</option><option value="exento">Exento</option><option value="consumidor_final">Consumidor final</option><option value="no_informado">No informado</option></select></label>
-          <label>Comprobante<select id="tipoComprobante" class="field"><option value="factura_a">Factura A</option><option value="factura_b">Factura B</option><option value="factura_c">Factura C</option><option value="recibo_x">Recibo X</option><option value="otro">Otro</option></select></label>
-          <label>IVA %<input type="number" id="ivaAlicuota" class="field" min="0" step="0.01" value="21"></label>
-          <div class="detail-box"><span>IVA a favor</span><strong id="ivaFavorInfo">Solo factura A + RI</strong></div>
-        </div>
-        <label class="full">Impacto del proveedor
-          <select id="tipoImpacto" class="field">
-            <option value="costo_fijo_operativo">Costo fijo / operativo</option>
-            <option value="costo_variable_mercaderia">Costo variable / mercadería</option>
-            <option value="inversion">Inversión</option>
-            <option value="otro_no_computable">Otro / no computable</option>
-          </select>
-        </label>
+
+      <div class="proveedor-form-body">
+
+        <section class="proveedor-step">
+          <div class="proveedor-step-title">
+            <div><h3>Datos básicos</h3><p>Nombre, categoría y alias del proveedor.</p></div>
+          </div>
+          <div class="form-grid proveedor-form-grid">
+            <label>Nombre
+              <input type="text" id="nombre" class="field" />
+            </label>
+            <label>Categoría
+              <select id="categoríaProveedor" class="field">
+                <option value="">Sin categoría</option>
+              </select>
+            </label>
+            <label>Alias
+              <input type="text" id="alias" class="field" />
+            </label>
+          </div>
+        </section>
+
+        <section class="proveedor-step">
+          <div class="proveedor-step-title">
+            <div><h3>Condiciones comerciales</h3><p>Cuenta corriente y tiempo de vencimiento.</p></div>
+          </div>
+          <div class="commercial-row">
+            <strong>Configuración</strong>
+            <label class="switch-row"><input type="checkbox" id="manejaCuentaCorriente" /> Cta corriente</label>
+            <label>Vencimiento<input type="number" id="diasVencimiento" class="field" min="0" step="1" placeholder="Tiempo"></label>
+          </div>
+        </section>
+
+        <section class="proveedor-step">
+          <div class="proveedor-step-title">
+            <div><h3>Datos fiscales</h3><p>Condición IVA, comprobante y alícuota.</p></div>
+          </div>
+          <div class="commercial-row">
+            <strong>Facturación</strong>
+            <label>Condición IVA<select id="condicionIva" class="field"><option value="responsable_inscripto">Responsable inscripto</option><option value="monotributo">Monotributo</option><option value="exento">Exento</option><option value="consumidor_final">Consumidor final</option><option value="no_informado">No informado</option></select></label>
+            <label>Comprobante<select id="tipoComprobante" class="field"><option value="factura_a">Factura A</option><option value="factura_b">Factura B</option><option value="factura_c">Factura C</option><option value="recibo_x">Recibo X</option><option value="otro">Otro</option></select></label>
+            <label>IVA %<input type="number" id="ivaAlicuota" class="field" min="0" step="0.01" value="21"></label>
+            <div class="detail-box"><span>IVA a favor</span><strong id="ivaFavorInfo">Solo factura A + RI</strong></div>
+          </div>
+        </section>
+
+        <section class="proveedor-step">
+          <div class="proveedor-step-title">
+            <div><h3>Clasificación</h3><p>Impacto del proveedor en el análisis financiero.</p></div>
+          </div>
+          <label>Impacto del proveedor
+            <select id="tipoImpacto" class="field">
+              <option value="costo_fijo_operativo">Costo fijo / operativo</option>
+              <option value="costo_variable_mercaderia">Costo variable / mercadería</option>
+              <option value="inversion">Inversión</option>
+              <option value="otro_no_computable">Otro / no computable</option>
+            </select>
+          </label>
+        </section>
+
         <input type="hidden" id="categoríaEspecial" />
         <input type="hidden" id="cuit" />
         <input type="hidden" id="tipoPersona" value="juridica" />
@@ -703,8 +804,14 @@
         <input type="hidden" id="diaVencimientoFijo" />
         <select class="hidden" id="moneda"><option value="ARS">ARS</option><option value="USD">USD</option></select>
         <input class="hidden" type="checkbox" id="activo" checked />
+
       </div>
+
+      <div class="modal-footer">
+        <button type="button" class="mib ghost" id="limpiarProveedor" title="Limpiar formulario" aria-label="Limpiar formulario"><span class="app-icon icon-broom" aria-hidden="true"></span> Limpiar</button>
+        <button type="button" class="mib ok" id="guardarProveedor" title="Guardar proveedor" aria-label="Guardar proveedor"><span class="app-icon icon-save" aria-hidden="true"></span> Guardar</button>
       </div>
+
     </article>
   </div>
 
