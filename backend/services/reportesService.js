@@ -1276,13 +1276,22 @@ function normalizarEstadoCuentaCorriente(value) {
 function mapReporteCuentaCorrienteCliente(row) {
   const deudaActual = round2(row.deuda_actual);
   const limiteCredito = round2(row.limite_fiado);
+  const deudaVencida = round2(row.deuda_vencida);
   return {
     cliente_id: Number(row.id),
     nombre: row.nombre,
     dni_cuit: row.dni_cuit || null,
     tipo_cliente: row.tipo_cliente || "cliente",
     activo: Number(row.activo || 0),
+    habilita_cuenta_corriente: Boolean(Number(row.habilita_cuenta_corriente || 0)),
+    suspendido: Boolean(Number(row.suspendido || 0)),
+    requiere_autorizacion: Boolean(Number(row.requiere_autorizacion || 0)),
+    dias_vencimiento: Number(row.dias_vencimiento || 30),
     deuda_actual: deudaActual,
+    deuda_vencida: deudaVencida,
+    deuda_no_vencida: round2(deudaActual - deudaVencida),
+    dias_max_en_deuda: Number(row.dias_max_en_deuda || 0),
+    ventas_vencidas: Number(row.ventas_vencidas || 0),
     limite_credito: limiteCredito,
     excedido: limiteCredito > 0 && deudaActual > limiteCredito,
     primera_deuda: row.primera_deuda || null,
@@ -1358,7 +1367,15 @@ async function getReporteCuentasCorrientes({
        c.tipo_cliente,
        c.activo,
        c.limite_fiado,
+       c.dias_vencimiento,
+       c.suspendido,
+       c.requiere_autorizacion,
+       c.habilita_cuenta_corriente,
        COALESCE(deuda.deuda_actual, 0) AS deuda_actual,
+       COALESCE(deuda.deuda_vencida, 0) AS deuda_vencida,
+       COALESCE(deuda.deuda_no_vencida, 0) AS deuda_no_vencida,
+       COALESCE(deuda.dias_max_en_deuda, 0) AS dias_max_en_deuda,
+       COALESCE(deuda.ventas_vencidas, 0) AS ventas_vencidas,
        deuda.primera_deuda,
        deuda.ultima_venta,
        cobros.ultimo_pago,
@@ -1370,9 +1387,21 @@ async function getReporteCuentasCorrientes({
        SELECT
          v.cliente_id,
          COALESCE(SUM(v.saldo_pendiente), 0) AS deuda_actual,
+         COALESCE(SUM(CASE WHEN COALESCE(v.saldo_pendiente, 0) > 0
+           AND (julianday('now') - julianday(v.fecha)) > cl.dias_vencimiento
+           THEN v.saldo_pendiente ELSE 0 END), 0) AS deuda_vencida,
+         COALESCE(SUM(CASE WHEN COALESCE(v.saldo_pendiente, 0) > 0
+           AND (julianday('now') - julianday(v.fecha)) <= cl.dias_vencimiento
+           THEN v.saldo_pendiente ELSE 0 END), 0) AS deuda_no_vencida,
+         CAST(COALESCE(MAX(CASE WHEN COALESCE(v.saldo_pendiente, 0) > 0
+           THEN julianday('now') - julianday(v.fecha) ELSE NULL END), 0) AS INTEGER) AS dias_max_en_deuda,
+         COALESCE(SUM(CASE WHEN COALESCE(v.saldo_pendiente, 0) > 0
+           AND (julianday('now') - julianday(v.fecha)) > cl.dias_vencimiento
+           THEN 1 ELSE 0 END), 0) AS ventas_vencidas,
          MIN(CASE WHEN COALESCE(v.saldo_pendiente, 0) > 0 THEN v.fecha ELSE NULL END) AS primera_deuda,
          MAX(v.fecha) AS ultima_venta
        FROM ventas v
+       JOIN clientes cl ON cl.id = v.cliente_id
        WHERE ${ventasBaseWhere.join(" AND ")}
        GROUP BY v.cliente_id
      ) deuda ON deuda.cliente_id = c.id
@@ -1495,7 +1524,11 @@ async function getReporteCuentasCorrientes({
       clientes_inactivos: clientes.filter((item) => item.activo === 0).length,
       clientes_con_deuda: clientes.filter((item) => item.deuda_actual > 0).length,
       deuda_total: round2(clientes.reduce((acc, item) => acc + item.deuda_actual, 0)),
+      deuda_vencida: round2(clientes.reduce((acc, item) => acc + item.deuda_vencida, 0)),
+      deuda_no_vencida: round2(clientes.reduce((acc, item) => acc + item.deuda_no_vencida, 0)),
+      clientes_con_deuda_vencida: clientes.filter((item) => item.deuda_vencida > 0).length,
       clientes_excedidos: clientes.filter((item) => item.excedido).length,
+      clientes_requieren_autorizacion: clientes.filter((item) => item.deuda_actual > 0 && item.requiere_autorizacion).length,
       cobrado_periodo: round2(clientes.reduce((acc, item) => acc + item.cobrado_periodo, 0)),
       ventas_cuenta_corriente: clientes.reduce((acc, item) => acc + item.ventas_periodo, 0),
       monto_ventas_cuenta_corriente: round2(clientes.reduce((acc, item) => acc + item.monto_ventas_periodo, 0))
