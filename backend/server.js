@@ -769,6 +769,47 @@ async function registrarVentaCobros(ventaId, cobro, cuentaCobroId, created_at) {
     );
   }
 }
+async function migrarVentaCobrosLegacy() {
+  // Ventas simples cobradas sin fila en venta_cobros (idempotente: NOT EXISTS)
+  await runQuery(`
+    INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at)
+    SELECT v.id,
+           LOWER(v.tipo_cobro),
+           v.cuenta_cobro_id,
+           CASE WHEN LOWER(v.tipo_cobro) = 'efectivo' THEN v.monto_efectivo ELSE v.monto_debito END,
+           'confirmado',
+           v.fecha || ' ' || v.hora
+    FROM ventas v
+    WHERE v.estado = 'cobrada'
+      AND v.tipo_cobro IS NOT NULL
+      AND LOWER(v.tipo_cobro) NOT IN ('mixto', 'cuenta_corriente', 'cuenta_corriente_pendiente')
+      AND NOT EXISTS (SELECT 1 FROM venta_cobros vc WHERE vc.venta_id = v.id)
+  `);
+
+  // Mixtas: parte efectivo (solo si no existe fila efectivo para esa venta)
+  await runQuery(`
+    INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at)
+    SELECT v.id, 'efectivo', NULL, v.monto_efectivo, 'confirmado', v.fecha || ' ' || v.hora
+    FROM ventas v
+    WHERE LOWER(v.tipo_cobro) = 'mixto'
+      AND v.monto_efectivo > 0
+      AND NOT EXISTS (
+        SELECT 1 FROM venta_cobros vc WHERE vc.venta_id = v.id AND vc.tipo_cobro = 'efectivo'
+      )
+  `);
+
+  // Mixtas: parte debito (solo si no existe fila debito para esa venta)
+  await runQuery(`
+    INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at)
+    SELECT v.id, 'debito', v.cuenta_cobro_id, v.monto_debito, 'confirmado', v.fecha || ' ' || v.hora
+    FROM ventas v
+    WHERE LOWER(v.tipo_cobro) = 'mixto'
+      AND v.monto_debito > 0
+      AND NOT EXISTS (
+        SELECT 1 FROM venta_cobros vc WHERE vc.venta_id = v.id AND vc.tipo_cobro = 'debito'
+      )
+  `);
+}
 // ─────────────────────────────────────────────────────────────────────────────
 
 function calcularCostoFinal(precioCompra, ivaPorcentaje, incluyeIva) {
@@ -7582,6 +7623,7 @@ Promise.all([
   ensureVentaRecetaSnapshotSchema(),
   ensureVentaCobrosSchema()
 ])
+  .then(() => migrarVentaCobrosLegacy())
   .then(async () => {
     await Promise.all([
       runQuery("CREATE INDEX IF NOT EXISTS idx_usuarios_usuario ON usuarios(usuario)"),
