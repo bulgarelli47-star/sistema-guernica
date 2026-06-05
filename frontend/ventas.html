@@ -1591,6 +1591,19 @@
     @media(max-width:860px){:where(.modal,.modal-backdrop){padding:10px}.modal>.modal-card,.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{width:min(100%,calc(100vw - 20px));max-height:calc(100vh - 20px);border-radius:16px}:where(.modal-actions,.dialog-actions,.modal-footer){justify-content:stretch}:where(.modal-actions>* , .dialog-actions>* , .modal-footer>*){flex:1 1 140px}}
     .atlas-modal-card{padding:0;overflow:hidden;background:#f8fafc}.atlas-modal-card>.modal-header{margin:0;border:0;border-radius:0;padding:16px 18px;background:linear-gradient(135deg,#16052e 0%,#2a1450 100%);color:#fff;box-shadow:none}.atlas-modal-card>.modal-header p{color:rgba(255,255,255,.72)}.atlas-modal-card .modal-body,.atlas-modal-card .cobro-modal-body{padding:16px 18px;background:#f8fafc}.atlas-modal-card .checkout-section,.atlas-modal-card .support-card,.atlas-modal-card .client-select-card{border:1px solid var(--border);border-radius:16px;background:#fff;box-shadow:0 10px 24px rgba(17,24,39,.04)}.atlas-modal-close{width:38px;height:38px;border-radius:10px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.1);color:#fff;display:inline-grid;place-items:center;cursor:pointer}.atlas-modal-card>.modal-footer,.atlas-modal-card>.inline-actions{margin:0;padding:12px 18px;border-top:1px solid var(--border);background:#fff}.atlas-modal-card>.modal-footer[aria-hidden="true"]{display:none}.cobro-modal-card.atlas-modal-card{width:min(720px,100%);max-height:calc(100vh - 56px);display:grid;grid-template-rows:auto minmax(0,1fr) auto}.cobro-modal-card.atlas-modal-card .cobro-modal-body{overflow:auto}.payment-button.disabled-by-account{opacity:.45}.payment-button.disabled-by-account::after{content:"Sin cuenta";font-size:10px;color:var(--danger);font-weight:800;margin-top:2px}.client-select-card{padding:14px}.client-select-card .field{margin-top:8px}
     .cobro-system-message{margin:0 18px 12px;padding:11px 13px;border-radius:12px;border:1px solid rgba(224,82,82,.28);background:rgba(224,82,82,.1);color:#991b1b;font-weight:800;font-size:13px;line-height:1.35}.cobro-system-message.hidden{display:none}
+    /* Cobros V2 — D2.1 */
+    [data-payment="mixto"] { display: none !important; }
+    .cobros-v2-list { display: grid; gap: 6px; margin-top: 4px; }
+    .cobro-v2-fila { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; align-items: end; }
+    .cobro-v2-fila select, .cobro-v2-fila input[type="number"] { min-height: 38px; border-radius: 10px; padding: 8px 10px; }
+    .cobro-v2-remove { display: inline-grid; place-items: center; width: 32px; height: 38px; border-radius: 9px; border: 1px solid var(--border); background: #fafafe; color: var(--muted); cursor: pointer; font-size: 16px; }
+    .cobro-v2-remove:hover { background: #fee2e2; color: var(--danger); border-color: rgba(224,82,82,.3); }
+    .cobros-v2-resumen { display: grid; gap: 4px; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--border); background: #f9fafb; margin-top: 6px; font-size: 12px; }
+    .cobros-v2-total-row { display: flex; justify-content: space-between; gap: 8px; font-weight: 700; }
+    .cobros-v2-diff-row { display: flex; justify-content: space-between; gap: 8px; }
+    .cobros-v2-diff-row.error { color: var(--danger); font-weight: 700; }
+    .cobros-v2-diff-row.ok { color: var(--success); }
+    .cobros-v2-add { margin-top: 6px; width: 100%; }
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=8" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -1958,6 +1971,26 @@
             </div>
           </div>
         </section>
+
+        <section class="checkout-section hidden" id="cobrosMultiplesSection">
+          <div class="checkout-section-header">
+            <span class="checkout-section-label">Medios de pago</span>
+          </div>
+          <div class="payment-fields">
+            <div class="cobros-v2-list" id="cobrosV2Lista"></div>
+            <div class="cobros-v2-resumen hidden" id="cobrosV2Resumen">
+              <div class="cobros-v2-total-row">
+                <span>Total ingresado</span>
+                <span id="cobrosV2Ingresado">$0.00</span>
+              </div>
+              <div class="cobros-v2-diff-row" id="cobrosV2DiffRow">
+                <span id="cobrosV2DiffLabel">Diferencia</span>
+                <span id="cobrosV2Diff">$0.00</span>
+              </div>
+            </div>
+            <button type="button" class="button secondary cobros-v2-add" id="agregarCobroV2Btn">+ Agregar medio</button>
+          </div>
+        </section>
       </div>
       <div id="mensajeCobroVenta" class="cobro-system-message hidden" role="status" aria-live="polite"></div>
       <div class="inline-actions">
@@ -2198,6 +2231,14 @@
     const montoRecibido = document.getElementById("montoRecibido");
     const vueltoCalculado = document.getElementById("vueltoCalculado");
     const recibidoWrapper = document.getElementById("recibidoWrapper");
+    const cobrosMultiplesSection = document.getElementById("cobrosMultiplesSection");
+    const cobrosV2Lista = document.getElementById("cobrosV2Lista");
+    const cobrosV2Resumen = document.getElementById("cobrosV2Resumen");
+    const cobrosV2Ingresado = document.getElementById("cobrosV2Ingresado");
+    const cobrosV2DiffRow = document.getElementById("cobrosV2DiffRow");
+    const cobrosV2Diff = document.getElementById("cobrosV2Diff");
+    const cobrosV2DiffLabel = document.getElementById("cobrosV2DiffLabel");
+    const agregarCobroV2Btn = document.getElementById("agregarCobroV2Btn");
     const modalGuardarPendiente = document.getElementById("modalGuardarPendiente");
     const modalPendientes = document.getElementById("modalPendientes");
     const modalIdentificadorPendiente = document.getElementById("modalIdentificadorPendiente");
@@ -2260,6 +2301,7 @@
     const AJUSTE_STOCK_RESOLUCION_KEY = "guernicaResolverAjusteStock";
     const modificadoresCache = new Map();
     const CONSUMIDOR_FINAL_ID = "1";
+    let cobrosMultiples = [];
 
     function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[raw]||raw}
     function usuarioActualVentas(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{};return String(u.usuario||"admin")}
@@ -3037,6 +3079,7 @@
     function abrirModalCobroVenta() {
       limpiarMensajeCobroVenta();
       actualizarCobroNormalUI();
+      try { if (!esCuentaCorriente.checked) inicializarCobrosMultiples(getTicketTotal()); } catch(_e) {}
       abrirModal(modalCobroVenta);
       window.setTimeout(() => {
         modalCobroVenta?.querySelector(".payment-button.active:not(:disabled), .payment-button:not(:disabled), .field:not(:disabled), button:not(:disabled)")?.focus();
@@ -3382,6 +3425,94 @@
       actualizarVuelto();
       renderizarTicket();
       actualizarResumenCobroTicket();
+
+      try {
+        const _esCCActiva = esCuentaCorriente.checked;
+        if (cobrosMultiplesSection) cobrosMultiplesSection.classList.toggle("hidden", _esCCActiva);
+        const _legacyDetail = document.querySelector(".payment-detail-section");
+        if (_legacyDetail) _legacyDetail.classList.toggle("hidden", !_esCCActiva);
+      } catch(_e) { /* cobros-v2 ui — non-fatal */ }
+    }
+
+    function inicializarCobrosMultiples(total) {
+      if (!cobrosV2Lista) return;
+      cobrosMultiples = [{ id: 1, tipo: "efectivo", monto: Number(total) || 0 }];
+      renderCobrosMultiples();
+    }
+
+    function renderCobrosMultiples() {
+      if (!cobrosV2Lista) return;
+      const tipos = tiposPagoVentas.filter(t => t.codigo !== "mixto");
+      const fallback = [
+        { codigo: "efectivo", nombre: "Efectivo" },
+        { codigo: "debito", nombre: "Débito" },
+        { codigo: "credito", nombre: "Crédito" },
+        { codigo: "transferencia", nombre: "Transferencia" },
+        { codigo: "qr", nombre: "QR" }
+      ];
+      const opcionesTipo = tipos.length ? tipos : fallback;
+      cobrosV2Lista.innerHTML = cobrosMultiples.map((c) => `
+        <div class="cobro-v2-fila" data-cobro-id="${c.id}">
+          <select class="field cobro-v2-tipo" data-id="${c.id}">
+            ${opcionesTipo.map(t => `<option value="${escapeHtml(t.codigo)}" ${c.tipo === t.codigo ? "selected" : ""}>${escapeHtml(t.nombre || t.codigo)}</option>`).join("")}
+          </select>
+          <input type="number" class="field cobro-v2-monto" data-id="${c.id}" value="${c.monto !== 0 ? (c.monto || "") : ""}" step="0.01" min="0" placeholder="Monto" />
+          ${cobrosMultiples.length > 1
+            ? `<button type="button" class="cobro-v2-remove" data-remove="${c.id}" title="Quitar">×</button>`
+            : `<span style="display:inline-block;width:32px"></span>`}
+        </div>
+      `).join("");
+      actualizarResumenCobrosMultiples();
+    }
+
+    function actualizarResumenCobrosMultiples() {
+      if (!cobrosV2Resumen || !cobrosV2Ingresado || !cobrosV2Diff || !cobrosV2DiffRow) return;
+      const total = getTicketTotal();
+      const ingresado = cobrosMultiples.reduce((s, c) => s + (Number(c.monto) || 0), 0);
+      const diff = Number((ingresado - total).toFixed(2));
+      cobrosV2Ingresado.textContent = "$" + formatearNumero(ingresado);
+      cobrosV2DiffRow.className = "cobros-v2-diff-row" + (Math.abs(diff) < 0.01 ? " ok" : " error");
+      cobrosV2Diff.textContent = (diff > 0 ? "+" : "") + "$" + formatearNumero(Math.abs(diff));
+      if (cobrosV2DiffLabel) cobrosV2DiffLabel.textContent = Math.abs(diff) < 0.01 ? "Cubierto ✓" : diff > 0 ? "Exceso" : "Falta";
+      cobrosV2Resumen.classList.toggle("hidden", cobrosMultiples.length === 0);
+    }
+
+    function agregarCobroMultiple() {
+      const nextId = (cobrosMultiples[cobrosMultiples.length - 1]?.id || 0) + 1;
+      cobrosMultiples.push({ id: nextId, tipo: "efectivo", monto: 0 });
+      renderCobrosMultiples();
+    }
+
+    function getCobrosMultiplesNormalizados() {
+      if (!cobrosV2Lista) return [];
+      const cobros = [];
+      cobrosV2Lista.querySelectorAll(".cobro-v2-fila").forEach(fila => {
+        const tipo_cobro = fila.querySelector(".cobro-v2-tipo")?.value || "";
+        const monto = Number(fila.querySelector(".cobro-v2-monto")?.value) || 0;
+        if (monto > 0 && tipo_cobro) {
+          cobros.push({ tipo_cobro, cuenta_cobro_id: null, monto: Number(monto.toFixed(2)) });
+        }
+      });
+      return cobros;
+    }
+
+    function derivarLegacyDesdeCobros(cobros) {
+      if (!cobros || !cobros.length) return { tipo_cobro: "efectivo", monto_efectivo: 0, monto_debito: 0 };
+      if (cobros.length === 1) {
+        const c = cobros[0];
+        return {
+          tipo_cobro: c.tipo_cobro,
+          monto_efectivo: c.tipo_cobro === "efectivo" ? c.monto : 0,
+          monto_debito: c.tipo_cobro !== "efectivo" ? c.monto : 0
+        };
+      }
+      const efectivo = cobros.filter(c => c.tipo_cobro === "efectivo").reduce((s, c) => s + c.monto, 0);
+      const noEfectivo = cobros.filter(c => c.tipo_cobro !== "efectivo").reduce((s, c) => s + c.monto, 0);
+      return {
+        tipo_cobro: "mixto",
+        monto_efectivo: Number(efectivo.toFixed(2)),
+        monto_debito: Number(noEfectivo.toFixed(2))
+      };
     }
 
     function actualizarAccionesTicket() {
@@ -3421,6 +3552,7 @@
       montoRecibido.value = "";
       esCuentaCorriente.checked = false;
       cuentaCobroVenta.value = "";
+      cobrosMultiples = [];
       resetIntentoPointVisual();
       actualizarAccionesTicket();
       actualizarCobroNormalUI();
@@ -3993,12 +4125,12 @@
 
     function renderMetodosPagoVentas() {
       if (!paymentButtons) return;
-      const tipos = tiposPagoVentas.length ? tiposPagoVentas : [
+      const tiposRaw = tiposPagoVentas.length ? tiposPagoVentas : [
         { codigo: "efectivo", nombre: "Eft" },
         { codigo: "debito", nombre: "Deb" },
-        { codigo: "transferencia", nombre: "Transf" },
-        { codigo: "mixto", nombre: "Mixto" }
+        { codigo: "transferencia", nombre: "Transf" }
       ];
+      const tipos = tiposRaw.filter(t => t.codigo !== "mixto");
       paymentButtons.innerHTML = tipos.map((tipo) => `
         <button type="button" class="payment-button ${selectedPaymentMode === tipo.codigo ? "active" : ""}" data-payment="${tipo.codigo}">
           <strong><span class="app-icon ${iconoMetodoPago(tipo.codigo)}" aria-hidden="true"></span> ${escapeHtml(etiquetaMetodoPago(tipo))}</strong>
@@ -4264,6 +4396,7 @@
           monto_efectivo: 0,
           monto_debito: 0
         };
+        let cobrosPayload = null;
 
         if (esCuentaCorriente.checked) {
           if (!clienteVenta.value) {
@@ -4271,21 +4404,20 @@
             return;
           }
         } else {
-          cobro = resolverCobroFrontend(
-            tipoCobroNormal.value,
-            montoEfectivoNormal,
-            montoDebitoNormal,
-            total
-          );
-
-          if (!cobro) {
-            mostrarMensaje("En cobro mixto, efectivo + débito debe ser igual al total", true);
+          const cobrosV2 = getCobrosMultiplesNormalizados();
+          if (cobrosV2.some(c => !c.tipo_cobro)) {
+            mostrarMensaje("Seleccioná un método de cobro válido.", true);
+            abrirModal(modalCobroVenta);
             return;
           }
-
-          if (!validarCuentaTerminalCobro(cobro)) {
+          const sumaV2 = cobrosV2.reduce((s, c) => s + c.monto, 0);
+          if (!cobrosV2.length || Math.abs(sumaV2 - total) >= 0.01) {
+            mostrarMensaje("El total de los medios de pago debe ser igual al total del ticket", true);
+            abrirModal(modalCobroVenta);
             return;
           }
+          cobro = derivarLegacyDesdeCobros(cobrosV2);
+          cobrosPayload = cobrosV2;
         }
 
         if (currentPendingId) {
@@ -4315,7 +4447,8 @@
             recargo_porcentaje: recargoVentaActual.porcentaje,
             recargo_monto: recargoVentaActual.monto,
             cuotas: recargoVentaActual.cuotas,
-            ...cobro
+            ...cobro,
+            ...(cobrosPayload ? { cobros: cobrosPayload } : {})
           })
         });
 
@@ -4982,6 +5115,36 @@
       actualizarVuelto();
       marcarPendienteEditado();
     });
+
+    agregarCobroV2Btn?.addEventListener("click", agregarCobroMultiple);
+
+    cobrosV2Lista?.addEventListener("change", function(event) {
+      const sel = event.target.closest(".cobro-v2-tipo");
+      if (sel) {
+        const id = Number(sel.dataset.id);
+        const cobro = cobrosMultiples.find(c => c.id === id);
+        if (cobro) { cobro.tipo = sel.value; actualizarResumenCobrosMultiples(); }
+      }
+    });
+
+    cobrosV2Lista?.addEventListener("input", function(event) {
+      const inp = event.target.closest(".cobro-v2-monto");
+      if (inp) {
+        const id = Number(inp.dataset.id);
+        const cobro = cobrosMultiples.find(c => c.id === id);
+        if (cobro) { cobro.monto = Number(inp.value) || 0; actualizarResumenCobrosMultiples(); }
+      }
+    });
+
+    cobrosV2Lista?.addEventListener("click", function(event) {
+      const btn = event.target.closest(".cobro-v2-remove");
+      if (btn) {
+        const id = Number(btn.dataset.remove);
+        cobrosMultiples = cobrosMultiples.filter(c => c.id !== id);
+        renderCobrosMultiples();
+      }
+    });
+
     modalIdentificadorPendiente.addEventListener("keydown", function (event) {
       if (event.key === "Enter") {
         event.preventDefault();
