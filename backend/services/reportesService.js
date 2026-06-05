@@ -2334,6 +2334,74 @@ async function getReporteRiesgoVentas({ desde = null, hasta = null } = {}) {
   };
 }
 
+async function getReporteRentabilidadProductos({ desde = null, hasta = null } = {}) {
+  const fechaWhere = [];
+  const fechaParams = [];
+  if (desde) { fechaWhere.push("v.fecha >= ?"); fechaParams.push(desde); }
+  if (hasta) { fechaWhere.push("v.fecha <= ?"); fechaParams.push(hasta); }
+  const fechaJoin = fechaWhere.length ? "AND " + fechaWhere.join(" AND ") : "";
+
+  const rows = await allQuery(
+    `SELECT
+       dv.producto_id,
+       dv.nombre_producto,
+       COALESCE(cat.nombre, p.categoria, 'Sin categoría') AS categoria,
+       p.tipo,
+       COALESCE(SUM(dv.cantidad), 0) AS unidades_vendidas,
+       COALESCE(SUM(dv.subtotal), 0) AS facturacion_total,
+       COALESCE(SUM(dv.cantidad * COALESCE(NULLIF(p.costo_final, 0), NULLIF(p.precio_compra, 0), 0)), 0) AS costo_estimado_total
+     FROM detalle_ventas dv
+     JOIN ventas v ON v.id = dv.venta_id
+     JOIN productos p ON p.id = dv.producto_id
+     LEFT JOIN categorias cat ON cat.id = p.categoria_id
+     WHERE COALESCE(v.estado, '') != 'anulado'
+       AND COALESCE(v.tipo, '') != 'test_modificadores'
+       ${fechaJoin}
+     GROUP BY dv.producto_id, dv.nombre_producto, cat.nombre, p.categoria, p.tipo
+     ORDER BY facturacion_total DESC`,
+    fechaParams
+  );
+
+  const productos = rows.map((row) => {
+    const facturacion = round2(row.facturacion_total);
+    const costo = round2(row.costo_estimado_total);
+    const margen = round2(facturacion - costo);
+    const margenPct = facturacion > 0 ? round2((margen / facturacion) * 100) : 0;
+    return {
+      producto_id: row.producto_id == null ? null : Number(row.producto_id),
+      producto_nombre: row.nombre_producto,
+      categoria: row.categoria,
+      tipo: row.tipo || "simple",
+      unidades_vendidas: round2(row.unidades_vendidas),
+      facturacion_total: facturacion,
+      costo_estimado_total: costo,
+      margen_bruto: margen,
+      margen_porcentual: margenPct,
+      ticket_promedio: round2(row.unidades_vendidas > 0 ? facturacion / row.unidades_vendidas : 0)
+    };
+  }).sort((a, b) => b.margen_bruto - a.margen_bruto);
+
+  const facturacionTotal = round2(productos.reduce((acc, p) => acc + p.facturacion_total, 0));
+  const costoTotal = round2(productos.reduce((acc, p) => acc + p.costo_estimado_total, 0));
+  const margenTotal = round2(facturacionTotal - costoTotal);
+  const margenPromedio = facturacionTotal > 0 ? round2((margenTotal / facturacionTotal) * 100) : 0;
+  const porRentabilidad = [...productos].sort((a, b) => b.margen_bruto - a.margen_bruto);
+  const porMargenPct = [...productos].filter((p) => p.facturacion_total > 0).sort((a, b) => b.margen_porcentual - a.margen_porcentual);
+
+  return {
+    filtros: { desde, hasta },
+    resumen: {
+      facturacion_total: facturacionTotal,
+      costo_total: costoTotal,
+      margen_total: margenTotal,
+      margen_promedio: margenPromedio,
+      producto_mayor_rentabilidad: porRentabilidad[0]?.producto_nombre || null,
+      producto_menor_rentabilidad: porMargenPct[porMargenPct.length - 1]?.producto_nombre || null
+    },
+    productos
+  };
+}
+
 module.exports = {
   getResumenReportes,
   getReporteVentas,
@@ -2348,5 +2416,6 @@ module.exports = {
   getReporteDesviosReceta,
   getReporteSaludInventario,
   getReporteDependenciaInsumos,
-  getReporteRiesgoVentas
+  getReporteRiesgoVentas,
+  getReporteRentabilidadProductos
 };
