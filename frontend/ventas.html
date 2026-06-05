@@ -1591,12 +1591,15 @@
     @media(max-width:860px){:where(.modal,.modal-backdrop){padding:10px}.modal>.modal-card,.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{width:min(100%,calc(100vw - 20px));max-height:calc(100vh - 20px);border-radius:16px}:where(.modal-actions,.dialog-actions,.modal-footer){justify-content:stretch}:where(.modal-actions>* , .dialog-actions>* , .modal-footer>*){flex:1 1 140px}}
     .atlas-modal-card{padding:0;overflow:hidden;background:#f8fafc}.atlas-modal-card>.modal-header{margin:0;border:0;border-radius:0;padding:16px 18px;background:linear-gradient(135deg,#16052e 0%,#2a1450 100%);color:#fff;box-shadow:none}.atlas-modal-card>.modal-header p{color:rgba(255,255,255,.72)}.atlas-modal-card .modal-body,.atlas-modal-card .cobro-modal-body{padding:16px 18px;background:#f8fafc}.atlas-modal-card .checkout-section,.atlas-modal-card .support-card,.atlas-modal-card .client-select-card{border:1px solid var(--border);border-radius:16px;background:#fff;box-shadow:0 10px 24px rgba(17,24,39,.04)}.atlas-modal-close{width:38px;height:38px;border-radius:10px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.1);color:#fff;display:inline-grid;place-items:center;cursor:pointer}.atlas-modal-card>.modal-footer,.atlas-modal-card>.inline-actions{margin:0;padding:12px 18px;border-top:1px solid var(--border);background:#fff}.atlas-modal-card>.modal-footer[aria-hidden="true"]{display:none}.cobro-modal-card.atlas-modal-card{width:min(720px,100%);max-height:calc(100vh - 56px);display:grid;grid-template-rows:auto minmax(0,1fr) auto}.cobro-modal-card.atlas-modal-card .cobro-modal-body{overflow:auto}.payment-button.disabled-by-account{opacity:.45}.payment-button.disabled-by-account::after{content:"Sin cuenta";font-size:10px;color:var(--danger);font-weight:800;margin-top:2px}.client-select-card{padding:14px}.client-select-card .field{margin-top:8px}
     .cobro-system-message{margin:0 18px 12px;padding:11px 13px;border-radius:12px;border:1px solid rgba(224,82,82,.28);background:rgba(224,82,82,.1);color:#991b1b;font-weight:800;font-size:13px;line-height:1.35}.cobro-system-message.hidden{display:none}
-    /* Cobros V2 — D2.1 */
+    /* Cobros V2 — D2.1/D2.3 */
     [data-payment="mixto"] { display: none !important; }
+    .payment-section.cobros-v2-mode { display: none !important; }
     .cobros-v2-list { display: grid; gap: 6px; margin-top: 4px; }
     .cobro-v2-fila { display: grid; grid-template-columns: 1fr 1.2fr 1fr auto; gap: 6px; align-items: end; }
     .cobro-v2-fila select, .cobro-v2-fila input[type="number"] { min-height: 38px; border-radius: 10px; padding: 8px 10px; }
     @media (max-width: 520px) { .cobro-v2-fila { grid-template-columns: 1fr 1fr; } .cobro-v2-remove { grid-column: 2; justify-self: end; } }
+    .cobro-v2-tipo-wrap { display: grid; grid-template-columns: 22px 1fr; gap: 4px; align-items: center; }
+    .cobro-v2-tipo-icon { font-size: 14px; color: var(--muted); justify-self: center; pointer-events: none; }
     .cobro-v2-remove { display: inline-grid; place-items: center; width: 32px; height: 38px; border-radius: 9px; border: 1px solid var(--border); background: #fafafe; color: var(--muted); cursor: pointer; font-size: 16px; }
     .cobro-v2-remove:hover { background: #fee2e2; color: var(--danger); border-color: rgba(224,82,82,.3); }
     .cobros-v2-resumen { display: grid; gap: 4px; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--border); background: #f9fafb; margin-top: 6px; font-size: 12px; }
@@ -1605,6 +1608,8 @@
     .cobros-v2-diff-row.error { color: var(--danger); font-weight: 700; }
     .cobros-v2-diff-row.ok { color: var(--success); }
     .cobros-v2-add { margin-top: 6px; width: 100%; }
+    .cobros-v2-cc-btn { width: 100%; margin-top: 4px; font-size: 12px; color: var(--muted); background: none; border: 1px dashed var(--border); border-radius: 9px; padding: 6px; cursor: pointer; text-align: center; }
+    .cobros-v2-cc-btn:hover { color: var(--primary); border-color: var(--primary-soft); background: var(--primary-soft); }
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=8" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -1990,6 +1995,7 @@
               </div>
             </div>
             <button type="button" class="button secondary cobros-v2-add" id="agregarCobroV2Btn">+ Agregar medio</button>
+            <button type="button" class="cobros-v2-cc-btn" id="activarCuentaCorrienteV2">Cobrar a cuenta corriente</button>
           </div>
         </section>
       </div>
@@ -2240,6 +2246,7 @@
     const cobrosV2Diff = document.getElementById("cobrosV2Diff");
     const cobrosV2DiffLabel = document.getElementById("cobrosV2DiffLabel");
     const agregarCobroV2Btn = document.getElementById("agregarCobroV2Btn");
+    const activarCuentaCorrienteV2 = document.getElementById("activarCuentaCorrienteV2");
     const modalGuardarPendiente = document.getElementById("modalGuardarPendiente");
     const modalPendientes = document.getElementById("modalPendientes");
     const modalIdentificadorPendiente = document.getElementById("modalIdentificadorPendiente");
@@ -3432,6 +3439,8 @@
         if (cobrosMultiplesSection) cobrosMultiplesSection.classList.toggle("hidden", _esCCActiva);
         const _legacyDetail = document.querySelector(".payment-detail-section");
         if (_legacyDetail) _legacyDetail.classList.toggle("hidden", !_esCCActiva);
+        const _paymentSect = document.querySelector(".payment-section");
+        if (_paymentSect) _paymentSect.classList.toggle("cobros-v2-mode", !_esCCActiva);
       } catch(_e) { /* cobros-v2 ui — non-fatal */ }
     }
 
@@ -3471,9 +3480,12 @@
         }
         return `
           <div class="cobro-v2-fila" data-cobro-id="${c.id}">
-            <select class="field cobro-v2-tipo" data-id="${c.id}">
-              ${opcionesTipo.map(t => `<option value="${escapeHtml(t.codigo)}" ${c.tipo === t.codigo ? "selected" : ""}>${escapeHtml(t.nombre || t.codigo)}</option>`).join("")}
-            </select>
+            <div class="cobro-v2-tipo-wrap">
+              <span class="app-icon ${escapeHtml(iconoMetodoPago(c.tipo))} cobro-v2-tipo-icon" aria-hidden="true"></span>
+              <select class="field cobro-v2-tipo" data-id="${c.id}">
+                ${opcionesTipo.map(t => `<option value="${escapeHtml(t.codigo)}" ${c.tipo === t.codigo ? "selected" : ""}>${escapeHtml(t.nombre || t.codigo)}</option>`).join("")}
+              </select>
+            </div>
             ${cuentaSelectHtml}
             <input type="number" class="field cobro-v2-monto" data-id="${c.id}" value="${c.monto !== 0 ? (c.monto || "") : ""}" step="0.01" min="0" placeholder="Monto" />
             ${cobrosMultiples.length > 1
@@ -3499,7 +3511,14 @@
 
     function agregarCobroMultiple() {
       const nextId = (cobrosMultiples[cobrosMultiples.length - 1]?.id || 0) + 1;
-      cobrosMultiples.push({ id: nextId, tipo: "efectivo", monto: 0, cuentaId: null });
+      const total = getTicketTotal();
+      const ingresado = cobrosMultiples.reduce((s, c) => s + (Number(c.monto) || 0), 0);
+      const saldo = Math.max(0, Number((total - ingresado).toFixed(2)));
+      const digitales = tiposPagoVentas.filter(t => t.codigo !== "mixto" && t.codigo !== "efectivo" && t.codigo !== "cuenta_corriente");
+      const conCuenta = digitales.find(t => getCuentasCobroCompatibles(t.codigo).length > 0);
+      const tipoSugerido = conCuenta ? conCuenta.codigo : "efectivo";
+      const primerasCuentas = getCuentasCobroCompatibles(tipoSugerido);
+      cobrosMultiples.push({ id: nextId, tipo: tipoSugerido, monto: saldo, cuentaId: primerasCuentas.length ? primerasCuentas[0].id : null });
       renderCobrosMultiples();
     }
 
@@ -5145,6 +5164,7 @@
     });
 
     agregarCobroV2Btn?.addEventListener("click", agregarCobroMultiple);
+    activarCuentaCorrienteV2?.addEventListener("click", () => setPaymentMode("cuenta_corriente"));
 
     cobrosV2Lista?.addEventListener("change", function(event) {
       const selTipo = event.target.closest(".cobro-v2-tipo");

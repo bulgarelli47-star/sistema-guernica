@@ -3530,6 +3530,31 @@ app.patch("/cuentas_cobro/:id/activo", async (req, res) => {
   }
 });
 
+app.delete("/cuentas_cobro/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "ID invalido" });
+  try {
+    const cuenta = await getQuery("SELECT id FROM cuentas_cobro WHERE id = ?", [id]);
+    if (!cuenta) return res.status(404).json({ message: "Canal no encontrado" });
+    const uso = await getQuery(
+      `SELECT
+        (SELECT COUNT(*) FROM venta_cobros WHERE cuenta_cobro_id = ?) +
+        (SELECT COUNT(*) FROM ventas       WHERE cuenta_cobro_id = ?) +
+        (SELECT COUNT(*) FROM pagos        WHERE cuenta_cobro_id = ?) AS total`,
+      [id, id, id]
+    );
+    if (Number(uso?.total || 0) > 0) {
+      await runQuery("UPDATE cuentas_cobro SET activo = 0, updated_at = datetime('now') WHERE id = ?", [id]);
+      return res.json({ message: "La cuenta tiene movimientos. Se desactivó para conservar el historial.", desactivado: true });
+    }
+    await runQuery("DELETE FROM cuentas_cobro WHERE id = ?", [id]);
+    return res.json({ message: "Canal eliminado", eliminado: true });
+  } catch (error) {
+    logError("Error al eliminar cuenta de cobro:", error);
+    return res.status(500).json({ message: "Error al eliminar canal" });
+  }
+});
+
 app.post("/integraciones/mercadopago-point/intentos", async (req, res) => {
   try {
     const intento = await crearIntentoPoint({
