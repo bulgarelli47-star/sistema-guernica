@@ -1948,6 +1948,141 @@ async function getReporteDesviosReceta({ desde = null, hasta = null } = {}) {
   };
 }
 
+async function getReporteSaludInventario() {
+  const [compuestosRows, componentesRows, todosRows] = await Promise.all([
+    allQuery(
+      `SELECT id, nombre, rendimiento_receta, es_combo, costo_final, precio_compra
+       FROM productos
+       WHERE activo = 1 AND (tipo = 'compuesto' OR es_combo = 1)
+       ORDER BY nombre ASC`
+    ),
+    allQuery(`SELECT producto_compuesto_id, producto_id, cantidad FROM producto_componentes`),
+    allQuery(
+      `SELECT id, nombre, stock, stock_minimo, maneja_stock, tipo, costo_final, precio_compra
+       FROM productos WHERE activo = 1`
+    )
+  ]);
+
+  const productMap = new Map(todosRows.map((p) => [p.id, p]));
+  const compMap = new Map();
+  componentesRows.forEach((c) => {
+    if (!compMap.has(c.producto_compuesto_id)) compMap.set(c.producto_compuesto_id, []);
+    compMap.get(c.producto_compuesto_id).push(c);
+  });
+
+  function flattenReceta(productoId, cantidadPorUnidad, visited) {
+    if (visited.has(productoId)) return [];
+    const newVisited = new Set([...visited, productoId]);
+    const producto = productMap.get(productoId);
+    const comps = compMap.get(productoId) || [];
+    if (!comps.length) {
+      if (producto && Number(producto.maneja_stock) === 1) {
+        return [{
+          id: productoId,
+          nombre: producto.nombre,
+          stock: round2(producto.stock),
+          stock_minimo: round2(producto.stock_minimo),
+          cantidadPorUnidad
+        }];
+      }
+      return [];
+    }
+    const rendimiento = Math.max(1, Number(producto?.rendimiento_receta || 1));
+    const result = [];
+    for (const comp of comps) {
+      const cantPorUnidad = cantidadPorUnidad * comp.cantidad / rendimiento;
+      const sub = productMap.get(comp.producto_id);
+      if (!sub) continue;
+      if (Number(sub.maneja_stock) === 1) {
+        result.push({
+          id: comp.producto_id,
+          nombre: sub.nombre,
+          stock: round2(sub.stock),
+          stock_minimo: round2(sub.stock_minimo),
+          cantidadPorUnidad: cantPorUnidad
+        });
+      } else {
+        result.push(...flattenReceta(comp.producto_id, cantPorUnidad, newVisited));
+      }
+    }
+    return result;
+  }
+
+  const recetas = [];
+  const insumosCriticosMap = new Map();
+
+  for (const comp of compuestosRows) {
+    const ingredientes = flattenReceta(comp.id, 1, new Set());
+    if (!ingredientes.length) continue;
+
+    let unidadesPosibles = Infinity;
+    let limitante = null;
+    for (const ing of ingredientes) {
+      const posibles = ing.cantidadPorUnidad > 0
+        ? Math.floor(ing.stock / ing.cantidadPorUnidad)
+        : Infinity;
+      if (posibles < unidadesPosibles) { unidadesPosibles = posibles; limitante = ing; }
+    }
+    if (!isFinite(unidadesPosibles)) unidadesPosibles = 0;
+
+    const estado = unidadesPosibles <= 0 ? "bloqueada"
+      : unidadesPosibles <= 10 ? "en_riesgo"
+      : "saludable";
+
+    recetas.push({
+      producto_id: Number(comp.id),
+      producto_nombre: comp.nombre,
+      unidades_posibles: Number(unidadesPosibles),
+      estado,
+      insumo_limitante: limitante?.nombre || null,
+      stock_limitante: limitante ? round2(limitante.stock) : null,
+      cantidad_limitante: limitante ? round2(limitante.cantidadPorUnidad) : null,
+      ingredientes_simples: ingredientes.length
+    });
+
+    if (limitante) {
+      if (!insumosCriticosMap.has(limitante.id)) {
+        insumosCriticosMap.set(limitante.id, {
+          producto_id: Number(limitante.id),
+          producto_nombre: limitante.nombre,
+          stock_actual: limitante.stock,
+          stock_minimo: limitante.stock_minimo,
+          recetas_afectadas: [],
+          severidad: limitante.stock <= 0 ? "sin_stock"
+            : limitante.stock_minimo > 0 && limitante.stock <= limitante.stock_minimo
+              ? "bajo_minimo" : "limitante"
+        });
+      }
+      insumosCriticosMap.get(limitante.id).recetas_afectadas.push(comp.nombre);
+    }
+  }
+
+  const saludables = recetas.filter((r) => r.estado === "saludable");
+  const enRiesgo = recetas.filter((r) => r.estado === "en_riesgo");
+  const bloqueadas = recetas.filter((r) => r.estado === "bloqueada");
+  const insumosCriticos = [...insumosCriticosMap.values()]
+    .sort((a, b) => a.stock_actual - b.stock_actual);
+
+  return {
+    resumen: {
+      productos_analizados: recetas.length,
+      recetas_saludables: saludables.length,
+      recetas_en_riesgo: enRiesgo.length,
+      recetas_bloqueadas: bloqueadas.length,
+      insumos_criticos: insumosCriticos.length,
+      valor_comprometido: round2(
+        [...enRiesgo, ...bloqueadas].reduce((acc, r) => {
+          const p = productMap.get(r.producto_id);
+          const costo = Number(p?.costo_final || p?.precio_compra || 0);
+          return acc + r.unidades_posibles * costo;
+        }, 0)
+      )
+    },
+    recetas: recetas.sort((a, b) => a.unidades_posibles - b.unidades_posibles),
+    insumos_criticos: insumosCriticos
+  };
+}
+
 module.exports = {
   getResumenReportes,
   getReporteVentas,
@@ -1959,5 +2094,6 @@ module.exports = {
   getVentasPorDia,
   getResumenCuentasCobro,
   getReporteModificadores,
-  getReporteDesviosReceta
+  getReporteDesviosReceta,
+  getReporteSaludInventario
 };

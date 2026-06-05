@@ -1180,6 +1180,7 @@
               <button class="constructor-plantilla-card" data-plantilla="stock-rotacion" type="button">Rotación de stock</button>
               <button class="constructor-plantilla-card" data-plantilla="extras-combos" type="button">Extras y combos</button>
               <button class="constructor-plantilla-card" data-plantilla="desvios-receta" type="button">Desvíos de receta</button>
+              <button class="constructor-plantilla-card" data-plantilla="salud-inventario" type="button">Salud inventario</button>
             </div>
           </section>
           <section>
@@ -1249,7 +1250,8 @@
       "proveedores-ranking": "Ranking proveedores",
       "stock-rotacion": "Rotación de stock",
       "extras-combos": "Extras y combos",
-      "desvios-receta": "Desvíos de receta"
+      "desvios-receta": "Desvíos de receta",
+      "salud-inventario": "Salud inventario"
     };
     const CONSTRUCTOR_MODULO_LABELS = {
       "ventas": "Ventas",
@@ -1288,7 +1290,7 @@
       }
       return null;
     }
-    function recargarPlantillaActual() { const { plantilla } = constructorState; if (!plantilla) return; if (plantilla === "ventas-del-dia") cargarConstructorVentas(); else if (plantilla === "cierre-diario") cargarConstructorCierreDiario(); else if (plantilla === "clientes-con-deuda") cargarConstructorClientesDeuda(); else if (plantilla === "pagos-pendientes") cargarConstructorPagosPendientes(); else if (plantilla === "resumen-ejecutivo") cargarConstructorResumenEjecutivo(); else if (plantilla === "caja-movimientos") cargarConstructorCajaMovimientos(); else if (plantilla === "proveedores-ranking") cargarConstructorProveedoresRanking(); else if (plantilla === "stock-rotacion") cargarConstructorStockRotacion(); else if (plantilla === "extras-combos") cargarConstructorExtrasCombos(); else if (plantilla === "desvios-receta") cargarConstructorDesviosReceta(); }
+    function recargarPlantillaActual() { const { plantilla } = constructorState; if (!plantilla) return; if (plantilla === "ventas-del-dia") cargarConstructorVentas(); else if (plantilla === "cierre-diario") cargarConstructorCierreDiario(); else if (plantilla === "clientes-con-deuda") cargarConstructorClientesDeuda(); else if (plantilla === "pagos-pendientes") cargarConstructorPagosPendientes(); else if (plantilla === "resumen-ejecutivo") cargarConstructorResumenEjecutivo(); else if (plantilla === "caja-movimientos") cargarConstructorCajaMovimientos(); else if (plantilla === "proveedores-ranking") cargarConstructorProveedoresRanking(); else if (plantilla === "stock-rotacion") cargarConstructorStockRotacion(); else if (plantilla === "extras-combos") cargarConstructorExtrasCombos(); else if (plantilla === "desvios-receta") cargarConstructorDesviosReceta(); else if (plantilla === "salud-inventario") cargarConstructorSaludInventario(); }
     function renderConstructorPreview() {
       const el = $("constructorPreview");
       if (!el) return;
@@ -1359,6 +1361,10 @@
       }
       if (plantilla === "desvios-receta" && data) {
         renderConstructorDesviosReceta(el, data);
+        return;
+      }
+      if (plantilla === "salud-inventario" && data) {
+        renderConstructorSaludInventario(el, data);
         return;
       }
       const cards = [];
@@ -1995,6 +2001,59 @@
         : "";
       el.innerHTML = titulo + kpisHtml + secProd + secRecetas + secItems;
     }
+    async function cargarConstructorSaludInventario() {
+      constructorState.loading = true;
+      constructorState.error = "";
+      constructorState.data = null;
+      renderConstructorPreview();
+      try {
+        const res = await fetch("/reportes/salud-inventario");
+        if (!res.ok) throw new Error(`${res.status}`);
+        constructorState.data = await res.json();
+        constructorState.loading = false;
+      } catch {
+        constructorState.loading = false;
+        constructorState.error = "No se pudo cargar la plantilla Salud inventario.";
+      }
+      renderConstructorPreview();
+    }
+    function renderConstructorSaludInventario(el, data) {
+      const res = data?.resumen || {};
+      const recetas = Array.isArray(data?.recetas) ? data.recetas : [];
+      const insumos = Array.isArray(data?.insumos_criticos) ? data.insumos_criticos : [];
+      const titulo = `<div class="constructor-preview-title"><h3>Salud inventario</h3><p>Stock actual vs. recetas</p></div>`;
+      const kpis = [
+        { label: "Recetas saludables", value: n(res.recetas_saludables) },
+        { label: "En riesgo", value: n(res.recetas_en_riesgo) },
+        { label: "Bloqueadas", value: n(res.recetas_bloqueadas) },
+        { label: "Insumos críticos", value: n(res.insumos_criticos) },
+        { label: "Analizadas", value: n(res.productos_analizados) },
+        { label: "Valor comprometido", value: money(n(res.valor_comprometido)) }
+      ];
+      const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong>${k.value}</strong></div>`).join("")}</div>`;
+      const colores = { bloqueada: "var(--danger)", en_riesgo: "var(--warning)", saludable: "var(--success)" };
+      const etiquetas = { bloqueada: "Bloqueada", en_riesgo: "En riesgo", saludable: "Saludable" };
+      function recetaRow(r, i) {
+        const col = colores[r.estado] || "var(--muted)";
+        return `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${r.producto_nombre || "—"}${r.insumo_limitante ? `<small style="color:var(--muted);display:block;font-size:11px">Limitante: ${r.insumo_limitante}</small>` : ""}</span><span class="constructor-ranking-val">${n(r.unidades_posibles)} ud.</span><small class="constructor-ranking-qty" style="color:${col};font-weight:900">${etiquetas[r.estado] || r.estado}</small></div>`;
+      }
+      const bloqueadas = recetas.filter((r) => r.estado === "bloqueada");
+      const enRiesgo = recetas.filter((r) => r.estado === "en_riesgo");
+      const saludables = recetas.filter((r) => r.estado === "saludable");
+      const secBloqueadas = bloqueadas.length
+        ? `<p class="constructor-section-title" style="color:var(--danger)">Recetas bloqueadas (${bloqueadas.length})</p><div class="constructor-ranking">${bloqueadas.map((r, i) => recetaRow(r, i)).join("")}</div>`
+        : "";
+      const secRiesgo = enRiesgo.length
+        ? `<p class="constructor-section-title" style="color:var(--warning)">Recetas en riesgo (${enRiesgo.length})</p><div class="constructor-ranking">${enRiesgo.map((r, i) => recetaRow(r, i)).join("")}</div>`
+        : "";
+      const secSaludables = saludables.length
+        ? `<p class="constructor-section-title" style="color:var(--success)">Recetas saludables (${saludables.length})</p><div class="constructor-ranking">${saludables.slice(0, 8).map((r, i) => recetaRow(r, i)).join("")}${saludables.length > 8 ? `<div class="constructor-empty">y ${saludables.length - 8} más</div>` : ""}</div>`
+        : "";
+      const secInsumos = insumos.length
+        ? `<p class="constructor-section-title">Insumos críticos</p><div class="constructor-ranking">${insumos.map((ins, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${ins.producto_nombre || "—"}<small style="color:var(--muted);display:block;font-size:11px">${ins.recetas_afectadas.length} receta(s)</small></span><span class="constructor-ranking-val">${n(ins.stock_actual)}</span><small class="constructor-ranking-qty" style="color:${ins.severidad === "sin_stock" ? "var(--danger)" : "var(--warning)"};font-weight:900">${ins.severidad}</small></div>`).join("")}</div>`
+        : `<p class="constructor-section-title">Insumos críticos</p><p class="constructor-empty">Sin insumos críticos detectados.</p>`;
+      el.innerHTML = titulo + kpisHtml + secBloqueadas + secRiesgo + secSaludables + secInsumos;
+    }
     function _csvEscape(val) { if (val == null) return ""; const s = String(val); return (s.includes(",") || s.includes('"') || s.includes("\n")) ? `"${s.replace(/"/g, '""')}"` : s; }
     function getConstructorRowsParaExportar() {
       const { plantilla, data } = constructorState;
@@ -2105,6 +2164,14 @@
           rows.push({ seccion: "Recetas con más desvíos", nombre: r.receta_nombre, tipo: "receta", cantidad: r.cantidad_detectada, ajustes: r.ajustes_total, estado: "", impacto_estimado: r.impacto_estimado }));
         (Array.isArray(data.items) ? data.items : []).forEach((r) =>
           rows.push({ seccion: "Últimos desvíos detectados", nombre: r.producto_nombre, tipo: r.receta_nombre || "", cantidad: r.cantidad, ajustes: 1, estado: r.estado || "", impacto_estimado: r.impacto_estimado }));
+        return rows;
+      }
+      if (plantilla === "salud-inventario") {
+        const rows = [];
+        (Array.isArray(data.recetas) ? data.recetas : []).forEach((r) =>
+          rows.push({ seccion: "Recetas", nombre: r.producto_nombre, estado: r.estado, unidades_posibles: r.unidades_posibles, insumo_limitante: r.insumo_limitante || "", stock_limitante: r.stock_limitante ?? "" }));
+        (Array.isArray(data.insumos_criticos) ? data.insumos_criticos : []).forEach((ins) =>
+          rows.push({ seccion: "Insumos críticos", nombre: ins.producto_nombre, estado: ins.severidad, unidades_posibles: ins.stock_actual, insumo_limitante: ins.recetas_afectadas.join("; "), stock_limitante: ins.stock_minimo }));
         return rows;
       }
       return [];
@@ -2339,6 +2406,14 @@
               if (stockBtn) stockBtn.classList.add("active");
             }
             cargarConstructorDesviosReceta();
+          } else if (btn.dataset.plantilla === "salud-inventario") {
+            constructorState.modulo = "stock";
+            if (modulosEl) {
+              modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+              const stockBtn = modulosEl.querySelector('[data-modulo="stock"]');
+              if (stockBtn) stockBtn.classList.add("active");
+            }
+            cargarConstructorSaludInventario();
           } else {
             renderConstructorPreview();
           }
