@@ -1182,6 +1182,7 @@
               <button class="constructor-plantilla-card" data-plantilla="desvios-receta" type="button">Desvíos de receta</button>
               <button class="constructor-plantilla-card" data-plantilla="salud-inventario" type="button">Salud inventario</button>
               <button class="constructor-plantilla-card" data-plantilla="dependencia-insumos" type="button">Dependencia de insumos</button>
+              <button class="constructor-plantilla-card" data-plantilla="riesgo-ventas" type="button">Riesgo de ventas</button>
             </div>
           </section>
           <section>
@@ -1253,7 +1254,8 @@
       "extras-combos": "Extras y combos",
       "desvios-receta": "Desvíos de receta",
       "salud-inventario": "Salud inventario",
-      "dependencia-insumos": "Dependencia de insumos"
+      "dependencia-insumos": "Dependencia de insumos",
+      "riesgo-ventas": "Riesgo de ventas"
     };
     const CONSTRUCTOR_MODULO_LABELS = {
       "ventas": "Ventas",
@@ -1292,7 +1294,7 @@
       }
       return null;
     }
-    function recargarPlantillaActual() { const { plantilla } = constructorState; if (!plantilla) return; if (plantilla === "ventas-del-dia") cargarConstructorVentas(); else if (plantilla === "cierre-diario") cargarConstructorCierreDiario(); else if (plantilla === "clientes-con-deuda") cargarConstructorClientesDeuda(); else if (plantilla === "pagos-pendientes") cargarConstructorPagosPendientes(); else if (plantilla === "resumen-ejecutivo") cargarConstructorResumenEjecutivo(); else if (plantilla === "caja-movimientos") cargarConstructorCajaMovimientos(); else if (plantilla === "proveedores-ranking") cargarConstructorProveedoresRanking(); else if (plantilla === "stock-rotacion") cargarConstructorStockRotacion(); else if (plantilla === "extras-combos") cargarConstructorExtrasCombos(); else if (plantilla === "desvios-receta") cargarConstructorDesviosReceta(); else if (plantilla === "salud-inventario") cargarConstructorSaludInventario(); else if (plantilla === "dependencia-insumos") cargarConstructorDependenciaInsumos(); }
+    function recargarPlantillaActual() { const { plantilla } = constructorState; if (!plantilla) return; if (plantilla === "ventas-del-dia") cargarConstructorVentas(); else if (plantilla === "cierre-diario") cargarConstructorCierreDiario(); else if (plantilla === "clientes-con-deuda") cargarConstructorClientesDeuda(); else if (plantilla === "pagos-pendientes") cargarConstructorPagosPendientes(); else if (plantilla === "resumen-ejecutivo") cargarConstructorResumenEjecutivo(); else if (plantilla === "caja-movimientos") cargarConstructorCajaMovimientos(); else if (plantilla === "proveedores-ranking") cargarConstructorProveedoresRanking(); else if (plantilla === "stock-rotacion") cargarConstructorStockRotacion(); else if (plantilla === "extras-combos") cargarConstructorExtrasCombos(); else if (plantilla === "desvios-receta") cargarConstructorDesviosReceta(); else if (plantilla === "salud-inventario") cargarConstructorSaludInventario(); else if (plantilla === "dependencia-insumos") cargarConstructorDependenciaInsumos(); else if (plantilla === "riesgo-ventas") cargarConstructorRiesgoVentas(); }
     function renderConstructorPreview() {
       const el = $("constructorPreview");
       if (!el) return;
@@ -1371,6 +1373,10 @@
       }
       if (plantilla === "dependencia-insumos" && data) {
         renderConstructorDependenciaInsumos(el, data);
+        return;
+      }
+      if (plantilla === "riesgo-ventas" && data) {
+        renderConstructorRiesgoVentas(el, data);
         return;
       }
       const cards = [];
@@ -2110,6 +2116,65 @@
         : "";
       el.innerHTML = titulo + kpisHtml + secCriticos + secOk;
     }
+    async function cargarConstructorRiesgoVentas() {
+      const { desde, hasta } = getConstructorRango();
+      constructorState.loading = true;
+      constructorState.error = "";
+      constructorState.data = null;
+      renderConstructorPreview();
+      try {
+        const res = await fetch(`/reportes/riesgo-ventas?desde=${desde}&hasta=${hasta}`);
+        if (!res.ok) throw new Error(`${res.status}`);
+        constructorState.data = await res.json();
+        constructorState.loading = false;
+      } catch {
+        constructorState.loading = false;
+        constructorState.error = "No se pudo cargar la plantilla Riesgo de ventas.";
+      }
+      renderConstructorPreview();
+    }
+    function renderConstructorRiesgoVentas(el, data) {
+      const res = data?.resumen || {};
+      const insumos = Array.isArray(data?.insumos) ? data.insumos : [];
+      const filtros = data?.filtros || {};
+      const diasPer = n(filtros.dias_periodo) || 30;
+      const titulo = `<div class="constructor-preview-title"><h3>Riesgo de ventas</h3><p>${filtros.desde || ""} → ${filtros.hasta || ""} · ${diasPer} días</p></div>`;
+      if (!insumos.length) {
+        el.innerHTML = titulo + '<div class="constructor-placeholder"><strong>Sin datos de riesgo de ventas para el período.</strong><p>Asegurate de que haya ventas de productos con recetas en el período seleccionado.</p></div>';
+        return;
+      }
+      const kpis = [
+        { label: "Analizados", value: n(res.insumos_analizados) },
+        { label: "Críticos", value: n(res.insumos_criticos) },
+        { label: "En riesgo", value: n(res.insumos_en_riesgo) },
+        { label: "Estables", value: n(res.insumos_estables) },
+        { label: "Sin consumo", value: n(res.insumos_sin_consumo) },
+        { label: "Cobertura prom.", value: res.cobertura_promedio != null ? n(res.cobertura_promedio) + " d" : "—" }
+      ];
+      const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong>${k.value}</strong></div>`).join("")}</div>`;
+      const sevCol = { critico: "var(--danger)", riesgo: "var(--warning)", estable: "var(--success)", sin_consumo: "var(--muted)" };
+      function cobStr(ins) { return ins.dias_cobertura != null ? n(ins.dias_cobertura) + " días" : "Sin consumo"; }
+      function insumoRow(ins, i) {
+        const col = sevCol[ins.severidad] || "var(--muted)";
+        const recStr = Array.isArray(ins.recetas_afectadas) ? ins.recetas_afectadas.join(", ") : "";
+        return `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${ins.producto_nombre || "—"}<small style="color:var(--muted);display:block;font-size:11px;overflow:hidden;text-overflow:ellipsis;max-width:160px" title="${recStr}">${recStr}</small></span><span class="constructor-ranking-val" style="color:${col}">${cobStr(ins)}</span><small class="constructor-ranking-qty">${n(ins.consumo_promedio_diario).toFixed(1)}/d</small></div>`;
+      }
+      const criticos = insumos.filter((i) => i.severidad === "critico");
+      const enRiesgo = insumos.filter((i) => i.severidad === "riesgo");
+      const estables = insumos.filter((i) => i.severidad === "estable").slice(0, 10);
+      const sinConsumo = insumos.filter((i) => i.severidad === "sin_consumo");
+      const urgentes = [...criticos, ...enRiesgo];
+      const secUrgentes = urgentes.length
+        ? `<p class="constructor-section-title" style="color:var(--danger)">Críticos y en riesgo (${urgentes.length})</p><div class="constructor-ranking">${urgentes.map((ins, i) => insumoRow(ins, i)).join("")}</div>`
+        : `<p class="constructor-section-title">Críticos y en riesgo</p><p class="constructor-empty">Sin insumos críticos o en riesgo.</p>`;
+      const secEstables = estables.length
+        ? `<p class="constructor-section-title" style="color:var(--success)">Estables (${estables.length}${insumos.filter(i => i.severidad === "estable").length > 10 ? "+" : ""})</p><div class="constructor-ranking">${estables.map((ins, i) => insumoRow(ins, i)).join("")}</div>`
+        : "";
+      const secSinConsumo = sinConsumo.length
+        ? `<p class="constructor-section-title">Sin consumo en el período (${sinConsumo.length})</p><div class="constructor-ranking">${sinConsumo.map((ins, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${ins.producto_nombre || "—"}<small style="color:var(--muted);display:block;font-size:11px">${Array.isArray(ins.recetas_afectadas) ? ins.recetas_afectadas.join(", ") : ""}</small></span><span class="constructor-ranking-val" style="color:var(--muted)">${n(ins.stock_actual)}</span></div>`).join("")}</div>`
+        : "";
+      el.innerHTML = titulo + kpisHtml + secUrgentes + secEstables + secSinConsumo;
+    }
     function _csvEscape(val) { if (val == null) return ""; const s = String(val); return (s.includes(",") || s.includes('"') || s.includes("\n")) ? `"${s.replace(/"/g, '""')}"` : s; }
     function getConstructorRowsParaExportar() {
       const { plantilla, data } = constructorState;
@@ -2229,6 +2294,19 @@
         (Array.isArray(data.insumos_criticos) ? data.insumos_criticos : []).forEach((ins) =>
           rows.push({ seccion: "Insumos críticos", nombre: ins.producto_nombre, estado: ins.severidad, unidades_posibles: ins.stock_actual, insumo_limitante: ins.recetas_afectadas.join("; "), stock_limitante: ins.stock_minimo }));
         return rows;
+      }
+      if (plantilla === "riesgo-ventas") {
+        return (Array.isArray(data.insumos) ? data.insumos : []).map((ins) => ({
+          producto_nombre: ins.producto_nombre,
+          severidad: ins.severidad,
+          stock_actual: n(ins.stock_actual),
+          stock_minimo: n(ins.stock_minimo),
+          consumo_total_periodo: n(ins.consumo_total_periodo),
+          consumo_promedio_diario: n(ins.consumo_promedio_diario),
+          dias_cobertura: ins.dias_cobertura != null ? n(ins.dias_cobertura) : "",
+          ventas_periodo: n(ins.ventas_periodo),
+          recetas_afectadas: Array.isArray(ins.recetas_afectadas) ? ins.recetas_afectadas.join("; ") : ""
+        }));
       }
       if (plantilla === "dependencia-insumos") {
         return (Array.isArray(data.insumos) ? data.insumos : []).map((ins) => ({
@@ -2489,6 +2567,14 @@
               if (stockBtn) stockBtn.classList.add("active");
             }
             cargarConstructorDependenciaInsumos();
+          } else if (btn.dataset.plantilla === "riesgo-ventas") {
+            constructorState.modulo = "stock";
+            if (modulosEl) {
+              modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+              const stockBtn = modulosEl.querySelector('[data-modulo="stock"]');
+              if (stockBtn) stockBtn.classList.add("active");
+            }
+            cargarConstructorRiesgoVentas();
           } else {
             renderConstructorPreview();
           }
