@@ -187,13 +187,32 @@ async function getReporteVentas({ desde = null, hasta = null, estado = null } = 
       productivas.params
     ),
     allQuery(
-      `SELECT
-         COALESCE(v.tipo_cobro, v.metodo_pago, 'Sin método') AS tipo_cobro,
-         COALESCE(SUM(v.total), 0) AS total,
-         COUNT(*) AS cantidad_ventas
-       FROM ventas v
-       WHERE ${productivasSql}
-       GROUP BY tipo_cobro
+      `WITH vp AS (SELECT * FROM ventas v WHERE ${productivasSql})
+       SELECT
+         tc.tipo_cobro,
+         COALESCE(SUM(tc.monto), 0) AS total,
+         COUNT(DISTINCT tc.venta_id) AS cantidad_ventas
+       FROM (
+         SELECT vc.tipo_cobro, vc.monto, vc.venta_id
+           FROM venta_cobros vc JOIN vp v ON v.id = vc.venta_id
+           WHERE vc.estado = 'confirmado'
+         UNION ALL
+         SELECT LOWER(COALESCE(v.tipo_cobro, v.metodo_pago, 'sin_método')),
+           CASE WHEN LOWER(COALESCE(v.tipo_cobro,'')) = 'efectivo' THEN v.monto_efectivo ELSE v.monto_debito END,
+           v.id
+           FROM vp v
+           WHERE NOT EXISTS (SELECT 1 FROM venta_cobros vc WHERE vc.venta_id = v.id)
+             AND v.tipo_cobro NOT IN ('mixto') AND v.tipo_cobro IS NOT NULL
+         UNION ALL
+         SELECT 'efectivo', v.monto_efectivo, v.id FROM vp v
+           WHERE NOT EXISTS (SELECT 1 FROM venta_cobros vc WHERE vc.venta_id = v.id)
+             AND LOWER(COALESCE(v.tipo_cobro,'')) = 'mixto' AND v.monto_efectivo > 0
+         UNION ALL
+         SELECT 'debito', v.monto_debito, v.id FROM vp v
+           WHERE NOT EXISTS (SELECT 1 FROM venta_cobros vc WHERE vc.venta_id = v.id)
+             AND LOWER(COALESCE(v.tipo_cobro,'')) = 'mixto' AND v.monto_debito > 0
+       ) tc
+       GROUP BY tc.tipo_cobro
        ORDER BY total DESC`,
       productivas.params
     ),
@@ -259,6 +278,11 @@ async function getReporteVentas({ desde = null, hasta = null, estado = null } = 
   const totalVendido = round2(resumen.total_vendido);
   const operaciones = Number(resumen.operaciones || 0);
   const totalPorTipo = porTipoCobroRows.reduce((acc, row) => acc + Number(row.total || 0), 0);
+  // Derive cobros breakdown from unified por_tipo_cobro (v2, no "mixto")
+  const cobrosMap = new Map(porTipoCobroRows.map((r) => [String(r.tipo_cobro || "").toLowerCase(), round2(r.total)]));
+  const cobros_efectivo = cobrosMap.get("efectivo") || 0;
+  const cobros_debito = cobrosMap.get("debito") || 0;
+  const cobros_transferencia = cobrosMap.get("transferencia") || 0;
 
   return {
     filtros: {
@@ -284,10 +308,10 @@ async function getReporteVentas({ desde = null, hasta = null, estado = null } = 
       productos_vendidos: round2(detalleResumen.productos_vendidos)
     },
     cobros: {
-      ventas_efectivo: round2(resumen.ventas_efectivo),
-      ventas_debito: round2(resumen.ventas_debito),
-      ventas_transferencia: round2(resumen.ventas_transferencia),
-      ventas_mixto: round2(resumen.ventas_mixto),
+      ventas_efectivo: cobros_efectivo,
+      ventas_debito: cobros_debito,
+      ventas_transferencia: cobros_transferencia,
+      ventas_mixto: 0,
       monto_efectivo: round2(resumen.monto_efectivo),
       monto_debito: round2(resumen.monto_debito)
     },
@@ -1609,16 +1633,23 @@ async function getResumenCuentasCobro({ desde = null, hasta = null } = {}) {
   const conciliacionesClause = conciliacionesWhere.length ? `WHERE ${conciliacionesWhere.join(" AND ")}` : "";
   const [ventas, pagos, conciliaciones] = await Promise.all([
     allQuery(
-      `SELECT
-         v.cuenta_cobro_id,
+      `WITH vb AS (SELECT * FROM ventas v WHERE ${ventasWhere.join(" AND ")})
+       SELECT
+         vc_or_v.cuenta_cobro_id,
          COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre,
-         COALESCE(cc.tipo_pago_codigo, v.tipo_cobro) AS tipo_pago_codigo,
-         COALESCE(SUM(v.total), 0) AS ingresos,
-         COUNT(*) AS ventas
-       FROM ventas v
-       LEFT JOIN cuentas_cobro cc ON cc.id = v.cuenta_cobro_id
-       WHERE ${ventasWhere.join(" AND ")}
-       GROUP BY v.cuenta_cobro_id, cuenta_nombre, tipo_pago_codigo`,
+         COALESCE(cc.tipo_pago_codigo, vc_or_v.tipo_cobro) AS tipo_pago_codigo,
+         COALESCE(SUM(vc_or_v.monto), 0) AS ingresos,
+         COUNT(DISTINCT vc_or_v.venta_id) AS ventas
+       FROM (
+         SELECT vc.cuenta_cobro_id, vc.tipo_cobro, vc.monto, vc.venta_id
+           FROM venta_cobros vc JOIN vb v ON v.id = vc.venta_id
+           WHERE vc.estado = 'confirmado'
+         UNION ALL
+         SELECT v.cuenta_cobro_id, COALESCE(v.tipo_cobro, v.metodo_pago), v.total, v.id
+           FROM vb v WHERE NOT EXISTS (SELECT 1 FROM venta_cobros vc WHERE vc.venta_id = v.id)
+       ) vc_or_v
+       LEFT JOIN cuentas_cobro cc ON cc.id = vc_or_v.cuenta_cobro_id
+       GROUP BY vc_or_v.cuenta_cobro_id, cuenta_nombre, tipo_pago_codigo`,
       ventasParams
     ),
     allQuery(
