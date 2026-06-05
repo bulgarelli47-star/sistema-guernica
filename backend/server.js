@@ -73,7 +73,8 @@ const {
   getResumenCuentasCobro,
   getReporteModificadores,
   getReporteDesviosReceta,
-  getReporteSaludInventario
+  getReporteSaludInventario,
+  getReporteDependenciaInsumos
 } = require("./services/reportesService");
 const {
   getResumenFinanciero
@@ -6401,6 +6402,16 @@ app.get("/reportes/salud-inventario", async (req, res) => {
   } catch (error) {
     logError("Error al obtener reporte de salud de inventario:", error);
     return res.status(500).json({ message: "Error al obtener reporte de salud de inventario" });
+  }
+});
+
+app.get("/reportes/dependencia-insumos", async (req, res) => {
+  if (!asegurarAccesoReporte(req, res, "stock")) return;
+  try {
+    return res.json(await getReporteDependenciaInsumos());
+  } catch (error) {
+    logError("Error al obtener reporte de dependencia de insumos:", error);
+    return res.status(500).json({ message: "Error al obtener reporte de dependencia de insumos" });
   }
 });
 
