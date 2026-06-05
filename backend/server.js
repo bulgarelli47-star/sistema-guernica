@@ -727,6 +727,50 @@ function getUsuarioAuditoria(req, fallback = "admin") {
   return req.usuario?.usuario || fallback || "admin";
 }
 
+// ── Cobros V2 ─────────────────────────────────────────────────────────────────
+async function ensureVentaCobrosSchema() {
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS venta_cobros (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      venta_id        INTEGER NOT NULL,
+      tipo_cobro      TEXT NOT NULL,
+      cuenta_cobro_id INTEGER,
+      monto           REAL NOT NULL DEFAULT 0,
+      estado          TEXT NOT NULL DEFAULT 'confirmado',
+      created_at      TEXT,
+      FOREIGN KEY (venta_id) REFERENCES ventas(id)
+    )
+  `);
+}
+
+async function registrarVentaCobros(ventaId, cobro, cuentaCobroId, created_at) {
+  if (!ventaId || !cobro) return;
+  const now = created_at || new Date().toISOString();
+  const tipo = String(cobro.tipo_cobro || "").toLowerCase();
+  if (!tipo || tipo === "cuenta_corriente" || tipo === "cuenta_corriente_pendiente") return;
+  if (tipo === "mixto") {
+    if (Number(cobro.monto_efectivo) > 0) {
+      await runQuery(
+        `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at) VALUES (?, 'efectivo', NULL, ?, 'confirmado', ?)`,
+        [ventaId, Number(cobro.monto_efectivo), now]
+      );
+    }
+    if (Number(cobro.monto_debito) > 0) {
+      await runQuery(
+        `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at) VALUES (?, 'debito', ?, ?, 'confirmado', ?)`,
+        [ventaId, cuentaCobroId ?? null, Number(cobro.monto_debito), now]
+      );
+    }
+  } else {
+    const monto = tipo === "efectivo" ? Number(cobro.monto_efectivo) : Number(cobro.monto_debito);
+    await runQuery(
+      `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at) VALUES (?, ?, ?, ?, 'confirmado', ?)`,
+      [ventaId, tipo, cuentaCobroId ?? null, monto || 0, now]
+    );
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 function calcularCostoFinal(precioCompra, ivaPorcentaje, incluyeIva) {
   const compra = Number(precioCompra) || 0;
   const iva = Number(ivaPorcentaje) || 0;
@@ -4119,6 +4163,9 @@ app.post("/ventas", async (req, res) => {
     if (hayModificadores) {
       await aplicarStockComponentesSnapshot(await filtrarDetallesConStockFisico(detalles), 1);
     }
+    if (tipoVenta === "normal" && !esCuentaCorriente && cobro?.tipo_cobro) {
+      await registrarVentaCobros(venta.lastID, cobro, cuentaCobroVenta.cuenta_cobro_id, `${fecha} ${hora}`);
+    }
 
     await runQuery("COMMIT");
 
@@ -5792,6 +5839,7 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
         ventaId
       ]
     );
+    await registrarVentaCobros(ventaId, cobroReal, cuentaCobro.cuenta_cobro_id);
 
     await runQuery("COMMIT");
 
@@ -5914,6 +5962,8 @@ app.patch("/ventas/:id/cobro", async (req, res) => {
        WHERE id = ?`,
       [cobro.tipo_cobro, cobro.tipo_cobro, cobro.monto_efectivo, cobro.monto_debito, cuentaCobroFinal, ventaId]
     );
+    await runQuery("DELETE FROM venta_cobros WHERE venta_id = ?", [ventaId]);
+    await registrarVentaCobros(ventaId, cobro, cuentaCobroFinal);
 
     return res.json({ message: `Metodo de pago actualizado en ticket ${ventaId}` });
   } catch (error) {
@@ -7529,7 +7579,8 @@ Promise.all([
   ensureClientesSchema(),
   ensureConfiguracionSchema(),
   ensureTiendaSchema(),
-  ensureVentaRecetaSnapshotSchema()
+  ensureVentaRecetaSnapshotSchema(),
+  ensureVentaCobrosSchema()
 ])
   .then(async () => {
     await Promise.all([
@@ -7542,7 +7593,9 @@ Promise.all([
       runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_producto ON movimientos_stock(producto_id)"),
       runQuery("CREATE INDEX IF NOT EXISTS idx_caja_movimientos_caja ON caja_movimientos(caja_id)"),
       runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_productos_codigo_unique ON productos(codigo) WHERE codigo IS NOT NULL AND codigo != '' AND eliminado = 0"),
-      runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_dni_cuit_unique ON clientes(dni_cuit) WHERE dni_cuit IS NOT NULL AND dni_cuit != ''")
+      runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_dni_cuit_unique ON clientes(dni_cuit) WHERE dni_cuit IS NOT NULL AND dni_cuit != ''"),
+      runQuery("CREATE INDEX IF NOT EXISTS idx_venta_cobros_venta ON venta_cobros(venta_id)"),
+      runQuery("CREATE INDEX IF NOT EXISTS idx_venta_cobros_cuenta ON venta_cobros(cuenta_cobro_id)")
     ]);
     await consolidarComponentesDuplicados();
     app.listen(PORT, () => {
