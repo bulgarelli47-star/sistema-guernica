@@ -743,9 +743,60 @@ async function ensureVentaCobrosSchema() {
   `);
 }
 
-async function registrarVentaCobros(ventaId, cobro, cuentaCobroId, created_at) {
-  if (!ventaId || !cobro) return;
+const COBROS_V2_TIPOS_VALIDOS = new Set(["efectivo", "debito", "credito", "transferencia", "qr"]);
+
+function normalizarCobrosV2(cobros) {
+  if (!Array.isArray(cobros) || cobros.length === 0) return null;
+  const resultado = [];
+  for (const c of cobros) {
+    const tipo = String(c.tipo_cobro || "").trim().toLowerCase();
+    const monto = Number(c.monto ?? c.amount ?? 0);
+    if (!COBROS_V2_TIPOS_VALIDOS.has(tipo)) {
+      return { error: `tipo_cobro inválido en cobros[]: "${tipo}". Valores permitidos: ${[...COBROS_V2_TIPOS_VALIDOS].join(", ")}` };
+    }
+    if (!monto || monto <= 0) {
+      return { error: `monto debe ser mayor a 0 en cobros[] (tipo: ${tipo})` };
+    }
+    resultado.push({
+      tipo_cobro: tipo,
+      cuenta_cobro_id: c.cuenta_cobro_id != null ? Number(c.cuenta_cobro_id) || null : null,
+      monto: Number(monto.toFixed(2))
+    });
+  }
+  return resultado;
+}
+
+function derivarCobroLegacy(cobrosNormalizados) {
+  const montoEfectivo = Number(
+    cobrosNormalizados.filter((c) => c.tipo_cobro === "efectivo").reduce((a, c) => a + c.monto, 0).toFixed(2)
+  );
+  const montoDebito = Number(
+    cobrosNormalizados.filter((c) => c.tipo_cobro !== "efectivo").reduce((a, c) => a + c.monto, 0).toFixed(2)
+  );
+  const esSingle = cobrosNormalizados.length === 1;
+  return {
+    tipo_cobro: esSingle ? cobrosNormalizados[0].tipo_cobro : "mixto",
+    monto_efectivo: montoEfectivo,
+    monto_debito: montoDebito,
+    cuenta_cobro_id: esSingle ? (cobrosNormalizados[0].cuenta_cobro_id ?? null) : null
+  };
+}
+
+async function registrarVentaCobros(ventaId, cobro, cuentaCobroId, created_at, cobrosV2 = null) {
+  if (!ventaId) return;
   const now = created_at || new Date().toISOString();
+  // Cobros V2: insertar exactamente las filas provistas
+  if (Array.isArray(cobrosV2) && cobrosV2.length > 0) {
+    for (const c of cobrosV2) {
+      await runQuery(
+        `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at) VALUES (?, ?, ?, ?, 'confirmado', ?)`,
+        [ventaId, c.tipo_cobro, c.cuenta_cobro_id ?? null, c.monto, now]
+      );
+    }
+    return;
+  }
+  // Legacy fallback
+  if (!cobro) return;
   const tipo = String(cobro.tipo_cobro || "").toLowerCase();
   if (!tipo || tipo === "cuenta_corriente" || tipo === "cuenta_corriente_pendiente") return;
   if (tipo === "mixto") {
@@ -3993,12 +4044,24 @@ app.post("/ventas", async (req, res) => {
     identificador_pendiente,
     cliente_id,
     es_cuenta_corriente,
-    tipo_cobro,
-    monto_efectivo,
-    monto_debito,
-    cuenta_cobro_id,
     cuotas
   } = req.body;
+  // Cobros V2: si viene cobros[], normalizar y derivar campos legacy
+  let cobrosV2Normalizados = null;
+  let tipo_cobro = req.body.tipo_cobro;
+  let monto_efectivo = req.body.monto_efectivo;
+  let monto_debito = req.body.monto_debito;
+  let cuenta_cobro_id = req.body.cuenta_cobro_id;
+  if (Array.isArray(req.body.cobros) && req.body.cobros.length > 0) {
+    const resultado = normalizarCobrosV2(req.body.cobros);
+    if (resultado && resultado.error) return res.status(400).json({ message: resultado.error });
+    cobrosV2Normalizados = resultado;
+    const legacy = derivarCobroLegacy(cobrosV2Normalizados);
+    tipo_cobro = legacy.tipo_cobro;
+    monto_efectivo = legacy.monto_efectivo;
+    monto_debito = legacy.monto_debito;
+    cuenta_cobro_id = legacy.cuenta_cobro_id;
+  }
 
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ message: "El ticket no puede estar vacio" });
@@ -4204,8 +4267,8 @@ app.post("/ventas", async (req, res) => {
     if (hayModificadores) {
       await aplicarStockComponentesSnapshot(await filtrarDetallesConStockFisico(detalles), 1);
     }
-    if (tipoVenta === "normal" && !esCuentaCorriente && cobro?.tipo_cobro) {
-      await registrarVentaCobros(venta.lastID, cobro, cuentaCobroVenta.cuenta_cobro_id, `${fecha} ${hora}`);
+    if (tipoVenta === "normal" && !esCuentaCorriente && (cobrosV2Normalizados || cobro?.tipo_cobro)) {
+      await registrarVentaCobros(venta.lastID, cobro, cuentaCobroVenta.cuenta_cobro_id, `${fecha} ${hora}`, cobrosV2Normalizados);
     }
 
     await runQuery("COMMIT");
@@ -5821,7 +5884,22 @@ app.put("/ventas/:id/pendiente", async (req, res) => {
 // Cobrar ticket pendiente
 app.post("/ventas/:id/cobrar", async (req, res) => {
   const ventaId = Number(req.params.id);
-  const tipoCobro = req.body.tipo_cobro;
+  // Cobros V2: normalizar si viene cobros[]
+  let cobrosV2Cobrar = null;
+  let tipoCobro = req.body.tipo_cobro;
+  let montoEfectivoCobrar = req.body.monto_efectivo;
+  let montoDebitoCobrar = req.body.monto_debito;
+  let cuentaCobroIdCobrar = req.body.cuenta_cobro_id;
+  if (Array.isArray(req.body.cobros) && req.body.cobros.length > 0) {
+    const resultado = normalizarCobrosV2(req.body.cobros);
+    if (resultado && resultado.error) return res.status(400).json({ message: resultado.error });
+    cobrosV2Cobrar = resultado;
+    const legacy = derivarCobroLegacy(cobrosV2Cobrar);
+    tipoCobro = legacy.tipo_cobro;
+    montoEfectivoCobrar = legacy.monto_efectivo;
+    montoDebitoCobrar = legacy.monto_debito;
+    cuentaCobroIdCobrar = legacy.cuenta_cobro_id;
+  }
 
   try {
     const venta = await getQuery("SELECT * FROM ventas WHERE id = ?", [ventaId]);
@@ -5848,15 +5926,15 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
     const cobroReal = resolveCobroData(
       recargo.total,
       tipoCobro,
-      req.body.monto_efectivo,
-      req.body.monto_debito
+      montoEfectivoCobrar,
+      montoDebitoCobrar
     );
 
     if (!cobroReal) {
       return res.status(400).json({ message: "Datos de cobro invalidos" });
     }
 
-    const cuentaCobro = await validarCuentaCobroVenta(req.body.cuenta_cobro_id, cobroReal);
+    const cuentaCobro = await validarCuentaCobroVenta(cuentaCobroIdCobrar, cobroReal);
     if (!cuentaCobro.ok) {
       return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
     }
@@ -5880,7 +5958,7 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
         ventaId
       ]
     );
-    await registrarVentaCobros(ventaId, cobroReal, cuentaCobro.cuenta_cobro_id);
+    await registrarVentaCobros(ventaId, cobroReal, cuentaCobro.cuenta_cobro_id, null, cobrosV2Cobrar);
 
     await runQuery("COMMIT");
 
@@ -5960,6 +6038,23 @@ app.patch("/ventas/:id/cobro", async (req, res) => {
     return res.status(403).json({ message: "No tenes permisos para editar tickets" });
   }
 
+  // Cobros V2: normalizar si viene cobros[]
+  let cobrosV2Patch = null;
+  let tipoCobro_patch = req.body.tipo_cobro;
+  let montoEfectivo_patch = req.body.monto_efectivo;
+  let montoDebito_patch = req.body.monto_debito;
+  let cuentaCobroId_patch = req.body.cuenta_cobro_id;
+  if (Array.isArray(req.body.cobros) && req.body.cobros.length > 0) {
+    const resultado = normalizarCobrosV2(req.body.cobros);
+    if (resultado && resultado.error) return res.status(400).json({ message: resultado.error });
+    cobrosV2Patch = resultado;
+    const legacy = derivarCobroLegacy(cobrosV2Patch);
+    tipoCobro_patch = legacy.tipo_cobro;
+    montoEfectivo_patch = legacy.monto_efectivo;
+    montoDebito_patch = legacy.monto_debito;
+    cuentaCobroId_patch = legacy.cuenta_cobro_id;
+  }
+
   try {
     const venta = await getQuery("SELECT * FROM ventas WHERE id = ?", [ventaId]);
 
@@ -5969,9 +6064,9 @@ app.patch("/ventas/:id/cobro", async (req, res) => {
 
     const cobro = resolveCobroData(
       Number(venta.total) || 0,
-      req.body.tipo_cobro,
-      req.body.monto_efectivo,
-      req.body.monto_debito
+      tipoCobro_patch,
+      montoEfectivo_patch,
+      montoDebito_patch
     );
 
     if (!cobro) {
@@ -5979,8 +6074,9 @@ app.patch("/ventas/:id/cobro", async (req, res) => {
     }
 
     let cuentaCobroFinal = venta.cuenta_cobro_id ?? null;
-    if (Object.prototype.hasOwnProperty.call(req.body, "cuenta_cobro_id")) {
-      const cuentaCobro = await validarCuentaCobroVenta(req.body.cuenta_cobro_id, cobro);
+    const hasCuentaEnBody = cobrosV2Patch ? true : Object.prototype.hasOwnProperty.call(req.body, "cuenta_cobro_id");
+    if (hasCuentaEnBody) {
+      const cuentaCobro = await validarCuentaCobroVenta(cuentaCobroId_patch, cobro);
       if (!cuentaCobro.ok) {
         return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
       }
@@ -6004,7 +6100,7 @@ app.patch("/ventas/:id/cobro", async (req, res) => {
       [cobro.tipo_cobro, cobro.tipo_cobro, cobro.monto_efectivo, cobro.monto_debito, cuentaCobroFinal, ventaId]
     );
     await runQuery("DELETE FROM venta_cobros WHERE venta_id = ?", [ventaId]);
-    await registrarVentaCobros(ventaId, cobro, cuentaCobroFinal);
+    await registrarVentaCobros(ventaId, cobro, cuentaCobroFinal, null, cobrosV2Patch);
 
     return res.json({ message: `Metodo de pago actualizado en ticket ${ventaId}` });
   } catch (error) {
