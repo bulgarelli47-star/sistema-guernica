@@ -1179,6 +1179,7 @@
               <button class="constructor-plantilla-card" data-plantilla="proveedores-ranking" type="button">Ranking proveedores</button>
               <button class="constructor-plantilla-card" data-plantilla="stock-rotacion" type="button">Rotación de stock</button>
               <button class="constructor-plantilla-card" data-plantilla="extras-combos" type="button">Extras y combos</button>
+              <button class="constructor-plantilla-card" data-plantilla="desvios-receta" type="button">Desvíos de receta</button>
             </div>
           </section>
           <section>
@@ -1247,7 +1248,8 @@
       "caja-movimientos": "Movimientos de caja",
       "proveedores-ranking": "Ranking proveedores",
       "stock-rotacion": "Rotación de stock",
-      "extras-combos": "Extras y combos"
+      "extras-combos": "Extras y combos",
+      "desvios-receta": "Desvíos de receta"
     };
     const CONSTRUCTOR_MODULO_LABELS = {
       "ventas": "Ventas",
@@ -1286,7 +1288,7 @@
       }
       return null;
     }
-    function recargarPlantillaActual() { const { plantilla } = constructorState; if (!plantilla) return; if (plantilla === "ventas-del-dia") cargarConstructorVentas(); else if (plantilla === "cierre-diario") cargarConstructorCierreDiario(); else if (plantilla === "clientes-con-deuda") cargarConstructorClientesDeuda(); else if (plantilla === "pagos-pendientes") cargarConstructorPagosPendientes(); else if (plantilla === "resumen-ejecutivo") cargarConstructorResumenEjecutivo(); else if (plantilla === "caja-movimientos") cargarConstructorCajaMovimientos(); else if (plantilla === "proveedores-ranking") cargarConstructorProveedoresRanking(); else if (plantilla === "stock-rotacion") cargarConstructorStockRotacion(); else if (plantilla === "extras-combos") cargarConstructorExtrasCombos(); }
+    function recargarPlantillaActual() { const { plantilla } = constructorState; if (!plantilla) return; if (plantilla === "ventas-del-dia") cargarConstructorVentas(); else if (plantilla === "cierre-diario") cargarConstructorCierreDiario(); else if (plantilla === "clientes-con-deuda") cargarConstructorClientesDeuda(); else if (plantilla === "pagos-pendientes") cargarConstructorPagosPendientes(); else if (plantilla === "resumen-ejecutivo") cargarConstructorResumenEjecutivo(); else if (plantilla === "caja-movimientos") cargarConstructorCajaMovimientos(); else if (plantilla === "proveedores-ranking") cargarConstructorProveedoresRanking(); else if (plantilla === "stock-rotacion") cargarConstructorStockRotacion(); else if (plantilla === "extras-combos") cargarConstructorExtrasCombos(); else if (plantilla === "desvios-receta") cargarConstructorDesviosReceta(); }
     function renderConstructorPreview() {
       const el = $("constructorPreview");
       if (!el) return;
@@ -1353,6 +1355,10 @@
       }
       if (plantilla === "extras-combos" && data) {
         renderConstructorExtrasCombos(el, data);
+        return;
+      }
+      if (plantilla === "desvios-receta" && data) {
+        renderConstructorDesviosReceta(el, data);
         return;
       }
       const cards = [];
@@ -1938,6 +1944,57 @@
           : emptyMsg("Sin datos de productos con modificadores."));
       el.innerHTML = titulo + secMods + secExtras + secOpciones + secIngs + secCombos + secProdMods;
     }
+    async function cargarConstructorDesviosReceta() {
+      const { desde, hasta } = getConstructorRango();
+      constructorState.loading = true;
+      constructorState.error = "";
+      constructorState.data = null;
+      renderConstructorPreview();
+      try {
+        const res = await fetch(`/reportes/desvios-receta?desde=${desde}&hasta=${hasta}`);
+        if (!res.ok) throw new Error(`${res.status}`);
+        constructorState.data = await res.json();
+        constructorState.loading = false;
+      } catch {
+        constructorState.loading = false;
+        constructorState.error = "No se pudo cargar la plantilla Desvíos de receta.";
+      }
+      renderConstructorPreview();
+    }
+    function renderConstructorDesviosReceta(el, data) {
+      const { desde, hasta } = getConstructorRango();
+      const periodoLabel = desde === hasta ? desde : `${desde} → ${hasta}`;
+      const titulo = `<div class="constructor-preview-title"><h3>Desvíos de receta</h3><p>${periodoLabel}</p></div>`;
+      const res = data?.resumen || {};
+      const productos = Array.isArray(data?.productos) ? data.productos : [];
+      const recetas = Array.isArray(data?.recetas) ? data.recetas : [];
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const hasData = n(res.total_ajustes) > 0;
+      if (!hasData) {
+        el.innerHTML = titulo + '<div class="constructor-placeholder"><strong>Sin desvíos de receta registrados en el período.</strong><p>Los desvíos se generan al vender productos con receta cuando el consumo no coincide con lo esperado.</p></div>';
+        return;
+      }
+      const kpis = [
+        { label: "Ajustes detectados", value: n(res.total_ajustes) },
+        { label: "Pendientes", value: n(res.total_pendiente) },
+        { label: "Rechazados", value: n(res.total_rechazado) },
+        { label: "Productos afectados", value: n(res.productos_afectados) },
+        { label: "Cantidad detectada", value: n(res.cantidad_total_detectada) },
+        { label: "Impacto estimado", value: money(n(res.impacto_estimado_total)) }
+      ];
+      const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong>${k.value}</strong></div>`).join("")}</div>`;
+      const secProd = productos.length
+        ? `<p class="constructor-section-title">Productos con mayor impacto</p><div class="constructor-ranking">${productos.slice(0, 12).map((p, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${p.producto_nombre || "—"}<small style="color:var(--muted);display:block;font-size:11px">${n(p.ajustes_total)} ajuste(s) · ${n(p.cantidad_detectada)} ud.</small></span><span class="constructor-ranking-val">${money(n(p.impacto_estimado))}</span></div>`).join("")}</div>`
+        : "";
+      const secRecetas = recetas.length
+        ? `<p class="constructor-section-title">Recetas con más desvíos</p><div class="constructor-ranking">${recetas.map((r, i) => `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${r.receta_nombre || "—"}<small style="color:var(--muted);display:block;font-size:11px">${n(r.ajustes_total)} ajuste(s) · ${n(r.productos_afectados)} prod.</small></span><span class="constructor-ranking-val">${money(n(r.impacto_estimado))}</span></div>`).join("")}</div>`
+        : "";
+      const estadoColor = { aprobado: "var(--success)", rechazado: "var(--danger)", pendiente: "var(--warning)", corregido: "var(--info)" };
+      const secItems = items.length
+        ? `<p class="constructor-section-title">Últimos desvíos detectados</p><div class="constructor-ranking">${items.slice(0, 15).map((it) => `<div class="constructor-ranking-row"><span class="constructor-ranking-name">${it.producto_nombre || "—"}<small style="color:var(--muted);display:block;font-size:11px">${it.receta_nombre || ""} · ${it.fecha || ""}</small></span><span class="constructor-ranking-val">${n(it.cantidad)} ud.</span><small class="constructor-ranking-qty" style="color:${estadoColor[it.estado] || "var(--muted)"};font-weight:900">${it.estado || "—"}</small></div>`).join("")}</div>`
+        : "";
+      el.innerHTML = titulo + kpisHtml + secProd + secRecetas + secItems;
+    }
     function _csvEscape(val) { if (val == null) return ""; const s = String(val); return (s.includes(",") || s.includes('"') || s.includes("\n")) ? `"${s.replace(/"/g, '""')}"` : s; }
     function getConstructorRowsParaExportar() {
       const { plantilla, data } = constructorState;
@@ -2038,6 +2095,16 @@
           rows.push({ seccion: "Combos más vendidos", nombre: r.nombre_producto, tipo: "combo", veces: n(r.unidades_vendidas), total: r.total_facturado }));
         (Array.isArray(data.productos_con_mas_modificadores) ? data.productos_con_mas_modificadores : []).forEach((r) =>
           rows.push({ seccion: "Productos con más modificadores", nombre: r.nombre_producto, tipo: "producto", veces: r.total_modificadores, total: r.total_facturado_modificadores }));
+        return rows;
+      }
+      if (plantilla === "desvios-receta") {
+        const rows = [];
+        (Array.isArray(data.productos) ? data.productos : []).forEach((r) =>
+          rows.push({ seccion: "Productos con mayor impacto", nombre: r.producto_nombre, tipo: "producto", cantidad: r.cantidad_detectada, ajustes: r.ajustes_total, estado: "", impacto_estimado: r.impacto_estimado }));
+        (Array.isArray(data.recetas) ? data.recetas : []).forEach((r) =>
+          rows.push({ seccion: "Recetas con más desvíos", nombre: r.receta_nombre, tipo: "receta", cantidad: r.cantidad_detectada, ajustes: r.ajustes_total, estado: "", impacto_estimado: r.impacto_estimado }));
+        (Array.isArray(data.items) ? data.items : []).forEach((r) =>
+          rows.push({ seccion: "Últimos desvíos detectados", nombre: r.producto_nombre, tipo: r.receta_nombre || "", cantidad: r.cantidad, ajustes: 1, estado: r.estado || "", impacto_estimado: r.impacto_estimado }));
         return rows;
       }
       return [];
@@ -2264,6 +2331,14 @@
               if (ventasBtn) ventasBtn.classList.add("active");
             }
             cargarConstructorExtrasCombos();
+          } else if (btn.dataset.plantilla === "desvios-receta") {
+            constructorState.modulo = "stock";
+            if (modulosEl) {
+              modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+              const stockBtn = modulosEl.querySelector('[data-modulo="stock"]');
+              if (stockBtn) stockBtn.classList.add("active");
+            }
+            cargarConstructorDesviosReceta();
           } else {
             renderConstructorPreview();
           }
