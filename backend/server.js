@@ -77,7 +77,8 @@ const {
   getReporteDependenciaInsumos,
   getReporteRiesgoVentas,
   getReporteRentabilidadProductos,
-  getReporteRentabilidadCategorias
+  getReporteRentabilidadCategorias,
+  getReporteDashboardEjecutivo
 } = require("./services/reportesService");
 const {
   getResumenFinanciero
@@ -6448,6 +6449,17 @@ app.get("/reportes/rentabilidad-categorias", async (req, res) => {
   } catch (error) {
     logError("Error al obtener reporte de rentabilidad por categoría:", error);
     return res.status(500).json({ message: "Error al obtener reporte de rentabilidad por categoría" });
+  }
+});
+
+app.get("/reportes/dashboard-ejecutivo", async (req, res) => {
+  if (!asegurarAccesoReporte(req, res, "generales")) return;
+  const { desde = null, hasta = null } = req.query;
+  try {
+    return res.json(await getReporteDashboardEjecutivo({ desde, hasta }));
+  } catch (error) {
+    logError("Error al obtener dashboard ejecutivo:", error);
+    return res.status(500).json({ message: "Error al obtener dashboard ejecutivo" });
   }
 });
 

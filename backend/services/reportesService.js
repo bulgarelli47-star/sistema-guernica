@@ -2467,6 +2467,73 @@ async function getReporteRentabilidadCategorias({ desde = null, hasta = null } =
   };
 }
 
+async function getReporteDashboardEjecutivo({ desde = null, hasta = null } = {}) {
+  const safe = async (fn) => { try { return await fn(); } catch { return null; } };
+
+  const [resumenVentas, rentabilidadProd, rentabilidadCat, cuentasCorrientes, saludInv, riesgoVentas] = await Promise.all([
+    safe(() => getResumenReportes({ desde, hasta })),
+    safe(() => getReporteRentabilidadProductos({ desde, hasta })),
+    safe(() => getReporteRentabilidadCategorias({ desde, hasta })),
+    safe(() => getReporteCuentasCorrientes({ desde, hasta })),
+    safe(() => getReporteSaludInventario()),
+    safe(() => getReporteRiesgoVentas({ desde, hasta }))
+  ]);
+
+  const ventasRes = resumenVentas || {};
+  const rentProdRes = rentabilidadProd?.resumen || {};
+  const rentCatRes = rentabilidadCat?.resumen || {};
+  const ccRes = cuentasCorrientes?.resumen || {};
+  const salud = saludInv?.resumen || {};
+  const riesgo = riesgoVentas?.resumen || {};
+
+  const alertas = [];
+  if (round2(ccRes.deuda_vencida) > 0) alertas.push({ tipo: "riesgo", titulo: "Deuda vencida", detalle: `Hay ${new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS" }).format(ccRes.deuda_vencida)} de deuda vencida.` });
+  if (Number(ccRes.clientes_excedidos) > 0) alertas.push({ tipo: "riesgo", titulo: "Clientes excedidos", detalle: `Hay ${ccRes.clientes_excedidos} cliente(s) excedido(s).` });
+  if (Number(salud.recetas_bloqueadas) > 0) alertas.push({ tipo: "critica", titulo: "Recetas bloqueadas", detalle: `Hay ${salud.recetas_bloqueadas} receta(s) bloqueada(s) por stock.` });
+  if (Number(salud.recetas_en_riesgo) > 0) alertas.push({ tipo: "riesgo", titulo: "Recetas en riesgo", detalle: `Hay ${salud.recetas_en_riesgo} receta(s) con baja disponibilidad.` });
+  if (Number(salud.insumos_criticos) > 0) alertas.push({ tipo: "riesgo", titulo: "Insumos críticos", detalle: `Hay ${salud.insumos_criticos} insumo(s) crítico(s).` });
+  const catBajoMargen = (rentabilidadCat?.categorias || []).find((c) => c.facturacion_total > 0 && c.margen_porcentual < 30);
+  if (catBajoMargen) alertas.push({ tipo: "info", titulo: "Categoría con bajo margen", detalle: `${catBajoMargen.categoria} tiene margen de ${round2(catBajoMargen.margen_porcentual)}%.` });
+  if (!alertas.length) alertas.push({ tipo: "info", titulo: "Sin alertas críticas", detalle: "No se detectaron alertas relevantes en el período." });
+
+  return {
+    filtros: { desde, hasta },
+    ventas: {
+      facturacion_total: round2(ventasRes.ventas_totales),
+      operaciones: Number(ventasRes.total_ventas || 0),
+      ticket_promedio: round2(ventasRes.ticket_promedio)
+    },
+    rentabilidad: {
+      costo_total: round2(rentProdRes.costo_total),
+      margen_total: round2(rentProdRes.margen_total),
+      margen_promedio: round2(rentProdRes.margen_promedio),
+      producto_mayor_rentabilidad: rentProdRes.producto_mayor_rentabilidad || null,
+      categoria_mayor_rentabilidad: rentCatRes.categoria_mayor_rentabilidad || null
+    },
+    cuentas_corrientes: {
+      deuda_total: round2(ccRes.deuda_total),
+      deuda_vencida: round2(ccRes.deuda_vencida),
+      clientes_con_deuda: Number(ccRes.clientes_con_deuda || 0),
+      clientes_con_deuda_vencida: Number(ccRes.clientes_con_deuda_vencida || 0),
+      clientes_excedidos: Number(ccRes.clientes_excedidos || 0)
+    },
+    inventario: {
+      recetas_saludables: Number(salud.recetas_saludables || 0),
+      recetas_en_riesgo: Number(salud.recetas_en_riesgo || 0),
+      recetas_bloqueadas: Number(salud.recetas_bloqueadas || 0),
+      insumos_criticos: Number(salud.insumos_criticos || 0),
+      cobertura_promedio: riesgo.cobertura_promedio != null ? round2(riesgo.cobertura_promedio) : null
+    },
+    alertas,
+    top: {
+      productos_margen: (rentabilidadProd?.productos || []).sort((a, b) => b.margen_bruto - a.margen_bruto).slice(0, 5),
+      categorias_margen: (rentabilidadCat?.categorias || []).sort((a, b) => b.margen_bruto - a.margen_bruto).slice(0, 5),
+      clientes_deuda: (cuentasCorrientes?.clientes || []).filter((c) => c.deuda_actual > 0).sort((a, b) => b.deuda_actual - a.deuda_actual).slice(0, 5),
+      insumos_riesgo: (riesgoVentas?.insumos || []).filter((i) => i.severidad !== "estable").slice(0, 5)
+    }
+  };
+}
+
 module.exports = {
   getResumenReportes,
   getReporteVentas,
@@ -2483,5 +2550,6 @@ module.exports = {
   getReporteDependenciaInsumos,
   getReporteRiesgoVentas,
   getReporteRentabilidadProductos,
-  getReporteRentabilidadCategorias
+  getReporteRentabilidadCategorias,
+  getReporteDashboardEjecutivo
 };
