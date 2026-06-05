@@ -1184,6 +1184,7 @@
               <button class="constructor-plantilla-card" data-plantilla="dependencia-insumos" type="button">Dependencia de insumos</button>
               <button class="constructor-plantilla-card" data-plantilla="riesgo-ventas" type="button">Riesgo de ventas</button>
               <button class="constructor-plantilla-card" data-plantilla="rentabilidad-productos" type="button">Rentabilidad</button>
+              <button class="constructor-plantilla-card" data-plantilla="rentabilidad-categorias" type="button">Rentab. categorías</button>
             </div>
           </section>
           <section>
@@ -1257,7 +1258,8 @@
       "salud-inventario": "Salud inventario",
       "dependencia-insumos": "Dependencia de insumos",
       "riesgo-ventas": "Riesgo de ventas",
-      "rentabilidad-productos": "Rentabilidad por producto"
+      "rentabilidad-productos": "Rentabilidad por producto",
+      "rentabilidad-categorias": "Rentabilidad por categoría"
     };
     const CONSTRUCTOR_MODULO_LABELS = {
       "ventas": "Ventas",
@@ -1296,7 +1298,7 @@
       }
       return null;
     }
-    function recargarPlantillaActual() { const { plantilla } = constructorState; if (!plantilla) return; if (plantilla === "ventas-del-dia") cargarConstructorVentas(); else if (plantilla === "cierre-diario") cargarConstructorCierreDiario(); else if (plantilla === "clientes-con-deuda") cargarConstructorClientesDeuda(); else if (plantilla === "pagos-pendientes") cargarConstructorPagosPendientes(); else if (plantilla === "resumen-ejecutivo") cargarConstructorResumenEjecutivo(); else if (plantilla === "caja-movimientos") cargarConstructorCajaMovimientos(); else if (plantilla === "proveedores-ranking") cargarConstructorProveedoresRanking(); else if (plantilla === "stock-rotacion") cargarConstructorStockRotacion(); else if (plantilla === "extras-combos") cargarConstructorExtrasCombos(); else if (plantilla === "desvios-receta") cargarConstructorDesviosReceta(); else if (plantilla === "salud-inventario") cargarConstructorSaludInventario(); else if (plantilla === "dependencia-insumos") cargarConstructorDependenciaInsumos(); else if (plantilla === "riesgo-ventas") cargarConstructorRiesgoVentas(); else if (plantilla === "rentabilidad-productos") cargarConstructorRentabilidadProductos(); }
+    function recargarPlantillaActual() { const { plantilla } = constructorState; if (!plantilla) return; if (plantilla === "ventas-del-dia") cargarConstructorVentas(); else if (plantilla === "cierre-diario") cargarConstructorCierreDiario(); else if (plantilla === "clientes-con-deuda") cargarConstructorClientesDeuda(); else if (plantilla === "pagos-pendientes") cargarConstructorPagosPendientes(); else if (plantilla === "resumen-ejecutivo") cargarConstructorResumenEjecutivo(); else if (plantilla === "caja-movimientos") cargarConstructorCajaMovimientos(); else if (plantilla === "proveedores-ranking") cargarConstructorProveedoresRanking(); else if (plantilla === "stock-rotacion") cargarConstructorStockRotacion(); else if (plantilla === "extras-combos") cargarConstructorExtrasCombos(); else if (plantilla === "desvios-receta") cargarConstructorDesviosReceta(); else if (plantilla === "salud-inventario") cargarConstructorSaludInventario(); else if (plantilla === "dependencia-insumos") cargarConstructorDependenciaInsumos(); else if (plantilla === "riesgo-ventas") cargarConstructorRiesgoVentas(); else if (plantilla === "rentabilidad-productos") cargarConstructorRentabilidadProductos(); else if (plantilla === "rentabilidad-categorias") cargarConstructorRentabilidadCategorias(); }
     function renderConstructorPreview() {
       const el = $("constructorPreview");
       if (!el) return;
@@ -1383,6 +1385,10 @@
       }
       if (plantilla === "rentabilidad-productos" && data) {
         renderConstructorRentabilidadProductos(el, data);
+        return;
+      }
+      if (plantilla === "rentabilidad-categorias" && data) {
+        renderConstructorRentabilidadCategorias(el, data);
         return;
       }
       const cards = [];
@@ -2231,6 +2237,56 @@
         : "";
       el.innerHTML = titulo + kpisHtml + secTop + secMejorPct + secRiesgo;
     }
+    async function cargarConstructorRentabilidadCategorias() {
+      const { desde, hasta } = getConstructorRango();
+      constructorState.loading = true;
+      constructorState.error = "";
+      constructorState.data = null;
+      renderConstructorPreview();
+      try {
+        const res = await fetch(`/reportes/rentabilidad-categorias?desde=${desde}&hasta=${hasta}`);
+        if (!res.ok) throw new Error(`${res.status}`);
+        constructorState.data = await res.json();
+        constructorState.loading = false;
+      } catch {
+        constructorState.loading = false;
+        constructorState.error = "No se pudo cargar la plantilla Rentabilidad por categoría.";
+      }
+      renderConstructorPreview();
+    }
+    function renderConstructorRentabilidadCategorias(el, data) {
+      const res = data?.resumen || {};
+      const categorias = Array.isArray(data?.categorias) ? data.categorias : [];
+      const { desde, hasta } = getConstructorRango();
+      const periodoLabel = desde === hasta ? desde : `${desde} → ${hasta}`;
+      const titulo = `<div class="constructor-preview-title"><h3>Rentabilidad por categoría</h3><p>${periodoLabel}</p></div>`;
+      if (!categorias.length) {
+        el.innerHTML = titulo + '<div class="constructor-placeholder"><strong>Sin datos de rentabilidad para el período.</strong></div>';
+        return;
+      }
+      const kpis = [
+        { label: "Categorías", value: n(res.categorias_analizadas) },
+        { label: "Facturación", value: money(n(res.facturacion_total)) },
+        { label: "Costo estimado", value: money(n(res.costo_total)) },
+        { label: "Margen bruto", value: money(n(res.margen_total)) },
+        { label: "Margen promedio", value: n(res.margen_promedio).toFixed(1) + "%" },
+        { label: "Mayor rentabilidad", value: res.categoria_mayor_rentabilidad || "—" }
+      ];
+      const kpisHtml = `<div class="constructor-kpi-grid">${kpis.map((k) => `<div class="constructor-kpi-card"><span>${k.label}</span><strong style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${k.value}</strong></div>`).join("")}</div>`;
+      function catRow(c, i) {
+        const col = c.margen_porcentual >= 40 ? "var(--success)" : c.margen_porcentual >= 20 ? "var(--warning)" : "var(--danger)";
+        return `<div class="constructor-ranking-row"><span class="constructor-ranking-pos">${i + 1}</span><span class="constructor-ranking-name">${c.categoria || "—"}<small style="color:var(--muted);display:block;font-size:11px">${c.productos_vendidos} prod. · ${n(c.unidades_vendidas)} ud.</small></span><span class="constructor-ranking-val">${money(n(c.facturacion_total))}</span><small class="constructor-ranking-qty" style="color:${col};font-weight:900">${n(c.margen_porcentual).toFixed(1)}%</small></div>`;
+      }
+      const topMargen = [...categorias].sort((a, b) => b.margen_bruto - a.margen_bruto);
+      const topPct = [...categorias].filter((c) => c.facturacion_total > 0).sort((a, b) => b.margen_porcentual - a.margen_porcentual);
+      const pocaRentab = [...categorias].filter((c) => c.facturacion_total > 0 && c.margen_porcentual < 30).sort((a, b) => b.facturacion_total - a.facturacion_total);
+      const secTop = `<p class="constructor-section-title">Por margen bruto</p><div class="constructor-ranking">${topMargen.map((c, i) => catRow(c, i)).join("")}</div>`;
+      const secPct = `<p class="constructor-section-title">Por mejor margen %</p><div class="constructor-ranking">${topPct.map((c, i) => catRow(c, i)).join("")}</div>`;
+      const secPoco = pocaRentab.length
+        ? `<p class="constructor-section-title">Facturan pero dejan poco (&lt;30%)</p><div class="constructor-ranking">${pocaRentab.map((c, i) => catRow(c, i)).join("")}</div>`
+        : "";
+      el.innerHTML = titulo + kpisHtml + secTop + secPct + secPoco;
+    }
     function _csvEscape(val) { if (val == null) return ""; const s = String(val); return (s.includes(",") || s.includes('"') || s.includes("\n")) ? `"${s.replace(/"/g, '""')}"` : s; }
     function getConstructorRowsParaExportar() {
       const { plantilla, data } = constructorState;
@@ -2350,6 +2406,18 @@
         (Array.isArray(data.insumos_criticos) ? data.insumos_criticos : []).forEach((ins) =>
           rows.push({ seccion: "Insumos críticos", nombre: ins.producto_nombre, estado: ins.severidad, unidades_posibles: ins.stock_actual, insumo_limitante: ins.recetas_afectadas.join("; "), stock_limitante: ins.stock_minimo }));
         return rows;
+      }
+      if (plantilla === "rentabilidad-categorias") {
+        return (Array.isArray(data.categorias) ? data.categorias : []).map((c) => ({
+          categoria: c.categoria,
+          productos_vendidos: n(c.productos_vendidos),
+          unidades_vendidas: n(c.unidades_vendidas),
+          facturacion_total: n(c.facturacion_total),
+          costo_estimado_total: n(c.costo_estimado_total),
+          margen_bruto: n(c.margen_bruto),
+          margen_porcentual: n(c.margen_porcentual),
+          ticket_promedio: n(c.ticket_promedio)
+        }));
       }
       if (plantilla === "rentabilidad-productos") {
         return (Array.isArray(data.productos) ? data.productos : []).map((p) => ({
@@ -2651,6 +2719,14 @@
               if (ventasBtn) ventasBtn.classList.add("active");
             }
             cargarConstructorRentabilidadProductos();
+          } else if (btn.dataset.plantilla === "rentabilidad-categorias") {
+            constructorState.modulo = "ventas";
+            if (modulosEl) {
+              modulosEl.querySelectorAll(".constructor-modulo-card").forEach((el) => el.classList.remove("active"));
+              const ventasBtn = modulosEl.querySelector('[data-modulo="ventas"]');
+              if (ventasBtn) ventasBtn.classList.add("active");
+            }
+            cargarConstructorRentabilidadCategorias();
           } else {
             renderConstructorPreview();
           }

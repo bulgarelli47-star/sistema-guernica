@@ -76,7 +76,8 @@ const {
   getReporteSaludInventario,
   getReporteDependenciaInsumos,
   getReporteRiesgoVentas,
-  getReporteRentabilidadProductos
+  getReporteRentabilidadProductos,
+  getReporteRentabilidadCategorias
 } = require("./services/reportesService");
 const {
   getResumenFinanciero
@@ -6436,6 +6437,17 @@ app.get("/reportes/rentabilidad-productos", async (req, res) => {
   } catch (error) {
     logError("Error al obtener reporte de rentabilidad por producto:", error);
     return res.status(500).json({ message: "Error al obtener reporte de rentabilidad por producto" });
+  }
+});
+
+app.get("/reportes/rentabilidad-categorias", async (req, res) => {
+  if (!asegurarAccesoReporte(req, res, "ventas")) return;
+  const { desde = null, hasta = null } = req.query;
+  try {
+    return res.json(await getReporteRentabilidadCategorias({ desde, hasta }));
+  } catch (error) {
+    logError("Error al obtener reporte de rentabilidad por categoría:", error);
+    return res.status(500).json({ message: "Error al obtener reporte de rentabilidad por categoría" });
   }
 });
 
