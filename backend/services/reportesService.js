@@ -1822,6 +1822,132 @@ async function getReporteModificadores({ desde = null, hasta = null } = {}) {
   };
 }
 
+async function getReporteDesviosReceta({ desde = null, hasta = null } = {}) {
+  const fechaWhere = [];
+  const fechaParams = [];
+  if (desde) { fechaWhere.push("sap.fecha >= ?"); fechaParams.push(desde); }
+  if (hasta) { fechaWhere.push("sap.fecha <= ?"); fechaParams.push(hasta); }
+
+  const baseWhere = [
+    "sap.motivo LIKE 'Consumo teorico venta receta: %'",
+    ...fechaWhere
+  ];
+  const baseSql = baseWhere.join(" AND ");
+
+  const [resumenRows, productosRows, recetasRows, itemsRows] = await Promise.all([
+    allQuery(
+      `SELECT
+         COUNT(*) AS total_ajustes,
+         COALESCE(SUM(CASE WHEN sap.estado = 'pendiente' THEN 1 ELSE 0 END), 0) AS total_pendiente,
+         COALESCE(SUM(CASE WHEN sap.estado IN ('aprobado', 'corregido') THEN 1 ELSE 0 END), 0) AS total_aprobado,
+         COALESCE(SUM(CASE WHEN sap.estado = 'rechazado' THEN 1 ELSE 0 END), 0) AS total_rechazado,
+         COALESCE(SUM(sap.cantidad), 0) AS cantidad_total_detectada,
+         COALESCE(SUM(COALESCE(NULLIF(p.costo_final, 0), NULLIF(p.precio_compra, 0), 0) * sap.cantidad), 0) AS impacto_estimado_total
+       FROM stock_ajustes_pendientes sap
+       JOIN productos p ON p.id = sap.producto_id
+       WHERE ${baseSql}`,
+      fechaParams
+    ),
+    allQuery(
+      `SELECT
+         sap.producto_id,
+         p.nombre AS producto_nombre,
+         COALESCE(SUM(sap.cantidad), 0) AS cantidad_detectada,
+         COALESCE(SUM(COALESCE(sap.cantidad_aprobada, 0)), 0) AS cantidad_aprobada,
+         COALESCE(SUM(CASE WHEN sap.estado = 'pendiente' THEN sap.cantidad ELSE 0 END), 0) AS cantidad_pendiente,
+         COUNT(*) AS ajustes_total,
+         COALESCE(SUM(CASE WHEN sap.estado IN ('aprobado', 'corregido') THEN 1 ELSE 0 END), 0) AS ajustes_aprobados,
+         COALESCE(SUM(CASE WHEN sap.estado = 'rechazado' THEN 1 ELSE 0 END), 0) AS ajustes_rechazados,
+         COALESCE(SUM(CASE WHEN sap.estado = 'pendiente' THEN 1 ELSE 0 END), 0) AS ajustes_pendientes,
+         COALESCE(SUM(COALESCE(NULLIF(p.costo_final, 0), NULLIF(p.precio_compra, 0), 0) * sap.cantidad), 0) AS impacto_estimado
+       FROM stock_ajustes_pendientes sap
+       JOIN productos p ON p.id = sap.producto_id
+       WHERE ${baseSql}
+       GROUP BY sap.producto_id, p.nombre
+       ORDER BY impacto_estimado DESC`,
+      fechaParams
+    ),
+    allQuery(
+      `SELECT
+         SUBSTR(sap.motivo, LENGTH('Consumo teorico venta receta: ') + 1) AS receta_nombre,
+         COUNT(*) AS ajustes_total,
+         COALESCE(SUM(sap.cantidad), 0) AS cantidad_detectada,
+         COUNT(DISTINCT sap.producto_id) AS productos_afectados,
+         COALESCE(SUM(COALESCE(NULLIF(p.costo_final, 0), NULLIF(p.precio_compra, 0), 0) * sap.cantidad), 0) AS impacto_estimado
+       FROM stock_ajustes_pendientes sap
+       JOIN productos p ON p.id = sap.producto_id
+       WHERE ${baseSql}
+       GROUP BY receta_nombre
+       ORDER BY impacto_estimado DESC`,
+      fechaParams
+    ),
+    allQuery(
+      `SELECT
+         sap.fecha,
+         sap.producto_id,
+         p.nombre AS producto_nombre,
+         sap.cantidad,
+         sap.estado,
+         sap.motivo,
+         SUBSTR(sap.motivo, LENGTH('Consumo teorico venta receta: ') + 1) AS receta_nombre,
+         sap.solicitado_por,
+         sap.resuelto_por,
+         COALESCE(NULLIF(p.costo_final, 0), NULLIF(p.precio_compra, 0), 0) * sap.cantidad AS impacto_estimado
+       FROM stock_ajustes_pendientes sap
+       JOIN productos p ON p.id = sap.producto_id
+       WHERE ${baseSql}
+       ORDER BY sap.fecha DESC, sap.hora DESC, sap.id DESC
+       LIMIT 50`,
+      fechaParams
+    )
+  ]);
+
+  const res = resumenRows[0] || {};
+  return {
+    filtros: { desde, hasta },
+    resumen: {
+      total_ajustes: Number(res.total_ajustes || 0),
+      total_pendiente: Number(res.total_pendiente || 0),
+      total_aprobado: Number(res.total_aprobado || 0),
+      total_rechazado: Number(res.total_rechazado || 0),
+      productos_afectados: productosRows.length,
+      cantidad_total_detectada: round2(res.cantidad_total_detectada),
+      impacto_estimado_total: round2(res.impacto_estimado_total)
+    },
+    productos: productosRows.map((row) => ({
+      producto_id: Number(row.producto_id),
+      producto_nombre: row.producto_nombre,
+      cantidad_detectada: round2(row.cantidad_detectada),
+      cantidad_aprobada: round2(row.cantidad_aprobada),
+      cantidad_pendiente: round2(row.cantidad_pendiente),
+      ajustes_total: Number(row.ajustes_total || 0),
+      ajustes_aprobados: Number(row.ajustes_aprobados || 0),
+      ajustes_rechazados: Number(row.ajustes_rechazados || 0),
+      ajustes_pendientes: Number(row.ajustes_pendientes || 0),
+      impacto_estimado: round2(row.impacto_estimado)
+    })),
+    recetas: recetasRows.map((row) => ({
+      receta_nombre: row.receta_nombre,
+      ajustes_total: Number(row.ajustes_total || 0),
+      cantidad_detectada: round2(row.cantidad_detectada),
+      productos_afectados: Number(row.productos_afectados || 0),
+      impacto_estimado: round2(row.impacto_estimado)
+    })),
+    items: itemsRows.map((row) => ({
+      fecha: row.fecha,
+      producto_id: Number(row.producto_id),
+      producto_nombre: row.producto_nombre,
+      cantidad: round2(row.cantidad),
+      estado: row.estado,
+      motivo: row.motivo,
+      receta_nombre: row.receta_nombre,
+      solicitado_por: row.solicitado_por || null,
+      resuelto_por: row.resuelto_por || null,
+      impacto_estimado: round2(row.impacto_estimado)
+    }))
+  };
+}
+
 module.exports = {
   getResumenReportes,
   getReporteVentas,
@@ -1832,5 +1958,6 @@ module.exports = {
   getResumenProveedoresPagos,
   getVentasPorDia,
   getResumenCuentasCobro,
-  getReporteModificadores
+  getReporteModificadores,
+  getReporteDesviosReceta
 };

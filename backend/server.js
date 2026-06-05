@@ -71,7 +71,8 @@ const {
   getResumenProveedoresPagos,
   getVentasPorDia,
   getResumenCuentasCobro,
-  getReporteModificadores
+  getReporteModificadores,
+  getReporteDesviosReceta
 } = require("./services/reportesService");
 const {
   getResumenFinanciero
@@ -6378,6 +6379,17 @@ app.get("/reportes/modificadores", async (req, res) => {
   } catch (error) {
     logError("Error al obtener reporte de modificadores:", error);
     return res.status(500).json({ message: "Error al obtener reporte de modificadores" });
+  }
+});
+
+app.get("/reportes/desvios-receta", async (req, res) => {
+  if (!asegurarAccesoReporte(req, res, "stock")) return;
+  const { desde = null, hasta = null } = req.query;
+  try {
+    return res.json(await getReporteDesviosReceta({ desde, hasta }));
+  } catch (error) {
+    logError("Error al obtener reporte de desvíos de receta:", error);
+    return res.status(500).json({ message: "Error al obtener reporte de desvíos de receta" });
   }
 });
 
