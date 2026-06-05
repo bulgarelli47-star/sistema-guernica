@@ -2213,6 +2213,127 @@ async function getReporteDependenciaInsumos() {
   };
 }
 
+async function getReporteRiesgoVentas({ desde = null, hasta = null } = {}) {
+  const fechaHoy = new Date().toISOString().slice(0, 10);
+  const fecha30 = new Date(Date.now() - 29 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const desdeEfectivo = (desde && String(desde).slice(0, 10)) || fecha30;
+  const hastaEfectivo = (hasta && String(hasta).slice(0, 10)) || fechaHoy;
+
+  const d1 = new Date(desdeEfectivo);
+  const d2 = new Date(hastaEfectivo);
+  const diasPeriodo = Math.max(1, Math.round((d2 - d1) / (1000 * 60 * 60 * 24)) + 1);
+
+  const [consumoRows, recetasRows] = await Promise.all([
+    allQuery(
+      `SELECT
+         pc.producto_id AS producto_id,
+         pi.nombre AS producto_nombre,
+         pi.stock AS stock_actual,
+         pi.stock_minimo AS stock_minimo,
+         COALESCE(pi.unidad_medida, '') AS unidad_medida,
+         COALESCE(SUM(dv.cantidad * pc.cantidad), 0) AS consumo_total_periodo,
+         COUNT(DISTINCT v.id) AS ventas_periodo,
+         COUNT(DISTINCT dv.producto_id) AS productos_vendidos_relacionados
+       FROM detalle_ventas dv
+       JOIN ventas v ON v.id = dv.venta_id
+       JOIN productos pv ON pv.id = dv.producto_id
+       JOIN producto_componentes pc ON pc.producto_compuesto_id = pv.id
+       JOIN productos pi ON pi.id = pc.producto_id
+       WHERE COALESCE(v.estado, '') != 'anulado'
+         AND COALESCE(v.tipo, '') != 'test_modificadores'
+         AND LOWER(COALESCE(pv.tipo, 'simple')) = 'compuesto'
+         AND COALESCE(pv.maneja_stock, 0) = 0
+         AND COALESCE(pi.maneja_stock, 0) = 1
+         AND v.fecha >= ?
+         AND v.fecha <= ?
+       GROUP BY pc.producto_id, pi.nombre, pi.stock, pi.stock_minimo, pi.unidad_medida
+       ORDER BY consumo_total_periodo DESC`,
+      [desdeEfectivo, hastaEfectivo]
+    ),
+    allQuery(
+      `SELECT
+         pi.id AS producto_id,
+         pi.nombre AS producto_nombre,
+         pi.stock AS stock_actual,
+         pi.stock_minimo AS stock_minimo,
+         COALESCE(pi.unidad_medida, '') AS unidad_medida,
+         GROUP_CONCAT(DISTINCT pv.nombre ORDER BY pv.nombre) AS recetas_raw
+       FROM producto_componentes pc
+       JOIN productos pi ON pi.id = pc.producto_id
+         AND COALESCE(pi.maneja_stock, 0) = 1
+         AND COALESCE(pi.activo, 0) = 1
+       JOIN productos pv ON pv.id = pc.producto_compuesto_id
+         AND (LOWER(COALESCE(pv.tipo, 'simple')) = 'compuesto' OR pv.es_combo = 1)
+         AND COALESCE(pv.activo, 0) = 1
+       GROUP BY pi.id, pi.nombre, pi.stock, pi.stock_minimo, pi.unidad_medida`
+    )
+  ]);
+
+  const consumoMap = new Map();
+  for (const row of consumoRows) {
+    consumoMap.set(Number(row.producto_id), {
+      consumo_total_periodo: round2(row.consumo_total_periodo),
+      ventas_periodo: Number(row.ventas_periodo || 0),
+      productos_vendidos_relacionados: Number(row.productos_vendidos_relacionados || 0)
+    });
+  }
+
+  const sevOrd = { critico: 0, riesgo: 1, estable: 2, sin_consumo: 3 };
+
+  const insumos = recetasRows.map((row) => {
+    const id = Number(row.producto_id);
+    const stockActual = round2(row.stock_actual);
+    const consumo = consumoMap.get(id);
+    const consumoTotal = consumo ? consumo.consumo_total_periodo : 0;
+    const consumoPromDiario = round2(consumoTotal / diasPeriodo);
+    const diasCobertura = consumoPromDiario > 0
+      ? round2(stockActual / consumoPromDiario)
+      : null;
+    const severidad = diasCobertura === null ? "sin_consumo"
+      : diasCobertura <= 3 ? "critico"
+      : diasCobertura <= 7 ? "riesgo"
+      : "estable";
+    return {
+      producto_id: id,
+      producto_nombre: row.producto_nombre,
+      unidad_medida: row.unidad_medida,
+      stock_actual: stockActual,
+      stock_minimo: round2(row.stock_minimo),
+      consumo_total_periodo: consumoTotal,
+      consumo_promedio_diario: consumoPromDiario,
+      dias_cobertura: diasCobertura,
+      ventas_periodo: consumo ? consumo.ventas_periodo : 0,
+      productos_vendidos_relacionados: consumo ? consumo.productos_vendidos_relacionados : 0,
+      recetas_afectadas: row.recetas_raw ? row.recetas_raw.split(",") : [],
+      severidad
+    };
+  }).sort((a, b) => {
+    const sd = sevOrd[a.severidad] - sevOrd[b.severidad];
+    if (sd !== 0) return sd;
+    if (a.dias_cobertura !== null && b.dias_cobertura !== null) {
+      const dd = a.dias_cobertura - b.dias_cobertura;
+      if (dd !== 0) return dd;
+    }
+    return b.consumo_total_periodo - a.consumo_total_periodo;
+  });
+
+  const coberturas = insumos.filter((i) => i.dias_cobertura !== null).map((i) => i.dias_cobertura);
+  return {
+    filtros: { desde: desdeEfectivo, hasta: hastaEfectivo, dias_periodo: diasPeriodo },
+    resumen: {
+      insumos_analizados: insumos.length,
+      insumos_criticos: insumos.filter((i) => i.severidad === "critico").length,
+      insumos_en_riesgo: insumos.filter((i) => i.severidad === "riesgo").length,
+      insumos_estables: insumos.filter((i) => i.severidad === "estable").length,
+      insumos_sin_consumo: insumos.filter((i) => i.severidad === "sin_consumo").length,
+      cobertura_promedio: coberturas.length
+        ? round2(coberturas.reduce((a, b) => a + b, 0) / coberturas.length)
+        : null
+    },
+    insumos
+  };
+}
+
 module.exports = {
   getResumenReportes,
   getReporteVentas,
@@ -2226,5 +2347,6 @@ module.exports = {
   getReporteModificadores,
   getReporteDesviosReceta,
   getReporteSaludInventario,
-  getReporteDependenciaInsumos
+  getReporteDependenciaInsumos,
+  getReporteRiesgoVentas
 };

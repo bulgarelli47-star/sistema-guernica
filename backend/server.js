@@ -74,7 +74,8 @@ const {
   getReporteModificadores,
   getReporteDesviosReceta,
   getReporteSaludInventario,
-  getReporteDependenciaInsumos
+  getReporteDependenciaInsumos,
+  getReporteRiesgoVentas
 } = require("./services/reportesService");
 const {
   getResumenFinanciero
@@ -6412,6 +6413,17 @@ app.get("/reportes/dependencia-insumos", async (req, res) => {
   } catch (error) {
     logError("Error al obtener reporte de dependencia de insumos:", error);
     return res.status(500).json({ message: "Error al obtener reporte de dependencia de insumos" });
+  }
+});
+
+app.get("/reportes/riesgo-ventas", async (req, res) => {
+  if (!asegurarAccesoReporte(req, res, "stock")) return;
+  const { desde = null, hasta = null } = req.query;
+  try {
+    return res.json(await getReporteRiesgoVentas({ desde, hasta }));
+  } catch (error) {
+    logError("Error al obtener reporte de riesgo de ventas:", error);
+    return res.status(500).json({ message: "Error al obtener reporte de riesgo de ventas" });
   }
 });
 
