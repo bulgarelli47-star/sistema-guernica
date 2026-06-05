@@ -1594,8 +1594,9 @@
     /* Cobros V2 — D2.1 */
     [data-payment="mixto"] { display: none !important; }
     .cobros-v2-list { display: grid; gap: 6px; margin-top: 4px; }
-    .cobro-v2-fila { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; align-items: end; }
+    .cobro-v2-fila { display: grid; grid-template-columns: 1fr 1.2fr 1fr auto; gap: 6px; align-items: end; }
     .cobro-v2-fila select, .cobro-v2-fila input[type="number"] { min-height: 38px; border-radius: 10px; padding: 8px 10px; }
+    @media (max-width: 520px) { .cobro-v2-fila { grid-template-columns: 1fr 1fr; } .cobro-v2-remove { grid-column: 2; justify-self: end; } }
     .cobro-v2-remove { display: inline-grid; place-items: center; width: 32px; height: 38px; border-radius: 9px; border: 1px solid var(--border); background: #fafafe; color: var(--muted); cursor: pointer; font-size: 16px; }
     .cobro-v2-remove:hover { background: #fee2e2; color: var(--danger); border-color: rgba(224,82,82,.3); }
     .cobros-v2-resumen { display: grid; gap: 4px; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--border); background: #f9fafb; margin-top: 6px; font-size: 12px; }
@@ -3434,9 +3435,14 @@
       } catch(_e) { /* cobros-v2 ui — non-fatal */ }
     }
 
+    function getCuentasCobroCompatibles(tipo) {
+      if (!tipo || tipo === "efectivo" || tipo === "cuenta_corriente") return [];
+      return cuentasCobroVentasPorTipo.get(tipo) || [];
+    }
+
     function inicializarCobrosMultiples(total) {
       if (!cobrosV2Lista) return;
-      cobrosMultiples = [{ id: 1, tipo: "efectivo", monto: Number(total) || 0 }];
+      cobrosMultiples = [{ id: 1, tipo: "efectivo", monto: Number(total) || 0, cuentaId: null }];
       renderCobrosMultiples();
     }
 
@@ -3451,17 +3457,31 @@
         { codigo: "qr", nombre: "QR" }
       ];
       const opcionesTipo = tipos.length ? tipos : fallback;
-      cobrosV2Lista.innerHTML = cobrosMultiples.map((c) => `
-        <div class="cobro-v2-fila" data-cobro-id="${c.id}">
-          <select class="field cobro-v2-tipo" data-id="${c.id}">
-            ${opcionesTipo.map(t => `<option value="${escapeHtml(t.codigo)}" ${c.tipo === t.codigo ? "selected" : ""}>${escapeHtml(t.nombre || t.codigo)}</option>`).join("")}
-          </select>
-          <input type="number" class="field cobro-v2-monto" data-id="${c.id}" value="${c.monto !== 0 ? (c.monto || "") : ""}" step="0.01" min="0" placeholder="Monto" />
-          ${cobrosMultiples.length > 1
-            ? `<button type="button" class="cobro-v2-remove" data-remove="${c.id}" title="Quitar">×</button>`
-            : `<span style="display:inline-block;width:32px"></span>`}
-        </div>
-      `).join("");
+      cobrosV2Lista.innerHTML = cobrosMultiples.map((c) => {
+        const esEfectivo = c.tipo === "efectivo";
+        const cuentasDisponibles = getCuentasCobroCompatibles(c.tipo);
+        let cuentaSelectHtml;
+        if (esEfectivo) {
+          cuentaSelectHtml = `<select class="field cobro-v2-cuenta" data-id="${c.id}" disabled><option value="">Caja / efectivo</option></select>`;
+        } else if (!cuentasDisponibles.length) {
+          cuentaSelectHtml = `<select class="field cobro-v2-cuenta" data-id="${c.id}" disabled><option value="">Sin cuenta disponible</option></select>`;
+        } else {
+          const opts = cuentasDisponibles.map(ct => `<option value="${ct.id}" ${Number(c.cuentaId) === ct.id ? "selected" : ""}>${escapeHtml(ct.nombre)}</option>`).join("");
+          cuentaSelectHtml = `<select class="field cobro-v2-cuenta" data-id="${c.id}">${opts}</select>`;
+        }
+        return `
+          <div class="cobro-v2-fila" data-cobro-id="${c.id}">
+            <select class="field cobro-v2-tipo" data-id="${c.id}">
+              ${opcionesTipo.map(t => `<option value="${escapeHtml(t.codigo)}" ${c.tipo === t.codigo ? "selected" : ""}>${escapeHtml(t.nombre || t.codigo)}</option>`).join("")}
+            </select>
+            ${cuentaSelectHtml}
+            <input type="number" class="field cobro-v2-monto" data-id="${c.id}" value="${c.monto !== 0 ? (c.monto || "") : ""}" step="0.01" min="0" placeholder="Monto" />
+            ${cobrosMultiples.length > 1
+              ? `<button type="button" class="cobro-v2-remove" data-remove="${c.id}" title="Quitar">×</button>`
+              : `<span style="display:inline-block;width:32px"></span>`}
+          </div>
+        `;
+      }).join("");
       actualizarResumenCobrosMultiples();
     }
 
@@ -3479,20 +3499,27 @@
 
     function agregarCobroMultiple() {
       const nextId = (cobrosMultiples[cobrosMultiples.length - 1]?.id || 0) + 1;
-      cobrosMultiples.push({ id: nextId, tipo: "efectivo", monto: 0 });
+      cobrosMultiples.push({ id: nextId, tipo: "efectivo", monto: 0, cuentaId: null });
       renderCobrosMultiples();
     }
 
     function getCobrosMultiplesNormalizados() {
-      if (!cobrosV2Lista) return [];
+      if (!cobrosV2Lista) return null;
       const cobros = [];
-      cobrosV2Lista.querySelectorAll(".cobro-v2-fila").forEach(fila => {
+      for (const fila of cobrosV2Lista.querySelectorAll(".cobro-v2-fila")) {
         const tipo_cobro = fila.querySelector(".cobro-v2-tipo")?.value || "";
+        const cuentaSel = fila.querySelector(".cobro-v2-cuenta");
+        const cuentaVal = cuentaSel && !cuentaSel.disabled ? (cuentaSel.value || "") : "";
+        const cuenta_cobro_id = cuentaVal ? (Number(cuentaVal) || null) : null;
         const monto = Number(fila.querySelector(".cobro-v2-monto")?.value) || 0;
-        if (monto > 0 && tipo_cobro) {
-          cobros.push({ tipo_cobro, cuenta_cobro_id: null, monto: Number(monto.toFixed(2)) });
+        if (!tipo_cobro || monto <= 0) continue;
+        if (tipo_cobro !== "efectivo" && !cuenta_cobro_id) {
+          mostrarMensaje("Seleccioná cuenta/terminal para cobros digitales.", true);
+          abrirModal(modalCobroVenta);
+          return null;
         }
-      });
+        cobros.push({ tipo_cobro, cuenta_cobro_id, monto: Number(monto.toFixed(2)) });
+      }
       return cobros;
     }
 
@@ -4405,7 +4432,8 @@
           }
         } else {
           const cobrosV2 = getCobrosMultiplesNormalizados();
-          if (cobrosV2.some(c => !c.tipo_cobro)) {
+          if (cobrosV2 === null) return; // mensaje ya mostrado dentro de la función
+          if (!cobrosV2.length || cobrosV2.some(c => !c.tipo_cobro)) {
             mostrarMensaje("Seleccioná un método de cobro válido.", true);
             abrirModal(modalCobroVenta);
             return;
@@ -5119,11 +5147,23 @@
     agregarCobroV2Btn?.addEventListener("click", agregarCobroMultiple);
 
     cobrosV2Lista?.addEventListener("change", function(event) {
-      const sel = event.target.closest(".cobro-v2-tipo");
-      if (sel) {
-        const id = Number(sel.dataset.id);
+      const selTipo = event.target.closest(".cobro-v2-tipo");
+      if (selTipo) {
+        const id = Number(selTipo.dataset.id);
         const cobro = cobrosMultiples.find(c => c.id === id);
-        if (cobro) { cobro.tipo = sel.value; actualizarResumenCobrosMultiples(); }
+        if (cobro) {
+          cobro.tipo = selTipo.value;
+          const primerasCuentas = getCuentasCobroCompatibles(cobro.tipo);
+          cobro.cuentaId = primerasCuentas.length ? primerasCuentas[0].id : null;
+          renderCobrosMultiples();
+        }
+        return;
+      }
+      const selCuenta = event.target.closest(".cobro-v2-cuenta");
+      if (selCuenta) {
+        const id = Number(selCuenta.dataset.id);
+        const cobro = cobrosMultiples.find(c => c.id === id);
+        if (cobro) cobro.cuentaId = Number(selCuenta.value) || null;
       }
     });
 
