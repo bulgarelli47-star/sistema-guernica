@@ -209,7 +209,7 @@ async function getClaveAutorizacion() {
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_LOCK_MS = 10 * 60 * 1000;
 
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "15mb" }));
 app.use("/uploads", express.static(path.join(__dirname, "../uploads"), {
   etag: false,
   lastModified: false,
@@ -7717,6 +7717,13 @@ app.use((req, res) => {
 
 // Handler global de errores no controlados — siempre JSON, nunca HTML
 // eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  if (err?.type === "entity.too.large" || err?.status === 413) {
+    return res.status(413).json({ message: "La imagen es demasiado pesada. Probá con una imagen menor a 5 MB." });
+  }
+  next(err);
+});
+
 app.use((err, req, res, _next) => {
   logError("Error no controlado en request", err);
   if (!res.headersSent) {
