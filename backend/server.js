@@ -122,6 +122,7 @@ const {
 const {
   actualizarCuentaDestino,
   crearCuentaDestino,
+  eliminarCuentaDestino,
   listarCuentasDestino,
   obtenerCuentaDestino,
   seedCuentasDestinoDefaults,
@@ -3494,6 +3495,19 @@ app.patch("/cuentas_destino/:id/activo", async (req, res) => {
   }
 });
 
+app.delete("/cuentas_destino/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "ID invalido" });
+  try {
+    const result = await eliminarCuentaDestino(id);
+    return res.json(result);
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
+    logError("Error al eliminar cuenta destino:", error);
+    return res.status(500).json({ message: "Error al eliminar cuenta destino" });
+  }
+});
+
 app.post("/cuentas_cobro", async (req, res) => {
   try {
     const cuenta = await crearCuentaCobro(req.body);
@@ -3542,10 +3556,11 @@ app.delete("/cuentas_cobro/:id", async (req, res) => {
     if (!cuenta) return res.status(404).json({ message: "Canal no encontrado" });
     const uso = await getQuery(
       `SELECT
-        (SELECT COUNT(*) FROM venta_cobros WHERE cuenta_cobro_id = ?) +
-        (SELECT COUNT(*) FROM ventas       WHERE cuenta_cobro_id = ?) +
-        (SELECT COUNT(*) FROM pagos        WHERE cuenta_cobro_id = ?) AS total`,
-      [id, id, id]
+        (SELECT COUNT(*) FROM venta_cobros                WHERE cuenta_cobro_id = ?) +
+        (SELECT COUNT(*) FROM ventas                      WHERE cuenta_cobro_id = ?) +
+        (SELECT COUNT(*) FROM pagos                       WHERE cuenta_cobro_id = ?) +
+        (SELECT COUNT(*) FROM conciliaciones_cuentas_cobro WHERE cuenta_cobro_id = ?) AS total`,
+      [id, id, id, id]
     );
     if (Number(uso?.total || 0) > 0) {
       await runQuery("UPDATE cuentas_cobro SET activo = 0, updated_at = datetime('now') WHERE id = ?", [id]);

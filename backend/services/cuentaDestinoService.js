@@ -118,11 +118,50 @@ async function setActivoCuentaDestino(id, activo) {
   return obtenerCuentaDestino(id);
 }
 
+async function eliminarCuentaDestino(id) {
+  const idNum = Number(id);
+  const cuenta = await obtenerCuentaDestino(idNum);
+  if (!cuenta) {
+    const err = new Error("Cuenta destino no encontrada");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const uso = await getQuery(
+    `SELECT
+      (SELECT COUNT(*) FROM cuentas_cobro                   WHERE cuenta_destino_id = ?) +
+      (SELECT COUNT(*) FROM conciliaciones_cuentas_destino  WHERE cuenta_destino_id = ?) AS total`,
+    [idNum, idNum]
+  );
+
+  if (Number(uso?.total || 0) === 0) {
+    await runQuery("DELETE FROM cuentas_destino WHERE id = ?", [idNum]);
+    return { eliminado: true, desactivado: false, message: "Cuenta destino eliminada" };
+  }
+
+  await runQuery("UPDATE cuentas_destino SET activo = 0, updated_at = datetime('now') WHERE id = ?", [idNum]);
+
+  const desvinculacion = await runQuery(
+    "UPDATE cuentas_cobro SET cuenta_destino_id = NULL, updated_at = datetime('now') WHERE cuenta_destino_id = ? AND activo = 1",
+    [idNum]
+  );
+  const canalesDesvinculados = desvinculacion?.changes ?? 0;
+
+  return {
+    eliminado: false,
+    desactivado: true,
+    desvinculado: true,
+    canales_desvinculados: canalesDesvinculados,
+    message: "La cuenta destino tenía historial. Se desactivó y se desvinculó de los canales activos."
+  };
+}
+
 module.exports = {
   seedCuentasDestinoDefaults,
   listarCuentasDestino,
   obtenerCuentaDestino,
   crearCuentaDestino,
   actualizarCuentaDestino,
-  setActivoCuentaDestino
+  setActivoCuentaDestino,
+  eliminarCuentaDestino
 };

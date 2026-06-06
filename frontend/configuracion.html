@@ -29,6 +29,19 @@
     :where(.modal-actions,.dialog-actions,.modal-footer,.modal-header-actions){display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
     :where(.close,.icon-button,.mib.icon-only){display:inline-grid;place-items:center;flex:0 0 auto;border-radius:10px}
     @media(max-width:860px){:where(.modal,.modal-backdrop){padding:10px}.modal>.modal-card,.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{width:min(100%,calc(100vw - 20px));max-height:calc(100vh - 20px);border-radius:16px}:where(.modal-actions,.dialog-actions,.modal-footer){justify-content:stretch}:where(.modal-actions>* , .dialog-actions>* , .modal-footer>*){flex:1 1 140px}}
+    /* Medios de cobro operativos */
+    .medios-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-top:10px}
+    .medio-card{border:1px solid var(--border);border-radius:14px;background:#fff;padding:14px;display:grid;gap:10px}
+    .medio-card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+    .medio-card-head strong{font-size:14px;line-height:1.2;word-break:break-word}
+    .medio-card-meta{display:grid;gap:5px;font-size:12px}
+    .medio-card-row{display:flex;gap:6px;align-items:center;color:var(--muted)}
+    .medio-card-row span.label{font-weight:800;color:var(--text);min-width:60px}
+    .medio-card-actions{display:flex;gap:6px;flex-wrap:wrap;padding-top:2px;border-top:1px solid var(--border)}
+    .medios-grid-empty{color:var(--muted);font-size:13px;padding:16px 0;text-align:center}
+    details.config-avanzada-cobros>summary{cursor:pointer;font-weight:900;color:var(--muted);font-size:13px;padding:10px 0 6px;user-select:none}
+    details.config-avanzada-cobros>summary:hover{color:var(--primary)}
+    @media(max-width:640px){.medios-grid{grid-template-columns:1fr}}
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=6" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -59,7 +72,19 @@
         <aside class="section-menu" id="menuSecciones"></aside>
         <form class="card" id="formConfig">
           <section class="config-section active" data-section="negocio"><h2>Datos del comercio</h2><div class="grid three"><label>Nombre comercial<input data-key="negocio_nombre_comercial"></label><label>Razón social<input data-key="negocio_razon_social"></label><label>CUIT<input data-key="negocio_cuit"></label><label>Teléfono<input data-key="negocio_telefono"></label><label style="grid-column:span 2">Dirección<input data-key="negocio_direccion"></label></div><p class="muted" style="margin:8px 0 4px;font-size:13px;font-weight:700">Elegí una condición fiscal principal.</p><div class="regime-row"><div class="toggle"><div><strong>Monotributo</strong><small>Ayuda: normalmente no corresponde activar IMP.</small></div><label class="switch"><input data-key="negocio_regimen_monotributo" type="checkbox"><span class="slider"></span></label></div><div class="toggle"><div><strong>Resp. inscripto</strong><small>Habilita uso fiscal completo e IMP.</small></div><label class="switch"><input data-key="negocio_regimen_responsable_inscripto" type="checkbox"><span class="slider"></span></label></div></div><input type="hidden" data-key="negocio_email"><input type="hidden" data-key="negocio_condicion_fiscal"><input type="hidden" data-key="negocio_logo_url"><input type="hidden" id="negocio_logo_escala_field" data-key="negocio_logo_escala" value="100"><div class="logo-drop" id="logoDrop"><input type="file" id="logoFile" accept="image/*"><div><strong>Logo del comercio</strong><small class="muted">Se refleja en la marca del header, reemplazando la G.</small></div><div id="logoPreviewWrap" style="display:none"><div style="width:54px;height:54px;border-radius:12px;overflow:hidden;background:#fff;border:1px solid var(--border);display:grid;place-items:center;flex-shrink:0"><img id="logoPreview" alt="Logo" style="width:100%;height:100%;object-fit:contain;transform-origin:center;transition:transform .15s"></div></div></div><div id="logoEscalaWrap" style="display:none;margin-top:10px"><label style="display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:800">Tamaño en header<div style="display:flex;align-items:center;gap:12px"><input type="range" id="logoEscalaRange" min="50" max="200" step="5" value="100" style="flex:1;accent-color:var(--primary)"><span id="logoEscalaLabel" style="min-width:40px;font-weight:800;color:var(--text)">100%</span></div><small class="muted">Ajustá el zoom sin modificar la imagen original.</small></label></div></section>
-          <section class="config-section" data-section="metodos_pago"><h2>Métodos / cuentas de cobro</h2><div class="toggle-list" id="metodosPago" style="display:none"></div><input type="hidden" data-key="pago_tipos_disponibles"><div class="category-segment" id="tiposPagoSegmento"><div class="section-head" style="margin-bottom:0"><div><h3>Métodos de cobro</h3><p class="muted">Define cómo paga el cliente: efectivo, débito, crédito, transferencia, QR o mixto.</p></div><button class="button" id="abrirNuevoTipoPago" type="button">Nuevo método</button></div><div style="overflow:auto;border:1px solid var(--border);border-radius:12px;margin-top:10px"><table class="compact-table" id="tablaTiposPago"><thead><tr><th>Código</th><th>Nombre</th><th>Orden</th><th>Características</th><th>Estado</th><th></th></tr></thead><tbody><tr><td colspan="6" style="color:var(--muted)">Cargando...</td></tr></tbody></table></div></div><div class="category-segment" id="cuentasDestinoSegmento" style="margin-top:14px"><div class="section-head" style="margin-bottom:0"><div><h3>Cuentas destino reales</h3><p class="muted">Define dónde cae finalmente la plata: caja, banco o billetera.</p></div><button class="button" id="abrirNuevaCuentaDestino" type="button">Nueva cuenta destino</button></div><div style="overflow:auto;border:1px solid var(--border);border-radius:12px;margin-top:10px"><table class="compact-table" id="tablaCuentasDestino"><thead><tr><th>Nombre</th><th>Tipo destino</th><th>Alias / CBU-CVU</th><th>Orden</th><th>Estado</th><th></th></tr></thead><tbody><tr><td colspan="6" style="color:var(--muted)">Cargando...</td></tr></tbody></table></div></div><div class="category-segment" id="cuentasCobroSegmento" style="margin-top:14px"><div class="section-head" style="margin-bottom:0"><div><h3>Canales / terminales de cobro</h3><p class="muted">Define por dónde se cobra y a qué cuenta operativa se asocia actualmente.</p></div><button class="button" id="abrirNuevaCuentaCobro" type="button">Nuevo canal</button></div><div style="overflow:auto;border:1px solid var(--border);border-radius:12px;margin-top:10px"><table class="compact-table" id="tablaCuentasCobro"><thead><tr><th>Nombre</th><th>Método</th><th>Cuenta / canal</th><th>Cuenta destino</th><th>Alias / Terminal</th><th>Orden</th><th>Estado</th><th></th></tr></thead><tbody><tr><td colspan="8" style="color:var(--muted)">Cargando...</td></tr></tbody></table></div></div><div class="notice">Por ahora caja, arqueos y reportes siguen usando el canal actual. La cuenta destino queda preparada para la próxima etapa.</div><details class="category-segment" style="margin-top:14px;background:#fff;display:none" aria-hidden="true"><summary style="cursor:pointer;font-weight:900">Configuración anterior / legacy</summary><p class="muted" style="margin:10px 0">Se conserva solo por compatibilidad con datos existentes.</p><input type="hidden" data-key="pago_cuentas_billeteras"><input type="hidden" data-key="cuenta_caja_principal"><input type="hidden" data-key="cuenta_banco_principal"><input type="hidden" data-key="cuenta_billetera_principal"><input type="hidden" data-key="cuenta_saldo_inicial"><div id="cuentasPago"></div><div class="inline-actions"><button class="button secondary" id="agregarCuentaPago" type="button">+ Op</button></div></details></section>
+          <section class="config-section" data-section="metodos_pago">
+            <div class="section-head" style="margin-bottom:0"><div><h2>Medios de cobro operativos</h2><p class="muted">Configurá cómo cobra tu negocio. Cada medio combina un método de cobro, un canal y una cuenta destino.</p></div><button class="button" id="abrirMedioSimpleBtn" type="button">+ Agregar medio de cobro</button></div>
+            <div id="mediosOperativosGrid"><p class="medios-grid-empty">Cargando...</p></div>
+            <details class="config-avanzada-cobros" id="configAvanzadaCobros">
+              <summary>Configuración avanzada</summary>
+              <div class="toggle-list" id="metodosPago" style="display:none"></div><input type="hidden" data-key="pago_tipos_disponibles">
+              <div class="category-segment" id="tiposPagoSegmento" style="margin-top:10px"><div class="section-head" style="margin-bottom:0"><div><h3>Métodos de cobro</h3><p class="muted">Define cómo paga el cliente: efectivo, débito, crédito, transferencia, QR o mixto.</p></div><button class="button" id="abrirNuevoTipoPago" type="button">Nuevo método</button></div><div style="overflow:auto;border:1px solid var(--border);border-radius:12px;margin-top:10px"><table class="compact-table" id="tablaTiposPago"><thead><tr><th>Código</th><th>Nombre</th><th>Orden</th><th>Características</th><th>Estado</th><th></th></tr></thead><tbody><tr><td colspan="6" style="color:var(--muted)">Cargando...</td></tr></tbody></table></div></div>
+              <div class="category-segment" id="cuentasDestinoSegmento" style="margin-top:14px"><div class="section-head" style="margin-bottom:0"><div><h3>Cuentas destino reales</h3><p class="muted">Define dónde cae finalmente la plata: caja, banco o billetera.</p></div><button class="button" id="abrirNuevaCuentaDestino" type="button">Nueva cuenta destino</button></div><div style="overflow:auto;border:1px solid var(--border);border-radius:12px;margin-top:10px"><table class="compact-table" id="tablaCuentasDestino"><thead><tr><th>Nombre</th><th>Tipo destino</th><th>Alias / CBU-CVU</th><th>Orden</th><th>Estado</th><th></th></tr></thead><tbody><tr><td colspan="6" style="color:var(--muted)">Cargando...</td></tr></tbody></table></div></div>
+              <div class="category-segment" id="cuentasCobroSegmento" style="margin-top:14px"><div class="section-head" style="margin-bottom:0"><div><h3>Canales / terminales de cobro</h3><p class="muted">Define por dónde se cobra y a qué cuenta operativa se asocia actualmente.</p></div><button class="button" id="abrirNuevaCuentaCobro" type="button">Nuevo canal</button></div><div style="overflow:auto;border:1px solid var(--border);border-radius:12px;margin-top:10px"><table class="compact-table" id="tablaCuentasCobro"><thead><tr><th>Nombre</th><th>Método</th><th>Cuenta / canal</th><th>Cuenta destino</th><th>Alias / Terminal</th><th>Orden</th><th>Estado</th><th></th></tr></thead><tbody><tr><td colspan="8" style="color:var(--muted)">Cargando...</td></tr></tbody></table></div></div>
+              <div class="notice" style="margin-top:10px">Por ahora caja, arqueos y reportes siguen usando el canal actual. La cuenta destino queda preparada para la próxima etapa.</div>
+              <details class="category-segment" style="margin-top:14px;background:#fff;display:none" aria-hidden="true"><summary style="cursor:pointer;font-weight:900">Configuración anterior / legacy</summary><p class="muted" style="margin:10px 0">Se conserva solo por compatibilidad con datos existentes.</p><input type="hidden" data-key="pago_cuentas_billeteras"><input type="hidden" data-key="cuenta_caja_principal"><input type="hidden" data-key="cuenta_banco_principal"><input type="hidden" data-key="cuenta_billetera_principal"><input type="hidden" data-key="cuenta_saldo_inicial"><div id="cuentasPago"></div><div class="inline-actions"><button class="button secondary" id="agregarCuentaPago" type="button">+ Op</button></div></details>
+            </details>
+          </section>
           <section class="config-section" data-section="stock"><h2>Stock</h2><div class="toggle-list stock-toggle-group" id="stockToggles"></div><input type="hidden" data-key="stock_unidad_default"><input type="hidden" data-key="stock_valor_alerta"><div class="category-segment"><div class="section-head"><div><h3>Segmento Categorías</h3><p class="muted">Las categorías definen nombre y margen de ganancia para los productos.</p></div><div class="toolbar"><button class="button" id="abrirNuevaCategoria" type="button">Nueva categoría</button><button class="button secondary" id="abrirMostrarCategorias" type="button">Mostrar categorías</button></div></div><div id="categoriasStockResumen" class="summary"></div></div><h3>Redondeo</h3><div class="grid"><label>Redondeo por defecto<select data-key="redondeo_tipo"><option value="0">Sin redondeo</option><option value="5">$5</option><option value="10">$10</option><option value="50">$50</option><option value="100">$100</option><option value="500">$500</option><option value="1000">$1000</option></select></label></div><div class="notice">Unidad, alertas y costos compuestos quedan como variables de cada producto.</div></section>
           <section class="config-section" data-section="cuentas_corrientes"><h2>Cuentas corrientes</h2><p class="muted" style="margin:4px 0 10px">Reglas generales para ventas a cuenta. Cada cliente podrá tener reglas propias.</p><div class="toggle-list" id="ccToggles"></div><input type="hidden" data-key="cuentas_dias_a_costo"><input type="hidden" data-key="cuentas_permitir_exceder"><div class="rule-block"><div class="toggle" title="Activa el interés por mora usando el porcentaje definido."><div><strong>Interés por mora</strong><small>Aplica interés sobre cuentas vencidas.</small></div><label class="switch"><input data-key="cuentas_interes_mora_activo" type="checkbox"><span class="slider"></span></label></div><label class="rule-param">Interés por mora por defecto %<input data-key="cuentas_interes_mora" type="number" step="0.01"></label></div><div class="rule-block"><div class="toggle" title="Aplica el límite por defecto a nuevas cuentas, salvo reglas propias del cliente."><div><strong>Aplicar límite por defecto</strong><small>Usa el límite definido como regla general.</small></div><label class="switch"><input data-key="cuentas_limite_global_activo" type="checkbox"><span class="slider"></span></label></div><label class="rule-param">Límite por defecto<input data-key="cuentas_limite_global_monto" type="number" step="0.01"></label></div><div class="rule-block"><div class="toggle" title="Suspende cuentas sin pagos durante el período definido. La deuda no desaparece."><div><strong>Suspender cuenta sin pagos</strong><small>Suspende la cuenta si no registra pagos.</small></div><label class="switch"><input data-key="cuentas_desactivar_por_vencimiento" type="checkbox"><span class="slider"></span></label></div><label class="rule-param">Días sin registrar pago<input data-key="cuentas_dias_vencimiento" type="number" step="1" min="1"></label></div></section>
           <section class="config-section" data-section="usuarios_permisos"><h2>Usuarios / permisos</h2><div class="notice">Configurá qué módulos ve cada rol y con qué nivel de vista operativa.</div><div class="permission-panel"><h3>Acciones críticas</h3><p class="muted" style="margin:4px 0 10px">Esta clave se requiere para anular tickets, editar pagos y otras operaciones sensibles.</p><div class="grid two"><label>Contraseña maestra<input type="password" data-key="autorizacion_clave_maestra" autocomplete="new-password" placeholder="••••"></label><label style="align-self:end"><button type="button" id="toggleMostrarClave" class="button secondary" style="width:100%;height:44px">Mostrar</button></label></div></div><div class="config-compat-hidden" aria-hidden="true"><div id="modulosSidebarResumen"></div><div id="permisosModulos"></div><input type="hidden" data-key="permisos_acciones_roles"><div id="permisosAcciones"></div><select data-key="dashboard_tipo_admin" disabled><option value="complejo">Completa</option></select><select data-key="dashboard_tipo_encargado"><option value="complejo">Completa</option><option value="simple">Reducida</option></select><select data-key="dashboard_tipo_colaborador"><option value="simple">Reducida</option><option value="complejo">Completa</option></select><input type="hidden" data-key="dashboard_pizarra_categorias"><input type="hidden" data-key="dashboard_pizarra_productos"></div><div class="permission-panel"><div class="section-head"><div><h3>Categorías destacadas en tienda</h3><p class="muted">Los productos de estas categorías aparecen destacados en Ventas.</p></div><button class="button secondary" id="abrirModalPizarraCategorias" type="button">Seleccionar</button></div><div id="pizarraCategoriasResumen" class="summary"></div></div><div class="permission-panel"><div class="section-head"><div><h3>Productos destacados en tienda</h3><p class="muted">Productos que siempre aparecen destacados en Ventas, sin importar la categoría.</p></div><button class="button secondary" id="abrirModalPizarraProductos" type="button">Seleccionar</button></div><div id="pizarraProductosResumen" class="summary"></div></div></section>
@@ -214,6 +239,24 @@
       <div class="dialog-actions">
         <button class="button ghost" id="cancelarCuentaDestino" type="button">Cancelar</button>
         <button class="button" id="guardarCuentaDestinoBtn" type="button">Guardar</button>
+      </div>
+    </article>
+  </div>
+  <div class="modal" id="modalMedioSimple" aria-hidden="true">
+    <article class="dialog" role="dialog" aria-modal="true" aria-labelledby="medioSimpleTitulo" style="width:min(480px,100%)">
+      <div class="dialog-head">
+        <div><h2 id="medioSimpleTitulo">Agregar medio de cobro</h2><p class="muted">Indicá el nombre, método y cuenta destino del nuevo medio.</p></div>
+        <button class="icon-button" id="cerrarModalMedioSimple" type="button"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+      </div>
+      <div class="grid">
+        <label style="grid-column:span 2">Nombre visible<input id="msNombre" placeholder="Ej: POSNET Bancor, QR Mercado Pago, Caja principal"></label>
+        <label>Método de cobro<select id="msTipoPago"></select></label>
+        <label>Cuenta destino<select id="msCuentaDestino"></select><small id="msCuentaDestinoHint" style="color:var(--muted);font-weight:400;font-size:11px;margin-top:4px;display:block"></small></label>
+      </div>
+      <p id="msMensaje" style="min-height:20px;font-weight:700;margin:10px 0 0;font-size:13px"></p>
+      <div class="dialog-actions">
+        <button class="button ghost" id="cancelarMedioSimple" type="button">Cancelar</button>
+        <button class="button" id="guardarMedioSimpleBtn" type="button">Agregar</button>
       </div>
     </article>
   </div>
@@ -612,7 +655,8 @@
           <td>${pill}</td>
           <td style="white-space:nowrap">
             <button class="button secondary" style="padding:5px 9px;font-size:11px;margin-right:4px" data-cd-editar="${c.id}" type="button">Editar</button>
-            <button class="button ${activo ? "ghost" : "secondary"}" style="padding:5px 9px;font-size:11px" data-cd-toggle="${c.id}" data-cd-activo="${activo ? "1" : "0"}" type="button">${activo ? "Desactivar" : "Activar"}</button>
+            <button class="button ${activo ? "ghost" : "secondary"}" style="padding:5px 9px;font-size:11px;margin-right:4px" data-cd-toggle="${c.id}" data-cd-activo="${activo ? "1" : "0"}" type="button">${activo ? "Desactivar" : "Activar"}</button>
+            <button class="button danger" style="padding:5px 9px;font-size:11px" data-cd-eliminar="${c.id}" type="button">Eliminar</button>
           </td>
         </tr>`;
       }).join("");
@@ -628,6 +672,22 @@
             msg(data.message || "Estado actualizado", res.ok ? "ok" : "error");
             if (res.ok) await cargarCuentasDestinoAdmin();
           } catch { msg("Error al cambiar estado de cuenta destino", "error"); }
+          finally { btn.disabled = false; }
+        };
+      });
+      tbody.querySelectorAll("[data-cd-eliminar]").forEach(btn => {
+        btn.onclick = async () => {
+          const id = btn.dataset.cdEliminar;
+          const cuenta = cuentasDestinoActuales.find(c => String(c.id) === String(id));
+          if (!cuenta) return;
+          if (!confirm(`¿Eliminar la cuenta destino "${cuenta.nombre}"?\n\nSi tiene historial de canales o conciliaciones, se desactivará para conservar los reportes.`)) return;
+          btn.disabled = true;
+          try {
+            const res = await fetch(`/cuentas_destino/${id}`, { method: "DELETE" });
+            const data = await res.json();
+            msg(data.message || "Operación realizada", res.ok ? "ok" : "error");
+            if (res.ok) { await cargarCuentasDestinoAdmin(); await cargarCuentasCobroAdmin(); }
+          } catch { msg("Error al eliminar cuenta destino", "error"); }
           finally { btn.disabled = false; }
         };
       });
@@ -707,6 +767,77 @@
         cuentasCobroActuales = res.ok ? await res.json() : [];
       } catch { cuentasCobroActuales = []; }
       renderCuentasCobro();
+      renderMediosOperativos();
+    }
+
+    function renderMediosOperativos() {
+      const grid = document.getElementById("mediosOperativosGrid");
+      if (!grid) return;
+
+      if (!cuentasCobroActuales.length) {
+        grid.innerHTML = '<p class="medios-grid-empty">Sin medios de cobro configurados.</p>';
+        return;
+      }
+
+      grid.innerHTML = '<div class="medios-grid">' + cuentasCobroActuales.map(c => {
+        const activo = Number(c.activo) === 1;
+        const metodoNombre = tiposPagoActuales.find(t => t.codigo === c.tipo_pago_codigo)?.nombre || c.tipo_pago_codigo || "-";
+        const destinoNombre = c.cuenta_destino_nombre || "Sin destino asignado";
+        const pill = activo
+          ? `<span style="display:inline-flex;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:800;background:rgba(34,163,90,.12);color:#22a35a">Activo</span>`
+          : `<span style="display:inline-flex;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:800;background:rgba(224,82,82,.12);color:#e05252">Inactivo</span>`;
+        return `<div class="medio-card">
+          <div class="medio-card-head">
+            <strong>${c.nombre || "-"}</strong>
+            ${pill}
+          </div>
+          <div class="medio-card-meta">
+            <div class="medio-card-row"><span class="label">Método</span>${metodoNombre}</div>
+            <div class="medio-card-row"><span class="label">Destino</span>${destinoNombre}</div>
+          </div>
+          <div class="medio-card-actions">
+            <button class="button secondary" style="padding:5px 9px;font-size:11px" data-moc-editar="${c.id}" type="button">Editar</button>
+            <button class="button ${activo ? "ghost" : "secondary"}" style="padding:5px 9px;font-size:11px" data-moc-toggle="${c.id}" data-moc-activo="${activo ? "1" : "0"}" type="button">${activo ? "Desactivar" : "Activar"}</button>
+            <button class="button danger" style="padding:5px 9px;font-size:11px" data-moc-eliminar="${c.id}" type="button">Eliminar</button>
+          </div>
+        </div>`;
+      }).join("") + '</div>';
+
+      grid.querySelectorAll("[data-moc-editar]").forEach(btn => {
+        btn.onclick = () => abrirCuentaCobroModal(cuentasCobroActuales.find(c => String(c.id) === btn.dataset.mocEditar));
+      });
+
+      grid.querySelectorAll("[data-moc-toggle]").forEach(btn => {
+        btn.onclick = async () => {
+          const id = Number(btn.dataset.mocToggle);
+          const nuevoActivo = btn.dataset.mocActivo === "0";
+          btn.disabled = true;
+          try {
+            const res = await fetch(`/cuentas_cobro/${id}/activo`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ activo: nuevoActivo }) });
+            const data = await res.json();
+            msg(data.message || "Estado actualizado", res.ok ? "ok" : "error");
+            if (res.ok) await cargarCuentasCobroAdmin();
+          } catch { msg("Error al cambiar estado del canal", "error"); }
+          finally { btn.disabled = false; }
+        };
+      });
+
+      grid.querySelectorAll("[data-moc-eliminar]").forEach(btn => {
+        btn.onclick = async () => {
+          const canal = cuentasCobroActuales.find(c => String(c.id) === btn.dataset.mocEliminar);
+          if (!canal) return;
+          if (!confirm(`¿Eliminar "${canal.nombre}"? Si tiene movimientos registrados se desactivará.`)) return;
+          const id = Number(btn.dataset.mocEliminar);
+          btn.disabled = true;
+          try {
+            const res = await fetch(`/cuentas_cobro/${id}`, { method: "DELETE" });
+            const data = await res.json();
+            msg(data.message || (res.ok ? "Canal procesado" : "Error"), res.ok ? "ok" : "error");
+            if (res.ok) await cargarCuentasCobroAdmin();
+          } catch { msg("Error al eliminar canal", "error"); }
+          finally { btn.disabled = false; }
+        };
+      });
     }
 
     function normalizarTipoCuentaCanal(valor = "") {
@@ -934,6 +1065,85 @@
     $("cerrarModalCuentaDestino").onclick = () => cerrarModal($("modalCuentaDestino"));
     $("cancelarCuentaDestino").onclick = () => cerrarModal($("modalCuentaDestino"));
     $("guardarCuentaDestinoBtn").onclick = guardarCuentaDestino;
+    // ── Formulario simple "Agregar medio de cobro" ──────────────────────────
+    function derivarTipoCuentaDeMetodo(codigo) {
+      const c = String(codigo || "").toLowerCase();
+      if (c === "efectivo") return "caja";
+      if (c === "debito" || c === "credito") return "terminal";
+      if (c === "transferencia") return "banco";
+      if (c === "qr") return "qr";
+      if (c === "billetera" || c === "mercado_pago") return "billetera";
+      return "otro";
+    }
+
+    function actualizarDestinosMedioSimple() {
+      const tipoCodigo = $("msTipoPago").value;
+      const esEfectivo = tipoCodigo === "efectivo";
+      const destinos = cuentasDestinoActuales.filter(d => Number(d.activo) === 1);
+      $("msCuentaDestino").innerHTML =
+        (esEfectivo ? '<option value="">Sin cuenta destino</option>' : '<option value="">Seleccioná cuenta destino</option>') +
+        destinos.map(d => `<option value="${d.id}">${d.nombre}</option>`).join("");
+      const hint = $("msCuentaDestinoHint");
+      if (hint) hint.textContent = esEfectivo ? "Opcional para efectivo." : "Obligatoria para métodos digitales.";
+    }
+
+    function abrirMedioSimple() {
+      $("msMensaje").textContent = "";
+      $("msNombre").value = "";
+      const tipos = tiposPagoActuales.filter(t => t.codigo !== "mixto");
+      const fallback = [
+        { codigo: "efectivo", nombre: "Efectivo" },
+        { codigo: "debito",   nombre: "Débito" },
+        { codigo: "transferencia", nombre: "Transferencia" }
+      ];
+      const opsTipo = tipos.length ? tipos : fallback;
+      $("msTipoPago").innerHTML = opsTipo.map(t => `<option value="${t.codigo}">${t.nombre || t.codigo}</option>`).join("");
+      actualizarDestinosMedioSimple();
+      abrirModal($("modalMedioSimple"));
+      $("msNombre").focus();
+    }
+
+    async function guardarMedioSimple() {
+      const msMsg = $("msMensaje");
+      const nombre = $("msNombre").value.trim();
+      const tipoCodigo = $("msTipoPago").value;
+      const cuentaDestinoId = $("msCuentaDestino").value ? Number($("msCuentaDestino").value) : null;
+      msMsg.style.color = "var(--danger)";
+      if (!nombre) { msMsg.textContent = "El nombre es obligatorio."; return; }
+      if (tipoCodigo !== "efectivo" && !cuentaDestinoId) {
+        msMsg.textContent = "Seleccioná una cuenta destino para métodos digitales.";
+        return;
+      }
+      const payload = {
+        nombre,
+        tipo_pago_codigo: tipoCodigo,
+        cuenta_destino_id: cuentaDestinoId,
+        tipo_cuenta: derivarTipoCuentaDeMetodo(tipoCodigo),
+        activo: true
+      };
+      const btn = $("guardarMedioSimpleBtn");
+      btn.disabled = true;
+      msMsg.style.color = "var(--muted)";
+      msMsg.textContent = "Guardando...";
+      try {
+        const res = await fetch("/cuentas_cobro", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        const data = await res.json();
+        if (!res.ok) { msMsg.style.color = "var(--danger)"; msMsg.textContent = data.message || "Error al guardar"; return; }
+        cerrarModal($("modalMedioSimple"));
+        msg(data.message || "Medio de cobro agregado", "ok");
+        await cargarCuentasCobroAdmin();
+      } catch { msMsg.style.color = "var(--danger)"; msMsg.textContent = "Error de conexión"; }
+      finally { btn.disabled = false; }
+    }
+
+    $("abrirMedioSimpleBtn").onclick = abrirMedioSimple;
+    $("cerrarModalMedioSimple").onclick = () => cerrarModal($("modalMedioSimple"));
+    $("cancelarMedioSimple").onclick = () => cerrarModal($("modalMedioSimple"));
+    $("guardarMedioSimpleBtn").onclick = guardarMedioSimple;
+    $("msTipoPago").addEventListener("change", actualizarDestinosMedioSimple);
+    $("modalMedioSimple").addEventListener("click", e => { if (e.target === $("modalMedioSimple")) cerrarModal($("modalMedioSimple")); });
+    // ── Fin formulario simple ────────────────────────────────────────────────
+
     $("abrirNuevaCuentaCobro").onclick = () => abrirCuentaCobroModal();
     $("cerrarModalCuentaCobro").onclick = () => cerrarModal($("modalCuentaCobro"));
     $("cancelarCuentaCobro").onclick = () => cerrarModal($("modalCuentaCobro"));
