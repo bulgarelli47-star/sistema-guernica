@@ -1423,7 +1423,11 @@ app.post("/productos/imagen", async (req, res) => {
     }
 
     const buffer = Buffer.from(match[2], "base64");
+    console.log("IMG MIME:", match[1]);
+    console.log("IMG BASE64 LENGTH:", match[2].length);
+    console.log("IMG BUFFER LENGTH:", buffer.length);
     if (!buffer.length || buffer.length > 5 * 1024 * 1024) {
+      console.log("IMG RECHAZADA > 5MB");
       return res.status(400).json({ message: "La imagen no puede superar 5 MB" });
     }
 
