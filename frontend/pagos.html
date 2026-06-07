@@ -1059,9 +1059,9 @@
           <label class="payment-method-field">Método de pago
             <input type="hidden" id="tipoPago" value="efectivo" />
             <div class="method-buttons" id="metodosPagoBotones">
-              <button type="button" class="method-button active" data-metodo-pago="efectivo">EFT</button>
-              <button type="button" class="method-button" data-metodo-pago="debito">DEB</button>
-              <button type="button" class="method-button" data-metodo-pago="mixto">MIXTO</button>
+              <button type="button" class="method-button active" data-metodo-pago="efectivo">Efectivo</button>
+              <button type="button" class="method-button" data-metodo-pago="debito">Débito</button>
+              <button type="button" class="method-button" data-metodo-pago="mixto">Mixto</button>
             </div>
           </label>
           <label class="payment-state-field">Estado del pago
@@ -1693,8 +1693,11 @@
       try {
         const res = await fetch("/tipos_pago");
         if (!res.ok) throw new Error("fallo");
-        const tipos = await res.json();
-        if (!Array.isArray(tipos) || tipos.length === 0) throw new Error("vacío");
+        const todos = await res.json();
+        if (!Array.isArray(todos) || todos.length === 0) throw new Error("vacío");
+        // cuenta_corriente y cuenta_corriente_pendiente son códigos de ventas, no de pagos a proveedores
+        const tipos = todos.filter(t => t.codigo !== "cuenta_corriente" && t.codigo !== "cuenta_corriente_pendiente");
+        if (!tipos.length) throw new Error("sin tipos válidos para pagos");
         const actual = tipoPago.value || "efectivo";
         contenedor.innerHTML = "";
         tipos.forEach((tipo) => {
@@ -1711,7 +1714,7 @@
           actualizarBloquesPago();
         }
       } catch {
-        // fallback: mantener botones hardcodeados
+        // fallback: mantener botones hardcodeados (efectivo / débito / mixto)
         actualizarBloquesPago();
       }
     }
