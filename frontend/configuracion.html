@@ -61,6 +61,10 @@
     .modal-msg{min-height:20px;font-weight:700;margin:10px 0 0;font-size:13px}
     .cobro-modal-sm{width:min(520px,100%)}.cobro-modal-md{width:min(560px,100%)}.cobro-modal-lg{width:min(680px,100%)}
     @media(max-width:640px){.modal-fields-section .grid,.modal-fields-section .grid.three,.channel-group .grid,.channel-group .grid.three{grid-template-columns:1fr}}
+    .cobro-section-spaced{margin-top:12px}
+    .cobro-switch-row{display:flex;gap:8px;align-items:center;min-height:42px}
+    .cobro-small-action{margin-top:8px;padding:7px 10px;font-size:12px}
+    .cobro-notice-spaced{margin-top:8px}
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=6" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -173,16 +177,16 @@
           <label>Orden<input id="tpOrden" type="number" step="1" min="0" value="50" title="Menor número = aparece primero."></label>
         </div>
       </div>
-      <div class="channel-group" style="margin-top:12px">
+      <div class="channel-group cobro-section-spaced">
         <h3>Recargos y cuotas</h3>
         <div class="grid">
-          <label style="display:flex;gap:8px;align-items:center;min-height:42px"><input id="tpUsaRecargo" type="checkbox" style="width:auto"> Usa recargo</label>
+          <label class="cobro-switch-row"><input id="tpUsaRecargo" type="checkbox" style="width:auto"> Usa recargo</label>
           <label>% recargo<input id="tpPorcentajeRecargo" type="number" step="0.01" min="0" value="0"></label>
-          <label style="display:flex;gap:8px;align-items:center;min-height:42px"><input id="tpPermiteCuotas" type="checkbox" style="width:auto"> Permite cuotas</label>
+          <label class="cobro-switch-row"><input id="tpPermiteCuotas" type="checkbox" style="width:auto"> Permite cuotas</label>
         </div>
         <div id="tpCuotasWrap" style="margin-top:10px;display:none">
           <div id="tpCuotasEditor" style="display:grid;gap:8px"></div>
-          <button class="button secondary" id="tpAgregarCuota" type="button" style="margin-top:8px;padding:7px 10px;font-size:12px">Agregar cuota</button>
+          <button class="button secondary cobro-small-action" id="tpAgregarCuota" type="button">Agregar cuota</button>
         </div>
       </div>
       <p id="tpMensaje" class="modal-msg"></p>
@@ -240,7 +244,7 @@
           </div>
         </div>
       </div>
-      <div id="ccAdvertencias" class="notice hidden" style="margin-top:8px"></div>
+      <div id="ccAdvertencias" class="notice hidden cobro-notice-spaced"></div>
       <p id="ccMensaje" class="modal-msg"></p>
       <div class="dialog-actions">
         <button class="button ghost" id="cancelarCuentaCobro" type="button">Cancelar</button>
@@ -254,14 +258,27 @@
         <div><h2 id="cuentaDestinoModalTitulo">Nueva cuenta destino real</h2><p class="muted" id="cuentaDestinoModalSub">Configurá dónde cae finalmente la plata.</p></div>
         <button class="mib ghost icon-only" id="cerrarModalCuentaDestino" type="button"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
-      <div class="modal-fields-section">
-        <div class="grid">
-          <label>Nombre<input id="cdNombre" placeholder="Ej: Banco Galicia" title="Nombre visible de la cuenta destino en canales y reportes."></label>
-          <label>Tipo destino<select id="cdTipoDestino" title="Tipo de destino: efectivo en caja, banco, billetera u otro."><option value="efectivo">Efectivo</option><option value="banco">Banco</option><option value="billetera">Billetera</option><option value="otro">Otro</option></select></label>
-          <label>Alias<input id="cdAlias" title="Alias bancario o nombre corto del canal."></label>
-          <label>CBU/CVU<input id="cdCbuCvu" title="CBU o CVU de la cuenta bancaria o billetera."></label>
-          <label>Orden<input id="cdOrden" type="number" step="1" value="50" title="Menor número aparece primero en el listado."></label>
-          <label>Estado<select id="cdActivo" title="Solo cuentas activas se asignan a los canales de cobro."><option value="1">Activa</option><option value="0">Inactiva</option></select></label>
+      <div class="channel-form">
+        <div class="channel-group">
+          <h3>Identidad</h3>
+          <div class="grid">
+            <label>Nombre<input id="cdNombre" placeholder="Ej: Banco Galicia" title="Nombre visible de la cuenta destino en canales y reportes."></label>
+            <label>Tipo destino<select id="cdTipoDestino" title="Tipo de destino: efectivo en caja, banco, billetera u otro."><option value="efectivo">Efectivo</option><option value="banco">Banco</option><option value="billetera">Billetera</option><option value="otro">Otro</option></select></label>
+          </div>
+        </div>
+        <div class="channel-group">
+          <h3>Datos bancarios / billetera</h3>
+          <div class="grid">
+            <label>Alias<input id="cdAlias" title="Alias bancario o nombre corto del canal."></label>
+            <label>CBU/CVU<input id="cdCbuCvu" title="CBU o CVU de la cuenta bancaria o billetera."></label>
+          </div>
+        </div>
+        <div class="channel-group">
+          <h3>Operación</h3>
+          <div class="grid">
+            <label>Orden<input id="cdOrden" type="number" step="1" value="50" title="Menor número aparece primero en el listado."></label>
+            <label>Estado<select id="cdActivo" title="Solo cuentas activas se asignan a los canales de cobro."><option value="1">Activa</option><option value="0">Inactiva</option></select></label>
+          </div>
         </div>
       </div>
       <p id="cdMensaje" class="modal-msg"></p>
