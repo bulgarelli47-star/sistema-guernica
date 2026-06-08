@@ -5715,34 +5715,6 @@
       }));
     }
 
-    function aplicarCuentasPagoConfig(config) {
-      let cuentas = [];
-      try {
-        cuentas = JSON.parse(config?.pago_cuentas_billeteras || "[]");
-      } catch {
-        cuentas = [];
-      }
-
-      const normalizadas = cuentas
-        .map((cuenta, index) => {
-          const saldoInicial = Number(cuenta.saldo_inicial || 0);
-          return {
-            nombre: String(cuenta.nombre || `Cuenta ${index + 1}`).trim() || `Cuenta ${index + 1}`,
-            saldo_inicial: saldoInicial,
-            saldo_actual: saldoInicial
-          };
-        })
-        .filter((cuenta) => cuenta.nombre);
-
-      cuentasDigitales = normalizadas.length
-        ? normalizadas
-        : [
-            { nombre: "MP", saldo_inicial: 0, saldo_actual: 0 },
-            { nombre: "Banco", saldo_inicial: 0, saldo_actual: 0 }
-          ];
-      renderizarCuentasDigitales();
-      actualizarResumenCierre();
-    }
 
     function calcularDigitalReal() {
       // Suma los saldos reales totales (no variación neta) para comparar contra esperado total.
@@ -7693,7 +7665,6 @@
         const configData = configRes.ok ? await configRes.json() : { config: {} };
         configCaja = configData.config || {};
         aplicarVistaOperativaCaja();
-        aplicarCuentasPagoConfig(configCaja);
         const data = await res.json();
         fechaCajaActual = data.fecha || null;
         renderizarApertura(data.apertura);

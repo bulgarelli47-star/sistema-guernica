@@ -78,7 +78,6 @@ const CONFIGURACION_PUBLICA_KEYS = new Set([
   "pago_transferencia_activo",
   "pago_billetera_activo",
   "pago_cuenta_corriente_activo",
-  "pago_tipos_disponibles",
   "stock_codigo_automatico",
   "stock_manejo_activo",
   "stock_alerta_minimo",
@@ -119,12 +118,6 @@ const CONFIGURACION_DEFAULTS = {
   pago_transferencia_activo: { seccion: "metodos_pago", valor: true },
   pago_billetera_activo: { seccion: "metodos_pago", valor: true },
   pago_cuenta_corriente_activo: { seccion: "metodos_pago", valor: true },
-  pago_cuentas_billeteras: { seccion: "metodos_pago", valor: '[{"nombre":"Cuenta principal","saldo_inicial":0,"impacta":"debito_transferencia"}]' },
-  cuenta_caja_principal: { seccion: "cuentas", valor: "Caja principal" },
-  cuenta_banco_principal: { seccion: "cuentas", valor: "" },
-  cuenta_billetera_principal: { seccion: "cuentas", valor: "" },
-  cuenta_saldo_inicial: { seccion: "cuentas", valor: 0 },
-  pago_tipos_disponibles: { seccion: "pagos", valor: "proveedor,gasto,impuesto,sueldo" },
   stock_manejo_activo: { seccion: "stock", valor: true },
   stock_codigo_automatico: { seccion: "stock", valor: true },
   stock_unidad_default: { seccion: "stock", valor: "unidad" },
@@ -354,8 +347,6 @@ async function getConfiguracionGlobal() {
   }
 
   [
-    "pago_cuentas_billeteras",
-    "pago_tipos_disponibles",
     "proveedor_tipos_habilitados",
     "proveedor_tipos_perdida",
     "permisos_acciones_roles"
