@@ -49,14 +49,18 @@
     .table-actions-compact{display:flex;gap:4px;flex-wrap:nowrap;align-items:center}
     .button.table-action{padding:4px 8px;font-size:11px;min-height:28px;border-radius:8px}
     /* Pestañas modal canal */
-    .cc-tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin:-2px 0 14px}
-    .cc-tab{padding:8px 16px;border:0;background:none;font:inherit;font-weight:700;font-size:13px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;cursor:pointer;transition:color .15s}
-    .cc-tab.active{color:var(--primary);border-bottom-color:var(--primary)}
+    .cc-tabs{display:flex;gap:6px;flex-wrap:wrap;border-bottom:0;background:#ede7f7;border-radius:12px;padding:8px;margin:0 0 14px}
+    .cc-tab{border:1px solid #d9c9f1;background:#fff;color:#4b376e;border-radius:999px;padding:7px 14px;font-size:12px;font-weight:900;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s}
+    .cc-tab.active{background:var(--primary);border-color:var(--primary);color:#fff}
     .cc-tab-panel{display:none}
     .cc-tab-panel.active{display:block}
     .cc-no-datos{text-align:center;color:var(--muted);font-size:13px;padding:24px 0;font-style:italic}
     /* Modal cuenta destino */
     .modal-fields-section{border:1px solid var(--border);border-radius:12px;padding:14px;background:#fafafe;margin-bottom:4px}
+    .mib{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:36px;min-height:36px;padding:7px 10px;border-radius:10px;border:none;cursor:pointer;font-weight:800;font-size:13px}.mib .app-icon{width:16px;height:16px;min-width:16px}.mib.ghost{background:#fff;color:var(--text);border:1px solid var(--border)}.mib.ghost:hover{border-color:var(--primary);color:var(--primary)}.mib.icon-only{display:inline-flex;padding:7px;min-width:36px;width:36px;height:36px}
+    .modal-msg{min-height:20px;font-weight:700;margin:10px 0 0;font-size:13px}
+    .cobro-modal-sm{width:min(520px,100%)}.cobro-modal-md{width:min(560px,100%)}.cobro-modal-lg{width:min(680px,100%)}
+    @media(max-width:640px){.modal-fields-section .grid,.modal-fields-section .grid.three,.channel-group .grid,.channel-group .grid.three{grid-template-columns:1fr}}
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=6" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -158,10 +162,10 @@
     </article>
   </div>
   <div class="modal" id="modalTipoPago" aria-hidden="true">
-    <article class="dialog" role="dialog" aria-modal="true" aria-labelledby="tipoPagoModalTitulo" style="width:min(560px,100%)">
+    <article class="dialog cobro-modal-md" role="dialog" aria-modal="true" aria-labelledby="tipoPagoModalTitulo">
       <div class="dialog-head">
         <div><h2 id="tipoPagoModalTitulo">Nuevo tipo de pago</h2><p class="muted" id="tipoPagoModalSub">Completá los datos del nuevo método.</p></div>
-        <button class="icon-button" id="cerrarModalTipoPago" type="button"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+        <button class="mib ghost icon-only" id="cerrarModalTipoPago" type="button"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
       <div class="modal-fields-section">
         <div class="grid three">
@@ -182,7 +186,7 @@
           <button class="button secondary" id="tpAgregarCuota" type="button" style="margin-top:8px;padding:7px 10px;font-size:12px">Agregar cuota</button>
         </div>
       </div>
-      <p id="tpMensaje" style="min-height:20px;font-weight:700;margin:10px 0 0;font-size:13px"></p>
+      <p id="tpMensaje" class="modal-msg"></p>
       <div class="dialog-actions">
         <button class="button ghost" id="cancelarTipoPago" type="button">Cancelar</button>
         <button class="button" id="guardarTipoPagoBtn" type="button">Guardar</button>
@@ -190,10 +194,10 @@
     </article>
   </div>
   <div class="modal" id="modalCuentaCobro" aria-hidden="true">
-    <article class="dialog" role="dialog" aria-modal="true" aria-labelledby="cuentaCobroModalTitulo" style="width:min(680px,100%)">
+    <article class="dialog cobro-modal-lg" role="dialog" aria-modal="true" aria-labelledby="cuentaCobroModalTitulo">
       <div class="dialog-head">
         <div><h2 id="cuentaCobroModalTitulo">Nuevo canal / terminal de cobro</h2><p class="muted" id="cuentaCobroModalSub">Completá los datos del canal.</p></div>
-        <button class="icon-button" id="cerrarModalCuentaCobro" type="button"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+        <button class="mib ghost icon-only" id="cerrarModalCuentaCobro" type="button"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
       <div class="cc-tabs">
         <button class="cc-tab active" data-cc-tab="identidad" type="button">Identidad</button>
@@ -238,7 +242,7 @@
         </div>
       </div>
       <div id="ccAdvertencias" class="notice hidden" style="margin-top:8px"></div>
-      <p id="ccMensaje" style="min-height:20px;font-weight:700;margin:10px 0 0;font-size:13px"></p>
+      <p id="ccMensaje" class="modal-msg"></p>
       <div class="dialog-actions">
         <button class="button ghost" id="cancelarCuentaCobro" type="button">Cancelar</button>
         <button class="button" id="guardarCuentaCobroBtn" type="button">Guardar</button>
@@ -246,22 +250,22 @@
     </article>
   </div>
   <div class="modal" id="modalCuentaDestino" aria-hidden="true">
-    <article class="dialog" role="dialog" aria-modal="true" aria-labelledby="cuentaDestinoModalTitulo" style="width:min(520px,100%)">
+    <article class="dialog cobro-modal-sm" role="dialog" aria-modal="true" aria-labelledby="cuentaDestinoModalTitulo">
       <div class="dialog-head">
         <div><h2 id="cuentaDestinoModalTitulo">Nueva cuenta destino real</h2><p class="muted" id="cuentaDestinoModalSub">Configurá dónde cae finalmente la plata.</p></div>
-        <button class="icon-button" id="cerrarModalCuentaDestino" type="button"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+        <button class="mib ghost icon-only" id="cerrarModalCuentaDestino" type="button"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
       <div class="modal-fields-section">
         <div class="grid">
-          <label>Nombre<input id="cdNombre" placeholder="Ej: Banco Galicia"></label>
-          <label>Tipo destino<select id="cdTipoDestino"><option value="efectivo">Efectivo</option><option value="banco">Banco</option><option value="billetera">Billetera</option><option value="otro">Otro</option></select></label>
-          <label>Alias<input id="cdAlias"></label>
-          <label>CBU/CVU<input id="cdCbuCvu"></label>
-          <label>Orden<input id="cdOrden" type="number" step="1" value="50"></label>
-          <label>Estado<select id="cdActivo"><option value="1">Activa</option><option value="0">Inactiva</option></select></label>
+          <label>Nombre<input id="cdNombre" placeholder="Ej: Banco Galicia" title="Nombre visible de la cuenta destino en canales y reportes."></label>
+          <label>Tipo destino<select id="cdTipoDestino" title="Tipo de destino: efectivo en caja, banco, billetera u otro."><option value="efectivo">Efectivo</option><option value="banco">Banco</option><option value="billetera">Billetera</option><option value="otro">Otro</option></select></label>
+          <label>Alias<input id="cdAlias" title="Alias bancario o nombre corto del canal."></label>
+          <label>CBU/CVU<input id="cdCbuCvu" title="CBU o CVU de la cuenta bancaria o billetera."></label>
+          <label>Orden<input id="cdOrden" type="number" step="1" value="50" title="Menor número aparece primero en el listado."></label>
+          <label>Estado<select id="cdActivo" title="Solo cuentas activas se asignan a los canales de cobro."><option value="1">Activa</option><option value="0">Inactiva</option></select></label>
         </div>
       </div>
-      <p id="cdMensaje" style="min-height:20px;font-weight:700;margin:10px 0 0;font-size:13px"></p>
+      <p id="cdMensaje" class="modal-msg"></p>
       <div class="dialog-actions">
         <button class="button ghost" id="cancelarCuentaDestino" type="button">Cancelar</button>
         <button class="button" id="guardarCuentaDestinoBtn" type="button">Guardar</button>
