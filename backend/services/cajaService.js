@@ -536,7 +536,36 @@ async function getResumenPorCuentaDestino({ cajaId } = {}) {
     [cajaId, cajaId]
   );
 
-  return rows.map(mapResumenCuentaDestino);
+  const conMovimientos = rows.map(mapResumenCuentaDestino);
+
+  // IDs de cuentas destino reales ya cubiertas por movimientos
+  const idsConMovimientos = new Set(
+    conMovimientos
+      .filter((r) => !r.sin_cuenta_destino && r.cuenta_destino_id != null)
+      .map((r) => r.cuenta_destino_id)
+  );
+
+  // Cuentas destino activas sin movimientos en este turno → aparecen al final con montos en cero
+  const cuentasActivas = await allQuery(
+    `SELECT id, nombre, tipo_destino FROM cuentas_destino WHERE activo = 1 ORDER BY orden ASC, nombre ASC`
+  );
+
+  const sinMovimientos = cuentasActivas
+    .filter((cd) => !idsConMovimientos.has(Number(cd.id)))
+    .map((cd) => ({
+      cuenta_destino_id: Number(cd.id),
+      cuenta_destino_nombre: cd.nombre || "Sin nombre",
+      tipo_destino: cd.tipo_destino || "otro",
+      ingresos: 0,
+      egresos: 0,
+      balance: 0,
+      ventas: 0,
+      pagos: 0,
+      canales: [],
+      sin_cuenta_destino: false
+    }));
+
+  return [...conMovimientos, ...sinMovimientos];
 }
 
 async function getConciliacionesCuentaCobro({ cajaId } = {}) {
