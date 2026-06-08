@@ -141,18 +141,17 @@ async function eliminarCuentaDestino(id) {
 
   await runQuery("UPDATE cuentas_destino SET activo = 0, updated_at = datetime('now') WHERE id = ?", [idNum]);
 
-  const desvinculacion = await runQuery(
-    "UPDATE cuentas_cobro SET cuenta_destino_id = NULL, updated_at = datetime('now') WHERE cuenta_destino_id = ? AND activo = 1",
+  const canalesAfectados = await getQuery(
+    "SELECT COUNT(*) AS total FROM cuentas_cobro WHERE cuenta_destino_id = ? AND activo = 1",
     [idNum]
   );
-  const canalesDesvinculados = desvinculacion?.changes ?? 0;
 
   return {
     eliminado: false,
     desactivado: true,
-    desvinculado: true,
-    canales_desvinculados: canalesDesvinculados,
-    message: "La cuenta destino tenía historial. Se desactivó y se desvinculó de los canales activos."
+    canales_afectados: Number(canalesAfectados?.total || 0),
+    requiere_snapshot_futuro: true,
+    message: "La cuenta destino tenía historial. Se desactivó sin desvincular canales para preservar la trazabilidad. Para eliminarla definitivamente, primero debe implementarse Cobros V2.5 con snapshot histórico."
   };
 }
 
