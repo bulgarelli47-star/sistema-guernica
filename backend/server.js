@@ -742,6 +742,22 @@ async function ensureVentaCobrosSchema() {
       FOREIGN KEY (venta_id) REFERENCES ventas(id)
     )
   `);
+
+  // ── CC 3.0A: canal de cobro para pagos de deuda en cuenta corriente ──────────
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS pagos_cc_cobros (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_id        TEXT NOT NULL,
+      tipo_cobro      TEXT NOT NULL,
+      cuenta_cobro_id INTEGER,
+      monto           REAL NOT NULL,
+      caja_id         INTEGER,
+      fecha           TEXT,
+      hora            TEXT,
+      created_at      TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await ensureColumn("pagos_cuenta_corriente", "group_id", "TEXT");
 }
 
 const COBROS_V2_TIPOS_VALIDOS = new Set(["efectivo", "debito", "credito", "transferencia", "qr"]);
