@@ -4475,7 +4475,8 @@
             tipoCobroPendiente,
             cobro.monto_efectivo,
             cobro.monto_debito,
-            cuentaCobroVenta?.value || null
+            cuentaCobroVenta?.value || null,
+            cobrosPayload
           );
           return;
         }
@@ -4665,7 +4666,7 @@
       }
     }
 
-    async function cobrarPendiente(ventaId, totalVenta, tipoCobro, montoEfectivo = "", montoDebito = "", cuentaCobroId = null) {
+    async function cobrarPendiente(ventaId, totalVenta, tipoCobro, montoEfectivo = "", montoDebito = "", cuentaCobroId = null, cobrosPayload = null) {
       try {
         const cobro = resolvePendingCobroInput(tipoCobro, montoEfectivo, montoDebito, totalVenta);
 
@@ -4690,7 +4691,8 @@
             cuenta_cobro_id: cuentaCobroId ? Number(cuentaCobroId) : null,
             recargo_porcentaje: recargoVentaActual.porcentaje,
             recargo_monto: recargoVentaActual.monto,
-            cuotas: recargoVentaActual.cuotas
+            cuotas: recargoVentaActual.cuotas,
+            ...(Array.isArray(cobrosPayload) && cobrosPayload.length ? { cobros: cobrosPayload } : {})
           })
         });
 
