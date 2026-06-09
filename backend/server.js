@@ -4266,7 +4266,7 @@ app.post("/ventas", async (req, res) => {
         fecha,
         hora,
         usuarioVenta,
-        total,
+        subtotalVenta,
         tipoVenta,
         estadoVenta,
         identificadorPendiente,
@@ -6002,7 +6002,7 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
        SET estado = 'cobrada', total = ?, metodo_pago = ?, tipo_cobro = ?, monto_efectivo = ?, monto_debito = ?, caja_id = ?, cuenta_cobro_id = ?, recargo_porcentaje = ?, recargo_monto = ?
        WHERE id = ?`,
       [
-        recargo.total,
+        Number(venta.total),
         cobroReal.tipo_cobro,
         cobroReal.tipo_cobro,
         cobroReal.monto_efectivo,
