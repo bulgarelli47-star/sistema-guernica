@@ -5550,6 +5550,123 @@ app.post("/clientes/:id/recalcular-deuda", async (req, res) => {
   }
 });
 
+// ── CC 3.0A: cobrar deuda con Cobros V2 ───────────────────────────────────────
+app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
+  const clienteId = Number(req.params.id);
+  try {
+    const cliente = await getQuery("SELECT id FROM clientes WHERE id = ?", [clienteId]);
+    if (!cliente) {
+      return res.status(404).json({ message: "Cliente no encontrado" });
+    }
+
+    const cajaActiva = await getCajaAbiertaActual();
+    if (!cajaActiva) {
+      return res.status(400).json({ message: "No hay una caja abierta para registrar el cobro" });
+    }
+
+    const cobrosRaw = req.body.cobros;
+    if (!Array.isArray(cobrosRaw) || cobrosRaw.length === 0) {
+      return res.status(400).json({ message: "cobros[] es obligatorio y no puede estar vacio" });
+    }
+
+    const cobrosNormalizados = normalizarCobrosV2(cobrosRaw);
+    if (!cobrosNormalizados || cobrosNormalizados.error) {
+      return res.status(400).json({ message: cobrosNormalizados?.error || "cobros[] invalido" });
+    }
+
+    const montoTotal = Number(cobrosNormalizados.reduce((s, c) => s + c.monto, 0).toFixed(2));
+    if (montoTotal <= 0) {
+      return res.status(400).json({ message: "El monto total debe ser mayor a 0" });
+    }
+
+    for (const cobro of cobrosNormalizados) {
+      const valido = await validarCuentaCobroVenta(cobro.cuenta_cobro_id, cobro);
+      if (!valido.ok) {
+        return res.status(valido.statusCode || 400).json({ message: valido.message });
+      }
+    }
+
+    const resumen = await buildClienteCuentaResumen(clienteId);
+    const deudaAnterior = resumen.deuda_actual;
+    if (deudaAnterior <= 0) {
+      return res.status(400).json({ message: "El cliente no tiene deuda pendiente" });
+    }
+    if (montoTotal > deudaAnterior + 0.01) {
+      return res.status(400).json({
+        message: `El monto (${montoTotal}) supera la deuda actual (${deudaAnterior})`
+      });
+    }
+
+    const ventasPendientes = await allQuery(
+      `SELECT id, saldo_pendiente
+       FROM ventas
+       WHERE cliente_id = ? AND es_cuenta_corriente = 1 AND saldo_pendiente > 0
+       ORDER BY fecha ASC, hora ASC, id ASC`,
+      [clienteId]
+    );
+    if (!ventasPendientes.length) {
+      return res.status(400).json({ message: "No hay ventas pendientes para este cliente" });
+    }
+
+    const { fecha, hora } = getNowParts();
+    const groupId = crypto.randomBytes(16).toString("hex");
+    const tipoCc = cobrosNormalizados.length === 1 ? cobrosNormalizados[0].tipo_cobro : "mixto";
+    let restante = montoTotal;
+    const ventasAfectadas = [];
+
+    await runQuery("BEGIN TRANSACTION");
+    try {
+      for (const venta of ventasPendientes) {
+        if (restante <= 0) break;
+        const saldoVenta = Number(venta.saldo_pendiente);
+        const montoPago = Number(Math.min(restante, saldoVenta).toFixed(2));
+        const nuevoSaldo = Number((saldoVenta - montoPago).toFixed(2));
+
+        await runQuery(
+          `INSERT INTO pagos_cuenta_corriente
+           (venta_id, cliente_id, fecha, hora, monto_pagado, tipo_cobro, monto_efectivo, monto_debito, caja_id, group_id)
+           VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
+          [venta.id, clienteId, fecha, hora, montoPago, tipoCc, cajaActiva.id, groupId]
+        );
+        await runQuery(
+          "UPDATE ventas SET saldo_pendiente = ?, estado = ? WHERE id = ?",
+          [nuevoSaldo, nuevoSaldo <= 0 ? "cobrada" : "cuenta_corriente_pendiente", venta.id]
+        );
+        ventasAfectadas.push({ venta_id: venta.id, monto_pagado: montoPago, saldo_restante: nuevoSaldo });
+        restante = Number((restante - montoPago).toFixed(2));
+      }
+
+      for (const cobro of cobrosNormalizados) {
+        await runQuery(
+          `INSERT INTO pagos_cc_cobros (group_id, tipo_cobro, cuenta_cobro_id, monto, caja_id, fecha, hora)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [groupId, cobro.tipo_cobro, cobro.cuenta_cobro_id || null, cobro.monto, cajaActiva.id, fecha, hora]
+        );
+      }
+
+      await runQuery("COMMIT");
+    } catch (txError) {
+      try { await runQuery("ROLLBACK"); } catch (_) {}
+      throw txError;
+    }
+
+    const deudaRestante = Math.max(0, Number((deudaAnterior - montoTotal).toFixed(2)));
+    return res.json({
+      message: "Pago de cuenta corriente registrado",
+      cliente_id: clienteId,
+      group_id: groupId,
+      monto_pagado: montoTotal,
+      deuda_anterior: deudaAnterior,
+      deuda_restante: deudaRestante,
+      ventas_afectadas: ventasAfectadas,
+      cobros: cobrosNormalizados
+    });
+  } catch (error) {
+    logError("Error al cobrar deuda del cliente:", error);
+    return res.status(500).json({ message: "Error al cobrar deuda del cliente" });
+  }
+});
+
 app.get("/clientes/:id", async (req, res) => {
   try {
     const cliente = await getClienteConMetricas(Number(req.params.id));

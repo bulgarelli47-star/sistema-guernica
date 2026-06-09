@@ -409,6 +409,21 @@ async function getResumenPorCuentaCobro({ cajaId } = {}) {
          WHERE p.caja_id = ?
            AND p.estado = 'registrado'
          GROUP BY p.cuenta_cobro_id, COALESCE(cc.nombre, 'Sin cuenta')
+
+         UNION ALL
+
+         -- cobros de deuda CC 3.0A por canal/terminal
+         SELECT
+           pcc.cuenta_cobro_id AS cuenta_cobro_id,
+           COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+           SUM(COALESCE(pcc.monto, 0)) AS ingresos,
+           0 AS egresos,
+           0 AS ventas,
+           0 AS pagos
+         FROM pagos_cc_cobros pcc
+         LEFT JOIN cuentas_cobro cc ON cc.id = pcc.cuenta_cobro_id
+         WHERE pcc.caja_id = ?
+         GROUP BY pcc.cuenta_cobro_id, COALESCE(cc.nombre, 'Sin cuenta')
        )
      SELECT
        cuenta_cobro_id,
@@ -420,7 +435,7 @@ async function getResumenPorCuentaCobro({ cajaId } = {}) {
      FROM movimientos
      GROUP BY cuenta_cobro_id, cuenta_nombre
      ORDER BY (SUM(ingresos) - SUM(egresos)) DESC, cuenta_nombre ASC`,
-    [cajaId, cajaId]
+    [cajaId, cajaId, cajaId]
   );
 
   return rows.map(mapResumenCuenta);
