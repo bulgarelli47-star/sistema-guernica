@@ -4159,9 +4159,14 @@ app.post("/ventas", async (req, res) => {
   };
 
   if (tipoVenta === "normal" && !esCuentaCorriente) {
-    const recargo = await calcularRecargoTipoPago({ tipoPagoCodigo: tipo_cobro, subtotal: subtotalVenta, cuotas });
-    if (!recargo.ok) {
-      return res.status(400).json({ message: recargo.message || "Metodo de cobro invalido" });
+    let recargo;
+    if (cobrosV2Normalizados && tipo_cobro === "mixto") {
+      recargo = { ok: true, porcentaje_recargo: 0, recargo_monto: 0, cuotas: null, total: subtotalVenta };
+    } else {
+      recargo = await calcularRecargoTipoPago({ tipoPagoCodigo: tipo_cobro, subtotal: subtotalVenta, cuotas });
+      if (!recargo.ok) {
+        return res.status(400).json({ message: recargo.message || "Metodo de cobro invalido" });
+      }
     }
     recargoVenta = recargo;
     total = recargo.total;
@@ -4183,7 +4188,7 @@ app.post("/ventas", async (req, res) => {
   }
 
   let cuentaCobroVenta = { cuenta_cobro_id: null };
-  if (tipoVenta === "normal" && !esCuentaCorriente) {
+  if (tipoVenta === "normal" && !esCuentaCorriente && !(cobrosV2Normalizados && tipo_cobro === "mixto")) {
     cuentaCobroVenta = await validarCuentaCobroVenta(cuenta_cobro_id, cobro);
     if (!cuentaCobroVenta.ok) {
       return res.status(cuentaCobroVenta.statusCode || 400).json({ message: cuentaCobroVenta.message });
@@ -5957,14 +5962,18 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
       return res.status(400).json({ message: "No hay una caja abierta para cobrar el ticket" });
     }
 
-    const recargo = await calcularRecargoTipoPago({
-      tipoPagoCodigo: tipoCobro,
-      subtotal: Number(venta.total) || 0,
-      cuotas: req.body.cuotas
-    });
-
-    if (!recargo.ok) {
-      return res.status(400).json({ message: recargo.message || "Metodo de cobro invalido" });
+    let recargo;
+    if (cobrosV2Cobrar && tipoCobro === "mixto") {
+      recargo = { ok: true, porcentaje_recargo: 0, recargo_monto: 0, cuotas: null, total: Number(venta.total) || 0 };
+    } else {
+      recargo = await calcularRecargoTipoPago({
+        tipoPagoCodigo: tipoCobro,
+        subtotal: Number(venta.total) || 0,
+        cuotas: req.body.cuotas
+      });
+      if (!recargo.ok) {
+        return res.status(400).json({ message: recargo.message || "Metodo de cobro invalido" });
+      }
     }
 
     const cobroReal = resolveCobroData(
@@ -5978,9 +5987,12 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
       return res.status(400).json({ message: "Datos de cobro invalidos" });
     }
 
-    const cuentaCobro = await validarCuentaCobroVenta(cuentaCobroIdCobrar, cobroReal);
-    if (!cuentaCobro.ok) {
-      return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
+    let cuentaCobro = { ok: true, cuenta_cobro_id: null };
+    if (!(cobrosV2Cobrar && tipoCobro === "mixto")) {
+      cuentaCobro = await validarCuentaCobroVenta(cuentaCobroIdCobrar, cobroReal);
+      if (!cuentaCobro.ok) {
+        return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
+      }
     }
 
     await runQuery("BEGIN TRANSACTION");
@@ -6118,22 +6130,24 @@ app.patch("/ventas/:id/cobro", async (req, res) => {
     }
 
     let cuentaCobroFinal = venta.cuenta_cobro_id ?? null;
-    const hasCuentaEnBody = cobrosV2Patch ? true : Object.prototype.hasOwnProperty.call(req.body, "cuenta_cobro_id");
-    if (hasCuentaEnBody) {
-      const cuentaCobro = await validarCuentaCobroVenta(cuentaCobroId_patch, cobro);
-      if (!cuentaCobro.ok) {
-        return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
-      }
-      cuentaCobroFinal = cuentaCobro.cuenta_cobro_id;
-    } else if (cuentaCobroFinal) {
-      const cuentaCobro = await validarCuentaCobroVenta(cuentaCobroFinal, cobro);
-      if (!cuentaCobro.ok) {
-        return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
-      }
-    } else {
-      const cuentaCobro = await validarCuentaCobroVenta(cuentaCobroFinal, cobro);
-      if (!cuentaCobro.ok) {
-        return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
+    if (!(cobrosV2Patch && tipoCobro_patch === "mixto")) {
+      const hasCuentaEnBody = cobrosV2Patch ? true : Object.prototype.hasOwnProperty.call(req.body, "cuenta_cobro_id");
+      if (hasCuentaEnBody) {
+        const cuentaCobro = await validarCuentaCobroVenta(cuentaCobroId_patch, cobro);
+        if (!cuentaCobro.ok) {
+          return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
+        }
+        cuentaCobroFinal = cuentaCobro.cuenta_cobro_id;
+      } else if (cuentaCobroFinal) {
+        const cuentaCobro = await validarCuentaCobroVenta(cuentaCobroFinal, cobro);
+        if (!cuentaCobro.ok) {
+          return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
+        }
+      } else {
+        const cuentaCobro = await validarCuentaCobroVenta(cuentaCobroFinal, cobro);
+        if (!cuentaCobro.ok) {
+          return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
+        }
       }
     }
 

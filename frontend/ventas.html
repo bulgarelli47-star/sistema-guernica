@@ -1971,10 +1971,6 @@
               <label class="muted" for="cuentaCobroVenta">Cuenta / terminal</label>
               <select id="cuentaCobroVenta" class="field"></select>
             </div>
-            <div id="cuotasVentaWrap" class="hidden">
-              <label class="muted" for="cuotasVenta">Cuotas</label>
-              <select id="cuotasVenta" class="field"></select>
-            </div>
           </div>
         </section>
 
@@ -1984,6 +1980,10 @@
           </div>
           <div class="payment-fields">
             <div class="cobros-v2-list" id="cobrosV2Lista"></div>
+            <div id="cuotasVentaWrap" class="hidden">
+              <label class="muted" for="cuotasVenta">Cuotas</label>
+              <select id="cuotasVenta" class="field"></select>
+            </div>
             <div class="cobros-v2-resumen hidden" id="cobrosV2Resumen">
               <div class="cobros-v2-total-row">
                 <span>Total ingresado</span>
@@ -3167,7 +3167,11 @@
     }
 
     function getMetodoPagoActual() {
-      return tiposPagoVentas.find((tipo) => tipo.codigo === tipoCobroNormal.value) || null;
+      const tipoV2 = cobrosMultiplesSection && !cobrosMultiplesSection.classList.contains("hidden")
+        ? cobrosMultiples.find(c => c?.tipo)?.tipo
+        : null;
+      const codigo = tipoV2 || tipoCobroNormal.value;
+      return tiposPagoVentas.find((tipo) => tipo.codigo === codigo) || null;
     }
 
     function parseCuotasMetodo(value) {
@@ -4675,7 +4679,8 @@
           return;
         }
 
-        if (!validarCuentaTerminalCobro(cobro)) {
+        const tieneCobrosV2 = Array.isArray(cobrosPayload) && cobrosPayload.length > 0;
+        if (!tieneCobrosV2 && !validarCuentaTerminalCobro(cobro)) {
           return;
         }
 
@@ -5163,6 +5168,10 @@
       renderizarTicket();
       actualizarVuelto();
       marcarPendienteEditado();
+      if (cobrosMultiples.length === 1) {
+        cobrosMultiples[0].monto = getTicketTotal();
+        renderCobrosMultiples();
+      }
     });
 
     agregarCobroV2Btn?.addEventListener("click", agregarCobroMultiple);
@@ -5177,6 +5186,8 @@
           cobro.tipo = selTipo.value;
           const primerasCuentas = getCuentasCobroCompatibles(cobro.tipo);
           cobro.cuentaId = primerasCuentas.length ? primerasCuentas[0].id : null;
+          actualizarCobroNormalUI();
+          if (cobrosMultiples.length === 1) { cobrosMultiples[0].monto = getTicketTotal(); }
           renderCobrosMultiples();
         }
         return;
