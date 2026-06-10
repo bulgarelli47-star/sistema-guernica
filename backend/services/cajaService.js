@@ -216,16 +216,57 @@ async function getOperacionesCaja(cajaId) {
     [cajaId, cajaId]
   );
 
+  // CC 3.0A: agrupa por group_id y obtiene efectivo/debito reales de pagos_cc_cobros.
+  // group_id IS NULL → cobros legacy sin CC 3.0A, se sirven como filas individuales.
   const pagosCuentaCorriente = await allQuery(
-    `SELECT pcc.id, pcc.fecha, pcc.hora, pcc.monto_pagado AS total, pcc.tipo_cobro,
-            pcc.monto_efectivo, pcc.monto_debito, pcc.cliente_id, pcc.caja_id,
-            'cobrada' AS estado, c.nombre AS cliente_nombre,
-            'cuenta_corriente' AS tipo
+    `SELECT
+       MIN(pcc.id)            AS id,
+       pcc.fecha,
+       pcc.hora,
+       pcc.caja_id,
+       pcc.cliente_id,
+       SUM(pcc.monto_pagado)  AS total,
+       COALESCE(
+         (SELECT SUM(pccx.monto) FROM pagos_cc_cobros pccx
+          WHERE pccx.group_id = pcc.group_id AND pccx.tipo_cobro = 'efectivo'), 0
+       ) AS monto_efectivo,
+       COALESCE(
+         (SELECT SUM(pccx.monto) FROM pagos_cc_cobros pccx
+          WHERE pccx.group_id = pcc.group_id AND pccx.tipo_cobro != 'efectivo'), 0
+       ) AS monto_debito,
+       COALESCE(
+         (SELECT CASE WHEN COUNT(DISTINCT pccx.tipo_cobro) > 1 THEN 'mixto'
+                      ELSE MIN(pccx.tipo_cobro) END
+          FROM pagos_cc_cobros pccx WHERE pccx.group_id = pcc.group_id),
+         MIN(pcc.tipo_cobro)
+       ) AS tipo_cobro,
+       'cobrada'              AS estado,
+       c.nombre               AS cliente_nombre,
+       'cuenta_corriente'     AS tipo
      FROM pagos_cuenta_corriente pcc
      LEFT JOIN clientes c ON c.id = pcc.cliente_id
-     WHERE pcc.caja_id = ?
-     ORDER BY pcc.hora DESC, pcc.id DESC`,
-    [cajaId]
+     WHERE pcc.caja_id = ? AND pcc.group_id IS NOT NULL
+     GROUP BY pcc.group_id, pcc.fecha, pcc.hora, pcc.caja_id, pcc.cliente_id, c.nombre
+
+     UNION ALL
+
+     SELECT
+       pcc.id,
+       pcc.fecha,
+       pcc.hora,
+       pcc.caja_id,
+       pcc.cliente_id,
+       pcc.monto_pagado AS total,
+       pcc.monto_efectivo,
+       pcc.monto_debito,
+       pcc.tipo_cobro,
+       'cobrada'          AS estado,
+       c.nombre           AS cliente_nombre,
+       'cuenta_corriente' AS tipo
+     FROM pagos_cuenta_corriente pcc
+     LEFT JOIN clientes c ON c.id = pcc.cliente_id
+     WHERE pcc.caja_id = ? AND pcc.group_id IS NULL`,
+    [cajaId, cajaId]
   );
 
   const pagosEgresos = await getPagosCaja(cajaId);
@@ -471,6 +512,29 @@ async function getResumenPorCuentaDestino({ cajaId } = {}) {
 
   const rows = await allQuery(
     `WITH movimientos AS (
+       -- ventas V2: canal y monto real de venta_cobros
+       SELECT
+         cd.id AS cuenta_destino_id,
+         cd.nombre AS cuenta_destino_nombre,
+         cd.tipo_destino AS tipo_destino,
+         CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END AS sin_cuenta_destino,
+         cc.nombre AS canal_nombre,
+         SUM(COALESCE(vc.monto, 0)) AS ingresos,
+         0 AS egresos,
+         COUNT(DISTINCT vc.venta_id) AS ventas,
+         0 AS pagos
+       FROM ventas v
+       JOIN venta_cobros vc ON vc.venta_id = v.id AND vc.estado = 'confirmado'
+       LEFT JOIN cuentas_cobro cc ON cc.id = vc.cuenta_cobro_id
+       LEFT JOIN cuentas_destino cd ON cd.id = cc.cuenta_destino_id
+       WHERE v.caja_id = ?
+         AND v.estado = 'cobrada'
+         AND COALESCE(v.estado, '') != 'anulado'
+       GROUP BY cd.id, cd.nombre, cd.tipo_destino, CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END, cc.nombre
+
+       UNION ALL
+
+       -- ventas legacy: sin venta_cobros, canal y total de ventas
        SELECT
          cd.id AS cuenta_destino_id,
          cd.nombre AS cuenta_destino_nombre,
@@ -487,6 +551,7 @@ async function getResumenPorCuentaDestino({ cajaId } = {}) {
        WHERE v.caja_id = ?
          AND v.estado = 'cobrada'
          AND COALESCE(v.estado, '') != 'anulado'
+         AND NOT EXISTS (SELECT 1 FROM venta_cobros vc WHERE vc.venta_id = v.id)
        GROUP BY cd.id, cd.nombre, cd.tipo_destino, CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END, cc.nombre
 
        UNION ALL
@@ -506,6 +571,25 @@ async function getResumenPorCuentaDestino({ cajaId } = {}) {
        LEFT JOIN cuentas_destino cd ON cd.id = cc.cuenta_destino_id
        WHERE p.caja_id = ?
          AND p.estado = 'registrado'
+       GROUP BY cd.id, cd.nombre, cd.tipo_destino, CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END, cc.nombre
+
+       UNION ALL
+
+       -- cobros de deuda CC 3.0A por canal/destino
+       SELECT
+         cd.id AS cuenta_destino_id,
+         cd.nombre AS cuenta_destino_nombre,
+         cd.tipo_destino AS tipo_destino,
+         CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END AS sin_cuenta_destino,
+         cc.nombre AS canal_nombre,
+         SUM(COALESCE(pcc.monto, 0)) AS ingresos,
+         0 AS egresos,
+         0 AS ventas,
+         0 AS pagos
+       FROM pagos_cc_cobros pcc
+       LEFT JOIN cuentas_cobro cc ON cc.id = pcc.cuenta_cobro_id
+       LEFT JOIN cuentas_destino cd ON cd.id = cc.cuenta_destino_id
+       WHERE pcc.caja_id = ?
        GROUP BY cd.id, cd.nombre, cd.tipo_destino, CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END, cc.nombre
      ),
      agrupado AS (
@@ -548,7 +632,7 @@ async function getResumenPorCuentaDestino({ cajaId } = {}) {
        ON (c.cuenta_destino_id = a.cuenta_destino_id OR (c.cuenta_destino_id IS NULL AND a.cuenta_destino_id IS NULL))
       AND c.sin_cuenta_destino = a.sin_cuenta_destino
      ORDER BY a.sin_cuenta_destino ASC, (a.ingresos - a.egresos) DESC, a.cuenta_destino_nombre ASC`,
-    [cajaId, cajaId]
+    [cajaId, cajaId, cajaId, cajaId]
   );
 
   const conMovimientos = rows.map(mapResumenCuentaDestino);
