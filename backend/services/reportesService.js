@@ -523,25 +523,61 @@ async function getReporteCaja({ desde = null, hasta = null, cajaId = null, cuent
       ventasParams
     ),
     allQuery(
-      `SELECT
+      `-- CC 3.0A: un registro por group_id, canales reales de pagos_cc_cobros
+       SELECT
+         MIN(pcc.id)           AS id,
+         pcc.fecha,
+         pcc.hora,
+         pcc.caja_id,
+         NULL                  AS cuenta_cobro_id,
+         NULL                  AS cuenta_nombre,
+         'cobro_cuenta_corriente' AS tipo_operacion,
+         'Cobro cuenta corriente #' || MIN(pcc.id) AS concepto,
+         COALESCE(
+           (SELECT CASE WHEN COUNT(DISTINCT pccx.tipo_cobro) > 1 THEN 'mixto'
+                        ELSE MIN(pccx.tipo_cobro) END
+            FROM pagos_cc_cobros pccx WHERE pccx.group_id = pcc.group_id),
+           MIN(pcc.tipo_cobro)
+         )                     AS metodo,
+         SUM(pcc.monto_pagado) AS ingreso,
+         0                     AS egreso,
+         COALESCE(
+           (SELECT SUM(pccx.monto) FROM pagos_cc_cobros pccx
+            WHERE pccx.group_id = pcc.group_id AND pccx.tipo_cobro = 'efectivo'), 0
+         )                     AS monto_efectivo,
+         COALESCE(
+           (SELECT SUM(pccx.monto) FROM pagos_cc_cobros pccx
+            WHERE pccx.group_id = pcc.group_id AND pccx.tipo_cobro != 'efectivo'), 0
+         )                     AS monto_debito,
+         0                     AS iva_credito_fiscal
+       FROM pagos_cuenta_corriente pcc
+       INNER JOIN caja_aperturas ca ON ca.id = pcc.caja_id
+       WHERE ${cobrosCuentaWhere.join(" AND ")}
+         AND pcc.group_id IS NOT NULL
+       GROUP BY pcc.group_id, pcc.fecha, pcc.hora, pcc.caja_id
+
+       UNION ALL
+
+       SELECT
          pcc.id,
          pcc.fecha,
          pcc.hora,
          pcc.caja_id,
          NULL AS cuenta_cobro_id,
          NULL AS cuenta_nombre,
-         'cobro_cuenta_corriente' AS tipo_operacion,
+         'cobro_cuenta_corriente'             AS tipo_operacion,
          'Cobro cuenta corriente #' || pcc.id AS concepto,
          COALESCE(pcc.tipo_cobro, 'Sin metodo') AS metodo,
-         COALESCE(pcc.monto_pagado, 0) AS ingreso,
-         0 AS egreso,
-         COALESCE(pcc.monto_efectivo, 0) AS monto_efectivo,
-         COALESCE(pcc.monto_debito, 0) AS monto_debito,
-         0 AS iva_credito_fiscal
+         COALESCE(pcc.monto_pagado, 0)        AS ingreso,
+         0                                    AS egreso,
+         COALESCE(pcc.monto_efectivo, 0)      AS monto_efectivo,
+         COALESCE(pcc.monto_debito, 0)        AS monto_debito,
+         0                                    AS iva_credito_fiscal
        FROM pagos_cuenta_corriente pcc
        INNER JOIN caja_aperturas ca ON ca.id = pcc.caja_id
-       WHERE ${cobrosCuentaWhere.join(" AND ")}`,
-      cobrosCuentaParams
+       WHERE ${cobrosCuentaWhere.join(" AND ")}
+         AND pcc.group_id IS NULL`,
+      [...cobrosCuentaParams, ...cobrosCuentaParams]
     ),
     allQuery(
       `SELECT
@@ -1612,26 +1648,33 @@ async function getResumenCuentasCobro({ desde = null, hasta = null } = {}) {
   const ventasParams = [];
   const pagosParams = [];
   const conciliacionesParams = [];
+  const cobrosCcWhere = [];
+  const cobrosCcParams = [];
 
   if (desde) {
     ventasWhere.push("v.fecha >= ?");
     pagosWhere.push("p.fecha >= ?");
     conciliacionesWhere.push("c.fecha >= ?");
+    cobrosCcWhere.push("pcc.fecha >= ?");
     ventasParams.push(desde);
     pagosParams.push(desde);
     conciliacionesParams.push(desde);
+    cobrosCcParams.push(desde);
   }
   if (hasta) {
     ventasWhere.push("v.fecha <= ?");
     pagosWhere.push("p.fecha <= ?");
     conciliacionesWhere.push("c.fecha <= ?");
+    cobrosCcWhere.push("pcc.fecha <= ?");
     ventasParams.push(hasta);
     pagosParams.push(hasta);
     conciliacionesParams.push(hasta);
+    cobrosCcParams.push(hasta);
   }
 
   const conciliacionesClause = conciliacionesWhere.length ? `WHERE ${conciliacionesWhere.join(" AND ")}` : "";
-  const [ventas, pagos, conciliaciones] = await Promise.all([
+  const cobrosCcClause = cobrosCcWhere.length ? `AND ${cobrosCcWhere.join(" AND ")}` : "";
+  const [ventas, pagos, conciliaciones, cobrosCc] = await Promise.all([
     allQuery(
       `WITH vb AS (SELECT * FROM ventas v WHERE ${ventasWhere.join(" AND ")})
        SELECT
@@ -1678,6 +1721,18 @@ async function getResumenCuentasCobro({ desde = null, hasta = null } = {}) {
        ${conciliacionesClause}
        GROUP BY c.cuenta_cobro_id, cuenta_nombre, cc.tipo_pago_codigo`,
       conciliacionesParams
+    ),
+    allQuery(
+      `SELECT
+         pcc.cuenta_cobro_id,
+         COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+         COALESCE(cc.tipo_pago_codigo, pcc.tipo_cobro) AS tipo_pago_codigo,
+         COALESCE(SUM(pcc.monto), 0) AS ingresos
+       FROM pagos_cc_cobros pcc
+       LEFT JOIN cuentas_cobro cc ON cc.id = pcc.cuenta_cobro_id
+       WHERE 1=1 ${cobrosCcClause}
+       GROUP BY pcc.cuenta_cobro_id, cuenta_nombre, tipo_pago_codigo`,
+      cobrosCcParams
     )
   ]);
 
@@ -1700,6 +1755,11 @@ async function getResumenCuentasCobro({ desde = null, hasta = null } = {}) {
     item.conciliaciones = Number(row.conciliaciones || 0);
     item.diferencias = round2(row.diferencias);
     item._conciliaciones_con_diferencia = Number(row.conciliaciones_con_diferencia || 0);
+  }
+
+  for (const row of cobrosCc) {
+    const item = upsertCuenta(porCuenta, row);
+    item.ingresos = round2(item.ingresos + Number(row.ingresos || 0));
   }
 
   return [...porCuenta.values()]
