@@ -530,6 +530,7 @@ async function getResumenPorCuentaDestino({ cajaId } = {}) {
        WHERE v.caja_id = ?
          AND v.estado = 'cobrada'
          AND COALESCE(v.estado, '') != 'anulado'
+         AND COALESCE(v.es_cuenta_corriente, 0) = 0
        GROUP BY cd.id, cd.nombre, cd.tipo_destino, CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END, cc.nombre
 
        UNION ALL
@@ -551,6 +552,7 @@ async function getResumenPorCuentaDestino({ cajaId } = {}) {
        WHERE v.caja_id = ?
          AND v.estado = 'cobrada'
          AND COALESCE(v.estado, '') != 'anulado'
+         AND COALESCE(v.es_cuenta_corriente, 0) = 0
          AND NOT EXISTS (SELECT 1 FROM venta_cobros vc WHERE vc.venta_id = v.id)
        GROUP BY cd.id, cd.nombre, cd.tipo_destino, CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END, cc.nombre
 

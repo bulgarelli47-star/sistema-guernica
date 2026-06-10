@@ -804,10 +804,19 @@ async function registrarVentaCobros(ventaId, cobro, cuentaCobroId, created_at, c
   const now = created_at || new Date().toISOString();
   // Cobros V2: insertar exactamente las filas provistas
   if (Array.isArray(cobrosV2) && cobrosV2.length > 0) {
+    let cuentaEfectivoId = null;
+    if (cobrosV2.some(c => c.tipo_cobro === "efectivo" && c.cuenta_cobro_id == null)) {
+      const efRow = await getQuery(
+        "SELECT id FROM cuentas_cobro WHERE tipo_pago_codigo = 'efectivo' AND activo = 1 ORDER BY orden ASC, id ASC LIMIT 1"
+      );
+      cuentaEfectivoId = efRow ? efRow.id : null;
+    }
     for (const c of cobrosV2) {
+      const cuentaFinal = c.cuenta_cobro_id ??
+        (c.tipo_cobro === "efectivo" ? cuentaEfectivoId : null);
       await runQuery(
         `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at) VALUES (?, ?, ?, ?, 'confirmado', ?)`,
-        [ventaId, c.tipo_cobro, c.cuenta_cobro_id ?? null, c.monto, now]
+        [ventaId, c.tipo_cobro, cuentaFinal, c.monto, now]
       );
     }
     return;
@@ -816,11 +825,19 @@ async function registrarVentaCobros(ventaId, cobro, cuentaCobroId, created_at, c
   if (!cobro) return;
   const tipo = String(cobro.tipo_cobro || "").toLowerCase();
   if (!tipo || tipo === "cuenta_corriente" || tipo === "cuenta_corriente_pendiente") return;
+  const needsEfectivo = tipo === "mixto" ? Number(cobro.monto_efectivo) > 0 : tipo === "efectivo";
+  let cuentaEfectivoId = null;
+  if (needsEfectivo) {
+    const efRow = await getQuery(
+      "SELECT id FROM cuentas_cobro WHERE tipo_pago_codigo = 'efectivo' AND activo = 1 ORDER BY orden ASC, id ASC LIMIT 1"
+    );
+    cuentaEfectivoId = efRow ? efRow.id : null;
+  }
   if (tipo === "mixto") {
     if (Number(cobro.monto_efectivo) > 0) {
       await runQuery(
-        `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at) VALUES (?, 'efectivo', NULL, ?, 'confirmado', ?)`,
-        [ventaId, Number(cobro.monto_efectivo), now]
+        `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at) VALUES (?, 'efectivo', ?, ?, 'confirmado', ?)`,
+        [ventaId, cuentaEfectivoId, Number(cobro.monto_efectivo), now]
       );
     }
     if (Number(cobro.monto_debito) > 0) {
@@ -831,9 +848,12 @@ async function registrarVentaCobros(ventaId, cobro, cuentaCobroId, created_at, c
     }
   } else {
     const monto = tipo === "efectivo" ? Number(cobro.monto_efectivo) : Number(cobro.monto_debito);
+    const cuentaFinal = tipo === "efectivo"
+      ? (cuentaCobroId ?? cuentaEfectivoId)
+      : (cuentaCobroId ?? null);
     await runQuery(
       `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at) VALUES (?, ?, ?, ?, 'confirmado', ?)`,
-      [ventaId, tipo, cuentaCobroId ?? null, monto || 0, now]
+      [ventaId, tipo, cuentaFinal, monto || 0, now]
     );
   }
 }
@@ -5636,11 +5656,20 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
         restante = Number((restante - montoPago).toFixed(2));
       }
 
+      let cuentaEfectivoIdCc = null;
+      if (cobrosNormalizados.some(c => c.tipo_cobro === "efectivo" && c.cuenta_cobro_id == null)) {
+        const efRow = await getQuery(
+          "SELECT id FROM cuentas_cobro WHERE tipo_pago_codigo = 'efectivo' AND activo = 1 ORDER BY orden ASC, id ASC LIMIT 1"
+        );
+        cuentaEfectivoIdCc = efRow ? efRow.id : null;
+      }
       for (const cobro of cobrosNormalizados) {
+        const cuentaFinal = cobro.cuenta_cobro_id ??
+          (cobro.tipo_cobro === "efectivo" ? cuentaEfectivoIdCc : null);
         await runQuery(
           `INSERT INTO pagos_cc_cobros (group_id, tipo_cobro, cuenta_cobro_id, monto, caja_id, fecha, hora)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [groupId, cobro.tipo_cobro, cobro.cuenta_cobro_id || null, cobro.monto, cajaActiva.id, fecha, hora]
+          [groupId, cobro.tipo_cobro, cuentaFinal, cobro.monto, cajaActiva.id, fecha, hora]
         );
       }
 
