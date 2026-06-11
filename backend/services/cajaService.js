@@ -893,9 +893,8 @@ function buildCajaResumen(ventas) {
       const esIngresoManual = movimiento.tipo_operacion === "caja_movimiento_ingreso";
       const esEgresoManual = movimiento.tipo_operacion === "caja_movimiento_egreso";
       const esVenta = movimiento.tipo_operacion === "venta_normal" ||
-        movimiento.tipo_operacion === "venta_pendiente_cobrada" ||
-        movimiento.tipo_operacion === "venta_cuenta_corriente";
-      const esCuentaCorrientePendiente = movimiento.tipo_operacion === "venta_cuenta_corriente";
+        movimiento.tipo_operacion === "venta_pendiente_cobrada";
+      const esCuentaCorriente = movimiento.tipo_operacion === "venta_cuenta_corriente";
       const tipoCobro = String(movimiento.tipo_cobro || "").toLowerCase();
 
       if (esPago || esEgresoManual) {
@@ -904,8 +903,8 @@ function buildCajaResumen(ventas) {
         acc.total_pagos_general += Number((efectivo + debito).toFixed(2));
       } else if (esIngresoManual) {
         acc.total_efectivo += efectivo;
-      } else if (esCuentaCorrientePendiente) {
-        acc.total_cuenta_corriente += Number(movimiento.total || 0);
+      } else if (esCuentaCorriente) {
+        // venta a cuenta no es ingreso real de caja — el cobro real llega como cobro_cuenta_corriente
       } else {
         acc.total_efectivo += efectivo;
         acc.total_debito += debito;
