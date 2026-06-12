@@ -4526,6 +4526,7 @@
         );
         await cargarProductos();
         await cargarPendientes();
+        localStorage.setItem('atlas_caja_refresh', Date.now().toString());
       } catch (error) {
         console.error("Error al registrar venta:", error);
         if (esCuentaCorriente.checked || selectedPaymentMode === "cuenta_corriente") {
@@ -4725,6 +4726,7 @@
         mostrarMensaje(data.message || "Ticket pendiente cobrado", false, ticketImpresion ? { ticket: ticketImpresion } : {});
         await cargarPendientes();
         await cargarHistorialAnulados();
+        localStorage.setItem('atlas_caja_refresh', Date.now().toString());
       } catch (error) {
         console.error("Error al cobrar pendiente:", error);
         if (String(tipoCobro || "").toLowerCase() === "cuenta_corriente") {

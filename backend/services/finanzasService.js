@@ -133,23 +133,53 @@ async function obtenerIngresosPeriodo({ desde, hasta }) {
   if (desde) { where.push("fecha >= ?"); params.push(desde); }
   if (hasta) { where.push("fecha <= ?"); params.push(hasta); }
 
-  const rows = await allQuery(
-    `SELECT
-       COALESCE(SUM(CASE WHEN estado = 'cobrada' THEN total ELSE 0 END), 0) AS ventas_cobradas,
-       COALESCE(SUM(CASE WHEN estado = 'pendiente' AND COALESCE(es_cuenta_corriente, 0) = 0 THEN total ELSE 0 END), 0) AS ventas_pendientes,
-       COALESCE(SUM(CASE WHEN COALESCE(es_cuenta_corriente, 0) = 1 THEN total ELSE 0 END), 0) AS ventas_cuenta_corriente,
-       COALESCE(SUM(total), 0) AS total_periodo
-     FROM ventas
-     WHERE ${where.join(" AND ")}`,
-    params
-  );
+  // pagos_cc_cobros: cobros CC V2 (con group_id) filtrados por fecha de cobro real
+  const cobrosV2Where = [];
+  const cobrosV2Params = [];
+  if (desde) { cobrosV2Where.push("pcc.fecha >= ?"); cobrosV2Params.push(desde); }
+  if (hasta) { cobrosV2Where.push("pcc.fecha <= ?"); cobrosV2Params.push(hasta); }
+  const cobrosV2WhereSQL = cobrosV2Where.length ? `WHERE ${cobrosV2Where.join(" AND ")}` : "";
+
+  // pagos_cuenta_corriente: fallback histórico para cobros CC sin group_id (pre-CC 3.0A)
+  const cobrosLegacyWhere = ["pcc.group_id IS NULL"];
+  const cobrosLegacyParams = [];
+  if (desde) { cobrosLegacyWhere.push("pcc.fecha >= ?"); cobrosLegacyParams.push(desde); }
+  if (hasta) { cobrosLegacyWhere.push("pcc.fecha <= ?"); cobrosLegacyParams.push(hasta); }
+
+  const [rows, cobrosRows] = await Promise.all([
+    allQuery(
+      `SELECT
+         COALESCE(SUM(CASE WHEN estado = 'cobrada' AND COALESCE(es_cuenta_corriente, 0) = 0 THEN total ELSE 0 END), 0) AS ventas_cobradas,
+         COALESCE(SUM(CASE WHEN estado = 'pendiente' AND COALESCE(es_cuenta_corriente, 0) = 0 THEN total ELSE 0 END), 0) AS ventas_pendientes,
+         COALESCE(SUM(CASE WHEN COALESCE(es_cuenta_corriente, 0) = 1 THEN total ELSE 0 END), 0) AS ventas_cuenta_corriente,
+         COALESCE(SUM(total), 0) AS total_periodo
+       FROM ventas
+       WHERE ${where.join(" AND ")}`,
+      params
+    ),
+    allQuery(
+      `SELECT COALESCE(SUM(total_cobro), 0) AS cobros_cc
+       FROM (
+         SELECT pcc.monto AS total_cobro
+           FROM pagos_cc_cobros pcc
+           ${cobrosV2WhereSQL}
+         UNION ALL
+         SELECT pcc.monto_pagado AS total_cobro
+           FROM pagos_cuenta_corriente pcc
+           WHERE ${cobrosLegacyWhere.join(" AND ")}
+       )`,
+      [...cobrosV2Params, ...cobrosLegacyParams]
+    )
+  ]);
 
   const row = rows[0] || {};
-  // total_periodo es SUM directo sin CASE: una venta CC cobrada se cuenta una sola vez
+  const cobrosRow = cobrosRows[0] || {};
+  // total_periodo es SUM directo sin CASE: valor comercial del período (no dinero cobrado)
   return {
     ventas_cobradas: round2(row.ventas_cobradas),
     ventas_pendientes: round2(row.ventas_pendientes),
     ventas_cuenta_corriente: round2(row.ventas_cuenta_corriente),
+    cobros_cuenta_corriente: round2(cobrosRow.cobros_cc),
     total_periodo: round2(row.total_periodo)
   };
 }
@@ -364,7 +394,7 @@ async function getResumenFinanciero({ desde = null, hasta = null } = {}) {
     obtenerCostosOperativosFijos({ desde, hasta })
   ]);
 
-  const resultado_operativo = round2(ingresosPeriodo.ventas_cobradas - pasivos.egresos_ejecutados);
+  const resultado_operativo = round2(ingresosPeriodo.ventas_cobradas + ingresosPeriodo.cobros_cuenta_corriente - pasivos.egresos_ejecutados);
   return {
     fecha_corte: fechaCorte,
     filtros: { desde, hasta },

@@ -8260,6 +8260,18 @@
       ]);
     }
 
+    let atlasCajaRefreshTimer = null;
+    window.addEventListener('storage', (event) => {
+      if (event.key !== 'atlas_caja_refresh') return;
+      clearTimeout(atlasCajaRefreshTimer);
+      atlasCajaRefreshTimer = setTimeout(() => { cargarCaja(); }, 250);
+    });
+
+    if (botonActualizarCaja) {
+      botonActualizarCaja.hidden = false;
+      botonActualizarCaja.addEventListener('click', () => { cargarCaja(); });
+    }
+
     inicializarCaja();
   </script>
   <script src="/nav-permissions.js?v=6" defer></script>

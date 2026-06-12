@@ -1647,6 +1647,7 @@
         cerrarModalPago();
         await cargarCaja();
         await cargarPagos();
+        localStorage.setItem('atlas_caja_refresh', Date.now().toString());
       } catch (error) {
         console.error("Error al registrar pago:", error);
         mostrarMensaje("Error al registrar pago", true);
@@ -1842,6 +1843,7 @@
         cerrarEditarPagoModal();
         mostrarMensaje(data.message || "Pago actualizado");
         await cargarPagos();
+        localStorage.setItem('atlas_caja_refresh', Date.now().toString());
       } catch (e) {
         document.getElementById("editarPagoAviso").textContent = "Error de conexión";
         document.getElementById("editarPagoAviso").style.display = "block";
