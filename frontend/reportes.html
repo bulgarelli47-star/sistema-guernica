@@ -1506,7 +1506,7 @@
       const { desde, hasta } = getConstructorRango();
       const periodoLabel = desde === hasta ? desde : `${desde} → ${hasta}`;
       const kpis = [
-        { label: "Ventas del día", value: money(n(res.ventas_totales)) },
+        { label: "Ingresos reales del día", value: money(n(res.ingresos_reales ?? res.ventas_totales)) },
         { label: "Ticket promedio", value: money(n(res.ticket_promedio)) },
         { label: "Egresos sistema", value: money(n(res.pagos_totales)) },
         { label: "Resultado del día", value: money(n(res.balance_general)) }
@@ -2323,7 +2323,7 @@
       const cc = data.cuentas_corrientes || {};
       const inv = data.inventario || {};
       const kpis = [
-        { label: "Facturación", value: money(n(v.facturacion_total)) },
+        { label: "Ingresos reales", value: money(n(v.ingresos_reales ?? v.facturacion_total)) },
         { label: "Margen bruto", value: money(n(r.margen_total)) },
         { label: "Margen %", value: n(r.margen_promedio).toFixed(1) + "%" },
         { label: "Deuda vencida", value: money(n(cc.deuda_vencida)) },
@@ -3483,32 +3483,39 @@
       const pagos = pagosPeriodo();
       const rb = state.resumenBackend;
       const ventasTotalesLocal = ventas.reduce((acc, venta) => acc + n(venta.total), 0);
+      const ventasCobJadasLocal = ventas.filter((v) => v.estado === "cobrada" && Number(v.es_cuenta_corriente || 0) === 0).reduce((acc, v) => acc + n(v.total), 0);
       const pagosTotalesLocal = pagos.reduce((acc, pago) => acc + n(pago.monto_total || pago.monto), 0);
       const ivaFavorLocal = pagos.reduce((acc, pago) => acc + ivaFavorPago(pago), 0);
       return {
-        ventasTotales: rb ? n(rb.ventas_totales) : ventasTotalesLocal,
-        pagosTotales: rb ? n(rb.pagos_totales) : pagosTotalesLocal,
-        balance: rb ? n(rb.balance_general) : ventasTotalesLocal - pagosTotalesLocal,
-        ivaFavor: rb ? n(rb.iva_credito_fiscal) : ivaFavorLocal,
-        ticketPromedio: rb ? n(rb.ticket_promedio) : (ventas.length ? ventasTotalesLocal / ventas.length : 0),
-        cantidadVentas: rb ? n(rb.total_ventas) : ventas.length,
-        cantidadPagos: rb ? n(rb.total_pagos) : pagos.length,
-        ventasEfectivo: rb ? n(rb.ventas_efectivo) : ventas.reduce((acc, venta) => acc + n(venta.monto_efectivo), 0),
-        ventasDebito: rb ? n(rb.ventas_debito) : ventas.reduce((acc, venta) => acc + n(venta.monto_debito), 0),
-        pagosEfectivo: rb ? n(rb.pagos_efectivo) : pagos.reduce((acc, pago) => acc + n(pago.monto_efectivo), 0),
-        pagosDebito: rb ? n(rb.pagos_debito) : pagos.reduce((acc, pago) => acc + n(pago.monto_debito), 0)
+        ventasTotales:         rb ? n(rb.ventas_totales)              : ventasTotalesLocal,
+        valorComercialTotal:   rb ? n(rb.valor_comercial_total ?? rb.ventas_totales) : ventasTotalesLocal,
+        ventasCobradas:        rb ? n(rb.ventas_cobradas)             : ventasCobJadasLocal,
+        ventasPendientes:      rb ? n(rb.ventas_pendientes)           : ventas.filter((v) => v.estado === "pendiente" && Number(v.es_cuenta_corriente || 0) === 0).reduce((acc, v) => acc + n(v.total), 0),
+        ventasCuentaCorriente: rb ? n(rb.ventas_cuenta_corriente)     : ventas.filter((v) => Number(v.es_cuenta_corriente || 0) === 1).reduce((acc, v) => acc + n(v.total), 0),
+        cobrosCC:              rb ? n(rb.cobros_cuenta_corriente)     : 0,
+        ingresosReales:        rb ? n(rb.ingresos_reales)             : ventasCobJadasLocal,
+        pagosTotales:          rb ? n(rb.pagos_totales)               : pagosTotalesLocal,
+        balance:               rb ? n(rb.balance_general)             : ventasTotalesLocal - pagosTotalesLocal,
+        ivaFavor:              rb ? n(rb.iva_credito_fiscal)          : ivaFavorLocal,
+        ticketPromedio:        rb ? n(rb.ticket_promedio)             : (ventas.length ? ventasTotalesLocal / ventas.length : 0),
+        cantidadVentas:        rb ? n(rb.total_ventas)                : ventas.length,
+        cantidadPagos:         rb ? n(rb.total_pagos)                 : pagos.length,
+        ventasEfectivo:        rb ? n(rb.ventas_efectivo)             : ventas.reduce((acc, venta) => acc + n(venta.monto_efectivo), 0),
+        ventasDebito:          rb ? n(rb.ventas_debito)               : ventas.reduce((acc, venta) => acc + n(venta.monto_debito), 0),
+        pagosEfectivo:         rb ? n(rb.pagos_efectivo)              : pagos.reduce((acc, pago) => acc + n(pago.monto_efectivo), 0),
+        pagosDebito:           rb ? n(rb.pagos_debito)                : pagos.reduce((acc, pago) => acc + n(pago.monto_debito), 0)
       };
     }
 
     function renderKpis() {
       const anterior = periodoAnteriorVentas();
       const base = resumenPeriodoBase();
-      const total = base.ventasTotales;
+      const total = base.ingresosReales;
       const totalAnterior = anterior.reduce((acc, venta) => acc + n(venta.total), 0);
       const estimacionBruta = total * 0.34;
       const ticket = base.ticketPromedio;
       const datos = [
-        ["V", "Ventas totales", money(total), pct(total, totalAnterior)],
+        ["V", "Ingresos reales", money(total), pct(total, totalAnterior)],
         ["E", "Estimación bruta", money(estimacionBruta), pct(estimacionBruta, totalAnterior * 0.34)],
         ["T", "Ticket promedio", money(ticket), pct(ticket, anterior.length ? totalAnterior / anterior.length : 0)],
         ["#", "Operaciones", base.cantidadVentas + base.cantidadPagos, pct(base.cantidadVentas, anterior.length)],
@@ -3774,7 +3781,7 @@
           ]
         : [["Clientes", state.clientes.length], ["Con deuda", state.clientes.filter((c) => n(c.deuda_actual) > 0).length], ["Deuda total", money(deudaTotal)], ["Excedidos", state.clientes.filter((c) => n(c.limite_credito) > 0 && n(c.deuda_actual) > n(c.limite_credito)).length], ["Cobrado período", money(state.clientes.reduce((acc, c) => acc + n(c.cobrado_hoy), 0))], ["Inactivos", state.clientes.filter((c) => Number(c.activo) === 0).length]];
       const map = {
-        generales: [["Ventas", money(totalVentas)], ["Egresos", money(totalPagos)], ["Balance", money(base.balance)], ["Stock físico valorizado", money(stockValorizadoFisico)], ["Deuda clientes", money(deudaTotal)], ["Operaciones", base.cantidadVentas + base.cantidadPagos]],
+        generales: [["Ingresos reales", money(base.ingresosReales)], ["Valor comercial", money(base.valorComercialTotal)], ["Egresos", money(totalPagos)], ["Balance", money(base.balance)], ["Stock físico valorizado", money(stockValorizadoFisico)], ["Deuda clientes", money(deudaTotal)], ["Operaciones", base.cantidadVentas + base.cantidadPagos]],
         ventas: ventasResumen,
         caja: cajaResumen,
         stock: stockResumen,

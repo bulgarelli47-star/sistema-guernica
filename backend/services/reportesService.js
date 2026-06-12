@@ -1,67 +1,143 @@
 const { allQuery } = require("../db");
 
 async function getResumenReportes({ desde = null, hasta = null } = {}) {
-  const ventasWhere = ["estado != 'anulado'"];
-  const pagosWhere  = ["estado != 'pendiente'"];
+  const ventasWhere  = ["estado != 'anulado'"];
+  const ventasWhereV = ["COALESCE(v.estado, '') != 'anulado'"];
+  const pagosWhere   = ["estado != 'pendiente'"];
   const ventasParams = [];
   const pagosParams  = [];
 
   if (desde) {
     ventasWhere.push("fecha >= ?");
+    ventasWhereV.push("v.fecha >= ?");
     pagosWhere.push("fecha >= ?");
     ventasParams.push(desde);
     pagosParams.push(desde);
   }
   if (hasta) {
     ventasWhere.push("fecha <= ?");
+    ventasWhereV.push("v.fecha <= ?");
     pagosWhere.push("fecha <= ?");
     ventasParams.push(hasta);
     pagosParams.push(hasta);
   }
 
-  const [ventasRows, pagosRows] = await Promise.all([
+  const ventasWhereVSQL = ventasWhereV.join(" AND ");
+
+  // cobros_cuenta_corriente: V2 (pagos_cc_cobros) + fallback legacy (group_id IS NULL)
+  const ccV2Where = [];
+  const ccV2Params = [];
+  if (desde) { ccV2Where.push("pcc.fecha >= ?"); ccV2Params.push(desde); }
+  if (hasta) { ccV2Where.push("pcc.fecha <= ?"); ccV2Params.push(hasta); }
+  const ccV2SQL = ccV2Where.length ? `WHERE ${ccV2Where.join(" AND ")}` : "";
+
+  const ccLegacyWhere = ["pcc.group_id IS NULL"];
+  const ccLegacyParams = [];
+  if (desde) { ccLegacyWhere.push("pcc.fecha >= ?"); ccLegacyParams.push(desde); }
+  if (hasta) { ccLegacyWhere.push("pcc.fecha <= ?"); ccLegacyParams.push(hasta); }
+
+  const [ventasRows, pagosRows, cobrosRows, cobrosCanalRows] = await Promise.all([
     allQuery(
       `SELECT
-         COUNT(*)                        AS total_ventas,
-         COALESCE(SUM(total), 0)         AS ventas_totales,
-         COALESCE(SUM(monto_efectivo), 0) AS ventas_efectivo,
-         COALESCE(SUM(monto_debito), 0)  AS ventas_debito
+         COUNT(*) AS total_ventas,
+         COALESCE(SUM(total), 0) AS valor_comercial_total,
+         COALESCE(SUM(CASE WHEN COALESCE(estado, '') = 'cobrada'   AND COALESCE(es_cuenta_corriente, 0) = 0 THEN total ELSE 0 END), 0) AS ventas_cobradas,
+         COALESCE(SUM(CASE WHEN COALESCE(estado, '') = 'pendiente' AND COALESCE(es_cuenta_corriente, 0) = 0 THEN total ELSE 0 END), 0) AS ventas_pendientes,
+         COALESCE(SUM(CASE WHEN COALESCE(es_cuenta_corriente, 0) = 1 THEN total ELSE 0 END), 0) AS ventas_cuenta_corriente
        FROM ventas
        WHERE ${ventasWhere.join(" AND ")}`,
       ventasParams
     ),
     allQuery(
       `SELECT
-         COUNT(*)                              AS total_pagos,
-         COALESCE(SUM(monto_total), 0)         AS pagos_totales,
-         COALESCE(SUM(monto_efectivo), 0)      AS pagos_efectivo,
-         COALESCE(SUM(monto_debito), 0)        AS pagos_debito,
-         COALESCE(SUM(iva_credito_fiscal), 0)  AS iva_credito_fiscal
+         COUNT(*) AS total_pagos,
+         COALESCE(SUM(monto_total), 0)        AS pagos_totales,
+         COALESCE(SUM(monto_efectivo), 0)     AS pagos_efectivo,
+         COALESCE(SUM(monto_debito), 0)       AS pagos_debito,
+         COALESCE(SUM(iva_credito_fiscal), 0) AS iva_credito_fiscal
        FROM pagos
        WHERE ${pagosWhere.join(" AND ")}`,
       pagosParams
+    ),
+    allQuery(
+      `SELECT COALESCE(SUM(total_cobro), 0) AS cobros_cc
+       FROM (
+         SELECT pcc.monto AS total_cobro
+           FROM pagos_cc_cobros pcc
+           ${ccV2SQL}
+         UNION ALL
+         SELECT pcc.monto_pagado AS total_cobro
+           FROM pagos_cuenta_corriente pcc
+           WHERE ${ccLegacyWhere.join(" AND ")}
+       )`,
+      [...ccV2Params, ...ccLegacyParams]
+    ),
+    allQuery(
+      `SELECT
+         COALESCE(SUM(CASE WHEN tipo_cobro = 'efectivo' THEN monto ELSE 0 END), 0) AS efectivo,
+         COALESCE(SUM(CASE WHEN tipo_cobro = 'debito'   THEN monto ELSE 0 END), 0) AS debito
+       FROM (
+         SELECT vc.tipo_cobro, vc.monto
+           FROM venta_cobros vc
+           JOIN ventas v ON v.id = vc.venta_id
+           WHERE vc.estado = 'confirmado'
+             AND vc.tipo_cobro IN ('efectivo', 'debito')
+             AND ${ventasWhereVSQL}
+         UNION ALL
+         SELECT 'efectivo', v.monto_efectivo
+           FROM ventas v
+           WHERE NOT EXISTS (SELECT 1 FROM venta_cobros vc WHERE vc.venta_id = v.id)
+             AND ${ventasWhereVSQL}
+             AND v.monto_efectivo > 0
+         UNION ALL
+         SELECT 'debito', v.monto_debito
+           FROM ventas v
+           WHERE NOT EXISTS (SELECT 1 FROM venta_cobros vc WHERE vc.venta_id = v.id)
+             AND ${ventasWhereVSQL}
+             AND v.monto_debito > 0
+       )`,
+      [...ventasParams, ...ventasParams, ...ventasParams]
     )
   ]);
 
-  const v = ventasRows[0] || {};
-  const p = pagosRows[0] || {};
+  const v  = ventasRows[0]      || {};
+  const p  = pagosRows[0]       || {};
+  const cc = cobrosRows[0]      || {};
+  const ch = cobrosCanalRows[0] || {};
 
-  const ventas_totales = Number(v.ventas_totales || 0);
-  const pagos_totales  = Number(p.pagos_totales  || 0);
-  const total_ventas   = Number(v.total_ventas   || 0);
+  const r2 = (x) => Number(Number(x || 0).toFixed(2));
+
+  const valor_comercial_total   = r2(v.valor_comercial_total);
+  const ventas_cobradas         = r2(v.ventas_cobradas);
+  const ventas_pendientes       = r2(v.ventas_pendientes);
+  const ventas_cuenta_corriente = r2(v.ventas_cuenta_corriente);
+  const cobros_cuenta_corriente = r2(cc.cobros_cc);
+  const ingresos_reales         = r2(ventas_cobradas + cobros_cuenta_corriente);
+  const pagos_totales           = r2(p.pagos_totales);
+  const total_ventas            = Number(v.total_ventas || 0);
+  const ventas_efectivo         = r2(ch.efectivo);
+  const ventas_debito           = r2(ch.debito);
 
   return {
-    ventas_totales:     Number(ventas_totales.toFixed(2)),
-    pagos_totales:      Number(pagos_totales.toFixed(2)),
-    balance_general:    Number((ventas_totales - pagos_totales).toFixed(2)),
-    iva_credito_fiscal: Number(Number(p.iva_credito_fiscal || 0).toFixed(2)),
-    ticket_promedio:    total_ventas > 0 ? Number((ventas_totales / total_ventas).toFixed(2)) : 0,
+    // backward-compatible fields
+    ventas_totales:     valor_comercial_total,
+    pagos_totales,
+    balance_general:    r2(ingresos_reales - pagos_totales),
+    iva_credito_fiscal: r2(p.iva_credito_fiscal),
+    ticket_promedio:    total_ventas > 0 ? r2(valor_comercial_total / total_ventas) : 0,
     total_ventas,
-    total_pagos:        Number(p.total_pagos   || 0),
-    ventas_efectivo:    Number(Number(v.ventas_efectivo || 0).toFixed(2)),
-    ventas_debito:      Number(Number(v.ventas_debito  || 0).toFixed(2)),
-    pagos_efectivo:     Number(Number(p.pagos_efectivo  || 0).toFixed(2)),
-    pagos_debito:       Number(Number(p.pagos_debito   || 0).toFixed(2))
+    total_pagos:        Number(p.total_pagos || 0),
+    ventas_efectivo,
+    ventas_debito,
+    pagos_efectivo:     r2(p.pagos_efectivo),
+    pagos_debito:       r2(p.pagos_debito),
+    // new semantic fields
+    valor_comercial_total,
+    ventas_cobradas,
+    ventas_pendientes,
+    ventas_cuenta_corriente,
+    cobros_cuenta_corriente,
+    ingresos_reales
   };
 }
 
@@ -2591,6 +2667,7 @@ async function getReporteDashboardEjecutivo({ desde = null, hasta = null } = {})
     filtros: { desde, hasta },
     ventas: {
       facturacion_total: round2(ventasRes.ventas_totales),
+      ingresos_reales: round2(ventasRes.ingresos_reales || 0),
       operaciones: Number(ventasRes.total_ventas || 0),
       ticket_promedio: round2(ventasRes.ticket_promedio)
     },
