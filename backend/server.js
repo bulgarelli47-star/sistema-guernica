@@ -728,6 +728,44 @@ function getUsuarioAuditoria(req, fallback = "admin") {
   return req.usuario?.usuario || fallback || "admin";
 }
 
+// CV2.5-B: rellena snapshots históricos en filas anteriores a esta fase
+async function backfillCobrosV25Snapshots() {
+  const tblCC = await getQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='cuentas_cobro'");
+  if (!tblCC) return; // instalación limpia sin data — nada que rellenar
+
+  await runQuery(`
+    UPDATE venta_cobros
+    SET
+      cuenta_cobro_nombre_snapshot    = (SELECT cc.nombre            FROM cuentas_cobro cc WHERE cc.id = venta_cobros.cuenta_cobro_id),
+      cuenta_cobro_tipo_pago_snapshot = (SELECT cc.tipo_pago_codigo  FROM cuentas_cobro cc WHERE cc.id = venta_cobros.cuenta_cobro_id),
+      cuenta_destino_id_snapshot      = (SELECT cc.cuenta_destino_id FROM cuentas_cobro cc WHERE cc.id = venta_cobros.cuenta_cobro_id),
+      cuenta_destino_nombre_snapshot  = (
+        SELECT cd.nombre FROM cuentas_cobro cc
+        LEFT JOIN cuentas_destino cd ON cd.id = cc.cuenta_destino_id
+        WHERE cc.id = venta_cobros.cuenta_cobro_id
+      )
+    WHERE cuenta_cobro_nombre_snapshot IS NULL
+      AND cuenta_cobro_id IS NOT NULL
+      AND EXISTS (SELECT 1 FROM cuentas_cobro cc WHERE cc.id = venta_cobros.cuenta_cobro_id)
+  `);
+
+  await runQuery(`
+    UPDATE pagos_cc_cobros
+    SET
+      cuenta_cobro_nombre_snapshot    = (SELECT cc.nombre            FROM cuentas_cobro cc WHERE cc.id = pagos_cc_cobros.cuenta_cobro_id),
+      cuenta_cobro_tipo_pago_snapshot = (SELECT cc.tipo_pago_codigo  FROM cuentas_cobro cc WHERE cc.id = pagos_cc_cobros.cuenta_cobro_id),
+      cuenta_destino_id_snapshot      = (SELECT cc.cuenta_destino_id FROM cuentas_cobro cc WHERE cc.id = pagos_cc_cobros.cuenta_cobro_id),
+      cuenta_destino_nombre_snapshot  = (
+        SELECT cd.nombre FROM cuentas_cobro cc
+        LEFT JOIN cuentas_destino cd ON cd.id = cc.cuenta_destino_id
+        WHERE cc.id = pagos_cc_cobros.cuenta_cobro_id
+      )
+    WHERE cuenta_cobro_nombre_snapshot IS NULL
+      AND cuenta_cobro_id IS NOT NULL
+      AND EXISTS (SELECT 1 FROM cuentas_cobro cc WHERE cc.id = pagos_cc_cobros.cuenta_cobro_id)
+  `);
+}
+
 // ── Cobros V2 ─────────────────────────────────────────────────────────────────
 async function ensureVentaCobrosSchema() {
   await runQuery(`
@@ -768,6 +806,7 @@ async function ensureVentaCobrosSchema() {
   await ensureColumn("pagos_cc_cobros", "cuenta_cobro_tipo_pago_snapshot", "TEXT");
   await ensureColumn("pagos_cc_cobros", "cuenta_destino_id_snapshot",      "INTEGER");
   await ensureColumn("pagos_cc_cobros", "cuenta_destino_nombre_snapshot",  "TEXT");
+  await backfillCobrosV25Snapshots();
 }
 
 const COBROS_V2_TIPOS_VALIDOS = new Set(["efectivo", "debito", "credito", "transferencia", "qr"]);
