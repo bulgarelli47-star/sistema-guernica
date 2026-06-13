@@ -1755,16 +1755,16 @@ async function getResumenCuentasCobro({ desde = null, hasta = null } = {}) {
       `WITH vb AS (SELECT * FROM ventas v WHERE ${ventasWhere.join(" AND ")})
        SELECT
          vc_or_v.cuenta_cobro_id,
-         COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre,
-         COALESCE(cc.tipo_pago_codigo, vc_or_v.tipo_cobro) AS tipo_pago_codigo,
+         COALESCE(vc_or_v.cuenta_cobro_nombre_snapshot, cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+         COALESCE(vc_or_v.cuenta_cobro_tipo_pago_snapshot, cc.tipo_pago_codigo, vc_or_v.tipo_cobro) AS tipo_pago_codigo,
          COALESCE(SUM(vc_or_v.monto), 0) AS ingresos,
          COUNT(DISTINCT vc_or_v.venta_id) AS ventas
        FROM (
-         SELECT vc.cuenta_cobro_id, vc.tipo_cobro, vc.monto, vc.venta_id
+         SELECT vc.cuenta_cobro_id, vc.tipo_cobro, vc.monto, vc.venta_id, vc.cuenta_cobro_nombre_snapshot, vc.cuenta_cobro_tipo_pago_snapshot
            FROM venta_cobros vc JOIN vb v ON v.id = vc.venta_id
            WHERE vc.estado = 'confirmado'
          UNION ALL
-         SELECT v.cuenta_cobro_id, COALESCE(v.tipo_cobro, v.metodo_pago), v.total, v.id
+         SELECT v.cuenta_cobro_id, COALESCE(v.tipo_cobro, v.metodo_pago), v.total, v.id, NULL, NULL
            FROM vb v WHERE NOT EXISTS (SELECT 1 FROM venta_cobros vc WHERE vc.venta_id = v.id)
        ) vc_or_v
        LEFT JOIN cuentas_cobro cc ON cc.id = vc_or_v.cuenta_cobro_id
@@ -1801,8 +1801,8 @@ async function getResumenCuentasCobro({ desde = null, hasta = null } = {}) {
     allQuery(
       `SELECT
          pcc.cuenta_cobro_id,
-         COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre,
-         COALESCE(cc.tipo_pago_codigo, pcc.tipo_cobro) AS tipo_pago_codigo,
+         COALESCE(pcc.cuenta_cobro_nombre_snapshot, cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+         COALESCE(pcc.cuenta_cobro_tipo_pago_snapshot, cc.tipo_pago_codigo, pcc.tipo_cobro) AS tipo_pago_codigo,
          COALESCE(SUM(pcc.monto), 0) AS ingresos
        FROM pagos_cc_cobros pcc
        LEFT JOIN cuentas_cobro cc ON cc.id = pcc.cuenta_cobro_id

@@ -416,25 +416,25 @@ async function getResumenPorCuentaCobro({ cajaId } = {}) {
        ),
        ingresos_v2 AS (
          -- ventas CON venta_cobros: usar cuenta y monto por cobro real
-         SELECT vc.cuenta_cobro_id, vc.monto, vc.venta_id
+         SELECT vc.cuenta_cobro_id, vc.monto, vc.venta_id, vc.cuenta_cobro_nombre_snapshot
            FROM venta_cobros vc JOIN vb ON vb.id = vc.venta_id
            WHERE vc.estado = 'confirmado'
          UNION ALL
          -- ventas SIN venta_cobros: fallback legacy
-         SELECT vb.cuenta_cobro_id, vb.total, vb.id
+         SELECT vb.cuenta_cobro_id, vb.total, vb.id, NULL
            FROM vb WHERE NOT EXISTS (SELECT 1 FROM venta_cobros vc WHERE vc.venta_id = vb.id)
        ),
        movimientos AS (
          SELECT
            i.cuenta_cobro_id AS cuenta_cobro_id,
-           COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+           COALESCE(i.cuenta_cobro_nombre_snapshot, cc.nombre, 'Sin cuenta') AS cuenta_nombre,
            SUM(COALESCE(i.monto, 0)) AS ingresos,
            0 AS egresos,
            COUNT(DISTINCT i.venta_id) AS ventas,
            0 AS pagos
          FROM ingresos_v2 i
          LEFT JOIN cuentas_cobro cc ON cc.id = i.cuenta_cobro_id
-         GROUP BY i.cuenta_cobro_id, COALESCE(cc.nombre, 'Sin cuenta')
+         GROUP BY i.cuenta_cobro_id, COALESCE(i.cuenta_cobro_nombre_snapshot, cc.nombre, 'Sin cuenta')
 
          UNION ALL
 
@@ -456,7 +456,7 @@ async function getResumenPorCuentaCobro({ cajaId } = {}) {
          -- cobros de deuda CC 3.0A por canal/terminal
          SELECT
            pcc.cuenta_cobro_id AS cuenta_cobro_id,
-           COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+           COALESCE(pcc.cuenta_cobro_nombre_snapshot, cc.nombre, 'Sin cuenta') AS cuenta_nombre,
            SUM(COALESCE(pcc.monto, 0)) AS ingresos,
            0 AS egresos,
            0 AS ventas,
@@ -464,7 +464,7 @@ async function getResumenPorCuentaCobro({ cajaId } = {}) {
          FROM pagos_cc_cobros pcc
          LEFT JOIN cuentas_cobro cc ON cc.id = pcc.cuenta_cobro_id
          WHERE pcc.caja_id = ?
-         GROUP BY pcc.cuenta_cobro_id, COALESCE(cc.nombre, 'Sin cuenta')
+         GROUP BY pcc.cuenta_cobro_id, COALESCE(pcc.cuenta_cobro_nombre_snapshot, cc.nombre, 'Sin cuenta')
        )
      SELECT
        cuenta_cobro_id,
@@ -514,11 +514,11 @@ async function getResumenPorCuentaDestino({ cajaId } = {}) {
     `WITH movimientos AS (
        -- ventas V2: canal y monto real de venta_cobros
        SELECT
-         cd.id AS cuenta_destino_id,
-         cd.nombre AS cuenta_destino_nombre,
+         COALESCE(vc.cuenta_destino_id_snapshot, cd.id) AS cuenta_destino_id,
+         COALESCE(vc.cuenta_destino_nombre_snapshot, cd.nombre) AS cuenta_destino_nombre,
          cd.tipo_destino AS tipo_destino,
-         CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END AS sin_cuenta_destino,
-         cc.nombre AS canal_nombre,
+         CASE WHEN COALESCE(vc.cuenta_destino_id_snapshot, cd.id) IS NULL THEN 1 ELSE 0 END AS sin_cuenta_destino,
+         COALESCE(vc.cuenta_cobro_nombre_snapshot, cc.nombre) AS canal_nombre,
          SUM(COALESCE(vc.monto, 0)) AS ingresos,
          0 AS egresos,
          COUNT(DISTINCT vc.venta_id) AS ventas,
@@ -531,7 +531,7 @@ async function getResumenPorCuentaDestino({ cajaId } = {}) {
          AND v.estado = 'cobrada'
          AND COALESCE(v.estado, '') != 'anulado'
          AND COALESCE(v.es_cuenta_corriente, 0) = 0
-       GROUP BY cd.id, cd.nombre, cd.tipo_destino, CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END, cc.nombre
+       GROUP BY COALESCE(vc.cuenta_destino_id_snapshot, cd.id), COALESCE(vc.cuenta_destino_nombre_snapshot, cd.nombre), cd.tipo_destino, CASE WHEN COALESCE(vc.cuenta_destino_id_snapshot, cd.id) IS NULL THEN 1 ELSE 0 END, COALESCE(vc.cuenta_cobro_nombre_snapshot, cc.nombre)
 
        UNION ALL
 
@@ -579,11 +579,11 @@ async function getResumenPorCuentaDestino({ cajaId } = {}) {
 
        -- cobros de deuda CC 3.0A por canal/destino
        SELECT
-         cd.id AS cuenta_destino_id,
-         cd.nombre AS cuenta_destino_nombre,
+         COALESCE(pcc.cuenta_destino_id_snapshot, cd.id) AS cuenta_destino_id,
+         COALESCE(pcc.cuenta_destino_nombre_snapshot, cd.nombre) AS cuenta_destino_nombre,
          cd.tipo_destino AS tipo_destino,
-         CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END AS sin_cuenta_destino,
-         cc.nombre AS canal_nombre,
+         CASE WHEN COALESCE(pcc.cuenta_destino_id_snapshot, cd.id) IS NULL THEN 1 ELSE 0 END AS sin_cuenta_destino,
+         COALESCE(pcc.cuenta_cobro_nombre_snapshot, cc.nombre) AS canal_nombre,
          SUM(COALESCE(pcc.monto, 0)) AS ingresos,
          0 AS egresos,
          0 AS ventas,
@@ -592,7 +592,7 @@ async function getResumenPorCuentaDestino({ cajaId } = {}) {
        LEFT JOIN cuentas_cobro cc ON cc.id = pcc.cuenta_cobro_id
        LEFT JOIN cuentas_destino cd ON cd.id = cc.cuenta_destino_id
        WHERE pcc.caja_id = ?
-       GROUP BY cd.id, cd.nombre, cd.tipo_destino, CASE WHEN cd.id IS NULL THEN 1 ELSE 0 END, cc.nombre
+       GROUP BY COALESCE(pcc.cuenta_destino_id_snapshot, cd.id), COALESCE(pcc.cuenta_destino_nombre_snapshot, cd.nombre), cd.tipo_destino, CASE WHEN COALESCE(pcc.cuenta_destino_id_snapshot, cd.id) IS NULL THEN 1 ELSE 0 END, COALESCE(pcc.cuenta_cobro_nombre_snapshot, cc.nombre)
      ),
      agrupado AS (
        SELECT
