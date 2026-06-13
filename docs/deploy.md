@@ -40,6 +40,62 @@ pm2 save
 pm2 startup   # seguir las instrucciones que imprime este comando
 ```
 
+## Configuración de Nginx
+
+Atlas OS requiere que Nginx esté configurado con un límite de body adecuado para
+permitir la carga de imágenes. Las imágenes viajan como **base64 dentro de JSON**,
+lo que incrementa el tamaño del request en ~33% respecto al archivo original.
+
+> **¿Por qué importa?**
+> El default de Nginx es `client_max_body_size 1m` (1 MB). Con ese valor,
+> una imagen de 1 MB ya supera el límite al codificarse en base64 (~1.37 MB
+> de payload JSON). Nginx devuelve HTTP 413 **antes** de que el request llegue
+> a Express, por lo que el mensaje de error amigable del backend no llega al
+> usuario — el browser recibe HTML de error de Nginx en su lugar.
+>
+> Express tiene configurado `express.json({ limit: "15mb" })` y un handler
+> que devuelve JSON con mensaje legible si el 413 llega a Node.js. Para que
+> ese handler funcione, Nginx debe dejar pasar el request.
+
+### Bloque de configuración recomendado
+
+```nginx
+server {
+    server_name atlasos.com.ar;  # reemplazar con el dominio real
+
+    # Necesario para que las imágenes (base64/JSON) lleguen a Express.
+    # Las imágenes están limitadas a 5 MB en el backend; 20M da margen
+    # suficiente al overhead de base64 (~6.7 MB) + headers JSON.
+    client_max_body_size 20M;
+
+    location / {
+        proxy_pass         http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection 'upgrade';
+        proxy_set_header   Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+```
+
+### Validar y recargar Nginx
+
+Después de editar el archivo de configuración:
+
+```bash
+sudo nginx -t              # verificar sintaxis — debe decir "syntax is ok"
+sudo systemctl reload nginx  # aplicar sin cortar conexiones activas
+```
+
+### Síntoma de Nginx mal configurado
+
+Si al subir una imagen se recibe un error genérico de red (no el mensaje
+"La imagen no puede superar 5 MB") o la respuesta tiene `Content-Type: text/html`
+en lugar de `application/json`, revisar primero `client_max_body_size`.
+
+---
+
 ## Deploy normal (actualizaciones)
 
 ```bash
