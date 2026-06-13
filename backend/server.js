@@ -3680,8 +3680,9 @@ app.delete("/cuentas_cobro/:id", async (req, res) => {
         (SELECT COUNT(*) FROM venta_cobros                WHERE cuenta_cobro_id = ?) +
         (SELECT COUNT(*) FROM ventas                      WHERE cuenta_cobro_id = ?) +
         (SELECT COUNT(*) FROM pagos                       WHERE cuenta_cobro_id = ?) +
-        (SELECT COUNT(*) FROM conciliaciones_cuentas_cobro WHERE cuenta_cobro_id = ?) AS total`,
-      [id, id, id, id]
+        (SELECT COUNT(*) FROM conciliaciones_cuentas_cobro WHERE cuenta_cobro_id = ?) +
+        (SELECT COUNT(*) FROM pagos_cc_cobros             WHERE cuenta_cobro_id = ?) AS total`,
+      [id, id, id, id, id]
     );
     if (Number(uso?.total || 0) > 0) {
       await runQuery("UPDATE cuentas_cobro SET activo = 0, updated_at = datetime('now') WHERE id = ?", [id]);

@@ -130,8 +130,10 @@ async function eliminarCuentaDestino(id) {
   const uso = await getQuery(
     `SELECT
       (SELECT COUNT(*) FROM cuentas_cobro                   WHERE cuenta_destino_id = ?) +
-      (SELECT COUNT(*) FROM conciliaciones_cuentas_destino  WHERE cuenta_destino_id = ?) AS total`,
-    [idNum, idNum]
+      (SELECT COUNT(*) FROM conciliaciones_cuentas_destino  WHERE cuenta_destino_id = ?) +
+      (SELECT COUNT(*) FROM venta_cobros                    WHERE cuenta_destino_id_snapshot = ?) +
+      (SELECT COUNT(*) FROM pagos_cc_cobros                 WHERE cuenta_destino_id_snapshot = ?) AS total`,
+    [idNum, idNum, idNum, idNum]
   );
 
   if (Number(uso?.total || 0) === 0) {
