@@ -758,6 +758,16 @@ async function ensureVentaCobrosSchema() {
     )
   `);
   await ensureColumn("pagos_cuenta_corriente", "group_id", "TEXT");
+
+  // CV2.5-A: snapshot de cuenta al momento de la transacción — permite renombrar/desactivar cuentas sin romper históricos
+  await ensureColumn("venta_cobros",    "cuenta_cobro_nombre_snapshot",   "TEXT");
+  await ensureColumn("venta_cobros",    "cuenta_cobro_tipo_pago_snapshot", "TEXT");
+  await ensureColumn("venta_cobros",    "cuenta_destino_id_snapshot",      "INTEGER");
+  await ensureColumn("venta_cobros",    "cuenta_destino_nombre_snapshot",  "TEXT");
+  await ensureColumn("pagos_cc_cobros", "cuenta_cobro_nombre_snapshot",   "TEXT");
+  await ensureColumn("pagos_cc_cobros", "cuenta_cobro_tipo_pago_snapshot", "TEXT");
+  await ensureColumn("pagos_cc_cobros", "cuenta_destino_id_snapshot",      "INTEGER");
+  await ensureColumn("pagos_cc_cobros", "cuenta_destino_nombre_snapshot",  "TEXT");
 }
 
 const COBROS_V2_TIPOS_VALIDOS = new Set(["efectivo", "debito", "credito", "transferencia", "qr"]);
