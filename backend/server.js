@@ -848,6 +848,25 @@ function derivarCobroLegacy(cobrosNormalizados) {
   };
 }
 
+async function getCuentaCobroSnapshot(cuentaCobroId) {
+  if (!cuentaCobroId) return { cuenta_cobro_nombre_snapshot: null, cuenta_cobro_tipo_pago_snapshot: null, cuenta_destino_id_snapshot: null, cuenta_destino_nombre_snapshot: null };
+  const row = await getQuery(`
+    SELECT cc.nombre            AS cuenta_cobro_nombre_snapshot,
+           cc.tipo_pago_codigo  AS cuenta_cobro_tipo_pago_snapshot,
+           cc.cuenta_destino_id AS cuenta_destino_id_snapshot,
+           cd.nombre            AS cuenta_destino_nombre_snapshot
+    FROM cuentas_cobro cc
+    LEFT JOIN cuentas_destino cd ON cd.id = cc.cuenta_destino_id
+    WHERE cc.id = ?
+  `, [cuentaCobroId]);
+  return {
+    cuenta_cobro_nombre_snapshot:    row?.cuenta_cobro_nombre_snapshot    || null,
+    cuenta_cobro_tipo_pago_snapshot: row?.cuenta_cobro_tipo_pago_snapshot || null,
+    cuenta_destino_id_snapshot:      row?.cuenta_destino_id_snapshot      ?? null,
+    cuenta_destino_nombre_snapshot:  row?.cuenta_destino_nombre_snapshot  || null
+  };
+}
+
 async function registrarVentaCobros(ventaId, cobro, cuentaCobroId, created_at, cobrosV2 = null) {
   if (!ventaId) return;
   const now = created_at || new Date().toISOString();
@@ -863,9 +882,10 @@ async function registrarVentaCobros(ventaId, cobro, cuentaCobroId, created_at, c
     for (const c of cobrosV2) {
       const cuentaFinal = c.cuenta_cobro_id ??
         (c.tipo_cobro === "efectivo" ? cuentaEfectivoId : null);
+      const snap = await getCuentaCobroSnapshot(cuentaFinal);
       await runQuery(
-        `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at) VALUES (?, ?, ?, ?, 'confirmado', ?)`,
-        [ventaId, c.tipo_cobro, cuentaFinal, c.monto, now]
+        `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at, cuenta_cobro_nombre_snapshot, cuenta_cobro_tipo_pago_snapshot, cuenta_destino_id_snapshot, cuenta_destino_nombre_snapshot) VALUES (?, ?, ?, ?, 'confirmado', ?, ?, ?, ?, ?)`,
+        [ventaId, c.tipo_cobro, cuentaFinal, c.monto, now, snap.cuenta_cobro_nombre_snapshot, snap.cuenta_cobro_tipo_pago_snapshot, snap.cuenta_destino_id_snapshot, snap.cuenta_destino_nombre_snapshot]
       );
     }
     return;
@@ -884,15 +904,17 @@ async function registrarVentaCobros(ventaId, cobro, cuentaCobroId, created_at, c
   }
   if (tipo === "mixto") {
     if (Number(cobro.monto_efectivo) > 0) {
+      const snapEf = await getCuentaCobroSnapshot(cuentaEfectivoId);
       await runQuery(
-        `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at) VALUES (?, 'efectivo', ?, ?, 'confirmado', ?)`,
-        [ventaId, cuentaEfectivoId, Number(cobro.monto_efectivo), now]
+        `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at, cuenta_cobro_nombre_snapshot, cuenta_cobro_tipo_pago_snapshot, cuenta_destino_id_snapshot, cuenta_destino_nombre_snapshot) VALUES (?, 'efectivo', ?, ?, 'confirmado', ?, ?, ?, ?, ?)`,
+        [ventaId, cuentaEfectivoId, Number(cobro.monto_efectivo), now, snapEf.cuenta_cobro_nombre_snapshot, snapEf.cuenta_cobro_tipo_pago_snapshot, snapEf.cuenta_destino_id_snapshot, snapEf.cuenta_destino_nombre_snapshot]
       );
     }
     if (Number(cobro.monto_debito) > 0) {
+      const snapDeb = await getCuentaCobroSnapshot(cuentaCobroId ?? null);
       await runQuery(
-        `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at) VALUES (?, 'debito', ?, ?, 'confirmado', ?)`,
-        [ventaId, cuentaCobroId ?? null, Number(cobro.monto_debito), now]
+        `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at, cuenta_cobro_nombre_snapshot, cuenta_cobro_tipo_pago_snapshot, cuenta_destino_id_snapshot, cuenta_destino_nombre_snapshot) VALUES (?, 'debito', ?, ?, 'confirmado', ?, ?, ?, ?, ?)`,
+        [ventaId, cuentaCobroId ?? null, Number(cobro.monto_debito), now, snapDeb.cuenta_cobro_nombre_snapshot, snapDeb.cuenta_cobro_tipo_pago_snapshot, snapDeb.cuenta_destino_id_snapshot, snapDeb.cuenta_destino_nombre_snapshot]
       );
     }
   } else {
@@ -900,23 +922,31 @@ async function registrarVentaCobros(ventaId, cobro, cuentaCobroId, created_at, c
     const cuentaFinal = tipo === "efectivo"
       ? (cuentaCobroId ?? cuentaEfectivoId)
       : (cuentaCobroId ?? null);
+    const snapSimple = await getCuentaCobroSnapshot(cuentaFinal);
     await runQuery(
-      `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at) VALUES (?, ?, ?, ?, 'confirmado', ?)`,
-      [ventaId, tipo, cuentaFinal, monto || 0, now]
+      `INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at, cuenta_cobro_nombre_snapshot, cuenta_cobro_tipo_pago_snapshot, cuenta_destino_id_snapshot, cuenta_destino_nombre_snapshot) VALUES (?, ?, ?, ?, 'confirmado', ?, ?, ?, ?, ?)`,
+      [ventaId, tipo, cuentaFinal, monto || 0, now, snapSimple.cuenta_cobro_nombre_snapshot, snapSimple.cuenta_cobro_tipo_pago_snapshot, snapSimple.cuenta_destino_id_snapshot, snapSimple.cuenta_destino_nombre_snapshot]
     );
   }
 }
 async function migrarVentaCobrosLegacy() {
   // Ventas simples cobradas sin fila en venta_cobros (idempotente: NOT EXISTS)
   await runQuery(`
-    INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at)
+    INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at,
+      cuenta_cobro_nombre_snapshot, cuenta_cobro_tipo_pago_snapshot, cuenta_destino_id_snapshot, cuenta_destino_nombre_snapshot)
     SELECT v.id,
            LOWER(v.tipo_cobro),
            v.cuenta_cobro_id,
            CASE WHEN LOWER(v.tipo_cobro) = 'efectivo' THEN v.monto_efectivo ELSE v.monto_debito END,
            'confirmado',
-           v.fecha || ' ' || v.hora
+           v.fecha || ' ' || v.hora,
+           cc.nombre,
+           cc.tipo_pago_codigo,
+           cc.cuenta_destino_id,
+           cd.nombre
     FROM ventas v
+    LEFT JOIN cuentas_cobro cc ON cc.id = v.cuenta_cobro_id
+    LEFT JOIN cuentas_destino cd ON cd.id = cc.cuenta_destino_id
     WHERE v.estado = 'cobrada'
       AND v.tipo_cobro IS NOT NULL
       AND LOWER(v.tipo_cobro) NOT IN ('mixto', 'cuenta_corriente', 'cuenta_corriente_pendiente')
@@ -925,8 +955,10 @@ async function migrarVentaCobrosLegacy() {
 
   // Mixtas: parte efectivo (solo si no existe fila efectivo para esa venta)
   await runQuery(`
-    INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at)
-    SELECT v.id, 'efectivo', NULL, v.monto_efectivo, 'confirmado', v.fecha || ' ' || v.hora
+    INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at,
+      cuenta_cobro_nombre_snapshot, cuenta_cobro_tipo_pago_snapshot, cuenta_destino_id_snapshot, cuenta_destino_nombre_snapshot)
+    SELECT v.id, 'efectivo', NULL, v.monto_efectivo, 'confirmado', v.fecha || ' ' || v.hora,
+           NULL, NULL, NULL, NULL
     FROM ventas v
     WHERE LOWER(v.tipo_cobro) = 'mixto'
       AND v.monto_efectivo > 0
@@ -937,9 +969,13 @@ async function migrarVentaCobrosLegacy() {
 
   // Mixtas: parte debito (solo si no existe fila debito para esa venta)
   await runQuery(`
-    INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at)
-    SELECT v.id, 'debito', v.cuenta_cobro_id, v.monto_debito, 'confirmado', v.fecha || ' ' || v.hora
+    INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto, estado, created_at,
+      cuenta_cobro_nombre_snapshot, cuenta_cobro_tipo_pago_snapshot, cuenta_destino_id_snapshot, cuenta_destino_nombre_snapshot)
+    SELECT v.id, 'debito', v.cuenta_cobro_id, v.monto_debito, 'confirmado', v.fecha || ' ' || v.hora,
+           cc.nombre, cc.tipo_pago_codigo, cc.cuenta_destino_id, cd.nombre
     FROM ventas v
+    LEFT JOIN cuentas_cobro cc ON cc.id = v.cuenta_cobro_id
+    LEFT JOIN cuentas_destino cd ON cd.id = cc.cuenta_destino_id
     WHERE LOWER(v.tipo_cobro) = 'mixto'
       AND v.monto_debito > 0
       AND NOT EXISTS (
@@ -5715,10 +5751,11 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
       for (const cobro of cobrosNormalizados) {
         const cuentaFinal = cobro.cuenta_cobro_id ??
           (cobro.tipo_cobro === "efectivo" ? cuentaEfectivoIdCc : null);
+        const snap = await getCuentaCobroSnapshot(cuentaFinal);
         await runQuery(
-          `INSERT INTO pagos_cc_cobros (group_id, tipo_cobro, cuenta_cobro_id, monto, caja_id, fecha, hora)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [groupId, cobro.tipo_cobro, cuentaFinal, cobro.monto, cajaActiva.id, fecha, hora]
+          `INSERT INTO pagos_cc_cobros (group_id, tipo_cobro, cuenta_cobro_id, monto, caja_id, fecha, hora, cuenta_cobro_nombre_snapshot, cuenta_cobro_tipo_pago_snapshot, cuenta_destino_id_snapshot, cuenta_destino_nombre_snapshot)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [groupId, cobro.tipo_cobro, cuentaFinal, cobro.monto, cajaActiva.id, fecha, hora, snap.cuenta_cobro_nombre_snapshot, snap.cuenta_cobro_tipo_pago_snapshot, snap.cuenta_destino_id_snapshot, snap.cuenta_destino_nombre_snapshot]
         );
       }
 
