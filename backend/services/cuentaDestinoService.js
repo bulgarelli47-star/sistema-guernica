@@ -152,8 +152,8 @@ async function eliminarCuentaDestino(id) {
     eliminado: false,
     desactivado: true,
     canales_afectados: Number(canalesAfectados?.total || 0),
-    requiere_snapshot_futuro: true,
-    message: "La cuenta destino tenía historial. Se desactivó sin desvincular canales para preservar la trazabilidad. Para eliminarla definitivamente, primero debe implementarse Cobros V2.5 con snapshot histórico."
+    requiere_snapshot_futuro: false,
+    message: "La cuenta destino tiene movimientos históricos. Se desactivó para conservar la trazabilidad."
   };
 }
 

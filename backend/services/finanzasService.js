@@ -133,6 +133,13 @@ async function obtenerIngresosPeriodo({ desde, hasta }) {
   if (desde) { where.push("fecha >= ?"); params.push(desde); }
   if (hasta) { where.push("fecha <= ?"); params.push(hasta); }
 
+  // F4-A: filtros de fecha para la query de ventas_cobradas (se aplican a ambas ramas del UNION ALL)
+  const vcFechaWhere = [];
+  const vcFechaParams = [];
+  if (desde) { vcFechaWhere.push("v.fecha >= ?"); vcFechaParams.push(desde); }
+  if (hasta) { vcFechaWhere.push("v.fecha <= ?"); vcFechaParams.push(hasta); }
+  const vcFechaSQL = vcFechaWhere.length ? `AND ${vcFechaWhere.join(" AND ")}` : "";
+
   // pagos_cc_cobros: cobros CC V2 (con group_id) filtrados por fecha de cobro real
   const cobrosV2Where = [];
   const cobrosV2Params = [];
@@ -146,16 +153,38 @@ async function obtenerIngresosPeriodo({ desde, hasta }) {
   if (desde) { cobrosLegacyWhere.push("pcc.fecha >= ?"); cobrosLegacyParams.push(desde); }
   if (hasta) { cobrosLegacyWhere.push("pcc.fecha <= ?"); cobrosLegacyParams.push(hasta); }
 
-  const [rows, cobrosRows] = await Promise.all([
+  const [rows, ventasCobradaRows, cobrosRows] = await Promise.all([
     allQuery(
       `SELECT
-         COALESCE(SUM(CASE WHEN estado = 'cobrada' AND COALESCE(es_cuenta_corriente, 0) = 0 THEN total ELSE 0 END), 0) AS ventas_cobradas,
          COALESCE(SUM(CASE WHEN estado = 'pendiente' AND COALESCE(es_cuenta_corriente, 0) = 0 THEN total ELSE 0 END), 0) AS ventas_pendientes,
          COALESCE(SUM(CASE WHEN COALESCE(es_cuenta_corriente, 0) = 1 THEN total ELSE 0 END), 0) AS ventas_cuenta_corriente,
          COALESCE(SUM(total), 0) AS total_periodo
        FROM ventas
        WHERE ${where.join(" AND ")}`,
       params
+    ),
+    // F4-A: ventas_cobradas desde venta_cobros.monto (Cobros V2) con fallback legacy
+    allQuery(
+      `SELECT COALESCE(SUM(monto_cobrado), 0) AS ventas_cobradas
+       FROM (
+         SELECT vc.monto AS monto_cobrado
+           FROM venta_cobros vc
+           JOIN ventas v ON v.id = vc.venta_id
+           WHERE vc.estado = 'confirmado'
+             AND v.estado = 'cobrada'
+             AND COALESCE(v.es_cuenta_corriente, 0) = 0
+             AND COALESCE(v.estado, '') != 'anulado'
+             ${vcFechaSQL}
+         UNION ALL
+         SELECT v.total AS monto_cobrado
+           FROM ventas v
+           WHERE NOT EXISTS (SELECT 1 FROM venta_cobros vc WHERE vc.venta_id = v.id)
+             AND v.estado = 'cobrada'
+             AND COALESCE(v.es_cuenta_corriente, 0) = 0
+             AND COALESCE(v.estado, '') != 'anulado'
+             ${vcFechaSQL}
+       )`,
+      [...vcFechaParams, ...vcFechaParams]
     ),
     allQuery(
       `SELECT COALESCE(SUM(total_cobro), 0) AS cobros_cc
@@ -173,10 +202,11 @@ async function obtenerIngresosPeriodo({ desde, hasta }) {
   ]);
 
   const row = rows[0] || {};
+  const vcRow = ventasCobradaRows[0] || {};
   const cobrosRow = cobrosRows[0] || {};
   // total_periodo es SUM directo sin CASE: valor comercial del período (no dinero cobrado)
   return {
-    ventas_cobradas: round2(row.ventas_cobradas),
+    ventas_cobradas: round2(vcRow.ventas_cobradas),
     ventas_pendientes: round2(row.ventas_pendientes),
     ventas_cuenta_corriente: round2(row.ventas_cuenta_corriente),
     cobros_cuenta_corriente: round2(cobrosRow.cobros_cc),
