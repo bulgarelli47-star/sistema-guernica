@@ -158,7 +158,8 @@ async function obtenerIngresosPeriodo({ desde, hasta }) {
       `SELECT
          COALESCE(SUM(CASE WHEN estado = 'pendiente' AND COALESCE(es_cuenta_corriente, 0) = 0 THEN total ELSE 0 END), 0) AS ventas_pendientes,
          COALESCE(SUM(CASE WHEN COALESCE(es_cuenta_corriente, 0) = 1 THEN total ELSE 0 END), 0) AS ventas_cuenta_corriente,
-         COALESCE(SUM(total), 0) AS total_periodo
+         COALESCE(SUM(total), 0) AS total_periodo,
+         COALESCE(SUM(CASE WHEN estado = 'cobrada' AND COALESCE(es_cuenta_corriente, 0) = 0 THEN recargo_monto ELSE 0 END), 0) AS recargos_periodo
        FROM ventas
        WHERE ${where.join(" AND ")}`,
       params
@@ -210,7 +211,8 @@ async function obtenerIngresosPeriodo({ desde, hasta }) {
     ventas_pendientes: round2(row.ventas_pendientes),
     ventas_cuenta_corriente: round2(row.ventas_cuenta_corriente),
     cobros_cuenta_corriente: round2(cobrosRow.cobros_cc),
-    total_periodo: round2(row.total_periodo)
+    total_periodo: round2(row.total_periodo),
+    recargos_periodo: round2(row.recargos_periodo)
   };
 }
 
