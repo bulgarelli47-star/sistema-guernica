@@ -412,18 +412,104 @@ async function obtenerCostosOperativosFijos({ desde, hasta }) {
   };
 }
 
+async function obtenerDesglosePorCanal({ desde, hasta }) {
+  const vcWhere = [
+    "vc.estado = 'confirmado'",
+    "v.estado = 'cobrada'",
+    "COALESCE(v.es_cuenta_corriente, 0) = 0",
+    "COALESCE(v.estado, '') != 'anulado'"
+  ];
+  const vcParams = [];
+  if (desde) { vcWhere.push("v.fecha >= ?"); vcParams.push(desde); }
+  if (hasta) { vcWhere.push("v.fecha <= ?"); vcParams.push(hasta); }
+
+  const legacyWhere = [
+    "NOT EXISTS (SELECT 1 FROM venta_cobros vc WHERE vc.venta_id = v.id)",
+    "v.estado = 'cobrada'",
+    "COALESCE(v.es_cuenta_corriente, 0) = 0",
+    "COALESCE(v.estado, '') != 'anulado'"
+  ];
+  const legacyParams = [];
+  if (desde) { legacyWhere.push("v.fecha >= ?"); legacyParams.push(desde); }
+  if (hasta) { legacyWhere.push("v.fecha <= ?"); legacyParams.push(hasta); }
+
+  const pccWhere = [];
+  const pccParams = [];
+  if (desde) { pccWhere.push("pcc.fecha >= ?"); pccParams.push(desde); }
+  if (hasta) { pccWhere.push("pcc.fecha <= ?"); pccParams.push(hasta); }
+  const pccWhereSQL = pccWhere.length ? `WHERE ${pccWhere.join(" AND ")}` : "";
+
+  const rows = await allQuery(
+    `SELECT
+       canal.cuenta_cobro_id,
+       canal.cuenta_nombre,
+       canal.tipo_pago_codigo,
+       COALESCE(SUM(canal.ingresos), 0)        AS ingresos,
+       COALESCE(SUM(canal.ventas_count), 0)    AS ventas,
+       COALESCE(SUM(canal.cobros_cc_count), 0) AS cobros_cc
+     FROM (
+       SELECT
+         vc.cuenta_cobro_id,
+         COALESCE(vc.cuenta_cobro_nombre_snapshot, cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+         COALESCE(vc.cuenta_cobro_tipo_pago_snapshot, cc.tipo_pago_codigo, vc.tipo_cobro) AS tipo_pago_codigo,
+         vc.monto AS ingresos,
+         1 AS ventas_count,
+         0 AS cobros_cc_count
+       FROM venta_cobros vc
+       JOIN ventas v ON v.id = vc.venta_id
+       LEFT JOIN cuentas_cobro cc ON cc.id = vc.cuenta_cobro_id
+       WHERE ${vcWhere.join(" AND ")}
+       UNION ALL
+       SELECT
+         v.cuenta_cobro_id,
+         COALESCE(cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+         COALESCE(cc.tipo_pago_codigo, v.tipo_cobro, v.metodo_pago) AS tipo_pago_codigo,
+         v.total AS ingresos,
+         1 AS ventas_count,
+         0 AS cobros_cc_count
+       FROM ventas v
+       LEFT JOIN cuentas_cobro cc ON cc.id = v.cuenta_cobro_id
+       WHERE ${legacyWhere.join(" AND ")}
+       UNION ALL
+       SELECT
+         pcc.cuenta_cobro_id,
+         COALESCE(pcc.cuenta_cobro_nombre_snapshot, cc.nombre, 'Sin cuenta') AS cuenta_nombre,
+         COALESCE(pcc.cuenta_cobro_tipo_pago_snapshot, cc.tipo_pago_codigo, pcc.tipo_cobro) AS tipo_pago_codigo,
+         pcc.monto AS ingresos,
+         0 AS ventas_count,
+         1 AS cobros_cc_count
+       FROM pagos_cc_cobros pcc
+       LEFT JOIN cuentas_cobro cc ON cc.id = pcc.cuenta_cobro_id
+       ${pccWhereSQL}
+     ) canal
+     GROUP BY canal.cuenta_cobro_id, canal.cuenta_nombre, canal.tipo_pago_codigo
+     ORDER BY ingresos DESC`,
+    [...vcParams, ...legacyParams, ...pccParams]
+  );
+
+  return rows.map((r) => ({
+    cuenta_cobro_id: r.cuenta_cobro_id == null ? null : Number(r.cuenta_cobro_id),
+    cuenta_nombre: r.cuenta_nombre || "Sin cuenta",
+    tipo_pago_codigo: r.tipo_pago_codigo || "",
+    ingresos: round2(r.ingresos),
+    ventas: Number(r.ventas || 0),
+    cobros_cc: Number(r.cobros_cc || 0)
+  }));
+}
+
 async function getResumenFinanciero({ desde = null, hasta = null } = {}) {
   const alertas = [];
   const fechaCorte = new Date().toISOString();
 
-  const [liquidez, pendientesCobro, capitalInmovilizado, pasivos, movimientosNoMonetarios, ingresosPeriodo, costosOperativosFijos] = await Promise.all([
+  const [liquidez, pendientesCobro, capitalInmovilizado, pasivos, movimientosNoMonetarios, ingresosPeriodo, costosOperativosFijos, desglosePorCanal] = await Promise.all([
     obtenerLiquidez(alertas),
     obtenerPendientesCobro({ desde, hasta }, alertas),
     obtenerCapitalInmovilizado({ desde, hasta }),
     obtenerPasivos({ desde, hasta }, alertas),
     obtenerMovimientosNoMonetarios({ desde, hasta }),
     obtenerIngresosPeriodo({ desde, hasta }),
-    obtenerCostosOperativosFijos({ desde, hasta })
+    obtenerCostosOperativosFijos({ desde, hasta }),
+    obtenerDesglosePorCanal({ desde, hasta })
   ]);
 
   const resultado_operativo = round2(ingresosPeriodo.ventas_cobradas + ingresosPeriodo.cobros_cuenta_corriente - pasivos.egresos_ejecutados);
@@ -435,6 +521,7 @@ async function getResumenFinanciero({ desde = null, hasta = null } = {}) {
     capital_inmovilizado: capitalInmovilizado,
     pasivos,
     ingresos_periodo: ingresosPeriodo,
+    desglose_por_canal: desglosePorCanal,
     movimientos_no_monetarios: movimientosNoMonetarios,
     costos_operativos_fijos: costosOperativosFijos,
     resultado: {
