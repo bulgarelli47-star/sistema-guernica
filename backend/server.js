@@ -4573,6 +4573,118 @@ app.get("/clientes/:id/movimientos-cuenta-corriente", async (req, res) => {
   }
 });
 
+// CC3B: historial de cobros CC agrupado por group_id
+app.get("/clientes/:id/cobros-cc", async (req, res) => {
+  const clienteId = Number(req.params.id);
+  try {
+    const cliente = await getQuery("SELECT id FROM clientes WHERE id = ?", [clienteId]);
+    if (!cliente) {
+      return res.status(404).json({ message: "Cliente no encontrado" });
+    }
+
+    // Grupos V2 (con group_id) — incluye CC3A (sin auditoría) y CC3B-A (con auditoría)
+    const grupos = await allQuery(
+      `SELECT group_id,
+              MIN(fecha) AS fecha, MIN(hora) AS hora, MIN(id) AS min_id,
+              SUM(monto_pagado) AS monto_total,
+              COUNT(DISTINCT venta_id) AS cantidad_ventas,
+              MAX(numero_comprobante) AS numero_comprobante,
+              MAX(usuario_id) AS usuario_id,
+              MAX(usuario_nombre) AS usuario_nombre,
+              MAX(observacion) AS observacion
+       FROM pagos_cuenta_corriente
+       WHERE cliente_id = ? AND group_id IS NOT NULL
+       GROUP BY group_id
+       ORDER BY MIN(fecha) DESC, MIN(hora) DESC, MIN(id) DESC`,
+      [clienteId]
+    );
+
+    // Filas legacy (sin group_id, anteriores a CC3A)
+    const legacy = await allQuery(
+      `SELECT id, fecha, hora, monto_pagado, venta_id, tipo_cobro
+       FROM pagos_cuenta_corriente
+       WHERE cliente_id = ? AND group_id IS NULL
+       ORDER BY fecha DESC, hora DESC, id DESC`,
+      [clienteId]
+    );
+
+    const resultado = [];
+
+    for (const g of grupos) {
+      const ventasAfectadas = await allQuery(
+        `SELECT venta_id, monto_pagado
+         FROM pagos_cuenta_corriente
+         WHERE cliente_id = ? AND group_id = ?
+         ORDER BY id ASC`,
+        [clienteId, g.group_id]
+      );
+      const canales = await allQuery(
+        `SELECT tipo_cobro, cuenta_cobro_id,
+                cuenta_cobro_nombre_snapshot, cuenta_cobro_tipo_pago_snapshot,
+                cuenta_destino_id_snapshot, cuenta_destino_nombre_snapshot, monto
+         FROM pagos_cc_cobros
+         WHERE group_id = ?
+         ORDER BY id ASC`,
+        [g.group_id]
+      );
+      resultado.push({
+        group_id: g.group_id,
+        numero_comprobante: g.numero_comprobante || null,
+        fecha: g.fecha,
+        hora: g.hora,
+        cliente_id: clienteId,
+        usuario_id: g.usuario_id || null,
+        usuario_nombre: g.usuario_nombre || null,
+        observacion: g.observacion || null,
+        monto_total: Number(Number(g.monto_total).toFixed(2)),
+        cantidad_ventas_afectadas: Number(g.cantidad_ventas || 0),
+        ventas_afectadas: ventasAfectadas.map(v => ({
+          venta_id: v.venta_id,
+          monto_pagado: Number(Number(v.monto_pagado).toFixed(2))
+        })),
+        canales: canales.map(c => ({
+          tipo_cobro: c.tipo_cobro,
+          cuenta_cobro_id: c.cuenta_cobro_id || null,
+          cuenta_cobro_nombre_snapshot: c.cuenta_cobro_nombre_snapshot || null,
+          cuenta_cobro_tipo_pago_snapshot: c.cuenta_cobro_tipo_pago_snapshot || null,
+          cuenta_destino_id_snapshot: c.cuenta_destino_id_snapshot || null,
+          cuenta_destino_nombre_snapshot: c.cuenta_destino_nombre_snapshot || null,
+          monto: Number(Number(c.monto).toFixed(2))
+        }))
+      });
+    }
+
+    // Filas legacy: cada fila es un cobro independiente sin pagos_cc_cobros
+    for (const row of legacy) {
+      resultado.push({
+        group_id: null,
+        numero_comprobante: null,
+        fecha: row.fecha,
+        hora: row.hora,
+        cliente_id: clienteId,
+        usuario_id: null,
+        usuario_nombre: null,
+        observacion: null,
+        monto_total: Number(Number(row.monto_pagado).toFixed(2)),
+        cantidad_ventas_afectadas: 1,
+        ventas_afectadas: [{ venta_id: row.venta_id, monto_pagado: Number(Number(row.monto_pagado).toFixed(2)) }],
+        canales: row.tipo_cobro
+          ? [{ tipo_cobro: row.tipo_cobro, cuenta_cobro_id: null, cuenta_cobro_nombre_snapshot: null,
+               cuenta_cobro_tipo_pago_snapshot: row.tipo_cobro, cuenta_destino_id_snapshot: null,
+               cuenta_destino_nombre_snapshot: null, monto: Number(Number(row.monto_pagado).toFixed(2)) }]
+          : []
+      });
+    }
+
+    resultado.sort((a, b) => `${b.fecha || ""} ${b.hora || ""}`.localeCompare(`${a.fecha || ""} ${a.hora || ""}`));
+
+    return res.json(resultado);
+  } catch (error) {
+    logError("Error al obtener cobros CC del cliente:", error);
+    return res.status(500).json({ message: "Error al obtener cobros CC del cliente" });
+  }
+});
+
 function resolverReglasCuenta(cliente, config) {
   if (Number(cliente.usa_reglas_personalizadas) === 1) {
     return {
