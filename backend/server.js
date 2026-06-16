@@ -806,6 +806,15 @@ async function ensureVentaCobrosSchema() {
   await ensureColumn("pagos_cc_cobros", "cuenta_cobro_tipo_pago_snapshot", "TEXT");
   await ensureColumn("pagos_cc_cobros", "cuenta_destino_id_snapshot",      "INTEGER");
   await ensureColumn("pagos_cc_cobros", "cuenta_destino_nombre_snapshot",  "TEXT");
+  // CC3B-A: auditoría básica de cobros CC
+  await ensureColumn("pagos_cuenta_corriente", "observacion",        "TEXT");
+  await ensureColumn("pagos_cuenta_corriente", "numero_comprobante", "TEXT");
+  await ensureColumn("pagos_cuenta_corriente", "usuario_id",         "INTEGER");
+  await ensureColumn("pagos_cuenta_corriente", "usuario_nombre",     "TEXT");
+  await ensureColumn("pagos_cc_cobros",        "observacion",        "TEXT");
+  await ensureColumn("pagos_cc_cobros",        "numero_comprobante", "TEXT");
+  await ensureColumn("pagos_cc_cobros",        "usuario_id",         "INTEGER");
+  await ensureColumn("pagos_cc_cobros",        "usuario_nombre",     "TEXT");
   await backfillCobrosV25Snapshots();
 }
 
@@ -5671,6 +5680,7 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
     }
 
     const cobrosRaw = req.body.cobros;
+    const observacion = typeof req.body.observacion === "string" && req.body.observacion.trim() ? req.body.observacion.trim() : null;
     if (!Array.isArray(cobrosRaw) || cobrosRaw.length === 0) {
       return res.status(400).json({ message: "cobros[] es obligatorio y no puede estar vacio" });
     }
@@ -5716,6 +5726,9 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
 
     const { fecha, hora } = getNowParts();
     const groupId = crypto.randomBytes(16).toString("hex");
+    const numeroComprobante = `CC-${fecha.replace(/-/g, "")}-${groupId.slice(0, 8)}`;
+    const usuarioId = req.usuario?.id ?? null;
+    const usuarioNombre = req.usuario?.nombre ?? null;
     const tipoCc = cobrosNormalizados.length === 1 ? cobrosNormalizados[0].tipo_cobro : "mixto";
     let restante = montoTotal;
     const ventasAfectadas = [];
@@ -5730,9 +5743,9 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
 
         await runQuery(
           `INSERT INTO pagos_cuenta_corriente
-           (venta_id, cliente_id, fecha, hora, monto_pagado, tipo_cobro, monto_efectivo, monto_debito, caja_id, group_id)
-           VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
-          [venta.id, clienteId, fecha, hora, montoPago, tipoCc, cajaActiva.id, groupId]
+           (venta_id, cliente_id, fecha, hora, monto_pagado, tipo_cobro, monto_efectivo, monto_debito, caja_id, group_id, observacion, numero_comprobante, usuario_id, usuario_nombre)
+           VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)`,
+          [venta.id, clienteId, fecha, hora, montoPago, tipoCc, cajaActiva.id, groupId, observacion, numeroComprobante, usuarioId, usuarioNombre]
         );
         await runQuery(
           "UPDATE ventas SET saldo_pendiente = ?, estado = ? WHERE id = ?",
@@ -5754,9 +5767,9 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
           (cobro.tipo_cobro === "efectivo" ? cuentaEfectivoIdCc : null);
         const snap = await getCuentaCobroSnapshot(cuentaFinal);
         await runQuery(
-          `INSERT INTO pagos_cc_cobros (group_id, tipo_cobro, cuenta_cobro_id, monto, caja_id, fecha, hora, cuenta_cobro_nombre_snapshot, cuenta_cobro_tipo_pago_snapshot, cuenta_destino_id_snapshot, cuenta_destino_nombre_snapshot)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [groupId, cobro.tipo_cobro, cuentaFinal, cobro.monto, cajaActiva.id, fecha, hora, snap.cuenta_cobro_nombre_snapshot, snap.cuenta_cobro_tipo_pago_snapshot, snap.cuenta_destino_id_snapshot, snap.cuenta_destino_nombre_snapshot]
+          `INSERT INTO pagos_cc_cobros (group_id, tipo_cobro, cuenta_cobro_id, monto, caja_id, fecha, hora, cuenta_cobro_nombre_snapshot, cuenta_cobro_tipo_pago_snapshot, cuenta_destino_id_snapshot, cuenta_destino_nombre_snapshot, observacion, numero_comprobante, usuario_id, usuario_nombre)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [groupId, cobro.tipo_cobro, cuentaFinal, cobro.monto, cajaActiva.id, fecha, hora, snap.cuenta_cobro_nombre_snapshot, snap.cuenta_cobro_tipo_pago_snapshot, snap.cuenta_destino_id_snapshot, snap.cuenta_destino_nombre_snapshot, observacion, numeroComprobante, usuarioId, usuarioNombre]
         );
       }
 
@@ -5771,6 +5784,8 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
       message: "Pago de cuenta corriente registrado",
       cliente_id: clienteId,
       group_id: groupId,
+      numero_comprobante: numeroComprobante,
+      observacion,
       monto_pagado: montoTotal,
       deuda_anterior: deudaAnterior,
       deuda_restante: deudaRestante,
