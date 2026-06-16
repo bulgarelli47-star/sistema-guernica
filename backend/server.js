@@ -815,6 +815,17 @@ async function ensureVentaCobrosSchema() {
   await ensureColumn("pagos_cc_cobros",        "numero_comprobante", "TEXT");
   await ensureColumn("pagos_cc_cobros",        "usuario_id",         "INTEGER");
   await ensureColumn("pagos_cc_cobros",        "usuario_nombre",     "TEXT");
+  // CC3B-E1: schema reversa — campos para marcar cobro revertido e insertar grupo reversa
+  await ensureColumn("pagos_cuenta_corriente", "revertido",              "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn("pagos_cuenta_corriente", "reversa_de_group_id",    "TEXT");
+  await ensureColumn("pagos_cuenta_corriente", "motivo_reversa",         "TEXT");
+  await ensureColumn("pagos_cuenta_corriente", "usuario_reversa_id",     "INTEGER");
+  await ensureColumn("pagos_cuenta_corriente", "usuario_reversa_nombre", "TEXT");
+  await ensureColumn("pagos_cuenta_corriente", "fecha_reversa",          "TEXT");
+  await ensureColumn("pagos_cuenta_corriente", "hora_reversa",           "TEXT");
+  await ensureColumn("pagos_cuenta_corriente", "tipo_movimiento",        "TEXT NOT NULL DEFAULT 'cobro'");
+  await ensureColumn("pagos_cc_cobros",        "reversa_de_group_id",    "TEXT");
+  await ensureColumn("pagos_cc_cobros",        "tipo_movimiento",        "TEXT NOT NULL DEFAULT 'cobro'");
   await backfillCobrosV25Snapshots();
 }
 
