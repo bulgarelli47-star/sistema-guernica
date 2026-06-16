@@ -4696,6 +4696,229 @@ app.get("/clientes/:id/cobros-cc", async (req, res) => {
   }
 });
 
+// CC3B-E2: reversa segura de cobro CC — movimiento compensatorio negativo
+app.post("/clientes/:id/cobros-cc/:group_id/revertir", async (req, res) => {
+  const clienteId      = Number(req.params.id);
+  const groupIdOriginal = String(req.params.group_id || "").trim();
+
+  try {
+    // 1. Cliente existe
+    const cliente = await getQuery("SELECT id FROM clientes WHERE id = ?", [clienteId]);
+    if (!cliente) return res.status(404).json({ message: "Cliente no encontrado" });
+
+    // 2. Caja abierta (igual que cobrar-deuda)
+    const cajaActiva = await getCajaAbiertaActual();
+    if (!cajaActiva) return res.status(400).json({ message: "No hay una caja abierta para registrar la reversa" });
+
+    // 3. Motivo obligatorio
+    const motivoReversa = typeof req.body.motivo_reversa === "string" ? req.body.motivo_reversa.trim() : "";
+    if (!motivoReversa) return res.status(400).json({ message: "motivo_reversa es obligatorio" });
+
+    // 4. group_id válido y pertenece al cliente (con JOIN a ventas para saldo/total/estado)
+    const filasOriginales = await allQuery(
+      `SELECT pcc.id, pcc.venta_id, pcc.monto_pagado, pcc.tipo_cobro,
+              pcc.revertido, pcc.reversa_de_group_id, pcc.tipo_movimiento
+       FROM pagos_cuenta_corriente pcc
+       WHERE pcc.group_id = ? AND pcc.cliente_id = ?
+       ORDER BY pcc.id ASC`,
+      [groupIdOriginal, clienteId]
+    );
+
+    if (!filasOriginales.length) {
+      return res.status(404).json({ message: "Cobro no encontrado para este cliente" });
+    }
+
+    // 5. No permitir reversa de reversa
+    const esReversa = filasOriginales.some(
+      f => f.tipo_movimiento === "reversa" || f.reversa_de_group_id != null
+    );
+    if (esReversa) {
+      return res.status(409).json({ message: "No se puede revertir una reversa" });
+    }
+
+    // 6a. No doble reversa: filas ya marcadas
+    const yaRevertido = filasOriginales.some(f => Number(f.revertido) === 1);
+    if (yaRevertido) {
+      return res.status(409).json({ message: "Este cobro ya fue revertido" });
+    }
+
+    // 6b. No doble reversa: ya existe grupo reversa
+    const reversaExistente = await getQuery(
+      "SELECT 1 FROM pagos_cuenta_corriente WHERE reversa_de_group_id = ? LIMIT 1",
+      [groupIdOriginal]
+    );
+    if (reversaExistente) {
+      return res.status(409).json({ message: "Este cobro ya fue revertido" });
+    }
+
+    // 7-8. Leer ventas afectadas y validar que ninguna esté anulada
+    const ventaIds = [...new Set(filasOriginales.map(f => f.venta_id))];
+    const ventasData = await allQuery(
+      `SELECT id, total, saldo_pendiente, estado
+       FROM ventas WHERE id IN (${ventaIds.map(() => "?").join(",")})`,
+      ventaIds
+    );
+    const ventasMap = new Map(ventasData.map(v => [v.id, v]));
+
+    const ventasAnuladas = ventaIds.filter(id => ventasMap.get(id)?.estado === "anulado");
+    if (ventasAnuladas.length) {
+      return res.status(422).json({
+        message: "No se puede revertir: hay ventas anuladas en este cobro",
+        ventas_anuladas: ventasAnuladas
+      });
+    }
+
+    // Canales originales en pagos_cc_cobros
+    const canalesOriginales = await allQuery(
+      `SELECT id, tipo_cobro, cuenta_cobro_id, monto,
+              cuenta_cobro_nombre_snapshot, cuenta_cobro_tipo_pago_snapshot,
+              cuenta_destino_id_snapshot, cuenta_destino_nombre_snapshot
+       FROM pagos_cc_cobros
+       WHERE group_id = ?
+       ORDER BY id ASC`,
+      [groupIdOriginal]
+    );
+
+    // 9. Monto total a revertir
+    const montoRevertido = Number(
+      filasOriginales.reduce((s, f) => s + Number(f.monto_pagado), 0).toFixed(2)
+    );
+
+    const { fecha, hora } = getNowParts();
+    const usuarioId      = req.usuario?.id     ?? null;
+    const usuarioNombre  = req.usuario?.nombre ?? null;
+    const groupIdReversa       = crypto.randomBytes(16).toString("hex");
+    const numeroComprobanteRev = `REV-${fecha.replace(/-/g, "")}-${groupIdReversa.slice(0, 8)}`;
+
+    const ventasResultado = [];
+
+    await runQuery("BEGIN TRANSACTION");
+    try {
+      // Revalidar doble reversa dentro de la transacción
+      const revalidar = await getQuery(
+        "SELECT 1 FROM pagos_cuenta_corriente WHERE reversa_de_group_id = ? LIMIT 1",
+        [groupIdOriginal]
+      );
+      if (revalidar) {
+        await runQuery("ROLLBACK");
+        return res.status(409).json({ message: "Este cobro ya fue revertido (conflicto concurrente)" });
+      }
+
+      // Marcar grupo original como revertido
+      await runQuery(
+        `UPDATE pagos_cuenta_corriente
+         SET revertido = 1,
+             motivo_reversa = ?,
+             usuario_reversa_id = ?,
+             usuario_reversa_nombre = ?,
+             fecha_reversa = ?,
+             hora_reversa = ?
+         WHERE group_id = ?`,
+        [motivoReversa, usuarioId, usuarioNombre, fecha, hora, groupIdOriginal]
+      );
+
+      // Insertar filas negativas en pagos_cuenta_corriente y restaurar saldo
+      for (const fila of filasOriginales) {
+        const montoPagadoNeg = Number((-Number(fila.monto_pagado)).toFixed(2));
+
+        await runQuery(
+          `INSERT INTO pagos_cuenta_corriente
+           (venta_id, cliente_id, fecha, hora, monto_pagado, tipo_cobro,
+            monto_efectivo, monto_debito, caja_id, group_id,
+            observacion, numero_comprobante, usuario_id, usuario_nombre,
+            reversa_de_group_id, motivo_reversa,
+            usuario_reversa_id, usuario_reversa_nombre,
+            fecha_reversa, hora_reversa, tipo_movimiento)
+           VALUES (?, ?, ?, ?, ?, ?,
+                   0, 0, ?, ?,
+                   ?, ?, ?, ?,
+                   ?, ?,
+                   ?, ?,
+                   ?, ?, ?)`,
+          [
+            fila.venta_id, clienteId, fecha, hora, montoPagadoNeg, fila.tipo_cobro,
+            cajaActiva.id, groupIdReversa,
+            motivoReversa, numeroComprobanteRev, usuarioId, usuarioNombre,
+            groupIdOriginal, motivoReversa,
+            usuarioId, usuarioNombre,
+            fecha, hora, "reversa"
+          ]
+        );
+
+        // Leer saldo actual dentro de la transacción para evitar race condition
+        const ventaRt = await getQuery(
+          "SELECT saldo_pendiente, total FROM ventas WHERE id = ?",
+          [fila.venta_id]
+        );
+        const saldoActual = Number(ventaRt?.saldo_pendiente ?? 0);
+        const ventaTotal  = Number(ventaRt?.total ?? 0);
+        const montoOriginal = Number(fila.monto_pagado);
+        const nuevoSaldo  = Number(Math.min(ventaTotal, saldoActual + montoOriginal).toFixed(2));
+        const nuevoEstado = nuevoSaldo > 0 ? "cuenta_corriente_pendiente" : "cobrada";
+
+        await runQuery(
+          "UPDATE ventas SET saldo_pendiente = ?, estado = ? WHERE id = ?",
+          [nuevoSaldo, nuevoEstado, fila.venta_id]
+        );
+
+        ventasResultado.push({
+          venta_id: fila.venta_id,
+          monto_revertido: montoOriginal,
+          nuevo_saldo: nuevoSaldo
+        });
+      }
+
+      // Insertar filas negativas en pagos_cc_cobros
+      for (const canal of canalesOriginales) {
+        const montoNeg = Number((-Number(canal.monto)).toFixed(2));
+        await runQuery(
+          `INSERT INTO pagos_cc_cobros
+           (group_id, tipo_cobro, cuenta_cobro_id, monto, caja_id, fecha, hora,
+            cuenta_cobro_nombre_snapshot, cuenta_cobro_tipo_pago_snapshot,
+            cuenta_destino_id_snapshot, cuenta_destino_nombre_snapshot,
+            observacion, numero_comprobante, usuario_id, usuario_nombre,
+            reversa_de_group_id, tipo_movimiento)
+           VALUES (?, ?, ?, ?, ?, ?, ?,
+                   ?, ?, ?, ?,
+                   ?, ?, ?, ?,
+                   ?, ?)`,
+          [
+            groupIdReversa, canal.tipo_cobro, canal.cuenta_cobro_id, montoNeg,
+            cajaActiva.id, fecha, hora,
+            canal.cuenta_cobro_nombre_snapshot,
+            canal.cuenta_cobro_tipo_pago_snapshot,
+            canal.cuenta_destino_id_snapshot,
+            canal.cuenta_destino_nombre_snapshot,
+            motivoReversa, numeroComprobanteRev, usuarioId, usuarioNombre,
+            groupIdOriginal, "reversa"
+          ]
+        );
+      }
+
+      await runQuery("COMMIT");
+    } catch (txError) {
+      try { await runQuery("ROLLBACK"); } catch (_) {}
+      throw txError;
+    }
+
+    const resumenPost    = await buildClienteCuentaResumen(clienteId);
+    const deudaResultante = resumenPost.deuda_actual;
+
+    return res.json({
+      message: "Cobro revertido correctamente",
+      group_id_original: groupIdOriginal,
+      group_id_reversa: groupIdReversa,
+      numero_comprobante_reversa: numeroComprobanteRev,
+      monto_revertido: montoRevertido,
+      deuda_resultante: deudaResultante,
+      ventas_afectadas: ventasResultado
+    });
+  } catch (error) {
+    logError("Error al revertir cobro CC:", error);
+    return res.status(500).json({ message: "Error al revertir cobro CC" });
+  }
+});
+
 function resolverReglasCuenta(cliente, config) {
   if (Number(cliente.usa_reglas_personalizadas) === 1) {
     return {
