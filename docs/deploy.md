@@ -130,7 +130,7 @@ Se rotan automáticamente conservando los últimos 30 (configurable con `GUERNIC
 Agregar al crontab del servidor (`crontab -e`):
 
 ```
-0 3 * * * cd /root/sistema-guernica && node scripts/backup-db.js --if-exists >> /var/log/atlas-os/backup.log 2>&1
+0 3 * * * cd /root/sistema-guernica && /usr/bin/node scripts/backup-db.js --if-exists >> /var/log/atlas-os/backup-db.log 2>&1
 ```
 
 Esto ejecuta un backup todos los días a las 3:00 AM.
@@ -177,29 +177,63 @@ Los archivos de log están en:
 
 ## Hardening VPS aplicado
 
-Estado verificado al 2026-06-15. Esta sección documenta el hardening de producción
+Estado verificado al 2026-06-21. Esta sección documenta el hardening de producción
 ejecutado en el VPS. Actualizar cuando cambie el estado.
+
+### Datos del servidor
+
+| Ítem | Valor |
+|---|---|
+| Host | `atlas-core` |
+| Ruta de la app | `/root/sistema-guernica` |
+| Rama productiva | `main` |
+| Proceso PM2 | `atlas-os` |
+| Servicio systemd | `pm2-root.service` |
+| Acceso operativo | `ssh deploy@206.189.183.146` → `sudo -i` |
+
+> **Nota PM2:** El servicio PM2 corre como root por compatibilidad con la ruta
+> `/root/sistema-guernica`. El servicio registrado es `pm2-root.service`, validado
+> con `systemctl start pm2-root`. La migración a un usuario `deploy` sin privilegios
+> de root queda pendiente con plan explícito (ver [Pendientes](#pendientes-de-hardening)).
 
 ### Estado actual verificado
 
 | Ítem | Estado |
 |---|---|
-| Dominio `atlasos.com.ar` con HTTPS | ✅ operativo |
-| Certificado SSL vigente | ✅ activo |
+| Dominio `https://atlasos.com.ar` responde `200 OK` | ✅ |
+| Certificado SSL vigente | ✅ |
 | Nginx activo y configurado | ✅ |
 | UFW activo | ✅ |
 | Puerto 22 (SSH) permitido | ✅ |
 | Puerto 80 (HTTP) permitido | ✅ |
 | Puerto 443 (HTTPS) permitido | ✅ |
-| Puerto 3000 bloqueado por firewall | ✅ solo accesible vía localhost |
+| Puerto 3000 bloqueado por firewall | ✅ solo vía localhost |
 | Node.js responde en `127.0.0.1:3000` | ✅ |
-| PM2 proceso `atlas-os` corriendo | ✅ |
+| PM2 proceso `atlas-os` online | ✅ |
 | `pm2 save` ejecutado | ✅ |
-| `pm2 startup` configurado como `pm2-root` | ✅ |
-| `pm2-logrotate` instalado y online | ✅ |
+| `pm2-root.service` validado con `systemctl start` | ✅ |
+| `pm2-logrotate` online | ✅ |
 | Logs en `/var/log/atlas-os/` | ✅ |
-| Backups locales funcionando | ✅ |
 | `.env`, `uploads/`, `backups/`, `database/*.db`, `node_modules/` en `.gitignore` | ✅ |
+| Usuario `deploy` creado | ✅ |
+| `deploy` con sudo validado | ✅ |
+| SSH por llave — acceso validado | ✅ |
+| `PermitRootLogin no` aplicado en `sshd_config` | ✅ |
+| `PasswordAuthentication no` — `sshd -T` confirmado | ✅ |
+| `sshd -t` sin errores | ✅ |
+| Backup automático por cron — 3:00 AM diario | ✅ |
+| Restore test local en `/tmp/atlas-restore-test/` | ✅ |
+| `PRAGMA integrity_check` del restore devolvió `ok` | ✅ |
+| Conteo restore: ventas=90, productos=431 | ✅ |
+| `rclone` instalado | ✅ |
+
+### Cron de backup activo
+
+Configurado en crontab de root (`sudo crontab -e`):
+
+```
+0 3 * * * cd /root/sistema-guernica && /usr/bin/node scripts/backup-db.js --if-exists >> /var/log/atlas-os/backup-db.log 2>&1
+```
 
 ### Comandos de verificación rápida
 
@@ -218,6 +252,9 @@ node scripts/backup-db.js
 
 # Verificar logs en tiempo real
 pm2 logs atlas-os --lines 50
+
+# Verificar servicio systemd
+systemctl status pm2-root
 ```
 
 ### Configurar PM2 para sobrevivir reinicios (primer setup)
@@ -271,37 +308,32 @@ Estos ítems están **pendientes** — no se aplicaron aún. Ordenados por prior
 
 #### Alta prioridad
 
-- [ ] **Usuario no-root** — crear usuario `deploy` y mover la app de `/root/sistema-guernica`
-  a `/home/deploy/sistema-guernica`. Actualizar `deploy.sh` con el nuevo `APP_DIR`.
-  ```bash
-  adduser deploy
-  mkdir -p /home/deploy/sistema-guernica
-  # copiar app, ajustar permisos, actualizar crontab
-  ```
+- [ ] **Reinicio controlado por kernel** — hay un kernel actualizado pendiente de reinicio.
+  Coordinar ventana de mantenimiento y ejecutar `reboot`. Verificar que `pm2-root.service`
+  levante `atlas-os` correctamente tras el reinicio.
 
-- [ ] **SSH por clave, sin password** — copiar clave pública al VPS, luego en
-  `/etc/ssh/sshd_config` establecer `PasswordAuthentication no` y `PermitRootLogin no`.
-  > ⚠️ Verificar acceso con clave en una segunda sesión antes de cerrar la primera.
+- [ ] **Verificar variables de entorno** — revisar que `.env` en producción esté completo
+  y actualizado. Confirmar especialmente `MERCADOPAGO_ACCESS_TOKEN` y cualquier variable
+  nueva incorporada desde el último deploy.
+
+- [ ] **Rotar token de Mercado Pago** si el `.env` estuvo expuesto en algún commit o log.
+  Hacerlo desde el panel de Mercado Pago Developers.
 
 #### Media prioridad
 
-- [ ] **Backup remoto** — sincronizar `backups/` a S3, Backblaze B2 u otro servidor.
-  Los backups locales no protegen contra pérdida del VPS completo.
-  ```bash
-  # Ejemplo con rsync a otro servidor
-  rsync -avz /root/sistema-guernica/backups/ user@backup-server:/backups/atlasos/
-  ```
+- [ ] **Google Workspace / Drive institucional** (`adm@atlasos.com.ar`) — necesario para
+  autenticar `rclone` y activar el backup remoto. `rclone` ya está instalado en el VPS;
+  falta activar la cuenta institucional y ejecutar `rclone config`.
 
-- [ ] **Test de restore** — ejecutar un restore real desde un backup para verificar
-  que el proceso funciona antes de necesitarlo en emergencia.
-  ```bash
-  # Copiar backup a ruta temporal y verificar que la DB es legible
-  cp backups/guernica-YYYY-MM-DD_HH-MM-SS.db /tmp/guernica-test.db
-  sqlite3 /tmp/guernica-test.db "SELECT COUNT(*) FROM ventas;"
-  ```
+- [ ] **Backup remoto vía rclone** — sincronizar `backups/` a Google Drive institucional.
+  Depende de la activación de la cuenta `adm@atlasos.com.ar`. Los backups locales no
+  protegen contra pérdida total del VPS.
 
-- [ ] **Backup de uploads** — las imágenes de productos y usuarios en `uploads/`
-  no se incluyen en el backup de DB. Agregar al proceso de sincronización remota.
+- [ ] **Backup remoto de `uploads/`** — las imágenes en `uploads/` no están cubiertas por
+  el backup de DB ni por la sincronización remota pendiente. Agregar al proceso de rclone.
+
+- [ ] **Restore test desde backup remoto** — una vez activo el backup remoto, ejecutar un
+  restore completo desde el destino remoto para validar el flujo de recuperación de desastre.
 
 #### Baja prioridad / mejora futura
 
@@ -309,5 +341,9 @@ Estos ítems están **pendientes** — no se aplicaron aún. Ordenados por prior
   `https://atlasos.com.ar` deja de responder.
 
 - [ ] **Header `X-Powered-By`** — Express expone `X-Powered-By: Express` por defecto.
-  Evaluar agregar `app.disable('x-powered-by')` o instalar `helmet` en el backend
-  para ocultar información del stack.
+  Actualmente visible en producción. Evaluar `app.disable('x-powered-by')` o `helmet`.
+
+- [ ] **Migración PM2/root → deploy** — mover la app de `/root/sistema-guernica` a
+  `/home/deploy/sistema-guernica`, registrar PM2 startup bajo el usuario `deploy` y
+  actualizar `deploy.sh` con el nuevo `APP_DIR`. Requiere plan explícito y ventana de
+  mantenimiento para evitar corte de servicio.
