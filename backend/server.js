@@ -4593,7 +4593,7 @@ app.get("/clientes/:id/cobros-cc", async (req, res) => {
       return res.status(404).json({ message: "Cliente no encontrado" });
     }
 
-    // Grupos V2 (con group_id) — incluye CC3A (sin auditoría) y CC3B-A (con auditoría)
+    // Grupos V2 (con group_id) — incluye CC3A, CC3B-A, CC3B-E2 (cobros y reversas)
     const grupos = await allQuery(
       `SELECT group_id,
               MIN(fecha) AS fecha, MIN(hora) AS hora, MIN(id) AS min_id,
@@ -4602,7 +4602,15 @@ app.get("/clientes/:id/cobros-cc", async (req, res) => {
               MAX(numero_comprobante) AS numero_comprobante,
               MAX(usuario_id) AS usuario_id,
               MAX(usuario_nombre) AS usuario_nombre,
-              MAX(observacion) AS observacion
+              MAX(observacion) AS observacion,
+              MAX(tipo_movimiento)        AS tipo_movimiento,
+              MAX(revertido)              AS revertido,
+              MAX(reversa_de_group_id)    AS reversa_de_group_id,
+              MAX(motivo_reversa)         AS motivo_reversa,
+              MAX(usuario_reversa_id)     AS usuario_reversa_id,
+              MAX(usuario_reversa_nombre) AS usuario_reversa_nombre,
+              MAX(fecha_reversa)          AS fecha_reversa,
+              MAX(hora_reversa)           AS hora_reversa
        FROM pagos_cuenta_corriente
        WHERE cliente_id = ? AND group_id IS NOT NULL
        GROUP BY group_id
@@ -4638,6 +4646,12 @@ app.get("/clientes/:id/cobros-cc", async (req, res) => {
          ORDER BY id ASC`,
         [g.group_id]
       );
+      const tm = g.tipo_movimiento || "cobro";
+      const revertido = Number(g.revertido || 0);
+      const estadoAuditoria = tm === "reversa" ? "reversa"
+                            : revertido === 1   ? "revertido"
+                            :                     "cobro";
+
       resultado.push({
         group_id: g.group_id,
         numero_comprobante: g.numero_comprobante || null,
@@ -4661,7 +4675,16 @@ app.get("/clientes/:id/cobros-cc", async (req, res) => {
           cuenta_destino_id_snapshot: c.cuenta_destino_id_snapshot || null,
           cuenta_destino_nombre_snapshot: c.cuenta_destino_nombre_snapshot || null,
           monto: Number(Number(c.monto).toFixed(2))
-        }))
+        })),
+        tipo_movimiento:        tm,
+        revertido:              revertido,
+        reversa_de_group_id:    g.reversa_de_group_id    || null,
+        motivo_reversa:         g.motivo_reversa         || null,
+        usuario_reversa_id:     g.usuario_reversa_id     || null,
+        usuario_reversa_nombre: g.usuario_reversa_nombre || null,
+        fecha_reversa:          g.fecha_reversa          || null,
+        hora_reversa:           g.hora_reversa           || null,
+        estado_auditoria:       estadoAuditoria
       });
     }
 
@@ -4683,7 +4706,16 @@ app.get("/clientes/:id/cobros-cc", async (req, res) => {
           ? [{ tipo_cobro: row.tipo_cobro, cuenta_cobro_id: null, cuenta_cobro_nombre_snapshot: null,
                cuenta_cobro_tipo_pago_snapshot: row.tipo_cobro, cuenta_destino_id_snapshot: null,
                cuenta_destino_nombre_snapshot: null, monto: Number(Number(row.monto_pagado).toFixed(2)) }]
-          : []
+          : [],
+        tipo_movimiento:        "legacy",
+        revertido:              0,
+        reversa_de_group_id:    null,
+        motivo_reversa:         null,
+        usuario_reversa_id:     null,
+        usuario_reversa_nombre: null,
+        fecha_reversa:          null,
+        hora_reversa:           null,
+        estado_auditoria:       "legacy"
       });
     }
 
