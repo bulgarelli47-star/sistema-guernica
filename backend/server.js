@@ -4584,6 +4584,165 @@ app.get("/clientes/:id/movimientos-cuenta-corriente", async (req, res) => {
   }
 });
 
+// CC3B-G1: estado de cuenta imprimible — solo lectura, no escribe DB
+app.get("/clientes/:id/estado-cuenta", async (req, res) => {
+  const clienteId = Number(req.params.id);
+
+  try {
+    const clienteRaw = await getClienteConMetricas(clienteId);
+    if (!clienteRaw) return res.status(404).json({ message: "Cliente no encontrado" });
+
+    const config = await getConfiguracionGlobal();
+    const comercio = {
+      nombre:       String(config.negocio_nombre_comercial || config.ticket_nombre || "Atlas OS"),
+      razon_social: config.negocio_razon_social || null,
+      cuit:         config.negocio_cuit         || null,
+      direccion:    config.negocio_direccion     || null,
+      telefono:     config.negocio_telefono      || null,
+    };
+
+    const ahora = await getQuery(
+      "SELECT date('now', 'localtime') AS fecha, time('now', 'localtime') AS hora"
+    );
+    const emision = { fecha: ahora?.fecha || null, hora: ahora?.hora || null };
+
+    const deudaActual       = Number(clienteRaw.deuda_actual  || 0);
+    const limiteFiado       = Number(clienteRaw.limite_fiado  || 0);
+    const creditoUtilizado  = deudaActual;
+    const creditoDisponible = Math.max(0, limiteFiado - deudaActual);
+
+    const cliente = {
+      id:                        clienteRaw.id,
+      nombre:                    clienteRaw.nombre,
+      dni_cuit:                  clienteRaw.dni_cuit               || null,
+      telefono:                  clienteRaw.telefono               || null,
+      tipo_cliente:              clienteRaw.tipo_cliente            || null,
+      tipo_cuenta_corriente:     clienteRaw.tipo_cuenta_corriente  || "cliente",
+      limite_fiado:              limiteFiado,
+      deuda_actual:              deudaActual,
+      observaciones:             clienteRaw.observaciones          || null,
+      notas:                     clienteRaw.notas                  || null,
+      habilita_cuenta_corriente: Number(clienteRaw.habilita_cuenta_corriente || 0),
+      credito_utilizado:         Number(creditoUtilizado.toFixed(2)),
+      credito_disponible:        Number(creditoDisponible.toFixed(2)),
+    };
+
+    const ventas = await allQuery(
+      `SELECT id, fecha, hora, total AS importe
+       FROM ventas
+       WHERE cliente_id = ? AND es_cuenta_corriente = 1
+         AND COALESCE(estado, '') != 'anulado'
+       ORDER BY fecha ASC, hora ASC, id ASC`,
+      [clienteId]
+    );
+
+    const pagos = await allQuery(
+      `SELECT id, fecha, hora, monto_pagado AS importe,
+              tipo_movimiento, group_id, numero_comprobante,
+              usuario_nombre, observacion
+       FROM pagos_cuenta_corriente
+       WHERE cliente_id = ?
+       ORDER BY fecha ASC, hora ASC, id ASC`,
+      [clienteId]
+    );
+
+    const recalculos = await allQuery(
+      `SELECT id, fecha, hora, diferencia AS importe, usuario, motivo
+       FROM recalculos_cuenta_corriente
+       WHERE cliente_id = ?
+       ORDER BY fecha ASC, hora ASC, id ASC`,
+      [clienteId]
+    );
+
+    const raw = [
+      ...ventas.map(r    => ({ ...r, _src: "venta"    })),
+      ...pagos.map(r     => ({ ...r, _src: r.tipo_movimiento || "cobro" })),
+      ...recalculos.map(r => ({ ...r, _src: "recalculo" })),
+    ].sort((a, b) => {
+      const ts = `${a.fecha} ${a.hora}`.localeCompare(`${b.fecha} ${b.hora}`);
+      if (ts !== 0) return ts;
+      const orden = { venta: 0, cobro: 1, reversa: 2, recalculo: 3 };
+      const oa = orden[a._src] ?? 4;
+      const ob = orden[b._src] ?? 4;
+      if (oa !== ob) return oa - ob;
+      return a.id - b.id;
+    });
+
+    let saldo = 0;
+    let total_vendido = 0;
+    let total_cobrado = 0;
+    let total_ajustes = 0;
+
+    const movimientos = raw.map(r => {
+      const tipo    = r._src;
+      const importe = Number(r.importe || 0);
+      let debe = 0, haber = 0, descripcion = "", usuario = null, observacion = null;
+
+      if (tipo === "venta") {
+        debe           = Number(importe.toFixed(2));
+        saldo         += importe;
+        total_vendido += importe;
+        descripcion    = `Venta CC #${r.id}`;
+
+      } else if (tipo === "cobro") {
+        haber          = Number(importe.toFixed(2));
+        saldo         -= importe;
+        total_cobrado += importe;
+        descripcion    = "Cobro CC";
+        usuario        = r.usuario_nombre || null;
+        observacion    = r.observacion    || null;
+
+      } else if (tipo === "reversa") {
+        // monto_pagado almacenado como negativo; debe muestra valor absoluto
+        debe        = Number(Math.abs(importe).toFixed(2));
+        saldo      += Math.abs(importe);
+        descripcion = "Reversa de cobro";
+        usuario     = r.usuario_nombre || null;
+        observacion = r.observacion    || null;
+
+      } else if (tipo === "recalculo") {
+        if (importe > 0) {
+          debe  = Number(importe.toFixed(2));
+        } else {
+          haber = Number(Math.abs(importe).toFixed(2));
+        }
+        saldo         += importe;
+        total_ajustes += importe;
+        descripcion    = "Recalculo de deuda";
+        usuario        = r.usuario  || null;
+        observacion    = r.motivo   || null;
+      }
+
+      return {
+        tipo,
+        fecha:              r.fecha              || null,
+        hora:               r.hora               || null,
+        descripcion,
+        debe,
+        haber,
+        saldo_acumulado:    Number(saldo.toFixed(2)),
+        usuario,
+        observacion,
+        numero_comprobante: r.numero_comprobante || null,
+        group_id:           r.group_id           || null,
+      };
+    });
+
+    const totales = {
+      total_vendido:   Number(total_vendido.toFixed(2)),
+      total_cobrado:   Number(total_cobrado.toFixed(2)),
+      total_ajustes:   Number(total_ajustes.toFixed(2)),
+      saldo_pendiente: Number(deudaActual.toFixed(2)),
+    };
+
+    return res.json({ comercio, cliente, emision, movimientos, totales });
+
+  } catch (error) {
+    logError("Error al generar estado de cuenta CC:", error);
+    return res.status(500).json({ message: "Error al generar estado de cuenta" });
+  }
+});
+
 // CC3B: historial de cobros CC agrupado por group_id
 app.get("/clientes/:id/cobros-cc", async (req, res) => {
   const clienteId = Number(req.params.id);
