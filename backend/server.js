@@ -4728,6 +4728,177 @@ app.get("/clientes/:id/cobros-cc", async (req, res) => {
   }
 });
 
+// CC3B-F1/F2: recibo de cobranza CC por group_id — solo lectura, no escribe DB
+app.get("/clientes/:id/cobros-cc/:group_id/recibo", async (req, res) => {
+  const clienteId = Number(req.params.id);
+  const groupId   = String(req.params.group_id || "").trim();
+  if (!groupId) return res.status(400).json({ message: "group_id requerido" });
+
+  try {
+    const cliente = await getQuery(
+      "SELECT id, nombre, dni_cuit, telefono FROM clientes WHERE id = ?",
+      [clienteId]
+    );
+    if (!cliente) return res.status(404).json({ message: "Cliente no encontrado" });
+
+    const g = await getQuery(
+      `SELECT group_id,
+              MIN(fecha)                   AS fecha,
+              MIN(hora)                    AS hora,
+              SUM(monto_pagado)            AS monto_total,
+              MAX(numero_comprobante)      AS numero_comprobante,
+              MAX(usuario_id)              AS usuario_id,
+              MAX(usuario_nombre)          AS usuario_nombre,
+              MAX(observacion)             AS observacion,
+              MAX(tipo_movimiento)         AS tipo_movimiento,
+              MAX(revertido)               AS revertido,
+              MAX(reversa_de_group_id)     AS reversa_de_group_id,
+              MAX(motivo_reversa)          AS motivo_reversa,
+              MAX(usuario_reversa_id)      AS usuario_reversa_id,
+              MAX(usuario_reversa_nombre)  AS usuario_reversa_nombre,
+              MAX(fecha_reversa)           AS fecha_reversa,
+              MAX(hora_reversa)            AS hora_reversa
+       FROM pagos_cuenta_corriente
+       WHERE cliente_id = ? AND group_id = ?`,
+      [clienteId, groupId]
+    );
+    if (!g || !g.group_id) {
+      return res.status(404).json({ message: "Cobro no encontrado para este cliente" });
+    }
+
+    const config = await getConfiguracionGlobal();
+    const comercio = {
+      nombre:       String(config.negocio_nombre_comercial || config.ticket_nombre || "Atlas OS"),
+      razon_social: config.negocio_razon_social  || null,
+      cuit:         config.negocio_cuit          || null,
+      direccion:    config.negocio_direccion     || null,
+      telefono:     config.negocio_telefono      || null,
+    };
+
+    const canales = await allQuery(
+      `SELECT tipo_cobro, cuenta_cobro_id,
+              cuenta_cobro_nombre_snapshot, cuenta_cobro_tipo_pago_snapshot,
+              cuenta_destino_id_snapshot, cuenta_destino_nombre_snapshot, monto
+       FROM pagos_cc_cobros WHERE group_id = ? ORDER BY id ASC`,
+      [groupId]
+    );
+
+    const ventasAfectadas = await allQuery(
+      `SELECT p.venta_id, p.monto_pagado AS monto_aplicado,
+              v.fecha AS venta_fecha, v.hora AS venta_hora, v.total AS venta_total
+       FROM pagos_cuenta_corriente p
+       LEFT JOIN ventas v ON v.id = p.venta_id
+       WHERE p.cliente_id = ? AND p.group_id = ?
+       ORDER BY p.id ASC`,
+      [clienteId, groupId]
+    );
+
+    // Reconstrucción de timeline para saldo_anterior / saldo_posterior
+    const ventasCC = await allQuery(
+      `SELECT id, fecha, hora, total AS importe FROM ventas
+       WHERE cliente_id = ? AND es_cuenta_corriente = 1
+       ORDER BY fecha ASC, hora ASC, id ASC`,
+      [clienteId]
+    );
+    const pagosCC = await allQuery(
+      `SELECT id, group_id AS pago_group_id, fecha, hora, monto_pagado AS importe
+       FROM pagos_cuenta_corriente WHERE cliente_id = ?
+       ORDER BY fecha ASC, hora ASC, id ASC`,
+      [clienteId]
+    );
+
+    const groupRowIds = new Set(
+      pagosCC.filter(p => p.pago_group_id === groupId).map(p => p.id)
+    );
+
+    const timeline = [
+      ...ventasCC.map(v => ({ ...v, _tipo: "venta" })),
+      ...pagosCC.map(p => ({ ...p, _tipo: "pago"  }))
+    ].sort((a, b) => {
+      const ts = `${a.fecha} ${a.hora}`.localeCompare(`${b.fecha} ${b.hora}`);
+      if (ts !== 0) return ts;
+      if (a._tipo !== b._tipo) return a._tipo === "venta" ? -1 : 1;
+      return a.id - b.id;
+    });
+
+    let saldo = 0;
+    let saldo_anterior = null;
+    let saldo_posterior = null;
+
+    for (const mov of timeline) {
+      if (mov._tipo === "venta") {
+        saldo += Number(mov.importe || 0);
+      } else {
+        if (groupRowIds.has(mov.id)) {
+          if (saldo_anterior === null) saldo_anterior = Number(saldo.toFixed(2));
+          saldo -= Number(mov.importe || 0);
+          saldo_posterior = Number(Math.max(0, saldo).toFixed(2));
+        } else {
+          saldo -= Number(mov.importe || 0);
+        }
+      }
+    }
+    if (saldo_anterior === null) saldo_anterior = 0;
+    if (saldo_posterior === null) saldo_posterior = 0;
+
+    const tm             = g.tipo_movimiento || "cobro";
+    const revertido      = Number(g.revertido || 0);
+    const estadoAuditoria = tm === "reversa" ? "reversa"
+                          : revertido === 1   ? "revertido"
+                          :                     "cobro";
+
+    return res.json({
+      comercio,
+      cliente: {
+        id:       cliente.id,
+        nombre:   cliente.nombre,
+        dni_cuit: cliente.dni_cuit  || null,
+        telefono: cliente.telefono  || null,
+      },
+      recibo: {
+        group_id:               g.group_id,
+        numero_comprobante:     g.numero_comprobante     || null,
+        fecha:                  g.fecha,
+        hora:                   g.hora,
+        monto_total:            Number(Number(g.monto_total).toFixed(2)),
+        saldo_anterior,
+        saldo_posterior,
+        usuario_id:             g.usuario_id             || null,
+        usuario_nombre:         g.usuario_nombre         || null,
+        observacion:            g.observacion            || null,
+        tipo_movimiento:        tm,
+        revertido,
+        reversa_de_group_id:    g.reversa_de_group_id    || null,
+        estado_auditoria:       estadoAuditoria,
+        motivo_reversa:         g.motivo_reversa         || null,
+        usuario_reversa_id:     g.usuario_reversa_id     || null,
+        usuario_reversa_nombre: g.usuario_reversa_nombre || null,
+        fecha_reversa:          g.fecha_reversa          || null,
+        hora_reversa:           g.hora_reversa           || null,
+      },
+      canales: canales.map(c => ({
+        tipo_cobro:                      c.tipo_cobro,
+        cuenta_cobro_id:                 c.cuenta_cobro_id                  || null,
+        cuenta_cobro_nombre_snapshot:    c.cuenta_cobro_nombre_snapshot     || null,
+        cuenta_cobro_tipo_pago_snapshot: c.cuenta_cobro_tipo_pago_snapshot  || null,
+        cuenta_destino_id_snapshot:      c.cuenta_destino_id_snapshot       || null,
+        cuenta_destino_nombre_snapshot:  c.cuenta_destino_nombre_snapshot   || null,
+        monto: Number(Number(c.monto).toFixed(2)),
+      })),
+      ventas_afectadas: ventasAfectadas.map(v => ({
+        venta_id:       v.venta_id,
+        fecha:          v.venta_fecha  || null,
+        hora:           v.venta_hora   || null,
+        total:          v.venta_total  ? Number(Number(v.venta_total).toFixed(2)) : null,
+        monto_aplicado: Number(Number(v.monto_aplicado).toFixed(2)),
+      })),
+    });
+  } catch (error) {
+    logError("Error al generar recibo CC:", error);
+    return res.status(500).json({ message: "Error al generar recibo de cobranza" });
+  }
+});
+
 // CC3B-E2: reversa segura de cobro CC — movimiento compensatorio negativo
 app.post("/clientes/:id/cobros-cc/:group_id/revertir", async (req, res) => {
   const clienteId      = Number(req.params.id);
