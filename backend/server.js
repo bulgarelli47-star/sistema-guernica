@@ -6389,6 +6389,8 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
 
     const cobrosRaw = req.body.cobros;
     const observacion = typeof req.body.observacion === "string" && req.body.observacion.trim() ? req.body.observacion.trim() : null;
+    const ventasRaw = req.body.ventas;
+    const ventasManual = Array.isArray(ventasRaw) && ventasRaw.length > 0 ? ventasRaw : null;
     if (!Array.isArray(cobrosRaw) || cobrosRaw.length === 0) {
       return res.status(400).json({ message: "cobros[] es obligatorio y no puede estar vacio" });
     }
@@ -6401,6 +6403,29 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
     const montoTotal = Number(cobrosNormalizados.reduce((s, c) => s + c.monto, 0).toFixed(2));
     if (montoTotal <= 0) {
       return res.status(400).json({ message: "El monto total debe ser mayor a 0" });
+    }
+
+    if (ventasManual) {
+      for (const item of ventasManual) {
+        const vid = Number(item.venta_id);
+        const mon = Number(item.monto);
+        if (!Number.isInteger(vid) || vid <= 0) {
+          return res.status(400).json({ message: "ventas[].venta_id debe ser un entero positivo" });
+        }
+        if (!isFinite(mon) || mon <= 0) {
+          return res.status(400).json({ message: "ventas[].monto debe ser mayor a 0" });
+        }
+      }
+      const ventaIdsManual = ventasManual.map(v => Number(v.venta_id));
+      if (new Set(ventaIdsManual).size !== ventaIdsManual.length) {
+        return res.status(400).json({ message: "ventas[] contiene venta_id duplicados" });
+      }
+      const sumaVentas = Number(ventasManual.reduce((s, v) => s + Number(v.monto), 0).toFixed(2));
+      if (Math.abs(sumaVentas - montoTotal) > 0.01) {
+        return res.status(400).json({
+          message: `La suma de ventas (${sumaVentas}) no coincide con el monto total de cobros (${montoTotal})`
+        });
+      }
     }
 
     for (const cobro of cobrosNormalizados) {
@@ -6421,15 +6446,18 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
       });
     }
 
-    const ventasPendientes = await allQuery(
-      `SELECT id, saldo_pendiente
-       FROM ventas
-       WHERE cliente_id = ? AND es_cuenta_corriente = 1 AND saldo_pendiente > 0
-       ORDER BY fecha ASC, hora ASC, id ASC`,
-      [clienteId]
-    );
-    if (!ventasPendientes.length) {
-      return res.status(400).json({ message: "No hay ventas pendientes para este cliente" });
+    let ventasPendientes = [];
+    if (!ventasManual) {
+      ventasPendientes = await allQuery(
+        `SELECT id, saldo_pendiente
+         FROM ventas
+         WHERE cliente_id = ? AND es_cuenta_corriente = 1 AND saldo_pendiente > 0
+         ORDER BY fecha ASC, hora ASC, id ASC`,
+        [clienteId]
+      );
+      if (!ventasPendientes.length) {
+        return res.status(400).json({ message: "No hay ventas pendientes para este cliente" });
+      }
     }
 
     const { fecha, hora } = getNowParts();
@@ -6443,24 +6471,69 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
 
     await runQuery("BEGIN TRANSACTION");
     try {
-      for (const venta of ventasPendientes) {
-        if (restante <= 0) break;
-        const saldoVenta = Number(venta.saldo_pendiente);
-        const montoPago = Number(Math.min(restante, saldoVenta).toFixed(2));
-        const nuevoSaldo = Number((saldoVenta - montoPago).toFixed(2));
+      if (ventasManual) {
+        for (const item of ventasManual) {
+          const ventaId = Number(item.venta_id);
+          const montoPago = Number(Number(item.monto).toFixed(2));
+          const ventaRt = await getQuery(
+            `SELECT id, saldo_pendiente, estado, es_cuenta_corriente
+             FROM ventas WHERE id = ? AND cliente_id = ?`,
+            [ventaId, clienteId]
+          );
+          if (!ventaRt) {
+            await runQuery("ROLLBACK");
+            return res.status(400).json({ message: `Venta #${ventaId} no encontrada para este cliente` });
+          }
+          if (!Number(ventaRt.es_cuenta_corriente)) {
+            await runQuery("ROLLBACK");
+            return res.status(400).json({ message: `Venta #${ventaId} no es una venta a cuenta corriente` });
+          }
+          if (ventaRt.estado === "anulado") {
+            await runQuery("ROLLBACK");
+            return res.status(400).json({ message: `Venta #${ventaId} está anulada` });
+          }
+          const saldoActual = Number(ventaRt.saldo_pendiente);
+          if (saldoActual <= 0) {
+            await runQuery("ROLLBACK");
+            return res.status(400).json({ message: `Venta #${ventaId} no tiene saldo pendiente` });
+          }
+          if (montoPago > saldoActual + 0.01) {
+            await runQuery("ROLLBACK");
+            return res.status(409).json({ message: `El monto (${montoPago}) supera el saldo pendiente de venta #${ventaId} (${saldoActual})` });
+          }
+          const nuevoSaldo = Number(Math.max(0, saldoActual - montoPago).toFixed(2));
+          await runQuery(
+            `INSERT INTO pagos_cuenta_corriente
+             (venta_id, cliente_id, fecha, hora, monto_pagado, tipo_cobro, monto_efectivo, monto_debito, caja_id, group_id, observacion, numero_comprobante, usuario_id, usuario_nombre)
+             VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)`,
+            [ventaId, clienteId, fecha, hora, montoPago, tipoCc, cajaActiva.id, groupId, observacion, numeroComprobante, usuarioId, usuarioNombre]
+          );
+          await runQuery(
+            "UPDATE ventas SET saldo_pendiente = ?, estado = ? WHERE id = ?",
+            [nuevoSaldo, nuevoSaldo <= 0 ? "cobrada" : "cuenta_corriente_pendiente", ventaId]
+          );
+          ventasAfectadas.push({ venta_id: ventaId, monto_pagado: montoPago, saldo_restante: nuevoSaldo });
+        }
+      } else {
+        for (const venta of ventasPendientes) {
+          if (restante <= 0) break;
+          const saldoVenta = Number(venta.saldo_pendiente);
+          const montoPago = Number(Math.min(restante, saldoVenta).toFixed(2));
+          const nuevoSaldo = Number((saldoVenta - montoPago).toFixed(2));
 
-        await runQuery(
-          `INSERT INTO pagos_cuenta_corriente
-           (venta_id, cliente_id, fecha, hora, monto_pagado, tipo_cobro, monto_efectivo, monto_debito, caja_id, group_id, observacion, numero_comprobante, usuario_id, usuario_nombre)
-           VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)`,
-          [venta.id, clienteId, fecha, hora, montoPago, tipoCc, cajaActiva.id, groupId, observacion, numeroComprobante, usuarioId, usuarioNombre]
-        );
-        await runQuery(
-          "UPDATE ventas SET saldo_pendiente = ?, estado = ? WHERE id = ?",
-          [nuevoSaldo, nuevoSaldo <= 0 ? "cobrada" : "cuenta_corriente_pendiente", venta.id]
-        );
-        ventasAfectadas.push({ venta_id: venta.id, monto_pagado: montoPago, saldo_restante: nuevoSaldo });
-        restante = Number((restante - montoPago).toFixed(2));
+          await runQuery(
+            `INSERT INTO pagos_cuenta_corriente
+             (venta_id, cliente_id, fecha, hora, monto_pagado, tipo_cobro, monto_efectivo, monto_debito, caja_id, group_id, observacion, numero_comprobante, usuario_id, usuario_nombre)
+             VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)`,
+            [venta.id, clienteId, fecha, hora, montoPago, tipoCc, cajaActiva.id, groupId, observacion, numeroComprobante, usuarioId, usuarioNombre]
+          );
+          await runQuery(
+            "UPDATE ventas SET saldo_pendiente = ?, estado = ? WHERE id = ?",
+            [nuevoSaldo, nuevoSaldo <= 0 ? "cobrada" : "cuenta_corriente_pendiente", venta.id]
+          );
+          ventasAfectadas.push({ venta_id: venta.id, monto_pagado: montoPago, saldo_restante: nuevoSaldo });
+          restante = Number((restante - montoPago).toFixed(2));
+        }
       }
 
       let cuentaEfectivoIdCc = null;
@@ -6498,7 +6571,8 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
       deuda_anterior: deudaAnterior,
       deuda_restante: deudaRestante,
       ventas_afectadas: ventasAfectadas,
-      cobros: cobrosNormalizados
+      cobros: cobrosNormalizados,
+      aplicacion: ventasManual ? "manual" : "fifo"
     });
   } catch (error) {
     logError("Error al cobrar deuda del cliente:", error);
