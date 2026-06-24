@@ -1,5 +1,5 @@
 const { allQuery, getQuery, runQuery } = require("../db");
-const TIPOS_CUENTA_CORRIENTE_PERMITIDOS = new Set(["cliente", "personal", "interna", "produccion", "cortesia"]);
+const TIPOS_CUENTA_CORRIENTE_PERMITIDOS = new Set(["normal", "empleado", "empresa"]);
 const PERFILES_CLIENTE_PERMITIDOS = new Set(["normal", "empleado", "empresa"]);
 
 const TIPOS_CLIENTE_PERMITIDOS = new Set(["cliente", "colaborador", "dueño", "negocio"]);
@@ -16,7 +16,7 @@ function normalizarPerfilCliente(valor) {
 
 function normalizarTipoCuentaCorriente(valor) {
   const tipo = String(valor || "").trim().toLowerCase();
-  return TIPOS_CUENTA_CORRIENTE_PERMITIDOS.has(tipo) ? tipo : "cliente";
+  return TIPOS_CUENTA_CORRIENTE_PERMITIDOS.has(tipo) ? tipo : "normal";
 }
 
 function parseClientePayload(body) {

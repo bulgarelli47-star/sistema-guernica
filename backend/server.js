@@ -532,7 +532,7 @@ async function ensureClientesSchema() {
   await ensureColumn("clientes", "dni_cuit", "TEXT");
   await ensureColumn("clientes", "tipo_persona", "TEXT NOT NULL DEFAULT 'fisica'");
   await ensureColumn("clientes", "tipo_cliente", "TEXT NOT NULL DEFAULT 'cliente'");
-  await ensureColumn("clientes", "tipo_cuenta_corriente", "TEXT NOT NULL DEFAULT 'cliente'");
+  await ensureColumn("clientes", "tipo_cuenta_corriente", "TEXT NOT NULL DEFAULT 'normal'");
   await ensureColumn("clientes", "email", "TEXT");
   await ensureColumn("clientes", "contacto", "TEXT");
   await ensureColumn("clientes", "localidad", "TEXT");
@@ -4617,7 +4617,7 @@ app.get("/clientes/:id/estado-cuenta", async (req, res) => {
       dni_cuit:                  clienteRaw.dni_cuit               || null,
       telefono:                  clienteRaw.telefono               || null,
       tipo_cliente:              clienteRaw.tipo_cliente            || null,
-      tipo_cuenta_corriente:     clienteRaw.tipo_cuenta_corriente  || "cliente",
+      tipo_cuenta_corriente:     clienteRaw.tipo_cuenta_corriente  || "normal",
       limite_fiado:              limiteFiado,
       deuda_actual:              deudaActual,
       observaciones:             clienteRaw.observaciones          || null,
