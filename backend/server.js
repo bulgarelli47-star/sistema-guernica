@@ -7292,6 +7292,80 @@ app.post("/ventas/:id/anular-cobrada", async (req, res) => {
   }
 });
 
+app.post("/ventas/:id/anular-cc", async (req, res) => {
+  const ventaId = Number(req.params.id);
+  const authorizationCode = String(req.body.authorization_code || "").trim();
+
+  if (!(await tienePermisoAccion(req, "ventas_anular_ticket"))) {
+    return res.status(403).json({ message: "No tenes permisos para anular tickets" });
+  }
+
+  const claveActual = await getClaveAutorizacion();
+  if (authorizationCode !== claveActual) {
+    return res.status(403).json({ message: "Codigo de autorizacion incorrecto" });
+  }
+
+  try {
+    const venta = await getQuery("SELECT * FROM ventas WHERE id = ?", [ventaId]);
+
+    if (!venta || venta.estado !== "cuenta_corriente_pendiente" || !venta.es_cuenta_corriente) {
+      return res.status(404).json({ message: "Venta de cuenta corriente pendiente no encontrada" });
+    }
+
+    const cobroActivo = await getQuery(
+      `SELECT 1 FROM pagos_cuenta_corriente
+       WHERE venta_id = ?
+         AND tipo_movimiento = 'cobro'
+         AND COALESCE(revertido, 0) = 0
+       LIMIT 1`,
+      [ventaId]
+    );
+
+    if (cobroActivo) {
+      return res.status(409).json({
+        message: "La venta tiene cobros aplicados. Revertí primero los cobros desde Cuenta Corriente."
+      });
+    }
+
+    const items = await getVentaDetalleRows(ventaId);
+
+    await runQuery("BEGIN TRANSACTION");
+
+    for (const item of items) {
+      if (item.producto_id) {
+        await applyStockChange(item.producto_id, -Number(item.cantidad || 0));
+      }
+    }
+    await aplicarStockComponentesSnapshot(await filtrarDetallesConStockFisico(items), -1);
+    await cancelarAjustesPendientesVentaReceta(ventaId, {
+      usuario: getUsuarioAuditoria(req),
+      observaciones_admin: "Cancelado por anulacion de venta cuenta corriente"
+    });
+    await borrarRecetaSnapshotVenta(items);
+    await borrarSnapshotsDetalles(items);
+
+    await runQuery(
+      `UPDATE ventas
+       SET estado = 'anulado', saldo_pendiente = 0
+       WHERE id = ?`,
+      [ventaId]
+    );
+
+    await runQuery("COMMIT");
+
+    return res.json({ message: `Venta CC #${ventaId} anulada` });
+  } catch (error) {
+    try {
+      await runQuery("ROLLBACK");
+    } catch (rollbackError) {
+      logError("Rollback anulacion CC", rollbackError);
+    }
+
+    logError("Error al anular venta CC:", error);
+    return res.status(500).json({ message: "Error al anular venta de cuenta corriente" });
+  }
+});
+
 app.get("/ventas/:id/receta-snapshot", async (req, res) => {
   const ventaId = Number(req.params.id);
   try {
@@ -7800,53 +7874,6 @@ app.get("/reportes/exportar", async (req, res) => {
     logError("Error al exportar reporte:", error);
     return res.status(500).json({ message: "Error al generar exportacion" });
   }
-});
-
-// Contrato base para reportes futuros
-app.get("/reportes/:modulo", async (req, res) => {
-  const { modulo } = req.params;
-
-  if (!REPORTES_MODULOS.has(modulo)) {
-    return res.status(404).json({ message: "Modulo de reporte no disponible" });
-  }
-  if (!asegurarAccesoReporte(req, res, modulo)) return;
-
-  const { desde = null, hasta = null, comparacion = "periodo_anterior" } = req.query;
-
-  return res.json({
-    modulo,
-    desde,
-    hasta,
-    comparacion,
-    estado: "pendiente_backend",
-    message: "Endpoint preparado para agregaciones y metricas futuras",
-    data: null
-  });
-});
-
-// Contrato base para exportaciones futuras
-app.post("/reportes/exportar", async (req, res) => {
-  const { modulo, desde, hasta, formato = "excel", contenido = [] } = req.body || {};
-  const formatoArchivo = normalizarFormatoReporte(formato);
-
-  if (!REPORTES_MODULOS.has(modulo)) {
-    return res.status(400).json({ message: "Modulo de reporte invalido" });
-  }
-  if (!asegurarAccesoReporte(req, res, modulo)) return;
-
-  if (!desde || !hasta) {
-    return res.status(400).json({ message: "Debe indicar rango de fechas" });
-  }
-
-  if (!Array.isArray(contenido) || contenido.length === 0) {
-    return res.status(400).json({ message: "Debe seleccionar contenido para exportar" });
-  }
-
-  return res.status(202).json({
-    estado: "simulado",
-    message: "Exportacion registrada. Generacion PDF/Excel pendiente de backend.",
-    filename: nombreArchivoReporte(modulo, desde, hasta, formatoArchivo)
-  });
 });
 
 app.get("/configuracion", async (req, res) => {
