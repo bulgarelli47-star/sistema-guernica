@@ -8116,6 +8116,9 @@ app.post("/tienda/publica/pedidos", async (req, res) => {
     if (!Number.isFinite(cantidad) || cantidad <= 0) {
       return res.status(400).json({ message: "Cantidad inválida en el pedido." });
     }
+    if (cantidad > 100) {
+      return res.status(400).json({ message: "La cantidad máxima por producto es 100" });
+    }
     const mods = Array.isArray(item.modificadores) ? item.modificadores : [];
     for (const mod of mods) {
       const modId = Number(mod.modificador_id);
