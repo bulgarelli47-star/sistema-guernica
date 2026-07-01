@@ -5064,6 +5064,8 @@ app.post("/clientes/:id/cobros-cc/:group_id/revertir", async (req, res) => {
   const groupIdOriginal = String(req.params.group_id || "").trim();
 
   try {
+    if (!(await requirePermiso(req, res, "pagos_eliminar", "No tenes permisos para revertir cobros"))) return;
+
     // 1. Cliente existe
     const cliente = await getQuery("SELECT id FROM clientes WHERE id = ?", [clienteId]);
     if (!cliente) return res.status(404).json({ message: "Cliente no encontrado" });
