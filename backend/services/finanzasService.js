@@ -82,6 +82,8 @@ async function obtenerLiquidez(alertas) {
 
   liquidez.total = round2(
     liquidez.efectivo_contado +
+    liquidez.caja_cambio +
+    liquidez.caja_grande_resguardado +
     liquidez.cuentas_digitales_conciliadas +
     sumar(liquidez.bancos_billeteras, "monto")
   );
