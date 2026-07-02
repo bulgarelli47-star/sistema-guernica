@@ -6193,7 +6193,8 @@ app.get("/caja/cierres", async (req, res) => {
   try {
     const cierres = await allQuery(
       `SELECT id, fecha, hora, hora_cierre, monto_apertura, efectivo_esperado, efectivo_contado,
-              diferencia, monto_caja_apertura, monto_caja_fondo, usuario, estado, resumen_snapshot
+              diferencia, monto_caja_apertura, monto_caja_fondo, usuario, estado, resumen_snapshot,
+              ventas_snapshot
        FROM caja_aperturas
        WHERE estado = 'cerrada'
        ORDER BY fecha DESC, hora_cierre DESC, id DESC`
@@ -6201,7 +6202,8 @@ app.get("/caja/cierres", async (req, res) => {
 
     return res.json(cierres.map((cierre) => ({
       ...cierre,
-      resumen_snapshot: parseJsonOrFallback(cierre.resumen_snapshot, null)
+      resumen_snapshot: parseJsonOrFallback(cierre.resumen_snapshot, null),
+      ventas_snapshot: cierre.ventas_snapshot ? JSON.parse(cierre.ventas_snapshot) : []
     })));
   } catch (error) {
     logError("Error al obtener historial de cierres:", error);
