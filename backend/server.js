@@ -336,6 +336,24 @@ async function requireServerPermissions(req, res, next) {
     return next();
   }
 
+  if (pathname.startsWith("/clientes")) {
+    if (esLectura) return next();
+    const esCrudCliente =
+      pathname === "/clientes" ||
+      /^\/clientes\/\d+$/.test(pathname) ||
+      /^\/clientes\/\d+\/estado$/.test(pathname);
+    if (esCrudCliente && !puedeRol(req, ROLES.ADMIN_ENCARGADO))
+      return res.status(403).json({ message: "No tenes permisos para gestionar clientes" });
+    return next();
+  }
+
+  if (pathname.startsWith("/cuentas_cobro")) {
+    if (esLectura) return next();
+    if (!puedeRol(req, ROLES.ADMIN_ENCARGADO))
+      return res.status(403).json({ message: "No tenes permisos para gestionar cuentas de cobro" });
+    return next();
+  }
+
   return next();
 }
 
