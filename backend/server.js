@@ -1,5 +1,6 @@
 const express = require("express");
 const helmet = require("helmet");
+const { rateLimit } = require("express-rate-limit");
 const path = require("path");
 const fs = require("fs");
 const bcrypt = require("bcrypt");
@@ -199,6 +200,20 @@ const {
 const app = express();
 app.disable("x-powered-by");
 app.use(helmet({ contentSecurityPolicy: false }));
+
+const RL_MSG = { message: "Demasiados intentos. Esperá unos minutos e intentá nuevamente." };
+const rateLimitAutorizacion = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, message: RL_MSG, standardHeaders: true, legacyHeaders: false });
+const rateLimitLogin = rateLimit({ windowMs: 60 * 1000, limit: 20, message: RL_MSG, standardHeaders: true, legacyHeaders: false });
+
+app.use((req, res, next) => {
+  const originalJson = res.json.bind(res);
+  res.json = function(body) {
+    if (!res.getHeader("Cache-Control")) res.setHeader("Cache-Control", "no-store");
+    return originalJson(body);
+  };
+  next();
+});
+
 const PORT = Number(process.env.PORT) || 3000;
 async function getClaveAutorizacion() {
   try {
@@ -1175,7 +1190,7 @@ app.post("/logout", async (req, res) => {
   return res.json({ message: "Sesión cerrada" });
 });
 
-app.post("/login", async (req, res) => {
+app.post("/login", rateLimitLogin, async (req, res) => {
   const usuario = String(req.body?.usuario || "").trim();
   const password = String(req.body?.password || "");
   const remember = Boolean(req.body?.remember);
@@ -7940,7 +7955,7 @@ app.get("/configuracion", async (req, res) => {
   }
 });
 
-app.post("/autorizacion/validar", async (req, res) => {
+app.post("/autorizacion/validar", rateLimitAutorizacion, async (req, res) => {
   const clave = String(req.body?.clave || "").trim();
   const claveActual = await getClaveAutorizacion();
   if (!requerirClaveConfigurada(claveActual, res)) return;
