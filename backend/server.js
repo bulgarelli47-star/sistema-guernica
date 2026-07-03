@@ -6575,22 +6575,35 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
       } else {
         for (const venta of ventasPendientes) {
           if (restante <= 0) break;
-          const saldoVenta = Number(venta.saldo_pendiente);
+          const ventaActual = await getQuery(
+            `SELECT saldo_pendiente FROM ventas
+             WHERE id = ? AND estado = 'cuenta_corriente_pendiente' AND saldo_pendiente > 0`,
+            [venta.id]
+          );
+          if (!ventaActual || Number(ventaActual.saldo_pendiente) <= 0) continue;
+          const saldoVenta = Number(ventaActual.saldo_pendiente);
           const montoPago = Number(Math.min(restante, saldoVenta).toFixed(2));
+          if (montoPago <= 0) continue;
           const nuevoSaldo = Number((saldoVenta - montoPago).toFixed(2));
-
+          const resultFifo = await runQuery(
+            `UPDATE ventas
+             SET saldo_pendiente = ?, estado = ?
+             WHERE id = ? AND estado = 'cuenta_corriente_pendiente' AND saldo_pendiente = ?`,
+            [nuevoSaldo, nuevoSaldo <= 0 ? "cobrada" : "cuenta_corriente_pendiente", venta.id, saldoVenta]
+          );
+          if (resultFifo.changes === 0) continue;
           await runQuery(
             `INSERT INTO pagos_cuenta_corriente
              (venta_id, cliente_id, fecha, hora, monto_pagado, tipo_cobro, monto_efectivo, monto_debito, caja_id, group_id, observacion, numero_comprobante, usuario_id, usuario_nombre)
              VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)`,
             [venta.id, clienteId, fecha, hora, montoPago, tipoCc, cajaActiva.id, groupId, observacion, numeroComprobante, usuarioId, usuarioNombre]
           );
-          await runQuery(
-            "UPDATE ventas SET saldo_pendiente = ?, estado = ? WHERE id = ?",
-            [nuevoSaldo, nuevoSaldo <= 0 ? "cobrada" : "cuenta_corriente_pendiente", venta.id]
-          );
           ventasAfectadas.push({ venta_id: venta.id, monto_pagado: montoPago, saldo_restante: nuevoSaldo });
           restante = Number((restante - montoPago).toFixed(2));
+        }
+        if (ventasAfectadas.length === 0) {
+          await runQuery("ROLLBACK");
+          return res.status(409).json({ message: "La deuda ya fue cobrada o no hay saldo pendiente." });
         }
       }
 
