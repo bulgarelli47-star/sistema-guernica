@@ -197,14 +197,18 @@ const {
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
-const AUTHORIZATION_CANCEL_CODE = "0000"; // fallback solo si la DB no tiene clave configurada
-
 async function getClaveAutorizacion() {
   try {
     const row = await getQuery("SELECT valor FROM configuracion_global WHERE clave = 'autorizacion_clave_maestra'");
     const val = String(parsearConfigValor(row?.valor) || "").trim();
-    return val || AUTHORIZATION_CANCEL_CODE;
-  } catch { return AUTHORIZATION_CANCEL_CODE; }
+    return val || null;
+  } catch { return null; }
+}
+
+function requerirClaveConfigurada(clave, res) {
+  if (clave) return true;
+  res.status(403).json({ message: "Configurá una clave de autorización antes de usar esta acción." });
+  return false;
 }
 
 const MAX_LOGIN_ATTEMPTS = 5;
@@ -2155,6 +2159,7 @@ app.get("/admin/combo-preview", async (req, res) => {
 // Aplicar corrección: mover es_combo=1 (no reales) a aplica_para_combo=1 — requiere clave maestra
 app.post("/admin/combo-aplicar", async (req, res) => {
   const claveConfig = await getClaveAutorizacion();
+  if (!requerirClaveConfigurada(claveConfig, res)) return;
   const clave = String(req.body?.clave || "").trim();
   if (clave !== claveConfig) {
     return res.status(403).json({ message: "Clave maestra requerida" });
@@ -2450,6 +2455,7 @@ app.delete("/productos/:id", async (req, res) => {
 
   try {
     const claveActual = await getClaveAutorizacion();
+    if (!requerirClaveConfigurada(claveActual, res)) return;
     if (!clave || clave !== claveActual) {
       return res.status(403).json({ message: "Clave maestra incorrecta" });
     }
@@ -3770,6 +3776,8 @@ app.get("/integraciones/mercadopago-point/intentos/:id", async (req, res) => {
 });
 
 app.get("/integraciones/mercadopago-point/debug/terminales", async (req, res) => {
+  if (!puedeRol(req, ROLES.ADMIN))
+    return res.status(403).json({ message: "No tenes permisos para usar herramientas de diagnóstico." });
   const token = process.env.MERCADOPAGO_ACCESS_TOKEN;
   if (!token || !token.trim()) {
     return res.json({
@@ -3794,6 +3802,8 @@ app.get("/integraciones/mercadopago-point/debug/terminales", async (req, res) =>
 });
 
 app.post("/integraciones/mercadopago-point/debug/test-orden", async (req, res) => {
+  if (!puedeRol(req, ROLES.ADMIN))
+    return res.status(403).json({ message: "No tenes permisos para usar herramientas de diagnóstico." });
   res.setHeader("Content-Type", "application/json");
   try {
     const token = process.env.MERCADOPAGO_ACCESS_TOKEN;
@@ -4045,6 +4055,7 @@ app.put("/pagos/:id", async (req, res) => {
           categoria_pago, comprobante, numero_comprobante, cuenta_destino, observaciones, cuenta_cobro_id } = req.body;
 
   const claveConfig = await getClaveAutorizacion();
+  if (!requerirClaveConfigurada(claveConfig, res)) return;
   if (clave !== claveConfig) {
     return res.status(403).json({ message: "Clave maestra incorrecta" });
   }
@@ -4124,6 +4135,7 @@ app.delete("/pagos/:id", async (req, res) => {
   const { clave, rol } = req.body;
 
   const claveConfig = await getClaveAutorizacion();
+  if (!requerirClaveConfigurada(claveConfig, res)) return;
   if (clave !== claveConfig) {
     return res.status(403).json({ message: "Clave maestra incorrecta" });
   }
@@ -5862,6 +5874,7 @@ app.put("/caja/movimientos/:id", async (req, res) => {
   }
 
   const claveActual = await getClaveAutorizacion();
+  if (!requerirClaveConfigurada(claveActual, res)) return;
   if (!clave || clave !== claveActual) {
     return res.status(403).json({ message: "Clave maestra incorrecta" });
   }
@@ -6379,6 +6392,7 @@ app.post("/clientes/:id/recalcular-deuda", async (req, res) => {
 
     const claveIngresada = String(req.body?.clave_autorizacion || "").trim();
     const claveMaestra = await getClaveAutorizacion();
+    if (!requerirClaveConfigurada(claveMaestra, res)) return;
     if (!claveIngresada || claveIngresada !== claveMaestra) {
       return res.status(403).json({ message: "Clave maestra incorrecta" });
     }
@@ -7104,6 +7118,7 @@ app.post("/ventas/:id/anular", async (req, res) => {
   }
 
   const claveActual = await getClaveAutorizacion();
+  if (!requerirClaveConfigurada(claveActual, res)) return;
   if (authorizationCode !== claveActual) {
     return res.status(403).json({ message: "Codigo de autorizacion incorrecto" });
   }
@@ -7244,6 +7259,7 @@ app.post("/ventas/:id/anular-cobrada", async (req, res) => {
   }
 
   const claveActual = await getClaveAutorizacion();
+  if (!requerirClaveConfigurada(claveActual, res)) return;
   if (authorizationCode !== claveActual) {
     return res.status(403).json({ message: "Codigo de autorizacion incorrecto" });
   }
@@ -7323,6 +7339,7 @@ app.post("/ventas/:id/anular-cc", async (req, res) => {
   }
 
   const claveActual = await getClaveAutorizacion();
+  if (!requerirClaveConfigurada(claveActual, res)) return;
   if (authorizationCode !== claveActual) {
     return res.status(403).json({ message: "Codigo de autorizacion incorrecto" });
   }
@@ -7919,6 +7936,7 @@ app.get("/configuracion", async (req, res) => {
 app.post("/autorizacion/validar", async (req, res) => {
   const clave = String(req.body?.clave || "").trim();
   const claveActual = await getClaveAutorizacion();
+  if (!requerirClaveConfigurada(claveActual, res)) return;
   if (clave !== claveActual) {
     return res.status(403).json({ message: "Clave maestra incorrecta" });
   }

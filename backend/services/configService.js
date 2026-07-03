@@ -148,7 +148,7 @@ const CONFIGURACION_DEFAULTS = {
   cuenta_local_nombre: { seccion: "cuentas_corrientes", valor: "" },
   cuenta_local_produccion_activa: { seccion: "cuentas_corrientes", valor: true },
   cuenta_local_interno_cortesia_activa: { seccion: "cuentas_corrientes", valor: true },
-  autorizacion_clave_maestra: { seccion: "usuarios_permisos", valor: "1234" },
+  autorizacion_clave_maestra: { seccion: "usuarios_permisos", valor: "" },
   permiso_ajuste_stock: { seccion: "usuarios_permisos", valor: "admin" },
   permiso_ver_costos: { seccion: "usuarios_permisos", valor: "admin" },
   permiso_cierre_caja: { seccion: "usuarios_permisos", valor: "admin" },
