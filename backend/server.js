@@ -1,4 +1,5 @@
 const express = require("express");
+const helmet = require("helmet");
 const path = require("path");
 const fs = require("fs");
 const bcrypt = require("bcrypt");
@@ -196,6 +197,8 @@ const {
 }
 
 const app = express();
+app.disable("x-powered-by");
+app.use(helmet({ contentSecurityPolicy: false }));
 const PORT = Number(process.env.PORT) || 3000;
 async function getClaveAutorizacion() {
   try {
@@ -1902,7 +1905,11 @@ app.get("/productos", async (req, res) => {
       };
     });
 
-    return res.json(enriquecidos);
+    const CAMPOS_COSTO = ["precio_compra","costo_final","costo_teorico","costo_consumo_unitario","margen_porcentaje","precio_sugerido","precio_referencial_proveedor","precio_compra_incluye_iva"];
+    const productos = !puedeRol(req, ROLES.ADMIN_ENCARGADO)
+      ? enriquecidos.map(p => { const f = { ...p }; CAMPOS_COSTO.forEach(c => delete f[c]); return f; })
+      : enriquecidos;
+    return res.json(productos);
   } catch (err) {
     logError("Error al listar productos:", err);
     return res.status(500).json({ message: "Error al obtener productos" });

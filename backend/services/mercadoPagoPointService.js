@@ -285,9 +285,11 @@ async function llamarMpDebug(url, options) {
     }
   }
 
-  console.log(
-    `[MP Debug] ${options.method || "GET"} ${url} → HTTP ${res.status} | content-type: ${content_type} | body(120): ${String(raw_text || "").slice(0, 120)}`
-  );
+  if (process.env.MP_DEBUG === "1") {
+    console.log(
+      `[MP Debug] ${options.method || "GET"} ${url} → HTTP ${res.status} | content-type: ${content_type} | body(120): ${String(raw_text || "").slice(0, 120)}`
+    );
+  }
 
   return {
     http_status: res.status,
