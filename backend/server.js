@@ -7101,10 +7101,10 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
 
     await runQuery("BEGIN TRANSACTION");
 
-    await runQuery(
+    const resultCobrar = await runQuery(
       `UPDATE ventas
        SET estado = 'cobrada', total = ?, metodo_pago = ?, tipo_cobro = ?, monto_efectivo = ?, monto_debito = ?, caja_id = ?, cuenta_cobro_id = ?, recargo_porcentaje = ?, recargo_monto = ?
-       WHERE id = ?`,
+       WHERE id = ? AND estado = 'pendiente'`,
       [
         Number(venta.total),
         cobroReal.tipo_cobro,
@@ -7118,6 +7118,12 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
         ventaId
       ]
     );
+
+    if (resultCobrar.changes === 0) {
+      await runQuery("ROLLBACK");
+      return res.status(409).json({ message: "La venta ya fue cobrada o no está pendiente." });
+    }
+
     await registrarVentaCobros(ventaId, cobroReal, cuentaCobro.cuenta_cobro_id, null, cobrosV2Cobrar);
 
     await runQuery("COMMIT");
