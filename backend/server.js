@@ -7316,6 +7316,18 @@ app.post("/ventas/:id/anular-cobrada", async (req, res) => {
 
     await runQuery("BEGIN TRANSACTION");
 
+    const resultAnular = await runQuery(
+      `UPDATE ventas
+       SET estado = 'anulado', metodo_pago = NULL, tipo_cobro = NULL, monto_efectivo = 0, monto_debito = 0
+       WHERE id = ? AND estado = 'cobrada'`,
+      [ventaId]
+    );
+
+    if (resultAnular.changes === 0) {
+      await runQuery("ROLLBACK");
+      return res.status(409).json({ message: "La venta ya fue anulada o no está cobrada." });
+    }
+
     for (const item of items) {
       if (item.producto_id) {
         await applyStockChange(item.producto_id, -Number(item.cantidad || 0));
@@ -7327,13 +7339,6 @@ app.post("/ventas/:id/anular-cobrada", async (req, res) => {
       observaciones_admin: "Cancelado por anulacion de venta cobrada"
     });
     await borrarRecetaSnapshotVenta(items);
-
-    await runQuery(
-      `UPDATE ventas
-       SET estado = 'anulado', metodo_pago = NULL, tipo_cobro = NULL, monto_efectivo = 0, monto_debito = 0
-       WHERE id = ?`,
-      [ventaId]
-    );
 
     const cajaActiva = await getCajaAbiertaActual();
     if (cajaActiva) {
