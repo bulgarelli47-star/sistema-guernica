@@ -5494,10 +5494,45 @@ app.post("/ventas/:id/pagar-cuenta-corriente", async (req, res) => {
       return res.status(400).json({ message: "Datos de cobro invalidos" });
     }
 
-    const nuevoSaldo = Number((Number(snapshot.saldo_actual) - montoPagado).toFixed(2));
     const { fecha, hora } = getNowParts();
 
     await runQuery("BEGIN TRANSACTION");
+
+    const ventaDb = await getQuery(
+      `SELECT saldo_pendiente FROM ventas
+       WHERE id = ? AND estado = 'cuenta_corriente_pendiente' AND saldo_pendiente > 0`,
+      [ventaId]
+    );
+
+    if (!ventaDb || Number(ventaDb.saldo_pendiente) <= 0) {
+      await runQuery("ROLLBACK");
+      return res.status(409).json({ message: "La venta ya fue pagada o no tiene saldo pendiente." });
+    }
+
+    const saldoActualDb = Number(ventaDb.saldo_pendiente);
+    const nuevoSaldo = Number(Math.max(0, saldoActualDb - montoPagado).toFixed(2));
+
+    const resultPago = await runQuery(
+      `UPDATE ventas
+       SET saldo_pendiente = ?, estado = ?, metodo_pago = ?, tipo_cobro = ?, monto_efectivo = monto_efectivo + ?, monto_debito = monto_debito + ?
+       WHERE id = ? AND estado = 'cuenta_corriente_pendiente' AND saldo_pendiente = ?`,
+      [
+        nuevoSaldo,
+        nuevoSaldo === 0 ? "cobrada" : "cuenta_corriente_pendiente",
+        cobro.tipo_cobro,
+        cobro.tipo_cobro,
+        cobro.monto_efectivo,
+        cobro.monto_debito,
+        ventaId,
+        saldoActualDb
+      ]
+    );
+
+    if (resultPago.changes === 0) {
+      await runQuery("ROLLBACK");
+      return res.status(409).json({ message: "La venta ya fue pagada o no tiene saldo pendiente." });
+    }
+
     await runQuery(
       `INSERT INTO pagos_cuenta_corriente
       (venta_id, cliente_id, fecha, hora, monto_pagado, tipo_cobro, monto_efectivo, monto_debito, caja_id)
@@ -5515,20 +5550,6 @@ app.post("/ventas/:id/pagar-cuenta-corriente", async (req, res) => {
       ]
     );
 
-    await runQuery(
-      `UPDATE ventas
-       SET saldo_pendiente = ?, estado = ?, metodo_pago = ?, tipo_cobro = ?, monto_efectivo = monto_efectivo + ?, monto_debito = monto_debito + ?
-       WHERE id = ?`,
-      [
-        nuevoSaldo,
-        nuevoSaldo === 0 ? "cobrada" : "cuenta_corriente_pendiente",
-        cobro.tipo_cobro,
-        cobro.tipo_cobro,
-        cobro.monto_efectivo,
-        cobro.monto_debito,
-        ventaId
-      ]
-    );
     await runQuery("COMMIT");
 
     return res.json({
