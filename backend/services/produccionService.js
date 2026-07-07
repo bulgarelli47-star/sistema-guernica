@@ -186,18 +186,36 @@ async function buildPreviewProduccion({ producto_id, cantidad }) {
 }
 
 async function registrarMovimientoFisico({ productoId, tipoMovimiento, cantidad, motivo, usuario }) {
-  const producto = await getQuery("SELECT id, stock FROM productos WHERE id = ?", [Number(productoId)]);
-  if (!producto) throw crearError("Producto de stock no encontrado", 404);
-  const stockAnterior = Number(producto.stock || 0);
   const esIngreso = tipoMovimiento === "produccion_ingreso";
-  const stockNuevo = round4(esIngreso ? stockAnterior + Number(cantidad || 0) : stockAnterior - Number(cantidad || 0));
+  const cantidadNormalizada = round4(Number(cantidad || 0));
 
-  await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockNuevo, productoId]);
+  if (esIngreso) {
+    const upd = await runQuery(
+      "UPDATE productos SET stock = stock + ? WHERE id = ?",
+      [cantidadNormalizada, Number(productoId)]
+    );
+    if (upd.changes === 0) throw crearError("Producto de stock no encontrado", 404);
+  } else {
+    const upd = await runQuery(
+      "UPDATE productos SET stock = stock - ? WHERE id = ? AND stock >= ?",
+      [cantidadNormalizada, Number(productoId), cantidadNormalizada]
+    );
+    if (upd.changes === 0) {
+      const prod = await getQuery("SELECT nombre, stock FROM productos WHERE id = ?", [Number(productoId)]);
+      if (!prod) throw crearError("Producto de stock no encontrado", 404);
+      throw crearError(`Stock insuficiente para ${prod.nombre}`, 400);
+    }
+  }
+
+  const productoActual = await getQuery("SELECT stock FROM productos WHERE id = ?", [Number(productoId)]);
+  const stockNuevo = round4(productoActual.stock);
+  const stockAnterior = round4(esIngreso ? stockNuevo - cantidadNormalizada : stockNuevo + cantidadNormalizada);
+
   const { fecha, hora } = getNowParts();
   const result = await runQuery(
     `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [productoId, tipoMovimiento, round4(cantidad), stockAnterior, stockNuevo, motivo, usuario || "admin", fecha, hora]
+    [productoId, tipoMovimiento, cantidadNormalizada, stockAnterior, stockNuevo, motivo, usuario || "admin", fecha, hora]
   );
 
   return {
