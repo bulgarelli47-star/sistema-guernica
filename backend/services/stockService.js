@@ -273,14 +273,21 @@ async function descontarStockFisicoProducto(productoId, producto, deltaCantidad,
   const stockNuevo = stockAnterior - cantidadDescontar;
 
   const config = await getConfiguracionGlobal();
-  if (!config.stock_permitir_negativo && stockNuevo < 0) {
-    throw new Error(`Stock insuficiente para el producto (id: ${productoId}). Disponible: ${stockAnterior}`);
+  if (cantidadDescontar > 0 && !config.stock_permitir_negativo) {
+    const result = await runQuery(
+      "UPDATE productos SET stock = stock - ? WHERE id = ? AND stock >= ?",
+      [cantidadDescontar, productoId, cantidadDescontar]
+    );
+    if (result.changes === 0) {
+      const productoActual = await getQuery("SELECT nombre, stock FROM productos WHERE id = ?", [productoId]);
+      throw new Error(`Stock insuficiente para ${productoActual?.nombre || `producto id: ${productoId}`}`);
+    }
+  } else {
+    await runQuery(
+      "UPDATE productos SET stock = stock - ? WHERE id = ?",
+      [cantidadDescontar, productoId]
+    );
   }
-
-  await runQuery(
-    "UPDATE productos SET stock = stock - ? WHERE id = ?",
-    [cantidadDescontar, productoId]
-  );
 
   const { fecha, hora } = getNowParts();
   await runQuery(
