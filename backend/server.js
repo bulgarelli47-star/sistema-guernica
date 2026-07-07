@@ -4025,6 +4025,28 @@ app.post("/pagos", async (req, res) => {
       return res.status(400).json({ message: "No hay una caja abierta para registrar el pago" });
     }
 
+    if (numeroComprobante) {
+      const dupComprobante = await getQuery(
+        `SELECT 1 FROM pagos
+         WHERE (proveedor_id IS ?) AND numero_comprobante = ? AND monto_total = ? AND fecha = ?
+         LIMIT 1`,
+        [proveedorId, numeroComprobante, montoTotal, fecha]
+      );
+      if (dupComprobante) {
+        return res.status(409).json({ message: "Ya existe un pago con ese comprobante para este proveedor." });
+      }
+    } else {
+      const dupTemporal = await getQuery(
+        `SELECT 1 FROM pagos
+         WHERE (proveedor_id IS ?) AND concepto = ? AND monto_total = ? AND fecha = ? AND hora = ?
+         LIMIT 1`,
+        [proveedorId, concepto, montoTotal, fecha, hora]
+      );
+      if (dupTemporal) {
+        return res.status(409).json({ message: "Pago duplicado detectado." });
+      }
+    }
+
     const result = await runQuery(
       `INSERT INTO pagos
       (proveedor_id, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito, fecha, hora, estado, caja_id,
