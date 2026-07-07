@@ -4471,6 +4471,26 @@ app.post("/ventas", async (req, res) => {
       return res.status(400).json({ message: "No hay una caja abierta para registrar la venta" });
     }
 
+    if (tipoVenta === "pendiente") {
+      const existePendiente = await getQuery(
+        "SELECT 1 FROM ventas WHERE identificador_pendiente = ? AND tipo = 'pendiente' AND estado != 'anulado' LIMIT 1",
+        [identificadorPendiente]
+      );
+      if (existePendiente) return res.status(409).json({ message: "Ya existe un ticket pendiente con ese identificador." });
+    } else if (tipoVenta === "normal" && !esCuentaCorriente && cajaActiva) {
+      const dupVenta = await getQuery(
+        "SELECT 1 FROM ventas WHERE caja_id = ? AND fecha = ? AND hora = ? AND total = ? AND tipo = 'normal' AND es_cuenta_corriente = 0 LIMIT 1",
+        [cajaActiva.id, fecha, hora, subtotalVenta]
+      );
+      if (dupVenta) return res.status(409).json({ message: "Venta duplicada detectada." });
+    } else if (esCuentaCorriente && clienteId) {
+      const dupCC = await getQuery(
+        "SELECT 1 FROM ventas WHERE cliente_id = ? AND fecha = ? AND hora = ? AND total = ? AND es_cuenta_corriente = 1 LIMIT 1",
+        [clienteId, fecha, hora, subtotalVenta]
+      );
+      if (dupCC) return res.status(409).json({ message: "Venta de cuenta corriente duplicada detectada." });
+    }
+
     await runQuery("BEGIN TRANSACTION");
 
     // metodo_pago es alias legacy de tipo_cobro — ambos reciben el mismo valor
