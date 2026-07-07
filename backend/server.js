@@ -7442,6 +7442,18 @@ app.post("/ventas/:id/anular-cc", async (req, res) => {
 
     await runQuery("BEGIN TRANSACTION");
 
+    const resultAnular = await runQuery(
+      `UPDATE ventas
+       SET estado = 'anulado', saldo_pendiente = 0
+       WHERE id = ? AND estado = 'cuenta_corriente_pendiente'`,
+      [ventaId]
+    );
+
+    if (resultAnular.changes === 0) {
+      await runQuery("ROLLBACK");
+      return res.status(409).json({ message: "La venta ya fue anulada o no está pendiente en cuenta corriente." });
+    }
+
     for (const item of items) {
       if (item.producto_id) {
         await applyStockChange(item.producto_id, -Number(item.cantidad || 0));
@@ -7454,13 +7466,6 @@ app.post("/ventas/:id/anular-cc", async (req, res) => {
     });
     await borrarRecetaSnapshotVenta(items);
     await borrarSnapshotsDetalles(items);
-
-    await runQuery(
-      `UPDATE ventas
-       SET estado = 'anulado', saldo_pendiente = 0
-       WHERE id = ?`,
-      [ventaId]
-    );
 
     await runQuery("COMMIT");
 
