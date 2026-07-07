@@ -7196,6 +7196,18 @@ app.post("/ventas/:id/anular", async (req, res) => {
 
     await runQuery("BEGIN TRANSACTION");
 
+    const resultAnular = await runQuery(
+      `UPDATE ventas
+       SET estado = 'anulado', metodo_pago = NULL
+       WHERE id = ? AND estado = 'pendiente'`,
+      [ventaId]
+    );
+
+    if (resultAnular.changes === 0) {
+      await runQuery("ROLLBACK");
+      return res.status(409).json({ message: "La venta ya fue anulada o no está pendiente." });
+    }
+
     for (const item of items) {
       if (!item.producto_id) {
         continue;
@@ -7209,13 +7221,6 @@ app.post("/ventas/:id/anular", async (req, res) => {
       observaciones_admin: "Cancelado por anulacion de ticket pendiente"
     });
     await borrarRecetaSnapshotVenta(items);
-
-    await runQuery(
-      `UPDATE ventas
-       SET estado = 'anulado', metodo_pago = NULL
-       WHERE id = ?`,
-      [ventaId]
-    );
 
     await runQuery("COMMIT");
 
