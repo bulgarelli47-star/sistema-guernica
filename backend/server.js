@@ -8804,6 +8804,16 @@ app.post("/tienda/pedidos/:id/convertir-venta", async (req, res) => {
 
     await runQuery("BEGIN TRANSACTION");
 
+    const resultConvertir = await runQuery(
+      "UPDATE tienda_pedidos SET actualizado_en=? WHERE id=? AND estado='listo' AND venta_id IS NULL",
+      [new Date().toISOString().slice(0, 19).replace("T", " "), pedidoId]
+    );
+
+    if (resultConvertir.changes === 0) {
+      await runQuery("ROLLBACK");
+      return res.status(409).json({ message: "El pedido ya fue convertido por otra operación." });
+    }
+
     const venta = await runQuery(
       `INSERT INTO ventas
       (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id, cuenta_cobro_id, recargo_porcentaje, recargo_monto)
