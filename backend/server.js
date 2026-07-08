@@ -7343,17 +7343,27 @@ app.patch("/ventas/:id/cobro", async (req, res) => {
       }
     }
 
-    await runQuery(
+    await runQuery("BEGIN TRANSACTION");
+
+    const resultPatchCobro = await runQuery(
       `UPDATE ventas
        SET metodo_pago = ?, tipo_cobro = ?, monto_efectivo = ?, monto_debito = ?, cuenta_cobro_id = ?
-       WHERE id = ?`,
+       WHERE id = ? AND estado = 'cobrada'`,
       [cobro.tipo_cobro, cobro.tipo_cobro, cobro.monto_efectivo, cobro.monto_debito, cuentaCobroFinal, ventaId]
     );
+
+    if (resultPatchCobro.changes === 0) {
+      await runQuery("ROLLBACK");
+      return res.status(409).json({ message: "La venta ya no está cobrada o fue modificada por otra operación." });
+    }
+
     await runQuery("DELETE FROM venta_cobros WHERE venta_id = ?", [ventaId]);
     await registrarVentaCobros(ventaId, cobro, cuentaCobroFinal, null, cobrosV2Patch);
+    await runQuery("COMMIT");
 
     return res.json({ message: `Metodo de pago actualizado en ticket ${ventaId}` });
   } catch (error) {
+    try { await runQuery("ROLLBACK"); } catch {}
     logError("Error al actualizar cobro:", error);
     return res.status(500).json({ message: "Error al actualizar cobro" });
   }
