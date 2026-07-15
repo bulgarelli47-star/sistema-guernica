@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Usuarios - Atlas OS</title>
   <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap">
   <style>
     :root{--header-height:88px;--sidebar-width:270px;--bg:#f7f7fb;--surface:#fff;--header:#16052e;--text:#111827;--muted:#6b7280;--border:#e5e7eb;--primary:#6d28d9;--primary-soft:#f0e5ff;--success:#22a35a;--danger:#e05252;--warning:#d99a21;--shadow:0 12px 30px rgba(31,11,63,.08);--radius:18px}
     *{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#fbfaff 0%,var(--bg) 100%);color:var(--text);font-family:"Segoe UI",Tahoma,Geneva,Verdana,sans-serif}button,input,select{font:inherit}button{cursor:pointer}
@@ -29,6 +32,32 @@
     :where(.modal-actions,.dialog-actions,.modal-footer,.modal-header-actions){display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
     :where(.close,.icon-button,.mib.icon-only){display:inline-grid;place-items:center;flex:0 0 auto;border-radius:10px}
     @media(max-width:860px){:where(.modal,.modal-backdrop){padding:10px}.modal>.modal-card,.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{width:min(100%,calc(100vw - 20px));max-height:calc(100vh - 20px);border-radius:16px}:where(.modal-actions,.dialog-actions,.modal-footer){justify-content:stretch}:where(.modal-actions>* , .dialog-actions>* , .modal-footer>*){flex:1 1 140px}}
+    /* S2.1 — Header Atlas V1 */
+    :root{--primary:#7c3aed;--primary-strong:#5b21b6;--primary-soft:#f0e5ff;--surface:#fcfcfd;--text:#0f172a;--muted:#64748b;--border:#d9e1ec;--success:#059669;--danger:#dc2626}
+    body{font-family:"Inter","Segoe UI",sans-serif}
+    .logo-mark img{filter:drop-shadow(0 0 12px rgba(124,58,237,.28))}
+    .site-header .logo-text strong{font-family:"Space Grotesk","Inter","Segoe UI",sans-serif;font-weight:700;letter-spacing:.08em;font-size:17px;text-transform:uppercase;line-height:1}
+    .logo-text small{display:block;font-family:"Inter","Segoe UI",sans-serif;font-size:11px;font-weight:400;color:rgba(255,255,255,.62);line-height:1.25;margin-top:5px}
+    .topbar{padding:18px 24px;gap:20px}
+    .topbar-divider{height:38px;background:rgba(255,255,255,.12)}
+    .topbar-title h1{font-family:"Space Grotesk","Inter","Segoe UI",sans-serif;font-size:24px;font-weight:700;letter-spacing:-.025em;line-height:1.1;color:#fff}
+    .topbar-title p{font-family:"Inter","Segoe UI",sans-serif;font-size:14px;font-weight:400;line-height:1.35;color:rgba(255,255,255,.66);margin-top:6px}
+    .top-actions{gap:8px;flex-wrap:nowrap;min-width:0}
+    @media(max-width:860px){.top-actions{flex-wrap:wrap}}
+    .chip{min-height:40px;padding:10px 13px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.07);border-radius:12px;font-family:"Inter","Segoe UI",sans-serif;font-size:13px;font-weight:500;box-shadow:none;transition:background 150ms ease,border-color 150ms ease,color 150ms ease,box-shadow 150ms ease}
+    .chip.icon-chip{width:40px;height:40px;min-width:40px;padding:0;border-radius:12px}
+    .top-actions .chip:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.25)}
+    .topbar .top-actions .kpi-visibility-button{width:40px;height:40px;min-width:40px;min-height:40px;border-radius:12px;background:rgba(255,255,255,.07);border-color:rgba(255,255,255,.15);box-shadow:none;color:#fff}
+    .topbar .top-actions .kpi-visibility-button:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.25)}
+    .user-box{gap:9px;padding:6px 8px 6px 7px;border-radius:14px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.07);min-height:44px;box-shadow:none;transition:background 150ms ease,border-color 150ms ease}
+    .topbar .user-box:hover,.topbar .user-box.user-menu-open{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.24)}
+    .avatar{width:32px;height:32px;font-family:"Inter","Segoe UI",sans-serif;font-size:12px;font-weight:700;flex-shrink:0}
+    .user-box strong{display:block;font-family:"Inter","Segoe UI",sans-serif;font-size:13px;font-weight:600;line-height:1.15;color:#fff;white-space:nowrap}
+    .user-box small{font-family:"Inter","Segoe UI",sans-serif;font-size:11px;font-weight:400;line-height:1.2;color:rgba(255,255,255,.62);margin-top:3px}
+    .user-box .logout-btn{min-height:30px!important;padding:4px 8px!important;margin-left:4px!important;border-radius:8px!important;border:1px solid rgba(255,255,255,.14)!important;background:rgba(255,255,255,.07)!important;color:rgba(255,255,255,.82)!important;font-family:"Inter","Segoe UI",sans-serif!important;font-size:11px!important;font-weight:600!important;transition:background 150ms ease,border-color 150ms ease,color 150ms ease!important;white-space:nowrap!important}
+    .user-box .logout-btn:hover{background:rgba(220,38,38,.18)!important;border-color:rgba(248,113,113,.30)!important;color:#fff!important}
+    .user-box .logout-btn:focus-visible{outline:none!important;box-shadow:0 0 0 3px rgba(248,113,113,.18)!important}
+    @media(max-width:860px){.topbar{align-items:flex-start;flex-direction:column}.topbar-left{flex-wrap:wrap}.topbar-divider{display:none}}
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=6" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
