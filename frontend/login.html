@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Ingresar - Atlas OS</title>
   <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap">
   <style>
     @font-face {
       font-family: "Brimstone";
@@ -15,167 +18,238 @@
     }
 
     :root {
-      --header: #16052e;
-      --primary: #6d28d9;
-      --primary-dark: #4c1d95;
-      --text: #111827;
-      --muted: #6b7280;
-      --border: #e5e7eb;
-      --danger: #dc2626;
-      --success: #16a34a;
-      --surface: #ffffff;
-      --shadow: 0 28px 80px rgba(17, 24, 39, 0.22);
+      --primary:      #7c3aed;
+      --primary-dark: #5b21b6;
+      --text:         #0f172a;
+      --muted:        #64748b;
+      --border:       #e2e8f0;
+      --border-input: #d9e1ec;
+      --danger:       #dc2626;
+      --success:      #059669;
+      --surface:      #ffffff;
     }
 
     * { box-sizing: border-box; }
+
     body {
       min-height: 100vh;
       margin: 0;
       display: grid;
       place-items: center;
-      padding: 22px;
+      padding: 24px;
       color: var(--text);
-      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-      background-color: #12061F;
+      font-family: "Inter", "Space Grotesk", "Segoe UI", sans-serif;
+      background-color: #0d0219;
       position: relative;
     }
-    /* Capa 0: trama institucional repetida, detrás del overlay */
+
+    /* Trama institucional — muy sutil */
     body::before {
       content: '';
       position: fixed;
       inset: 0;
-      z-index: 0;
+      z-index: 1;
       background: url("/atla-trama.svg") repeat 0 0 / 320px 320px;
+      opacity: 0.30;
       pointer-events: none;
     }
-    /* Capa 1: overlay oscuro/degradado, deja visible la trama */
+
+    /* Overlay con glow radial central */
     body::after {
       content: '';
       position: fixed;
       inset: 0;
-      z-index: 1;
-      background: linear-gradient(135deg, rgba(18,6,31,0.76) 0%, rgba(88,28,135,0.52) 100%);
+      z-index: 0;
+      background:
+        radial-gradient(ellipse 85% 65% at 50% 40%, rgba(109, 28, 200, 0.20) 0%, transparent 70%),
+        linear-gradient(160deg, rgba(13, 2, 25, 0.94) 0%, rgba(50, 16, 80, 0.68) 100%);
       pointer-events: none;
     }
 
     button, input { font: inherit; }
+
+    /* ── Shell ── */
     .login-shell {
-      width: min(980px, 100%);
+      width: min(1000px, 100%);
       display: grid;
-      grid-template-columns: 1fr 430px;
-      min-height: 620px;
+      grid-template-columns: 1fr 420px;
+      min-height: 640px;
       overflow: hidden;
-      border: 1px solid rgba(255, 255, 255, 0.22);
+      border: 1px solid rgba(255, 255, 255, 0.09);
       border-radius: 28px;
-      background: rgba(255, 255, 255, 0.1);
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(16px);
+      background: rgba(255, 255, 255, 0.04);
+      box-shadow:
+        0 48px 120px rgba(0, 0, 0, 0.55),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+        inset 0 1px 0   rgba(255, 255, 255, 0.13);
+      backdrop-filter: blur(32px) saturate(1.6);
       position: relative;
       z-index: 2;
+      animation: shellIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
     }
 
+    @keyframes shellIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Panel de marca ── */
     .brand-panel {
       position: relative;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      padding: 36px;
+      padding: 44px;
       color: #fff;
-      background: linear-gradient(180deg, rgba(22, 5, 46, 0.24), rgba(22, 5, 46, 0.58));
+      background: linear-gradient(170deg, rgba(30, 8, 60, 0.18) 0%, rgba(12, 3, 24, 0.52) 100%);
+      border-right: 1px solid rgba(255, 255, 255, 0.06);
     }
 
+    /* Bloque superior: isologo + nombre */
     .brand {
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: 20px;
     }
 
-    .logo {
-      width: 62px;
-      height: 62px;
-      border-radius: 20px;
-      display: grid;
-      place-items: center;
-      background: linear-gradient(135deg, #fff 0%, #efe7ff 100%);
-      color: var(--primary);
-      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.24);
+    .brand-logo {
+      width: 78px;
+      height: 78px;
+      object-fit: contain;
+      flex-shrink: 0;
+      filter: drop-shadow(0 0 14px rgba(124, 58, 237, 0.30));
     }
 
-    .brand strong {
-      display: block;
-      font-family: "Brimstone", "Space Grotesk", "Inter", sans-serif;
-      font-size: 20px;
-      font-weight: normal;
-      letter-spacing: 0.06em;
+    .brand-text {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .brand-name {
+      font-family: "Space Grotesk", sans-serif;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
       text-transform: uppercase;
+      line-height: 1;
+      color: #fff;
     }
 
-    .brand small,
-    .brand-copy p,
-    .status-strip {
-      color: rgba(255, 255, 255, 0.78);
+    .brand-tagline {
+      font-size: 12px;
+      font-weight: 400;
+      color: rgba(255, 255, 255, 0.58);
+      letter-spacing: 0.01em;
+      line-height: 1;
+    }
+
+    /* Bloque central: hero */
+    .brand-copy {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 32px 0;
     }
 
     .brand-copy h1 {
-      max-width: 460px;
-      margin: 0 0 12px;
-      font-size: clamp(34px, 5vw, 56px);
-      line-height: 1;
-      letter-spacing: 0;
+      margin: 0 0 18px;
+      font-family: "Space Grotesk", sans-serif;
+      font-size: clamp(36px, 4.4vw, 58px);
+      font-weight: 800;
+      line-height: 1.06;
+      letter-spacing: -0.030em;
+      color: #fff;
+    }
+
+    .brand-copy h1 .hero-accent {
+      color: rgba(255, 255, 255, 0.50);
+      font-weight: 600;
+      font-style: italic;
     }
 
     .brand-copy p {
-      max-width: 430px;
+      max-width: 400px;
       margin: 0;
-      font-size: 17px;
-      line-height: 1.5;
+      font-size: 15px;
+      line-height: 1.65;
+      color: rgba(255, 255, 255, 0.55);
+      font-weight: 400;
     }
 
+    /* Status indicators */
     .status-strip {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
-      font-size: 13px;
+      gap: 8px;
+      font-size: 11.5px;
+      font-weight: 500;
+      color: rgba(255, 255, 255, 0.50);
+      letter-spacing: 0.015em;
     }
 
     .status-strip span {
-      border: 1px solid rgba(255, 255, 255, 0.16);
-      border-radius: 14px;
-      padding: 10px;
-      background: rgba(255, 255, 255, 0.08);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 10px;
+      padding: 9px 11px;
+      background: rgba(255, 255, 255, 0.04);
     }
 
+    .status-strip span::before {
+      content: '';
+      flex-shrink: 0;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #34d399;
+      box-shadow: 0 0 8px rgba(52, 211, 153, 0.70);
+    }
+
+    /* ── Panel de formulario ── */
     .form-panel {
       display: flex;
       flex-direction: column;
       justify-content: center;
-      gap: 22px;
-      padding: 34px;
-      background: var(--surface);
+      gap: 28px;
+      padding: 70px 44px 30px;
+      background: #fcfcfd;
+      box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.04);
     }
 
     .form-head h2 {
       margin: 0;
-      font-size: 30px;
+      font-family: "Space Grotesk", sans-serif;
+      font-size: 27px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.022em;
     }
 
     .form-head p {
-      margin: 8px 0 0;
+      margin: 5px 0 0;
       color: var(--muted);
-      line-height: 1.45;
+      font-size: 14px;
+      line-height: 1.6;
+      font-weight: 400;
     }
 
     form {
       display: grid;
-      gap: 16px;
+      gap: 14px;
     }
 
     label {
       display: grid;
-      gap: 8px;
-      color: var(--muted);
-      font-size: 13px;
-      font-weight: 800;
+      gap: 5px;
+      color: #64748b;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
     }
 
     .field-wrap {
@@ -185,36 +259,56 @@
     input[type="text"],
     input[type="password"] {
       width: 100%;
-      min-height: 48px;
-      border: 1px solid var(--border);
+      min-height: 50px;
+      border: 1.5px solid var(--border-input);
       border-radius: 14px;
-      padding: 12px 14px;
+      padding: 13px 16px;
       color: var(--text);
+      font-size: 15px;
       outline: none;
-      background: #fff;
+      background: #f8fafc;
+      box-shadow: inset 0 1.5px 3px rgba(0, 0, 0, 0.04);
+      transition: border-color 200ms ease, box-shadow 200ms ease, background 200ms ease;
     }
 
     .password-input {
-      padding-right: 104px !important;
+      padding-right: 52px !important;
     }
 
     input:focus {
       border-color: var(--primary);
-      box-shadow: 0 0 0 4px rgba(109, 40, 217, 0.13);
+      background: #fff;
+      box-shadow:
+        0 0 0 3px rgba(124, 58, 237, 0.08),
+        inset 0 1px 2px rgba(0, 0, 0, 0.03);
     }
 
     .password-toggle {
       position: absolute;
-      right: 8px;
+      right: 10px;
       top: 50%;
       transform: translateY(-50%);
-      min-height: 34px;
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
       border: 0;
-      border-radius: 10px;
-      padding: 7px 10px;
-      background: #f3f4f6;
-      color: var(--text);
-      font-weight: 800;
+      border-radius: 8px;
+      padding: 0;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      transition: color 150ms ease, background 150ms ease;
+    }
+
+    .password-toggle:hover {
+      color: var(--primary);
+      background: rgba(124, 58, 237, 0.08);
+    }
+
+    .password-toggle:focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: 1px;
     }
 
     .row {
@@ -230,8 +324,10 @@
       align-items: center;
       gap: 8px;
       color: var(--text);
-      font-size: 14px;
-      font-weight: 700;
+      font-size: 13.5px;
+      font-weight: 600;
+      text-transform: none;
+      letter-spacing: 0;
     }
 
     .link-button {
@@ -239,42 +335,76 @@
       background: transparent;
       color: var(--primary);
       padding: 0;
-      font-weight: 800;
+      font-size: 13.5px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: color 150ms ease;
     }
+
+    .link-button:hover { color: var(--primary-dark); }
 
     .submit {
-      min-height: 50px;
+      min-height: 52px;
       border: 0;
       border-radius: 14px;
-      background: var(--primary);
+      background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
       color: #fff;
-      font-weight: 900;
-      box-shadow: 0 16px 34px rgba(109, 40, 217, 0.28);
-      transition: background 150ms ease, transform 150ms ease, opacity 150ms ease;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      box-shadow:
+        0 8px 24px rgba(109, 40, 217, 0.36),
+        inset 0 1px 0 rgba(255, 255, 255, 0.14);
+      transition: all 220ms cubic-bezier(0.16, 1, 0.3, 1);
     }
 
-    .submit:hover { background: var(--primary-dark); }
-    .submit:active { transform: translateY(1px); }
-    .submit:disabled { opacity: 0.68; cursor: not-allowed; }
+    .submit:hover {
+      background: linear-gradient(135deg, #6d28d9 0%, #5b21b6 100%);
+      box-shadow:
+        0 14px 36px rgba(109, 40, 217, 0.50),
+        inset 0 1px 0 rgba(255, 255, 255, 0.14);
+      transform: translateY(-1px);
+    }
+
+    .submit:active {
+      transform: translateY(1px);
+      box-shadow: 0 4px 12px rgba(109, 40, 217, 0.28);
+    }
+
+    .submit:focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: 3px;
+    }
+
+    .submit:disabled {
+      opacity: 0.62;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: 0 4px 12px rgba(109, 40, 217, 0.18);
+    }
 
     .message {
-      min-height: 22px;
+      min-height: 20px;
       margin: 0;
+      font-size: 13px;
       color: var(--muted);
-      font-weight: 700;
+      font-weight: 600;
     }
 
     .message.error { color: var(--danger); }
-    .message.ok { color: var(--success); }
+    .message.ok    { color: var(--success); }
 
     .help {
+      margin-top: 6px;
       border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 12px;
-      background: #fafafa;
+      border-radius: 12px;
+      padding: 11px 14px;
+      background: #f8fafc;
       color: var(--muted);
-      font-size: 13px;
-      line-height: 1.45;
+      font-size: 12.5px;
+      line-height: 1.5;
+      font-weight: 500;
     }
 
     @media (max-width: 860px) {
@@ -283,41 +413,37 @@
         min-height: 100vh;
         grid-template-columns: 1fr;
         border-radius: 0;
+        animation: none;
       }
       .brand-panel {
         min-height: 280px;
-        padding: 26px;
+        padding: 28px 24px;
       }
-      .status-strip {
-        grid-template-columns: 1fr;
-      }
-      .form-panel {
-        padding: 26px;
-      }
+      .brand-copy { padding: 20px 0; }
+      .status-strip { grid-template-columns: 1fr; }
+      .form-panel { padding: 36px 24px; }
     }
   </style>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700;800&display=swap">
 </head>
 <body>
   <main class="login-shell">
     <section class="brand-panel" aria-label="Atlas OS">
       <div class="brand">
-        <div class="logo">
-          <img src="/atlas-iso.png" alt="Atlas OS" width="58" height="58" style="object-fit:cover;border-radius:18px;">
-        </div>
-        <div>
-          <strong>ATLAS OS</strong>
-          <small>El sistema que sostiene tu negocio</small>
+        <img class="brand-logo" src="/atlas-iso.png" alt="Atlas OS">
+        <div class="brand-text">
+          <span class="brand-name">ATLAS OS</span>
+          <span class="brand-tagline">El titán detrás de tu negocio.</span>
         </div>
       </div>
+
       <div class="brand-copy">
-        <h1>Acceso seguro</h1>
-        <p>Gestión operativa para ventas, caja, stock, pagos, reportes y cuentas corrientes.</p>
+        <h1>Todo tu negocio.<br><span class="hero-accent">En equilibrio.</span></h1>
+        <p>Controlá ventas, caja, stock, clientes, proveedores y reportes desde un único lugar.</p>
       </div>
+
       <div class="status-strip">
-        <span>Validacion backend</span>
-        <span>Sesion persistente</span>
+        <span>Validación backend</span>
+        <span>Sesión persistente</span>
         <span>Usuarios activos</span>
       </div>
     </section>
@@ -325,7 +451,7 @@
     <section class="form-panel">
       <div class="form-head">
         <h2>Ingresar</h2>
-        <p>Usa tus credenciales para entrar al sistema.</p>
+        <p>Usá tus credenciales para entrar al sistema.</p>
       </div>
 
       <form id="loginForm" novalidate>
@@ -338,7 +464,7 @@
           Contraseña
           <span class="field-wrap">
             <input class="password-input" type="password" id="password" name="password" autocomplete="current-password" required />
-            <button class="password-toggle" id="togglePassword" type="button">Mostrar</button>
+            <button class="password-toggle" id="togglePassword" type="button" aria-label="Mostrar contraseña"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
           </span>
         </label>
 
@@ -431,10 +557,14 @@
       sessionStorage.removeItem(SESSION_KEY);
     }
 
+    const eyeIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+    const eyeOffIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
     togglePassword.addEventListener("click", () => {
       const visible = passwordInput.type === "text";
       passwordInput.type = visible ? "password" : "text";
-      togglePassword.textContent = visible ? "Mostrar" : "Ocultar";
+      togglePassword.innerHTML = visible ? eyeIcon : eyeOffIcon;
+      togglePassword.setAttribute("aria-label", visible ? "Mostrar contraseña" : "Ocultar contraseña");
       passwordInput.focus();
     });
 
@@ -485,5 +615,3 @@
   </script>
 </body>
 </html>
-
-

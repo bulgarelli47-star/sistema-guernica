@@ -189,39 +189,100 @@
     if (document.getElementById("atlas-sidebar-toggle")) return;
     const sidebar = document.querySelector(".sidebar");
     if (!sidebar) return;
+    if (!sidebar.id) sidebar.id = "atlas-sidebar";
 
     // Inject CSS (once per page)
     if (!document.getElementById("atlas-sidebar-collapse-css")) {
       const s = document.createElement("style");
       s.id = "atlas-sidebar-collapse-css";
       s.textContent = `
-        /* Tab button: solapa pegada al borde derecho del sidebar */
+        /* Button: solapa pegada al borde derecho del sidebar */
         #atlas-sidebar-toggle {
           position: absolute;
-          right: -25px;
+          right: -28px;
           top: 72px;
-          width: 25px;
-          height: 52px;
-          border: 1px solid var(--border, #e5e7eb);
+          width: 28px;
+          height: 44px;
+          border: 1px solid var(--border, #d9e1ec);
           border-left: 0;
-          border-radius: 0 8px 8px 0;
-          background: var(--sidebar, #ffffff);
-          color: var(--muted, #6b7280);
+          border-radius: 0 10px 10px 0;
+          background: var(--surface, #fcfcfd);
+          color: var(--muted, #64748b);
           cursor: pointer;
-          font-size: 15px;
+          font-size: 14px;
           font-weight: 900;
           z-index: 40;
           display: flex;
           align-items: center;
           justify-content: center;
-          box-shadow: 3px 0 8px rgba(0,0,0,.07);
-          transition: background .15s, color .15s;
+          box-shadow: 3px 0 10px rgba(15,23,42,.08);
+          transition: background 150ms ease, color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
           line-height: 1;
           padding: 0;
+          overflow: visible;
         }
         #atlas-sidebar-toggle:hover {
           background: var(--primary-soft, #f0e5ff);
-          color: var(--primary, #6d28d9);
+          color: var(--primary, #7c3aed);
+          border-color: rgba(124,58,237,.22);
+          box-shadow: 3px 0 12px rgba(124,58,237,.14);
+        }
+        #atlas-sidebar-toggle:focus-visible {
+          outline: none;
+          box-shadow: 0 0 0 3px rgba(124,58,237,.14), 3px 0 10px rgba(15,23,42,.08);
+        }
+
+        /* Button tooltip (Atlas V1) */
+        #atlas-sidebar-toggle[data-tooltip]::before {
+          content: attr(data-tooltip);
+          position: absolute;
+          top: calc(100% + 8px);
+          left: 50%;
+          transform: translateX(-50%) translateY(-4px);
+          background: #111827;
+          color: #fff;
+          font-family: "Inter", "Segoe UI", sans-serif;
+          font-size: 12px;
+          font-weight: 500;
+          line-height: 1;
+          padding: 7px 10px;
+          border-radius: 8px;
+          white-space: nowrap;
+          pointer-events: none;
+          z-index: 200;
+          box-shadow: 0 6px 18px rgba(15,23,42,.18);
+          opacity: 0;
+          visibility: hidden;
+          transition: opacity 150ms ease, transform 150ms ease, visibility 150ms ease;
+        }
+        #atlas-sidebar-toggle[data-tooltip]::after {
+          content: '';
+          position: absolute;
+          top: calc(100% + 2px);
+          left: 50%;
+          transform: translateX(-50%) translateY(-4px);
+          width: 0;
+          height: 0;
+          border-left: 5px solid transparent;
+          border-right: 5px solid transparent;
+          border-bottom: 6px solid #111827;
+          pointer-events: none;
+          z-index: 200;
+          opacity: 0;
+          visibility: hidden;
+          transition: opacity 150ms ease, transform 150ms ease, visibility 150ms ease;
+        }
+        #atlas-sidebar-toggle:hover[data-tooltip]::before,
+        #atlas-sidebar-toggle:focus-visible[data-tooltip]::before {
+          opacity: 1;
+          visibility: visible;
+          transform: translateX(-50%) translateY(0);
+        }
+        #atlas-sidebar-toggle:hover[data-tooltip]::after,
+        #atlas-sidebar-toggle:focus-visible[data-tooltip]::after {
+          opacity: 1;
+          visibility: visible;
+          transform: translateX(-50%) translateY(0);
         }
 
         /* Collapsed: grid column override */
@@ -270,12 +331,18 @@
       document.head.appendChild(s);
     }
 
-    // Add title attributes to nav links for tooltip when collapsed
+    // Add data-tooltip + aria-label to nav links (Atlas Tooltip V1, no native title)
     sidebar.querySelectorAll(".nav a").forEach((a) => {
       const textSpan = [...a.querySelectorAll("span")].find(
         (s) => !s.className.includes("nav-icon") && !s.className.includes("app-icon")
       );
-      if (textSpan && !a.title) a.title = textSpan.textContent.trim();
+      if (textSpan) {
+        const label = textSpan.textContent.trim();
+        if (label) {
+          a.setAttribute("data-tooltip", label);
+          if (!a.getAttribute("aria-label")) a.setAttribute("aria-label", label);
+        }
+      }
     });
 
     // Create tab toggle button
@@ -287,14 +354,22 @@
     if (collapsed) document.body.classList.add("sidebar-collapsed");
     // ‹ = collapse direction  ›  = expand direction
     btn.textContent = collapsed ? "›" : "‹";
-    btn.title = collapsed ? "Expandir sidebar" : "Colapsar sidebar";
+
+    const LABEL_EXPAND = "Expandir navegación";
+    const LABEL_COLLAPSE = "Colapsar navegación";
+    btn.setAttribute("aria-label", collapsed ? LABEL_EXPAND : LABEL_COLLAPSE);
+    btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    btn.setAttribute("aria-controls", "atlas-sidebar");
+    btn.setAttribute("data-tooltip", collapsed ? LABEL_EXPAND : LABEL_COLLAPSE);
 
     btn.addEventListener("click", () => {
       if (window.innerWidth <= 860) return;
       const isNowCollapsed = document.body.classList.toggle("sidebar-collapsed");
       localStorage.setItem("atlasSidebarCollapsed", String(isNowCollapsed));
       btn.textContent = isNowCollapsed ? "›" : "‹";
-      btn.title = isNowCollapsed ? "Expandir sidebar" : "Colapsar sidebar";
+      btn.setAttribute("aria-label", isNowCollapsed ? LABEL_EXPAND : LABEL_COLLAPSE);
+      btn.setAttribute("aria-expanded", isNowCollapsed ? "false" : "true");
+      btn.setAttribute("data-tooltip", isNowCollapsed ? LABEL_EXPAND : LABEL_COLLAPSE);
     });
 
     // Ensure sidebar is a positioned context (for absolute button).
