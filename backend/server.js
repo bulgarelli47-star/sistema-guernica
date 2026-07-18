@@ -1099,6 +1099,17 @@ function normalizeItems(items) {
   }));
 }
 
+async function buscarProductosArchivadosEnItems(items = []) {
+  const ids = [...new Set(items.map((item) => Number(item.producto_id)).filter(Boolean))];
+  if (!ids.length) return null;
+  const ph = ids.map(() => "?").join(",");
+  const archivados = await allQuery(
+    `SELECT nombre FROM productos WHERE id IN (${ph}) AND COALESCE(eliminado, 0) = 1`,
+    ids
+  );
+  return archivados.length ? archivados.map((p) => p.nombre).join(", ") : null;
+}
+
 function calculateTotal(items) {
   return items.reduce((acc, item) => {
     return acc + item.cantidad * item.precio_unitario;
@@ -1772,6 +1783,7 @@ app.post("/productos", async (req, res) => {
       id: result.lastID
     });
   } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ message: err.message });
     logError("Error al guardar producto:", err);
     return res.status(500).json({ message: "Error al guardar producto" });
   }
@@ -1780,6 +1792,11 @@ app.post("/productos", async (req, res) => {
 // Listar productos
 app.get("/productos", async (req, res) => {
   const includeInactive = String(req.query.include_inactive || "") === "1";
+  const estado = String(req.query.estado || "").trim().toLowerCase();
+  let whereProductos;
+  if (estado === "archivados") whereProductos = "WHERE COALESCE(p.eliminado, 0) = 1";
+  else if (estado === "todos") whereProductos = "";
+  else whereProductos = includeInactive ? "WHERE COALESCE(p.eliminado, 0) = 0" : "WHERE p.activo = 1 AND COALESCE(p.eliminado, 0) = 0";
   const sql = `
     SELECT p.*, pr.nombre AS proveedor_nombre, c.nombre AS categoria_nombre, c.margen_porcentaje,
            COALESCE(dv.total_vendido, 0) AS total_vendido
@@ -1787,7 +1804,7 @@ app.get("/productos", async (req, res) => {
     LEFT JOIN proveedores pr ON pr.id = p.proveedor_id
     LEFT JOIN categorias c ON c.id = p.categoria_id
     LEFT JOIN (SELECT producto_id, SUM(cantidad) AS total_vendido FROM detalle_ventas GROUP BY producto_id) dv ON dv.producto_id = p.id
-    ${includeInactive ? "WHERE COALESCE(p.eliminado, 0) = 0" : "WHERE p.activo = 1 AND COALESCE(p.eliminado, 0) = 0"}
+    ${whereProductos}
     ORDER BY p.id DESC
   `;
 
@@ -1993,6 +2010,10 @@ app.put("/productos/:id", async (req, res) => {
       return res.status(404).json({ message: "Producto no encontrado" });
     }
 
+    if (Number(existente.eliminado) === 1) {
+      return res.status(400).json({ message: "No se puede editar un producto archivado. Restauralo primero." });
+    }
+
     const codigoEditado = String(codigo || "").trim();
     if (codigoEditado) {
       const codDuplicado = await getQuery(
@@ -2095,6 +2116,7 @@ app.put("/productos/:id", async (req, res) => {
     return res.json({ message: "Producto actualizado correctamente" });
   } catch (error) {
     try { await runQuery("ROLLBACK"); } catch {}
+    if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
     logError("Error al actualizar producto", error, "id: " + productoId);
     return res.status(500).json({ message: "Error al actualizar producto" });
   }
@@ -2133,6 +2155,10 @@ app.patch("/productos/:id/combo", async (req, res) => {
 
     if (!existente) {
       return res.status(404).json({ message: "Producto no encontrado" });
+    }
+
+    if (Number(existente.eliminado) === 1) {
+      return res.status(400).json({ message: "No se puede habilitar para combos un producto archivado" });
     }
 
     await runQuery("UPDATE productos SET aplica_para_combo = ? WHERE id = ?", [aplicaParaCombo, productoId]);
@@ -2304,6 +2330,7 @@ app.post("/productos_compuestos", async (req, res) => {
       logError("Rollback producto compuesto", rollbackError);
     }
 
+    if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
     logError("Error al guardar producto compuesto:", error);
     return res.status(500).json({ message: "Error al guardar producto compuesto" });
   }
@@ -2453,10 +2480,14 @@ app.patch("/productos/:id/reactivar", async (req, res) => {
   const productoId = Number(req.params.id);
 
   try {
-    const existente = await getQuery("SELECT id FROM productos WHERE id = ?", [productoId]);
+    const existente = await getQuery("SELECT id, COALESCE(eliminado, 0) AS eliminado FROM productos WHERE id = ?", [productoId]);
 
     if (!existente) {
       return res.status(404).json({ message: "Producto no encontrado" });
+    }
+
+    if (Number(existente.eliminado) === 1) {
+      return res.status(400).json({ message: "El producto está archivado. Usá la acción Restaurar." });
     }
 
     await runQuery("UPDATE productos SET activo = 1 WHERE id = ?", [productoId]);
@@ -2466,6 +2497,42 @@ app.patch("/productos/:id/reactivar", async (req, res) => {
   } catch (error) {
     logError("Error al reactivar producto:", error);
     return res.status(500).json({ message: "Error al reactivar producto" });
+  }
+});
+
+app.patch("/productos/:id/restaurar", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar productos"))) return;
+
+  const productoId = Number(req.params.id);
+
+  try {
+    const existente = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
+
+    if (!existente) {
+      return res.status(404).json({ message: "Producto no encontrado" });
+    }
+
+    if (Number(existente.eliminado) !== 1) {
+      return res.status(400).json({ message: "El producto no está archivado" });
+    }
+
+    if (existente.codigo) {
+      const conflicto = await getQuery(
+        "SELECT id FROM productos WHERE codigo = ? AND id != ? AND COALESCE(eliminado, 0) = 0",
+        [existente.codigo, productoId]
+      );
+      if (conflicto) {
+        return res.status(409).json({ message: "No se puede restaurar: existe otro producto con el mismo código" });
+      }
+    }
+
+    await runQuery("UPDATE productos SET activo = 1, eliminado = 0 WHERE id = ?", [productoId]);
+    const actualizado = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
+    await registrarCambiosProducto(productoId, existente, actualizado, "admin", "restauracion");
+    return res.json({ message: "Producto restaurado correctamente." });
+  } catch (error) {
+    logError("Error al restaurar producto:", error);
+    return res.status(500).json({ message: "Error al restaurar producto" });
   }
 });
 
@@ -2491,26 +2558,15 @@ app.delete("/productos/:id", async (req, res) => {
       return res.status(404).json({ message: "Producto no encontrado" });
     }
 
-    const usoEnDetalle = await getQuery(
-      "SELECT COUNT(*) AS total FROM detalle_ventas WHERE producto_id = ?",
-      [productoId]
-    );
     const esComponente = await getQuery(
       "SELECT COUNT(*) AS total FROM producto_componentes WHERE producto_id = ?",
       [productoId]
     );
 
-    const tieneMovimientos = Number(usoEnDetalle?.total || 0) > 0;
     const esIngrediente = Number(esComponente?.total || 0) > 0;
 
     if (esIngrediente) {
-      return res.status(409).json({ message: "No se puede eliminar: este producto es componente de una o más recetas activas" });
-    }
-
-    if (!tieneMovimientos) {
-      await runQuery("DELETE FROM productos WHERE id = ?", [productoId]);
-      await logHistorialProducto(productoId, "eliminacion", "activo", "borrado", "eliminacion fisica", "admin");
-      return res.json({ message: "Producto eliminado definitivamente", eliminacion: "fisica" });
+      return res.status(409).json({ message: "No se puede archivar: este producto es componente de una o más recetas activas" });
     }
 
     const anterior = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
@@ -2519,15 +2575,15 @@ app.delete("/productos/:id", async (req, res) => {
       [productoId]
     );
     const actualizado = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
-    await registrarCambiosProducto(productoId, anterior, actualizado, "admin", "eliminacion logica");
+    await registrarCambiosProducto(productoId, anterior, actualizado, "admin", "archivado");
 
     return res.json({
-      message: "Producto con historial: se aplico eliminacion logica segura",
-      eliminacion: "logica"
+      message: "Producto archivado correctamente.",
+      archivado: true
     });
   } catch (error) {
-    logError("Error al eliminar producto:", error);
-    return res.status(500).json({ message: "Error al eliminar producto" });
+    logError("Error al archivar producto:", error);
+    return res.status(500).json({ message: "Error al archivar producto" });
   }
 });
 
@@ -2746,6 +2802,9 @@ app.post("/productos/:id/movimientos-stock", async (req, res) => {
 
     if (!producto) {
       return res.status(404).json({ message: "Producto no encontrado" });
+    }
+    if (Number(producto.eliminado) === 1) {
+      return res.status(400).json({ message: "No se puede registrar movimientos de stock sobre un producto archivado. Restauralo primero." });
     }
     const esCompuesto = normalizarTipoProducto(producto.tipo) === "compuesto";
     const esRecetaSinStockFisico = esCompuesto && !Number(producto.maneja_stock);
@@ -4465,6 +4524,11 @@ app.post("/ventas", async (req, res) => {
   }
 
   try {
+    const productosArchivadosVenta = await buscarProductosArchivadosEnItems(itemsVenta);
+    if (productosArchivadosVenta) {
+      return res.status(400).json({ message: `No se puede vender productos archivados: ${productosArchivadosVenta}` });
+    }
+
     const cajaActiva = await getCajaAbiertaActual();
 
     if (tipoVenta === "normal" && !cajaActiva) {
@@ -5418,6 +5482,11 @@ app.post("/clientes/:id/venta-cuenta", async (req, res) => {
   }
 
   try {
+    const productosArchivadosCC = await buscarProductosArchivadosEnItems(items);
+    if (productosArchivadosCC) {
+      return res.status(400).json({ message: `No se puede vender productos archivados: ${productosArchivadosCC}` });
+    }
+
     const cliente = await getClienteConMetricas(clienteId);
     if (!cliente || Number(cliente.activo) !== 1) {
       return res.status(404).json({ message: "Cliente activo no encontrado" });

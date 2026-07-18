@@ -214,10 +214,15 @@ async function crearAjustePendiente({
     throw error;
   }
 
-  const producto = await getQuery("SELECT id, nombre, stock FROM productos WHERE id = ?", [productoId]);
+  const producto = await getQuery("SELECT id, nombre, stock, COALESCE(eliminado, 0) AS eliminado FROM productos WHERE id = ?", [productoId]);
   if (!producto) {
     const error = new Error("Producto no encontrado");
     error.statusCode = 404;
+    throw error;
+  }
+  if (Number(producto.eliminado) === 1) {
+    const error = new Error("No se puede proponer ajustes de stock sobre un producto archivado");
+    error.statusCode = 400;
     throw error;
   }
 

@@ -98,10 +98,25 @@ function normalizarCostosExtraProducto(costosExtra = []) {
 }
 
 async function guardarProductoCompuestoConfig(productoCompuestoId, componentes = [], costosExtra = []) {
+  const componentesNormalizados = normalizarComponentesProducto(componentes);
+  const idsComponentes = [...new Set(componentesNormalizados.map((c) => Number(c.producto_id)).filter(Boolean))];
+  if (idsComponentes.length) {
+    const ph = idsComponentes.map(() => "?").join(",");
+    const archivados = await allQuery(
+      `SELECT nombre FROM productos WHERE id IN (${ph}) AND COALESCE(eliminado, 0) = 1`,
+      idsComponentes
+    );
+    if (archivados.length) {
+      const error = new Error(`No se puede usar productos archivados como componentes: ${archivados.map((p) => p.nombre).join(", ")}`);
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
   await runQuery("DELETE FROM producto_componentes WHERE producto_compuesto_id = ?", [productoCompuestoId]);
   await runQuery("DELETE FROM producto_costos_extra WHERE producto_compuesto_id = ?", [productoCompuestoId]);
 
-  for (const componente of normalizarComponentesProducto(componentes)) {
+  for (const componente of componentesNormalizados) {
     if (Number(componente.producto_id) === Number(productoCompuestoId)) {
       continue;
     }
