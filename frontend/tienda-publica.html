@@ -174,7 +174,7 @@
       <h2 id="sectionTitle">Destacados de la tienda</h2>
       <p id="sectionSubtitle">Una selección rápida de nuestros productos.</p>
     </div>
-    <button class="ver-mas-btn hidden" id="verMasBtn" type="button">Ver más productos</button>
+    <button class="ver-mas-btn hidden" id="verMasBtn" type="button">Explorar productos</button>
   </div>
   <div class="empty-state hidden" id="emptyState">No hay productos disponibles por ahora.</div>
   <div class="hidden" id="catalogo"></div>
@@ -254,6 +254,7 @@
   const $ = id => document.getElementById(id);
 
   let productos = [];
+  let categoriasDestacadas = [];
   let carrito = {};
   let categoriaActiva = "all";
   let modoDestacados = true;
@@ -355,11 +356,13 @@
       if (Array.isArray(prods)) {
         // fallback: respuesta vieja — array plano con flag destacado
         productos = prods;
+        categoriasDestacadas = [];
       } else {
         // respuesta nueva: objeto estructurado
         const todosProductos = Array.isArray(prods.productos) ? prods.productos : [];
         const destIds = new Set((prods.productos_destacados || []).map(p => p.id));
-        const destCatsLower = new Set((prods.categorias_destacadas || []).map(n => String(n).toLowerCase()));
+        categoriasDestacadas = Array.isArray(prods.categorias_destacadas) ? prods.categorias_destacadas : [];
+        const destCatsLower = new Set(categoriasDestacadas.map(n => String(n).toLowerCase()));
         // Si ninguna config existe, marcamos todo como destacado (fallback: mostrar todo en vista inicial)
         const hayConfig = destIds.size > 0 || destCatsLower.size > 0;
         productos = todosProductos.map(p => ({
@@ -435,7 +438,7 @@
     if (modoDestacados) {
       $("sectionTitle").textContent = "Destacados de la tienda";
       $("sectionSubtitle").textContent = "Una selección rápida de nuestros productos.";
-      btn.textContent = "Ver más productos";
+      btn.textContent = "Explorar productos";
       btn.classList.toggle("hidden", !hayDestacados || productos.length === productosActuales().length);
     } else {
       $("sectionTitle").textContent = "Todos los productos";
@@ -649,6 +652,22 @@
     secciones.forEach(s => catObserver.observe(s));
   }
 
+  function agruparPorCategoria(items) {
+    const porCategoria = new Map();
+    items.forEach(p => {
+      const cat = p.categoria_nombre || "General";
+      if (!porCategoria.has(cat)) porCategoria.set(cat, []);
+      porCategoria.get(cat).push(p);
+    });
+    return porCategoria;
+  }
+
+  function renderCarruselesPorCategoria(catalogo, porCategoria, ordenCategorias) {
+    construirSlugsUnicos(ordenCategorias).forEach(([cat, slug]) => {
+      catalogo.appendChild(crearCarrusel(slug, cat, porCategoria.get(cat)));
+    });
+  }
+
   function renderProductos() {
     actualizarSectionHead();
     if (catObserver) { catObserver.disconnect(); catObserver = null; }
@@ -666,18 +685,18 @@
     $("emptyState").classList.add("hidden");
     catalogo.classList.remove("hidden");
 
+    const porCategoria = agruparPorCategoria(base);
+
     if (modoDestacados) {
-      catalogo.appendChild(crearCarrusel("destacados", null, base));
+      // Vista inicial: solo las categorías presentes en categorias_destacadas, en el orden que entrega la API.
+      // Si no hay categorías destacadas configuradas (fallback de productosActuales() muestra todo), se ordena
+      // igual que la vista completa para no dejar la sección vacía o rota.
+      const orden = categoriasDestacadas.length
+        ? categoriasDestacadas.filter(cat => porCategoria.has(cat))
+        : [...porCategoria.keys()].sort();
+      renderCarruselesPorCategoria(catalogo, porCategoria, orden);
     } else {
-      const porCategoria = new Map();
-      base.forEach(p => {
-        const cat = p.categoria_nombre || "General";
-        if (!porCategoria.has(cat)) porCategoria.set(cat, []);
-        porCategoria.get(cat).push(p);
-      });
-      construirSlugsUnicos([...porCategoria.keys()].sort()).forEach(([cat, slug]) => {
-        catalogo.appendChild(crearCarrusel(slug, cat, porCategoria.get(cat)));
-      });
+      renderCarruselesPorCategoria(catalogo, porCategoria, [...porCategoria.keys()].sort());
       iniciarScrollSpy();
     }
   }
