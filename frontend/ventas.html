@@ -1396,9 +1396,21 @@
       color: var(--muted);
     }
 
+    .modal-header-close {
+      display: none;
+    }
+
     .modal-body {
       display: grid;
       gap: 12px;
+    }
+
+    #modalProductos .modal-body {
+      min-width: 0;
+    }
+
+    #modalProductosGrid {
+      min-width: 0;
     }
 
     .modal-footer {
@@ -1576,6 +1588,401 @@
 
       .ticket-line-total {
         text-align: left;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .catalog-column,
+      #searchResultsContainer,
+      #sectionsContainer,
+      .section-card,
+      .modal-category-section {
+        min-width: 0;
+        max-width: 100%;
+      }
+
+      .product-grid {
+        grid-template-columns: none;
+        grid-auto-flow: column;
+        grid-auto-columns: clamp(150px, 56vw, 220px);
+        gap: 10px;
+        width: 100%;
+        max-width: 100%;
+        overflow-x: auto;
+        overflow-y: hidden;
+        overscroll-behavior-inline: contain;
+        -webkit-overflow-scrolling: touch;
+        scroll-snap-type: x proximity;
+        padding: 2px 18px 10px 0;
+        scrollbar-width: thin;
+      }
+
+      .product-grid > .product-card {
+        width: 100%;
+        min-width: 0;
+        scroll-snap-align: start;
+      }
+
+      .product-card {
+        grid-template-rows: 98px 68px;
+        min-height: 166px;
+      }
+
+      .product-body,
+      .product-body h4,
+      .product-price {
+        min-width: 0;
+      }
+
+      .product-body h4 {
+        overflow-wrap: anywhere;
+      }
+
+      .search-card {
+        padding: 14px;
+      }
+
+      .search-input {
+        min-height: 44px;
+        padding: 13px 14px;
+        font-size: 16px;
+      }
+
+      .category-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        margin-top: 12px;
+        min-width: 0;
+      }
+
+      .category-pills {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        overflow-y: hidden;
+        overscroll-behavior-inline: contain;
+        -webkit-overflow-scrolling: touch;
+        scroll-snap-type: x proximity;
+        gap: 8px;
+        margin-top: 0;
+        min-width: 0;
+        padding: 0 16px 6px 0;
+        scrollbar-width: thin;
+      }
+
+      .category-pills .pill {
+        flex: 0 0 auto;
+        min-height: 44px;
+        padding: 10px 14px;
+        white-space: nowrap;
+        scroll-snap-align: start;
+      }
+
+      .category-actions {
+        min-width: 0;
+        flex-shrink: 0;
+        align-self: start;
+      }
+
+      .filter-trigger {
+        width: 44px;
+        height: 44px;
+        display: inline-grid;
+        place-items: center;
+        padding: 0;
+        flex-shrink: 0;
+      }
+
+      .filter-popup {
+        position: fixed;
+        right: 14px;
+        bottom: max(14px, env(safe-area-inset-bottom));
+        left: 14px;
+        top: auto;
+        width: auto;
+        max-width: none;
+        max-height: min(360px, calc(100vh - 28px));
+        overflow: auto;
+        overscroll-behavior: contain;
+      }
+
+      .filter-list {
+        max-width: 100%;
+      }
+
+      .filter-list .pill {
+        min-height: 40px;
+        white-space: nowrap;
+      }
+
+      .search-card > .inline-actions {
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .search-card > .inline-actions .button {
+        min-height: 44px;
+        flex: 1 1 150px;
+      }
+
+      #modalProductos.catalogo-completo {
+        align-items: stretch;
+        justify-content: stretch;
+        padding: 0;
+        overflow: hidden;
+      }
+
+      #modalProductos.catalogo-completo .modal-card {
+        width: 100%;
+        max-width: 100%;
+        height: 100vh;
+        height: 100dvh;
+        max-height: 100vh;
+        max-height: 100dvh;
+        border-radius: 0;
+        border: 0;
+        padding: 0;
+        gap: 0;
+        overflow: hidden;
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr) auto;
+      }
+
+      #modalProductos.catalogo-completo .modal-header {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        align-items: flex-start;
+        padding: max(14px, env(safe-area-inset-top)) 14px 12px;
+        background: #ffffff;
+        border-bottom: 1px solid var(--border);
+      }
+
+      #modalProductos.catalogo-completo .modal-header > div {
+        min-width: 0;
+      }
+
+      #modalProductos.catalogo-completo .modal-header h3,
+      #modalProductos.catalogo-completo .modal-header p {
+        overflow-wrap: anywhere;
+      }
+
+      #modalProductos.catalogo-completo .modal-header h3 {
+        font-size: 18px;
+        line-height: 1.15;
+      }
+
+      #modalProductos.catalogo-completo .modal-header p {
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      #modalProductos.catalogo-completo .modal-header-close {
+        display: inline-grid;
+        place-items: center;
+        flex: 0 0 auto;
+        width: 44px;
+        height: 44px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #ffffff;
+        color: var(--text);
+        cursor: pointer;
+      }
+
+      #modalProductos.catalogo-completo #modalBuscadorTodos {
+        width: calc(100% - 28px);
+        min-height: 44px;
+        margin: 12px 14px;
+      }
+
+      #modalProductos.catalogo-completo .modal-body {
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+        overscroll-behavior: contain;
+        padding: 0 14px calc(18px + env(safe-area-inset-bottom));
+      }
+
+      #modalProductos.catalogo-completo #modalProductosGrid {
+        display: grid;
+        gap: 18px;
+        min-width: 0;
+      }
+
+      #modalProductos.catalogo-completo .modal-category-section {
+        display: grid;
+        gap: 8px;
+        margin-bottom: 0;
+      }
+
+      #modalProductos.catalogo-completo .modal-category-title {
+        margin: 0;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+
+      #modalProductos.catalogo-completo .modal-footer {
+        position: sticky;
+        bottom: 0;
+        z-index: 2;
+        padding: 10px 14px max(10px, env(safe-area-inset-bottom));
+        background: #ffffff;
+      }
+
+      #modalProductos.catalogo-completo #cerrarModalProductos {
+        min-height: 44px;
+      }
+
+      .ticket-panel {
+        min-width: 0;
+        gap: 9px;
+      }
+
+      .ticket-header {
+        display: grid;
+        grid-template-columns: 1fr;
+        align-items: start;
+        gap: 8px;
+      }
+
+      .ticket-header h3 {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+
+      .ticket-actions {
+        width: 100%;
+        justify-content: flex-start;
+        gap: 8px;
+      }
+
+      .ticket-actions .button {
+        min-height: 44px;
+      }
+
+      .ticket-table {
+        max-height: min(42vh, 360px);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding-right: 0;
+      }
+
+      .ticket-row {
+        grid-template-areas:
+          "product remove"
+          "qty total";
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px 10px;
+        align-items: start;
+        padding: 9px 10px;
+        min-width: 0;
+      }
+
+      .ticket-product {
+        grid-area: product;
+        min-width: 0;
+      }
+
+      .ticket-product-info {
+        min-width: 0;
+      }
+
+      .ticket-product strong {
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+        overflow-wrap: anywhere;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        font-size: 13px;
+        line-height: 1.18;
+        margin-bottom: 3px;
+      }
+
+      .ticket-product small {
+        display: block;
+        overflow-wrap: anywhere;
+        line-height: 1.25;
+      }
+
+      .ticket-modifiers {
+        margin-top: 4px;
+        gap: 2px;
+        font-size: 11px;
+        line-height: 1.22;
+      }
+
+      .ticket-modifiers li {
+        overflow-wrap: anywhere;
+      }
+
+      .ticket-edit-extras {
+        min-height: 32px;
+        padding: 7px 0 0;
+        margin-top: 0;
+      }
+
+      .qty-controls {
+        grid-area: qty;
+        align-self: center;
+        display: inline-flex;
+        width: max-content;
+        max-width: 100%;
+        gap: 8px;
+        font-size: 13px;
+      }
+
+      .qty-controls > strong {
+        min-width: 24px;
+        text-align: center;
+      }
+
+      .qty-button {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        font-size: 16px;
+      }
+
+      .ticket-line-total {
+        display: contents;
+      }
+
+      .ticket-line-total > strong {
+        grid-area: total;
+        justify-self: end;
+        align-self: center;
+        margin: 0;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        text-align: right;
+        font-size: 13px;
+        line-height: 1.15;
+      }
+
+      .ticket-line-total .button.secondary {
+        grid-area: remove;
+        justify-self: end;
+        align-self: start;
+        display: inline-grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        min-height: 44px;
+        padding: 0;
+        border-radius: 12px;
+      }
+
+      .ticket-mid-actions {
+        gap: 8px;
+      }
+
+      .ticket-mid-actions .button {
+        min-height: 44px;
+        flex: 1 1 150px;
       }
     }
 
@@ -2142,6 +2549,7 @@
           <h3 id="modalProductosTitulo">Productos</h3>
           <p class="muted">Vista ampliada de la seccion seleccionada.</p>
         </div>
+        <button type="button" class="modal-header-close" id="cerrarModalProductosHeader" aria-label="Cerrar catalogo">Cerrar</button>
       </div>
       <input type="text" id="modalBuscadorTodos" class="search-input" placeholder="Buscar por nombre, código o categoría..." style="display:none; margin-bottom:12px;">
       <div class="modal-body">
@@ -2308,6 +2716,7 @@
     const modalComboDetalle = document.getElementById("modalComboDetalle");
     let comboActual = null;
     const cerrarModalProductos = document.getElementById("cerrarModalProductos");
+    const cerrarModalProductosHeader = document.getElementById("cerrarModalProductosHeader");
     const abrirCliente = document.getElementById("abrirCliente");
     const clienteResumen = document.getElementById("ticketTitle");
     const toggleNotificaciones = document.getElementById("toggleNotificaciones");
@@ -2338,6 +2747,8 @@
     let ultimoIntentoPoint = null;
     let enviandoIntentoPoint = false;
     let ajusteStockResolucionContexto = null;
+    let scrollCatalogoProductosY = 0;
+    let scrollCatalogoProductosBloqueado = false;
     const AJUSTE_STOCK_RESOLUCION_KEY = "guernicaResolverAjusteStock";
     const modificadoresCache = new Map();
     const CONSUMIDOR_FINAL_ID = "1";
@@ -2592,6 +3003,44 @@
 
     function cerrarModal(elemento) {
       elemento.classList.remove("open");
+    }
+
+    function esTelefonoCatalogoProductos() {
+      return window.matchMedia("(max-width: 520px)").matches;
+    }
+
+    function bloquearScrollCatalogoProductos() {
+      if (scrollCatalogoProductosBloqueado || !esTelefonoCatalogoProductos()) {
+        return;
+      }
+
+      scrollCatalogoProductosY = window.scrollY || document.documentElement.scrollTop || 0;
+      document.body.style.position = "fixed";
+      document.body.style.top = `-${scrollCatalogoProductosY}px`;
+      document.body.style.left = "0";
+      document.body.style.right = "0";
+      document.body.style.width = "100%";
+      scrollCatalogoProductosBloqueado = true;
+    }
+
+    function restaurarScrollCatalogoProductos() {
+      if (!scrollCatalogoProductosBloqueado) {
+        return;
+      }
+
+      document.body.style.position = "";
+      document.body.style.top = "";
+      document.body.style.left = "";
+      document.body.style.right = "";
+      document.body.style.width = "";
+      window.scrollTo(0, scrollCatalogoProductosY);
+      scrollCatalogoProductosBloqueado = false;
+    }
+
+    function cerrarModalProductosSeguro() {
+      cerrarModal(modalProductos);
+      modalProductos.classList.remove("catalogo-completo");
+      restaurarScrollCatalogoProductos();
     }
 
     function normalizarModificadoresTicket(modificadores = []) {
@@ -3923,6 +4372,8 @@
     function abrirModalProductos(titulo, items, emptyMessage) {
       modalProductosTitulo.innerText = titulo;
       const buscadorTodos = document.getElementById("modalBuscadorTodos");
+      modalProductos.classList.remove("catalogo-completo");
+      restaurarScrollCatalogoProductos();
       buscadorTodos.style.display = "none";
       buscadorTodos.value = "";
       modalProductosGrid.className = "product-grid";
@@ -3973,10 +4424,12 @@
     function abrirModalTodos() {
       modalProductosTitulo.innerText = "Todos los productos";
       const buscadorTodos = document.getElementById("modalBuscadorTodos");
+      modalProductos.classList.add("catalogo-completo");
       buscadorTodos.style.display = "block";
       buscadorTodos.value = "";
       buscadorTodos.oninput = () => renderModalTodos(buscadorTodos.value);
       renderModalTodos("");
+      bloquearScrollCatalogoProductos();
       abrirModal(modalProductos);
     }
 
@@ -5108,8 +5561,10 @@
     });
 
     cerrarModalProductos.addEventListener("click", function () {
-      cerrarModal(modalProductos);
+      cerrarModalProductosSeguro();
     });
+
+    cerrarModalProductosHeader.addEventListener("click", cerrarModalProductosSeguro);
 
     function cerrarModalModificadoresLimpio() {
       ticketItemEditandoId = null;
@@ -5312,6 +5767,10 @@
     [modalGuardarPendiente, modalPendientes, modalCliente, modalProductos, modalModificadores, modalCombo].forEach((modal) => {
       modal.addEventListener("click", function (event) {
         if (event.target === modal) {
+          if (modal === modalProductos) {
+            cerrarModalProductosSeguro();
+            return;
+          }
           cerrarModal(modal);
         }
       });
