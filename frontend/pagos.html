@@ -846,6 +846,42 @@
       .topbar-divider { display: none; }
       .top-actions { justify-content: flex-start; }
     }
+
+
+    @media (max-width: 520px) {
+      .kpi-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .kpi-grid .kpi {
+        grid-column: auto !important;
+        min-width: 0;
+        min-height: 0;
+        padding: 10px 12px;
+        gap: 6px;
+        border-radius: 14px;
+      }
+
+      .kpi-grid .kpi:first-child {
+        grid-column: 1 / -1 !important;
+      }
+
+      .kpi span {
+        font-size: 11px;
+        line-height: 1.2;
+      }
+
+      .kpi strong {
+        font-size: clamp(18px, 5vw, 22px);
+        line-height: 1.08;
+        overflow-wrap: anywhere;
+      }
+
+      .kpi-line {
+        display: none;
+      }
+    }
     /* Modal UI unification layer - non invasive */
     :where(.modal,.modal-backdrop){background:rgba(17,24,39,.52);padding:clamp(12px,3vw,28px);overflow:auto;overscroll-behavior:contain}
     .modal>.modal-card:not(.stock-product-modal):not(.modal-card-wide):not(.cobro-modal-card),.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{max-height:calc(100vh - 56px);border:1px solid var(--border,#e5e7eb);border-radius:18px;background:#fff;box-shadow:0 26px 70px rgba(17,24,39,.28);overflow:auto;overscroll-behavior:contain}
@@ -1224,9 +1260,12 @@
     function getVistaOperativa(rol,cfg=configPagos,modulo=null){const key=String(rol||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");const canonical={administrador:"admin",dueno:"admin",dueño:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[key]||key;if(canonical==="admin")return "completa";if(modulo){const pm=normalizarVistaOperativa(cfg?.[`vista_operativa_${modulo}_${canonical}`]);if(pm)return pm;}const directa=normalizarVistaOperativa(cfg?.[`vista_operativa_${canonical}`]);if(directa)return directa;const legacy=normalizarVistaOperativa(cfg?.[`dashboard_tipo_${canonical}`]);if(legacy)return legacy;return canonical==="colaborador"?"reducida":"completa"}
     function esVistaReducida(){return getVistaOperativa(rolActual(),configPagos,"pagos")==="reducida"}
     function aplicarVistaOperativaPagos(){document.body.classList.toggle("vista-reducida",esVistaReducida())}
-    function puedeAdministrarPagos(){const rol=rolActual();let p=configPagos?.permisos_acciones_roles;if(typeof p==="string"){try{p=JSON.parse(p)}catch{p=null}}if(p&&"pagos_crear" in p)return p.pagos_crear?.[rol]===true;return ["admin","encargado","colaborador"].includes(rol)}
-    function aplicarPermisosPagosUI(){if(abrirPagoModal)abrirPagoModal.style.display=puedeAdministrarPagos()?"":"none"}
-    function mostrarKpisComplejos(config){aplicarVistaOperativaPagos();const complejo=getVistaOperativa(rolActual(),config)==="completa";if(window.initKpiVisibility){window.initKpiVisibility({storageKey:"guernica_kpis_pagos",enabled:complejo})}else if(kpiGrid){kpiGrid.style.display=complejo?"grid":"none"}}
+    function getPermisoAccionPagos(accion,fallbackRoles=[]){const rol=rolActual();let p=configPagos?.permisos_acciones_roles;if(typeof p==="string"){try{p=JSON.parse(p)}catch{p=null}}if(p&&accion in p)return p[accion]?.[rol]===true;return fallbackRoles.includes(rol)}
+    function puedeCrearPagos(){return getPermisoAccionPagos("pagos_crear",["admin","encargado","colaborador"])}
+    function puedeAdministrarPagos(){return puedeCrearPagos()}
+    function puedeVerKpisPagos(config=configPagos){return getVistaOperativa(rolActual(),config,"pagos")==="completa"}
+    function aplicarPermisosPagosUI(){if(abrirPagoModal)abrirPagoModal.style.display=puedeCrearPagos()?"":"none"}
+    function mostrarKpisComplejos(config){aplicarVistaOperativaPagos();const complejo=puedeVerKpisPagos(config);if(window.initKpiVisibility){window.initKpiVisibility({storageKey:"guernica_kpis_pagos",enabled:complejo})}else if(kpiGrid){kpiGrid.style.display=complejo?"grid":"none"}}
     async function aplicarVisibilidadKpis(){try{const res=await fetch("/configuracion");const data=res.ok ? await res.json():{config:{}};configPagos=data.config||{};mostrarKpisComplejos(configPagos)}catch{configPagos={};mostrarKpisComplejos({})}finally{aplicarPermisosPagosUI()}}
 
     function impactoLabel(valor) {
@@ -1459,6 +1498,9 @@
     }
 
     function renderizarKpis(pagos) {
+      if (!puedeVerKpisPagos()) {
+        return;
+      }
       const hoy = hoyISO();
       const mes = hoy.slice(0, 7);
       const pagosDia = pagos.filter((pago) => pago.fecha === hoy && pago.estado !== "pendiente");
@@ -1494,6 +1536,9 @@
     }
 
     function renderKpiLine(id, values, color) {
+      if (!puedeVerKpisPagos()) {
+        return;
+      }
       const max = Math.max(...values, 1);
       const min = Math.min(...values, 0);
       const points = values.map((value, index) => {

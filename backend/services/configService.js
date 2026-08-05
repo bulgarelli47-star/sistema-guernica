@@ -187,7 +187,7 @@ const CONFIGURACION_DEFAULTS = {
   modulo_inicio_colaborador: { seccion: "usuarios_permisos", valor: true },
   modulo_ventas_colaborador: { seccion: "usuarios_permisos", valor: true },
   modulo_caja_colaborador: { seccion: "usuarios_permisos", valor: true },
-  modulo_pagos_colaborador: { seccion: "usuarios_permisos", valor: false },
+  modulo_pagos_colaborador: { seccion: "usuarios_permisos", valor: true },
   modulo_stock_colaborador: { seccion: "usuarios_permisos", valor: true },
   modulo_clientes_colaborador: { seccion: "usuarios_permisos", valor: true },
   modulo_proveedores_colaborador: { seccion: "usuarios_permisos", valor: false },
