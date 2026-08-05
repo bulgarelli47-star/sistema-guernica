@@ -229,6 +229,34 @@ function requerirClaveConfigurada(clave, res) {
   return false;
 }
 
+async function validarClaveMaestraOperacion(req, res) {
+  const claveIngresada = String(req.body?.clave_maestra || "").trim();
+  const claveActual = await getClaveAutorizacion();
+  if (!requerirClaveConfigurada(claveActual, res)) return false;
+  if (!claveIngresada) {
+    res.status(403).json({ message: "Clave maestra requerida" });
+    return false;
+  }
+  if (claveIngresada !== claveActual) {
+    res.status(403).json({ message: "Clave maestra incorrecta" });
+    return false;
+  }
+  return true;
+}
+
+async function requirePagoProtegidoConClave(req, res, accion, mensaje) {
+  const rol = normalizarRol(req.usuario?.rol);
+  if (!ROLES.TODOS.has(rol)) {
+    res.status(403).json({ message: mensaje || "No tenes permisos para esta accion" });
+    return false;
+  }
+  const permisoDirecto = await tienePermisoAccion(req, accion);
+  if (permisoDirecto) return true;
+  if (!(await validarClaveMaestraOperacion(req, res))) return false;
+  req.autorizacionMaestraPago = true;
+  return true;
+}
+
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_LOCK_MS = 10 * 60 * 1000;
 
@@ -347,9 +375,13 @@ async function requireServerPermissions(req, res, next) {
     return next();
   }
 
-  if (pathname.startsWith("/proveedores") || pathname.startsWith("/pagos")) {
+  if (pathname.startsWith("/proveedores")) {
     if (esLectura) return next();
     if (!puedeRol(req, ROLES.ADMIN_ENCARGADO)) return res.status(403).json({ message: "No tenes permisos para esta accion" });
+    return next();
+  }
+
+  if (pathname.startsWith("/pagos")) {
     return next();
   }
 
@@ -4149,19 +4181,13 @@ app.post("/pagos", async (req, res) => {
   }
 });
 
-// Editar pago — requiere clave maestra 1234. Con arqueo solo Dueño/Encargado.
+// Editar pago: requiere clave maestra configurada. Con arqueo solo Dueño/Encargado.
 app.put("/pagos/:id", async (req, res) => {
-  if (!(await requirePermiso(req, res, "pagos_editar", "No tenes permisos para editar pagos"))) return;
+  if (!(await requirePagoProtegidoConClave(req, res, "pagos_editar", "No tenes permisos para editar pagos"))) return;
 
   const pagoId = Number(req.params.id);
-  const { clave, rol, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito,
+  const { concepto, monto_total, tipo_pago, monto_efectivo, monto_debito,
           categoria_pago, comprobante, numero_comprobante, cuenta_destino, observaciones, cuenta_cobro_id } = req.body;
-
-  const claveConfig = await getClaveAutorizacion();
-  if (!requerirClaveConfigurada(claveConfig, res)) return;
-  if (clave !== claveConfig) {
-    return res.status(403).json({ message: "Clave maestra incorrecta" });
-  }
 
   try {
     const pago = await getQuery("SELECT * FROM pagos WHERE id = ?", [pagoId]);
@@ -4177,8 +4203,9 @@ app.put("/pagos/:id", async (req, res) => {
       tieneArqueo = !!arqueo;
     }
 
-    const esPrivilegiado = rol === "admin" || rol === "encargado";
-    if (tieneArqueo && !esPrivilegiado) {
+    const rolUsuario = normalizarRol(req.usuario?.rol);
+    const esPrivilegiado = rolUsuario === "admin" || rolUsuario === "encargado";
+    if (tieneArqueo && !esPrivilegiado && !req.autorizacionMaestraPago) {
       return res.status(403).json({ message: "Este pago pertenece a un arqueo registrado. Solo Dueño o Encargado puede editarlo." });
     }
 
@@ -4232,16 +4259,9 @@ app.put("/pagos/:id", async (req, res) => {
 
 // Eliminar pago — bloqueado si la caja está cerrada (tiene cierre registrado)
 app.delete("/pagos/:id", async (req, res) => {
-  if (!(await requirePermiso(req, res, "pagos_eliminar", "No tenes permisos para eliminar pagos"))) return;
+  if (!(await requirePagoProtegidoConClave(req, res, "pagos_eliminar", "No tenes permisos para eliminar pagos"))) return;
 
   const pagoId = Number(req.params.id);
-  const { clave, rol } = req.body;
-
-  const claveConfig = await getClaveAutorizacion();
-  if (!requerirClaveConfigurada(claveConfig, res)) return;
-  if (clave !== claveConfig) {
-    return res.status(403).json({ message: "Clave maestra incorrecta" });
-  }
 
   try {
     const pago = await getQuery("SELECT * FROM pagos WHERE id = ?", [pagoId]);
@@ -8117,6 +8137,9 @@ app.get("/configuracion", async (req, res) => {
   try {
     const configCompleta = await getConfiguracionGlobal();
     const config = sanitizarConfiguracionParaRol(configCompleta, req.usuario?.rol);
+    if (Object.prototype.hasOwnProperty.call(config, "autorizacion_clave_maestra")) {
+      config.autorizacion_clave_maestra = "";
+    }
     return res.json({
       config,
       schema: Object.fromEntries(
@@ -8156,6 +8179,10 @@ app.put("/configuracion", async (req, res) => {
 
     await runQuery("BEGIN TRANSACTION");
     for (const [clave, valor] of Object.entries(cambios)) {
+      if (clave === "autorizacion_clave_maestra" && String(valor || "").trim() === "") {
+        const claveActual = await getClaveAutorizacion();
+        if (claveActual) continue;
+      }
       const seccion = CONFIGURACION_DEFAULTS[clave].seccion;
       await runQuery(
         `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)

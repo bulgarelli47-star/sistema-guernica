@@ -732,6 +732,53 @@
       font-weight: 700;
     }
 
+    .edit-payment-auth {
+      display: none;
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #f8fafc;
+    }
+
+    .edit-payment-auth p {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .edit-payment-error {
+      color: #ef4444;
+      display: none;
+      font-size: 12px;
+      margin: 6px 0 0;
+    }
+
+    .delete-payment-summary {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #f8fafc;
+      font-size: 13px;
+    }
+
+    .delete-payment-summary div {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .button.danger {
+      background: #dc2626;
+      color: #ffffff;
+    }
+
+    .button.danger:hover {
+      background: #b91c1c;
+    }
+
     .table-toolbar {
       display: flex;
       justify-content: space-between;
@@ -846,7 +893,6 @@
       .topbar-divider { display: none; }
       .top-actions { justify-content: flex-start; }
     }
-
 
     @media (max-width: 520px) {
       .kpi-grid {
@@ -1193,11 +1239,48 @@
           <label class="full">Observaciones<textarea class="field" id="epObservaciones"></textarea></label>
         </div>
         <div id="editarPagoAviso" class="edit-payment-alert"></div>
-        <div class="modal-footer modal-actions">
+        <div id="editarPagoGuardarClaveSection" class="edit-payment-auth">
+          <p>Ingresa la clave maestra para guardar los cambios.</p>
+          <div class="edit-payment-password">
+            <input type="password" id="editarPagoGuardarClave" class="field" placeholder="Clave maestra">
+            <button type="button" id="confirmarGuardarClavePago" class="button">Confirmar y guardar</button>
+          </div>
+          <p id="editarPagoGuardarClaveError" class="edit-payment-error"></p>
+          <div class="modal-footer modal-actions">
+            <button type="button" id="cancelarGuardarClavePago" class="button secondary">Cancelar autorizacion</button>
+          </div>
+        </div>
+        <div class="modal-footer modal-actions" id="editarPagoFooter">
           <button type="button" id="cerrarEditarPago2" class="button secondary">Cancelar</button>
           <button type="button" id="guardarEditarPago" class="button">Guardar cambios</button>
         </div>
       </div>
+      </div>
+    </article>
+  </div>
+
+  <!-- Modal eliminacion de pago -->
+  <div class="modal-backdrop" id="eliminarPagoModal" aria-hidden="true">
+    <article class="modal-card edit-payment-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div><h2>Eliminar pago</h2><p id="eliminarPagoSubtitulo"></p></div>
+        <button type="button" id="cerrarEliminarPago" style="border:1px solid #e2e8f0;border-radius:10px;width:36px;height:36px;background:#fff;cursor:pointer;font-size:18px">x</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted" style="margin:0">Esta accion eliminara el registro seleccionado.</p>
+        <div class="delete-payment-summary" id="eliminarPagoResumen"></div>
+        <div id="eliminarPagoClaveSection" class="edit-payment-auth">
+          <p>Ingresa la clave maestra para continuar.</p>
+          <div class="edit-payment-password">
+            <input type="password" id="eliminarPagoClave" class="field" placeholder="Clave maestra">
+          </div>
+          <p id="eliminarPagoClaveError" class="edit-payment-error"></p>
+        </div>
+        <div id="eliminarPagoAviso" class="edit-payment-alert"></div>
+        <div class="modal-footer modal-actions">
+          <button type="button" id="cancelarEliminarPago" class="button secondary">Cancelar</button>
+          <button type="button" id="confirmarEliminarPago" class="button danger">Eliminar pago</button>
+        </div>
       </div>
     </article>
   </div>
@@ -1262,7 +1345,7 @@
     function aplicarVistaOperativaPagos(){document.body.classList.toggle("vista-reducida",esVistaReducida())}
     function getPermisoAccionPagos(accion,fallbackRoles=[]){const rol=rolActual();let p=configPagos?.permisos_acciones_roles;if(typeof p==="string"){try{p=JSON.parse(p)}catch{p=null}}if(p&&accion in p)return p[accion]?.[rol]===true;return fallbackRoles.includes(rol)}
     function puedeCrearPagos(){return getPermisoAccionPagos("pagos_crear",["admin","encargado","colaborador"])}
-    function puedeAdministrarPagos(){return puedeCrearPagos()}
+    function puedeAccionProtegidaPagos(){return ["admin","encargado","colaborador"].includes(rolActual())}
     function puedeVerKpisPagos(config=configPagos){return getVistaOperativa(rolActual(),config,"pagos")==="completa"}
     function aplicarPermisosPagosUI(){if(abrirPagoModal)abrirPagoModal.style.display=puedeCrearPagos()?"":"none"}
     function mostrarKpisComplejos(config){aplicarVistaOperativaPagos();const complejo=puedeVerKpisPagos(config);if(window.initKpiVisibility){window.initKpiVisibility({storageKey:"guernica_kpis_pagos",enabled:complejo})}else if(kpiGrid){kpiGrid.style.display=complejo?"grid":"none"}}
@@ -1278,7 +1361,7 @@
     }
 
     function abrirModalPago() {
-      if (!puedeAdministrarPagos()) {
+      if (!puedeCrearPagos()) {
         mostrarMensaje("No tenés permisos para registrar pagos", true);
         return;
       }
@@ -1608,9 +1691,10 @@
           <td>${money(ivaFavorPago(pago))}</td>
           <td><span class="pill ${pendiente ? "pending" : ""}">${pendiente ? "Pendiente" : "Registrado"}</span></td>
           <td>${impacto}</td>
-          <td>${puedeAdministrarPagos() ? `<button type="button" class="button secondary" style="padding:5px 9px;font-size:11px" data-editar-pago="${pago.id}">Editar</button>` : ""}</td>
+          <td>${puedeAccionProtegidaPagos() ? `<div style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" class="button secondary" style="padding:5px 9px;font-size:11px" data-editar-pago="${pago.id}">Editar</button><button type="button" class="button secondary" style="padding:5px 9px;font-size:11px" data-eliminar-pago="${pago.id}">Eliminar</button></div>` : ""}</td>
         `;
         row.querySelector('[data-editar-pago]')?.addEventListener('click', () => abrirEditarPago(pago));
+        row.querySelector('[data-eliminar-pago]')?.addEventListener('click', () => eliminarPago(pago));
         listaPagos.appendChild(row);
       });
 
@@ -1812,7 +1896,7 @@
     const editarPagoModal = document.getElementById("editarPagoModal");
 
     function abrirEditarPago(pago) {
-      if (!puedeAdministrarPagos()) {
+      if (!puedeAccionProtegidaPagos()) {
         mostrarMensaje("No tenés permisos para editar pagos", true);
         return;
       }
@@ -1835,10 +1919,41 @@
       editarPagoModal.style.display = "grid";
     }
 
+    async function eliminarPago(pago) {
+      if (!puedeAccionProtegidaPagos()) {
+        mostrarMensaje("No tenés permisos para eliminar pagos", true);
+        return;
+      }
+      const clave = "";
+      if (!clave) {
+        mostrarMensaje("Clave maestra requerida", true);
+        return;
+      }
+      try {
+        const res = await fetch(`/pagos/${pago.id}`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ clave })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          mostrarMensaje(data.message || "No se pudo eliminar el pago", true);
+          return;
+        }
+        mostrarMensaje(data.message || "Pago eliminado");
+        await cargarCaja();
+        await cargarPagos();
+        localStorage.setItem('atlas_caja_refresh', Date.now().toString());
+      } catch (error) {
+        mostrarMensaje("Error de conexión", true);
+      }
+    }
+
     function cerrarEditarPagoModal() {
       editarPagoModal.style.display = "none";
       pagoEditandoId = null;
       claveConfirmada = null;
+      document.getElementById("editarPagoClave").value = "";
     }
 
     document.getElementById("cerrarEditarPago").addEventListener("click", cerrarEditarPagoModal);
@@ -1856,7 +1971,7 @@
       const btn = document.getElementById("confirmarClavePago");
       btn.disabled = true;
       try {
-        const res = await fetch("/autorizacion/validar", {
+        const res = await fetch(`/pagos/${pagoEditandoId}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ clave })
@@ -1928,6 +2043,183 @@
         btn.disabled = false;
       }
     });
+
+    // Flujo V1: el formulario se abre primero; la clave se pide solo al guardar si no hay permiso directo.
+    let pagoEliminandoActual = null;
+    let enviandoEdicionPago = false;
+    let enviandoEliminacionPago = false;
+    let editarPagoTrigger = null;
+    let eliminarPagoTrigger = null;
+    const eliminarPagoModalActual = document.getElementById("eliminarPagoModal");
+
+    function puedeEditarPagoDirecto(){return getPermisoAccionPagos("pagos_editar",["admin","encargado"])}
+    function puedeEliminarPagoDirecto(){return getPermisoAccionPagos("pagos_eliminar",["admin"])}
+    function setInlineError(el,text){if(!el)return;el.textContent=text;el.style.display="block"}
+    function clearInlineError(el){if(!el)return;el.textContent="";el.style.display="none"}
+    function resetClaveGuardar(){document.getElementById("editarPagoGuardarClave").value="";clearInlineError(document.getElementById("editarPagoGuardarClaveError"))}
+    function resetClaveEliminar(){document.getElementById("eliminarPagoClave").value="";clearInlineError(document.getElementById("eliminarPagoClaveError"))}
+    function hideGuardarAuth(){document.getElementById("editarPagoGuardarClaveSection").style.display="none";const footer=document.getElementById("editarPagoFooter");if(footer)footer.style.display="flex";resetClaveGuardar()}
+    function showGuardarAuth(){document.getElementById("editarPagoGuardarClaveSection").style.display="block";const footer=document.getElementById("editarPagoFooter");if(footer)footer.style.display="none";resetClaveGuardar();setTimeout(()=>document.getElementById("editarPagoGuardarClave").focus(),0)}
+    function setAvisoPago(text){const aviso=document.getElementById("editarPagoAviso");aviso.textContent=text;aviso.style.display="block"}
+    function cerrarModalAccesible(modal, trigger){
+      if(!modal)return;
+      if(modal.contains(document.activeElement))document.activeElement.blur();
+      modal.style.display="none";
+      modal.setAttribute("aria-hidden","true");
+      setTimeout(()=>{if(trigger&&document.contains(trigger))trigger.focus()},0);
+    }
+
+    function buildEditarPayload(clave=null){
+      const payload={
+        concepto: document.getElementById("epConcepto").value.trim(),
+        monto_total: document.getElementById("epMonto").value,
+        comprobante: document.getElementById("epComprobante").value.trim(),
+        numero_comprobante: document.getElementById("epNumeroComprobante").value.trim(),
+        cuenta_destino: document.getElementById("epCuentaDestino").value.trim(),
+        cuenta_cobro_id: document.getElementById("epCuentaCobro").value ? Number(document.getElementById("epCuentaCobro").value) : null,
+        observaciones: document.getElementById("epObservaciones").value.trim()
+      };
+      if(clave!==null)payload.clave_maestra=clave;
+      return payload;
+    }
+
+    abrirEditarPago = function(pago) {
+      if (!puedeAccionProtegidaPagos()) {
+        mostrarMensaje("No tenes permisos para editar pagos", true);
+        return;
+      }
+      editarPagoTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      pagoEditandoId = pago.id;
+      claveConfirmada = null;
+      document.getElementById("editarPagoSubtitulo").textContent = `#${pago.id} - ${pago.proveedor_nombre || "Sin proveedor"} - ${pago.fecha || ""}`;
+      document.getElementById("editarPagoClaveSection").style.display = "none";
+      document.getElementById("editarPagoFormSection").style.display = "block";
+      document.getElementById("editarPagoAviso").style.display = "none";
+      hideGuardarAuth();
+      document.getElementById("epConcepto").value = pago.concepto || "";
+      document.getElementById("epMonto").value = pago.monto_total || "";
+      document.getElementById("epComprobante").value = pago.comprobante || "";
+      document.getElementById("epNumeroComprobante").value = pago.numero_comprobante || "";
+      document.getElementById("epCuentaDestino").value = pago.cuenta_destino || "";
+      document.getElementById("epObservaciones").value = pago.observaciones || "";
+      cargarCuentasCobroEdicion(pago.tipo_pago, pago.cuenta_cobro_id);
+      editarPagoModal.style.display = "grid";
+      editarPagoModal.setAttribute("aria-hidden", "false");
+      setTimeout(()=>document.getElementById("epConcepto")?.focus(),0);
+    };
+
+    cerrarEditarPagoModal = function() {
+      cerrarModalAccesible(editarPagoModal, editarPagoTrigger);
+      pagoEditandoId = null;
+      claveConfirmada = null;
+      enviandoEdicionPago = false;
+      hideGuardarAuth();
+      document.getElementById("editarPagoClave").value = "";
+    };
+
+    async function submitEditarPago(clave=null, button=null){
+      if(!pagoEditandoId||enviandoEdicionPago)return;
+      enviandoEdicionPago=true;
+      const btn=button||document.getElementById("guardarEditarPago");
+      btn.disabled=true;
+      try{
+        const res=await fetch(`/pagos/${pagoEditandoId}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(buildEditarPayload(clave))});
+        const data=await res.json();
+        if(!res.ok){
+          if(clave!==null){setInlineError(document.getElementById("editarPagoGuardarClaveError"),data.message||"Clave maestra incorrecta");document.getElementById("editarPagoGuardarClave").value="";return}
+          setAvisoPago(data.message||"Error al guardar");
+          return;
+        }
+        cerrarEditarPagoModal();
+        mostrarMensaje(data.message||"Pago actualizado");
+        await cargarPagos();
+        localStorage.setItem("atlas_caja_refresh",Date.now().toString());
+      }catch{
+        if(clave!==null)setInlineError(document.getElementById("editarPagoGuardarClaveError"),"Error de conexion");
+        else setAvisoPago("Error de conexion");
+      }finally{
+        enviandoEdicionPago=false;
+        btn.disabled=false;
+      }
+    }
+
+    eliminarPago = function(pago) {
+      if (!puedeAccionProtegidaPagos()) {
+        mostrarMensaje("No tenes permisos para eliminar pagos", true);
+        return;
+      }
+      eliminarPagoTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      pagoEliminandoActual = pago;
+      document.getElementById("eliminarPagoSubtitulo").textContent = `#${pago.id} - ${pago.fecha || ""}`;
+      document.getElementById("eliminarPagoResumen").innerHTML = `
+        <div><span>Concepto</span><strong>${pago.concepto || "-"}</strong></div>
+        <div><span>Proveedor</span><strong>${pago.proveedor_nombre || "Sin proveedor"}</strong></div>
+        <div><span>Monto</span><strong>${money(pago.monto_total)}</strong></div>
+        <div><span>Fecha</span><strong>${pago.fecha || "-"}</strong></div>`;
+      document.getElementById("eliminarPagoAviso").style.display = "none";
+      document.getElementById("eliminarPagoClaveSection").style.display = puedeEliminarPagoDirecto() ? "none" : "block";
+      resetClaveEliminar();
+      eliminarPagoModalActual.style.display = "grid";
+      eliminarPagoModalActual.setAttribute("aria-hidden", "false");
+      if(!puedeEliminarPagoDirecto())setTimeout(()=>document.getElementById("eliminarPagoClave").focus(),0);
+      else setTimeout(()=>document.getElementById("confirmarEliminarPago")?.focus(),0);
+    };
+
+    function cerrarEliminarPagoModal(){
+      cerrarModalAccesible(eliminarPagoModalActual, eliminarPagoTrigger);
+      pagoEliminandoActual=null;
+      enviandoEliminacionPago=false;
+      resetClaveEliminar();
+    }
+
+    async function submitEliminarPago(){
+      if(!pagoEliminandoActual||enviandoEliminacionPago)return;
+      enviandoEliminacionPago=true;
+      const btn=document.getElementById("confirmarEliminarPago");
+      const clave=puedeEliminarPagoDirecto()?null:document.getElementById("eliminarPagoClave").value.trim();
+      btn.disabled=true;
+      try{
+        const res=await fetch(`/pagos/${pagoEliminandoActual.id}`,{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify(clave===null?{}:{clave_maestra:clave})});
+        const data=await res.json();
+        if(!res.ok){
+          if(clave!==null){setInlineError(document.getElementById("eliminarPagoClaveError"),data.message||"Clave maestra incorrecta");document.getElementById("eliminarPagoClave").value="";return}
+          const aviso=document.getElementById("eliminarPagoAviso");aviso.textContent=data.message||"No se pudo eliminar el pago";aviso.style.display="block";return;
+        }
+        cerrarEliminarPagoModal();
+        mostrarMensaje(data.message||"Pago eliminado");
+        await cargarCaja();
+        await cargarPagos();
+        localStorage.setItem("atlas_caja_refresh",Date.now().toString());
+      }catch{
+        if(clave!==null)setInlineError(document.getElementById("eliminarPagoClaveError"),"Error de conexion");
+        else {const aviso=document.getElementById("eliminarPagoAviso");aviso.textContent="Error de conexion";aviso.style.display="block"}
+      }finally{
+        enviandoEliminacionPago=false;
+        btn.disabled=false;
+      }
+    }
+
+    function replaceButtonListener(id,handler){
+      const old=document.getElementById(id);
+      if(!old)return;
+      const fresh=old.cloneNode(true);
+      old.replaceWith(fresh);
+      fresh.addEventListener("click",handler);
+      return fresh;
+    }
+
+    replaceButtonListener("cerrarEditarPago",cerrarEditarPagoModal);
+    replaceButtonListener("cerrarEditarPago2",cerrarEditarPagoModal);
+    replaceButtonListener("guardarEditarPago",()=>puedeEditarPagoDirecto()?submitEditarPago():showGuardarAuth());
+    replaceButtonListener("confirmarClavePago",()=>{});
+    replaceButtonListener("confirmarGuardarClavePago",()=>submitEditarPago(document.getElementById("editarPagoGuardarClave").value.trim(),document.getElementById("confirmarGuardarClavePago")));
+    replaceButtonListener("cancelarGuardarClavePago",hideGuardarAuth);
+    document.getElementById("editarPagoGuardarClave").addEventListener("keydown",e=>{if(e.key==="Enter")document.getElementById("confirmarGuardarClavePago").click()});
+    replaceButtonListener("cerrarEliminarPago",cerrarEliminarPagoModal);
+    replaceButtonListener("cancelarEliminarPago",cerrarEliminarPagoModal);
+    replaceButtonListener("confirmarEliminarPago",submitEliminarPago);
+    document.getElementById("eliminarPagoClave").addEventListener("keydown",e=>{if(e.key==="Enter")submitEliminarPago()});
+    eliminarPagoModalActual.addEventListener("click",e=>{if(e.target===eliminarPagoModalActual)cerrarEliminarPagoModal()});
   </script>
   <script src="/nav-permissions.js?v=6" defer></script>
   <script src="/mobile-nav.js?v=1"></script>
