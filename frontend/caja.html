@@ -3827,6 +3827,30 @@
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=7" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
+  <style>
+    @media (max-width: 520px) {
+      .tabs {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        overflow-y: hidden;
+        overscroll-behavior-inline: contain;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: thin;
+        padding-inline-end: 18px;
+        scroll-snap-type: x proximity;
+      }
+
+      .tab-button {
+        flex: 0 0 auto;
+        min-height: 44px;
+        white-space: nowrap;
+        scroll-snap-align: start;
+      }
+    }
+  </style>
   <link rel="stylesheet" href="/responsive-core.css?v=1" />
 <script src="/auth-interceptor.js"></script>
 </head>
