@@ -1,0 +1,579 @@
+/*
+  Atlas OS responsive core - Lote 1.
+  Capa compartida para estructura, navegacion, modales base y helpers.
+  No resuelve layouts internos especificos de cada modulo.
+*/
+
+/* Seguridad estructural */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:where(.app-shell, .main, .content, .page-content, .topbar, .topbar-left, .top-actions, .sidebar),
+:where(.app-shell, .main, .content, .page-content, .topbar, .topbar-left, .top-actions, .sidebar) > * {
+  min-width: 0;
+}
+
+:where(img, svg, video, canvas) {
+  max-width: 100%;
+}
+
+:where(img, video) {
+  height: auto;
+}
+
+:where(.text-break, .money-value, .kpi, .metric-card, .summary-box, .detail-box, .card, .panel) {
+  min-width: 0;
+}
+
+:where(.text-break, .money-value, .kpi strong, .metric-card strong, .summary-box strong, .detail-box strong) {
+  overflow-wrap: anywhere;
+}
+
+/* Helpers reutilizables */
+.table-scroll,
+.table-wrap,
+.responsive-table {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
+}
+
+.mobile-scroll-x {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 520px) {
+  .mobile-one-column {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .mobile-actions-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .mobile-full-width {
+    width: 100%;
+  }
+}
+
+/* Modales base compartidos. Evita asumir estructura interna especifica. */
+:where(.modal, .modal-backdrop) {
+  overscroll-behavior: contain;
+}
+
+:where(.modal > .modal-card, .modal-backdrop > .modal-card, .modal > .dialog, .modal > .modal-window) {
+  max-width: 100%;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+:where(.modal-header, .modal-head, .dialog-head, .sticky-modal-header) {
+  min-width: 0;
+}
+
+:where(.modal-header, .modal-head, .dialog-head, .sticky-modal-header) > :first-child {
+  min-width: 0;
+}
+
+:where(.modal-header h1, .modal-header h2, .modal-header h3, .modal-head h1, .modal-head h2, .modal-head h3, .dialog-head h1, .dialog-head h2, .dialog-head h3) {
+  overflow-wrap: anywhere;
+}
+
+:where(.modal-actions, .dialog-actions, .modal-footer, .modal-header-actions) {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.mobile-nav-toggle,
+.mobile-nav-drawer-header,
+.mobile-nav-backdrop {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  /* Header y topbar */
+  .site-header {
+    position: static;
+    min-height: auto;
+  }
+
+  .topbar {
+    min-height: auto;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px 16px;
+  }
+
+  .topbar-left {
+    width: 100%;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .mobile-nav-toggle {
+    flex: 0 0 auto;
+    display: inline-grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    border: 1px solid rgba(255, 255, 255, .18);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, .07);
+    color: rgba(255, 255, 255, .92);
+    cursor: pointer;
+    padding: 0;
+    transition: background-color 140ms ease, border-color 140ms ease, transform 120ms ease, box-shadow 140ms ease;
+  }
+
+  .mobile-nav-toggle svg {
+    display: block;
+    width: 22px;
+    height: 22px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.85;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .mobile-nav-toggle:hover {
+      background: rgba(255, 255, 255, .11);
+      border-color: rgba(255, 255, 255, .26);
+    }
+  }
+
+  .mobile-nav-toggle:active {
+    transform: scale(.97);
+  }
+
+  .mobile-nav-toggle:focus-visible {
+    outline: 0;
+    box-shadow: 0 0 0 3px rgba(167, 139, 250, .22);
+  }
+
+  .mobile-nav-close:focus-visible {
+    outline: 3px solid rgba(255, 255, 255, .5);
+    outline-offset: 2px;
+  }
+
+  .brand-block {
+    flex: 1 1 calc(100% - 56px);
+    min-width: 0;
+  }
+
+  .topbar-title {
+    flex: 1 1 100%;
+  }
+
+  .logo-text,
+  .topbar-title,
+  .topbar-title h1,
+  .topbar-title p {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .topbar-divider {
+    display: none;
+  }
+
+  .top-actions {
+    width: 100%;
+    justify-content: flex-start;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .top-actions .chip {
+    max-width: 100%;
+  }
+
+  .section-menu {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .regime-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .user-box {
+    max-width: 100%;
+    min-height: 44px;
+  }
+
+  .user-box > div {
+    min-width: 0;
+  }
+
+  .user-box strong,
+  .user-box small {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* App shell */
+  .app-shell,
+  body.sidebar-collapsed .app-shell {
+    grid-template-columns: 1fr;
+    margin-top: 0;
+    min-height: auto;
+  }
+
+  .main,
+  .content,
+  .page-content {
+    padding: 14px;
+    min-width: 0;
+  }
+
+  .main > *,
+  .content > *,
+  .page-content > * {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  :where(.card, .panel, .config-section) > * {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .config-section.active {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Sidebar mobile como drawer. Reutiliza el mismo DOM que filtra nav-permissions.js. */
+  body.mobile-nav-open {
+    position: fixed;
+    left: 0;
+    right: 0;
+    width: 100%;
+    overflow: hidden;
+  }
+
+  .mobile-nav-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 180;
+    display: block;
+    background: rgba(15, 23, 42, .48);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 180ms ease;
+  }
+
+  .mobile-nav-backdrop[hidden] {
+    display: none;
+  }
+
+  .mobile-nav-backdrop.mobile-nav-backdrop-open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .sidebar,
+  body.sidebar-collapsed .sidebar {
+    /* Neutraliza position/z-index inline que agrega nav-permissions.js para el colapsado desktop. */
+    position: fixed !important;
+    top: 0;
+    left: 0;
+    z-index: 190 !important;
+    display: flex;
+    flex-direction: column;
+    width: min(86vw, 320px);
+    max-width: 100%;
+    min-height: 0;
+    height: 100vh;
+    height: 100dvh;
+    border-right: 1px solid var(--border, #e5e7eb);
+    border-bottom: 0;
+    padding: max(14px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom));
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    background: var(--sidebar, #fff);
+    box-shadow: 24px 0 60px rgba(15, 23, 42, .24);
+    transform: translateX(-105%);
+    transition: transform 180ms ease;
+  }
+
+  .sidebar.mobile-nav-open,
+  body.sidebar-collapsed .sidebar.mobile-nav-open {
+    transform: translateX(0);
+  }
+
+  #atlas-sidebar-toggle {
+    display: none;
+  }
+
+  .mobile-nav-drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+    color: var(--text, #111827);
+  }
+
+  .mobile-nav-drawer-header strong {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-size: 13px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted, #64748b);
+  }
+
+  .mobile-nav-close {
+    flex: 0 0 auto;
+    display: inline-grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    background: var(--surface, #fff);
+    color: var(--text, #111827);
+    cursor: pointer;
+    font-size: 28px;
+    line-height: 1;
+    padding: 0;
+  }
+
+  .sidebar .nav-title,
+  body.sidebar-collapsed .sidebar .nav-title {
+    display: none;
+  }
+
+  .sidebar .nav,
+  body.sidebar-collapsed .sidebar .nav {
+    display: grid;
+    grid-auto-flow: row;
+    gap: 6px;
+    max-width: 100%;
+    overflow: visible;
+    padding-bottom: 0;
+  }
+
+  .sidebar .nav a,
+  body.sidebar-collapsed .sidebar .nav a {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 12px;
+    min-height: 44px;
+    padding: 11px 12px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  body.sidebar-collapsed .sidebar .nav a span:not([class*="nav-icon"]):not([class*="app-icon"]) {
+    display: inline;
+  }
+
+  .branch-card,
+  body.sidebar-collapsed .branch-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 14px;
+    padding: 10px 12px;
+  }
+
+  /* Modales base mobile */
+  :where(.modal, .modal-backdrop) {
+    padding: 10px;
+  }
+
+  :where(.modal > .modal-card, .modal-backdrop > .modal-card, .modal > .dialog, .modal > .modal-window) {
+    width: min(100%, calc(100vw - 20px));
+    max-height: calc(100vh - 20px);
+    max-height: calc(100dvh - 20px);
+    border-radius: 16px;
+  }
+
+  :where(.modal-actions, .dialog-actions, .modal-footer) {
+    justify-content: stretch;
+  }
+
+  :where(.modal-actions > *, .dialog-actions > *, .modal-footer > *) {
+    flex: 1 1 140px;
+  }
+
+  /* Acciones tactiles compartidas */
+  :where(.icon-button, .close, .atlas-modal-close, .mib.icon-only, .chip.icon-chip) {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  :where(.mib, .button, button, .tab, .subtab, .nav a) {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 520px) {
+  .topbar {
+    gap: 9px;
+    padding-block: 12px;
+  }
+
+  .topbar-left {
+    gap: 10px;
+  }
+
+  .brand-block {
+    flex: 1 1 calc(100% - 54px);
+    gap: 10px;
+  }
+
+  .topbar-title {
+    width: 100%;
+  }
+
+  .topbar-title h1 {
+    line-height: 1.12;
+  }
+
+  .topbar-title p {
+    margin-top: 4px;
+    line-height: 1.25;
+  }
+
+  .top-actions {
+    display: flex;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    align-items: center;
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .top-actions > :not(.user-box):not(.user-menu-host) {
+    flex: 0 0 auto;
+  }
+
+  .top-actions-menu,
+  .top-actions .chip,
+  .top-actions .kpi-visibility-button {
+    flex-shrink: 0;
+  }
+
+  .top-actions .chip.icon-chip,
+  .top-actions .kpi-visibility-button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+
+  .top-actions .chip:not(.icon-chip) {
+    min-height: 44px;
+    padding-inline: 10px;
+    white-space: nowrap;
+  }
+
+  .top-actions > .user-menu-host,
+  .top-actions > .user-box {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .top-actions .user-menu-host {
+    display: block;
+  }
+
+  .top-actions .user-box {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    gap: 7px;
+    padding: 5px 6px;
+  }
+
+  .top-actions .avatar {
+    width: 32px !important;
+    height: 32px !important;
+    min-width: 32px !important;
+    max-width: 32px !important;
+    flex: 0 0 32px !important;
+    flex-shrink: 0 !important;
+  }
+
+  .top-actions .user-box > div {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+  }
+
+  .top-actions .user-box strong,
+  .top-actions .user-box small {
+    display: block;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .top-actions .user-box .logout-btn {
+    flex: 0 0 auto;
+    min-height: 40px !important;
+    padding-inline: 8px !important;
+    margin-left: 2px !important;
+  }
+}
+
+@media (max-width: 390px) {
+  .top-actions .user-box small {
+    display: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .topbar {
+    padding-inline: 12px;
+  }
+
+  .main,
+  .content,
+  .page-content {
+    padding-inline: 12px;
+  }
+
+  .sidebar,
+  body.sidebar-collapsed .sidebar {
+    padding-inline: 12px;
+  }
+}
