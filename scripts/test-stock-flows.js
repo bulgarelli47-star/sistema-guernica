@@ -4037,6 +4037,277 @@ async function testProductoModeloFiscalF1ACompatibilidad() {
   }
 }
 
+async function testProductoMotorFiscalNormalizadoF1B1() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const sufijo = Date.now().toString().slice(-8);
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST Fiscal Motor ${sufijo}`, {
+        margen_porcentaje: 50
+      });
+      const categoriaIdMargen80 = await crearCategoria(baseUrl, token, `TEST Fiscal Motor 80 ${sufijo}`, {
+        margen_porcentaje: 80
+      });
+      const basePayload = {
+        categoria: `TEST Fiscal Motor ${sufijo}`,
+        categoria_id: categoriaId,
+        stock: 1,
+        maneja_stock: true,
+        activo: true,
+        redondeo: 0,
+        unidad_medida: "unidad"
+      };
+
+      const legacy = await crearProductoFiscal(baseUrl, token, {
+        ...basePayload,
+        nombre: `TEST Motor Legacy ${sufijo}`,
+        precio_compra: 100,
+        precio_venta: 0,
+        iva_porcentaje: 21,
+        precio_compra_incluye_iva: false
+      });
+      assertApprox(legacy.costo_final, 121, "Motor legacy debe conservar costo_final actual");
+      assertApprox(legacy.precio_sugerido, 181.5, "Motor legacy debe conservar precio sugerido actual");
+      assertApprox(legacy.precio_venta, 181.5, "Motor legacy debe conservar precio final automatico actual");
+
+      const normalizado21 = await crearProductoFiscal(baseUrl, token, {
+        ...basePayload,
+        nombre: `TEST Motor Gravado 21 ${sufijo}`,
+        precio_compra: 100,
+        precio_venta: 0,
+        iva_porcentaje: 3,
+        precio_compra_incluye_iva: false,
+        costo_economico: 50,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "gravado",
+        iva_venta_alicuota: 21
+      });
+      assertApprox(normalizado21.precio_neto_sugerido, 75, "Motor normalizado 21 debe calcular neto sugerido");
+      assertApprox(normalizado21.iva_sugerido, 15.75, "Motor normalizado 21 debe calcular IVA sugerido");
+      assertApprox(normalizado21.precio_final_sugerido, 90.75, "Motor normalizado 21 debe calcular final sugerido");
+      assertApprox(normalizado21.precio_venta, 90.75, "Motor normalizado 21 debe persistir precio final automatico");
+      if (normalizado21.precio_venta_modo !== "automatico") {
+        throw new Error(`Producto normalizado con precio 0 debe inferir modo automatico al crear. Actual=${normalizado21.precio_venta_modo}`);
+      }
+      assertApprox(normalizado21.iva_porcentaje, 3, "IVA legacy no debe contaminar motor normalizado");
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: `Colaborador Fiscal ${sufijo}`,
+        usuario: `colab_fiscal_${sufijo}`,
+        password: "colaborador123",
+        confirmar_password: "colaborador123",
+        rol: "colaborador",
+        activo: true
+      }, token);
+      const colaboradorToken = await login(baseUrl, `colab_fiscal_${sufijo}`, "colaborador123");
+      const productosColaborador = await requestJson(baseUrl, "GET", "/productos", null, colaboradorToken);
+      if (!productosColaborador.response.ok) {
+        throw new Error(`GET /productos colaborador fallo: ${productosColaborador.data?.message || productosColaborador.response.status}`);
+      }
+      const normalizadoColaborador = productosColaborador.data.find((producto) => Number(producto.id) === Number(normalizado21.id));
+      if (!normalizadoColaborador) {
+        throw new Error("GET /productos colaborador debe incluir el producto normalizado sin campos sensibles");
+      }
+      for (const campo of [
+        "costo_economico",
+        "precio_compra",
+        "costo_final",
+        "precio_neto_sugerido",
+        "iva_sugerido",
+        "precio_final_sugerido",
+        "precio_neto_desde_final",
+        "iva_desde_final"
+      ]) {
+        if (Object.prototype.hasOwnProperty.call(normalizadoColaborador, campo)) {
+          throw new Error(`GET /productos colaborador no debe exponer ${campo}`);
+        }
+      }
+      if (!Object.prototype.hasOwnProperty.call(normalizadoColaborador, "precio_venta")) {
+        throw new Error("GET /productos colaborador debe seguir exponiendo precio_venta");
+      }
+      assertApprox(normalizadoColaborador.precio_venta, 90.75, "GET /productos colaborador debe conservar precio_venta visible");
+
+      const normalizado105 = await crearProductoFiscal(baseUrl, token, {
+        ...basePayload,
+        nombre: `TEST Motor Gravado 105 ${sufijo}`,
+        precio_compra: 100,
+        precio_venta: 0,
+        iva_porcentaje: 27,
+        costo_economico: 50,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "gravado",
+        iva_venta_alicuota: 10.5
+      });
+      assertApprox(normalizado105.precio_neto_sugerido, 75, "Motor normalizado 10.5 debe calcular neto sugerido");
+      assertApprox(normalizado105.iva_sugerido, 7.88, "Motor normalizado 10.5 debe calcular IVA sugerido");
+      assertApprox(normalizado105.precio_venta, 82.88, "Motor normalizado 10.5 debe persistir precio final automatico");
+
+      const exento = await crearProductoFiscal(baseUrl, token, {
+        ...basePayload,
+        nombre: `TEST Motor Exento ${sufijo}`,
+        precio_compra: 999,
+        precio_venta: 0,
+        iva_porcentaje: 27,
+        costo_economico: 50,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "exento",
+        iva_venta_alicuota: 21
+      });
+      assertApprox(exento.iva_sugerido, 0, "Motor exento debe calcular IVA 0");
+      assertApprox(exento.precio_venta, 75, "Motor exento debe usar neto como final");
+
+      const noGravado = await crearProductoFiscal(baseUrl, token, {
+        ...basePayload,
+        nombre: `TEST Motor No Gravado ${sufijo}`,
+        precio_compra: 999,
+        precio_venta: 0,
+        iva_porcentaje: 27,
+        costo_economico: 50,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "no_gravado",
+        iva_venta_alicuota: 21
+      });
+      assertApprox(noGravado.iva_sugerido, 0, "Motor no_gravado debe calcular IVA 0");
+      assertApprox(noGravado.precio_venta, 75, "Motor no_gravado debe usar neto como final");
+
+      const manual = await crearProductoFiscal(baseUrl, token, {
+        ...basePayload,
+        nombre: `TEST Motor Manual ${sufijo}`,
+        precio_compra: 100,
+        precio_venta: 100,
+        costo_economico: 50,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "gravado",
+        iva_venta_alicuota: 21
+      });
+      assertApprox(manual.precio_venta, 100, "Precio manual debe tener prioridad sobre sugerido normalizado");
+      if (manual.precio_venta_modo !== "manual") {
+        throw new Error(`Producto normalizado con precio > 0 debe inferir modo manual al crear. Actual=${manual.precio_venta_modo}`);
+      }
+      assertApprox(manual.precio_final_sugerido, 90.75, "Precio sugerido normalizado debe seguir disponible con precio manual");
+      assertApprox(manual.precio_neto_desde_final, 82.64, "Descomposicion de final 100 con IVA 21 debe calcular neto");
+      assertApprox(manual.iva_desde_final, 17.36, "Descomposicion de final 100 con IVA 21 debe calcular IVA");
+
+      const putViejo = await requestJson(baseUrl, "PUT", `/productos/${normalizado21.id}`, {
+        nombre: `TEST Motor Gravado 21 viejo ${sufijo}`,
+        categoria: `TEST Fiscal Motor 80 ${sufijo}`,
+        categoria_id: categoriaIdMargen80,
+        precio_compra: 100,
+        precio_venta: 90.75,
+        stock: Number(normalizado21.stock || 0),
+        maneja_stock: true,
+        activo: true,
+        iva_porcentaje: 27,
+        precio_compra_incluye_iva: false,
+        redondeo: 0,
+        unidad_medida: "unidad",
+        usuario: "test"
+      }, token);
+      if (!putViejo.response.ok) {
+        throw new Error(`PUT viejo sobre normalizado fallo: ${putViejo.data?.message || putViejo.response.status}`);
+      }
+      const normalizadoViejo = await getProduct(baseUrl, token, normalizado21.id);
+      if (normalizadoViejo.modelo_fiscal !== "normalizado") {
+        throw new Error(`PUT viejo debe preservar modelo normalizado. Actual=${normalizadoViejo.modelo_fiscal}`);
+      }
+      assertApprox(normalizadoViejo.costo_economico, 50, "PUT viejo debe preservar costo_economico normalizado");
+      assertApprox(normalizadoViejo.iva_venta_alicuota, 21, "PUT viejo debe preservar alicuota normalizada");
+      if (normalizadoViejo.precio_venta_modo !== "automatico") {
+        throw new Error(`PUT viejo debe preservar modo automatico. Actual=${normalizadoViejo.precio_venta_modo}`);
+      }
+      assertApprox(normalizadoViejo.precio_venta, 108.9, "PUT viejo con precio cargado no debe congelar el valor como manual");
+
+      const automaticoAManual = await requestJson(baseUrl, "PUT", `/productos/${normalizado21.id}`, {
+        nombre: `TEST Motor Gravado 21 manual ${sufijo}`,
+        categoria: `TEST Fiscal Motor 80 ${sufijo}`,
+        categoria_id: categoriaIdMargen80,
+        precio_compra: 100,
+        precio_venta: 100,
+        stock: Number(normalizadoViejo.stock || 0),
+        maneja_stock: true,
+        activo: true,
+        iva_porcentaje: 27,
+        precio_compra_incluye_iva: false,
+        redondeo: 0,
+        unidad_medida: "unidad",
+        precio_venta_modo: "manual",
+        usuario: "test"
+      }, token);
+      if (!automaticoAManual.response.ok) {
+        throw new Error(`PUT automatico a manual fallo: ${automaticoAManual.data?.message || automaticoAManual.response.status}`);
+      }
+      const normalizadoManual = await getProduct(baseUrl, token, normalizado21.id);
+      if (normalizadoManual.precio_venta_modo !== "manual") {
+        throw new Error(`PUT explicito debe cambiar modo a manual. Actual=${normalizadoManual.precio_venta_modo}`);
+      }
+      assertApprox(normalizadoManual.precio_venta, 100, "Modo manual debe persistir precio indicado");
+      assertApprox(normalizadoManual.precio_final_sugerido, 108.9, "Modo manual debe conservar sugerido derivado actualizado");
+
+      const manualAAutomatico = await requestJson(baseUrl, "PUT", `/productos/${normalizado21.id}`, {
+        nombre: `TEST Motor Gravado 21 automatico ${sufijo}`,
+        categoria: `TEST Fiscal Motor ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 100,
+        precio_venta: 100,
+        stock: Number(normalizadoManual.stock || 0),
+        maneja_stock: true,
+        activo: true,
+        iva_porcentaje: 27,
+        precio_compra_incluye_iva: false,
+        redondeo: 0,
+        unidad_medida: "unidad",
+        precio_venta_modo: "automatico",
+        usuario: "test"
+      }, token);
+      if (!manualAAutomatico.response.ok) {
+        throw new Error(`PUT manual a automatico fallo: ${manualAAutomatico.data?.message || manualAAutomatico.response.status}`);
+      }
+      const normalizadoAutomatico = await getProduct(baseUrl, token, normalizado21.id);
+      if (normalizadoAutomatico.precio_venta_modo !== "automatico") {
+        throw new Error(`PUT explicito debe cambiar modo a automatico. Actual=${normalizadoAutomatico.precio_venta_modo}`);
+      }
+      assertApprox(normalizadoAutomatico.precio_venta, 90.75, "Modo automatico debe ignorar precio manual previo y recalcular");
+
+      const costoNullManual = await crearProductoFiscal(baseUrl, token, {
+        ...basePayload,
+        nombre: `TEST Motor Null Manual ${sufijo}`,
+        precio_compra: 999,
+        precio_venta: 123,
+        iva_porcentaje: 27,
+        costo_economico: null,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "gravado",
+        iva_venta_alicuota: 21
+      });
+      assertEqual(costoNullManual.costo_economico ?? null, null, "costo_economico null debe seguir permitido");
+      assertApprox(costoNullManual.precio_venta, 123, "costo_economico null debe conservar precio manual");
+      assertApprox(costoNullManual.precio_final_sugerido, 0, "costo_economico null no debe inferir sugerido desde IMP");
+
+      const costoNullAutomatico = await crearProductoFiscal(baseUrl, token, {
+        ...basePayload,
+        nombre: `TEST Motor Null Automatico ${sufijo}`,
+        precio_compra: 999,
+        precio_venta: 0,
+        iva_porcentaje: 27,
+        costo_economico: null,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "gravado",
+        iva_venta_alicuota: 21
+      });
+      assertEqual(costoNullAutomatico.costo_economico ?? null, null, "costo_economico null automatico debe persistir null");
+      assertApprox(costoNullAutomatico.precio_venta, 0, "costo_economico null sin precio manual debe producir precio deterministico 0");
+      assertApprox(costoNullAutomatico.precio_neto_sugerido, 0, "costo_economico null no debe inferir neto desde precio_compra");
+      assertApprox(costoNullAutomatico.iva_sugerido, 0, "costo_economico null no debe inferir IVA desde IMP");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testMovimientoManualRegistraStockAnteriorYNuevo() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -10079,6 +10350,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testReporteStockValorizaSoloStockFisico);
   await _run(testConfiguracionCodigoAutomaticoProductos);
   await _run(testProductoModeloFiscalF1ACompatibilidad);
+  await _run(testProductoMotorFiscalNormalizadoF1B1);
   await _run(testProductosMasVendidosDevuelveClaves);
   await _run(testProductosMasVendidosExcluyeVentasAnuladas);
   await _run(testProductosMasVendidosOrdenaPorCantidad);

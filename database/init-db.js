@@ -66,6 +66,7 @@ async function initDatabase() {
     await ensureColumn("productos", "iva_venta_tratamiento", "TEXT");
     await ensureColumn("productos", "iva_venta_alicuota", "REAL");
     await ensureColumn("productos", "modelo_fiscal", "TEXT NOT NULL DEFAULT 'legacy'");
+    await ensureColumn("productos", "precio_venta_modo", "TEXT NOT NULL DEFAULT 'manual'");
 
     await runQuery(`
       CREATE TABLE IF NOT EXISTS categorias (

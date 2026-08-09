@@ -533,6 +533,7 @@ async function ensureProductosSchema() {
   await ensureColumn("productos", "iva_venta_tratamiento", "TEXT");
   await ensureColumn("productos", "iva_venta_alicuota", "REAL");
   await ensureColumn("productos", "modelo_fiscal", "TEXT NOT NULL DEFAULT 'legacy'");
+  await ensureColumn("productos", "precio_venta_modo", "TEXT NOT NULL DEFAULT 'manual'");
   await runQuery(`
     CREATE TABLE IF NOT EXISTS categorias (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1109,8 +1110,89 @@ function calcularPrecioSugerido(costoFinal, margenPorcentaje, redondeo) {
   return Number(aplicarRedondeo(sugerido, redondeo).toFixed(2));
 }
 
+function descomponerPrecioFinalFiscal(precioFinal, ivaVentaTratamiento, ivaVentaAlicuota) {
+  const final = Number(precioFinal) || 0;
+  const alicuota = Number(ivaVentaAlicuota) || 0;
+
+  if (ivaVentaTratamiento === "gravado" && alicuota > 0) {
+    const neto = final / (1 + alicuota / 100);
+    return {
+      precio_neto_desde_final: Number(neto.toFixed(2)),
+      iva_desde_final: Number((final - neto).toFixed(2))
+    };
+  }
+
+  return {
+    precio_neto_desde_final: Number(final.toFixed(2)),
+    iva_desde_final: 0
+  };
+}
+
+function calcularPrecioFiscalNormalizado({
+  costo_economico,
+  margen_porcentaje,
+  iva_venta_tratamiento,
+  iva_venta_alicuota,
+  redondeo,
+  precio_venta,
+  precio_venta_modo
+} = {}) {
+  const costo = costo_economico === null || costo_economico === undefined || costo_economico === ""
+    ? 0
+    : Number(costo_economico);
+  if (!Number.isFinite(costo) || costo < 0) {
+    const error = new Error("El costo economico debe ser un numero valido");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const margen = Number(margen_porcentaje) || 0;
+  const tratamiento = String(iva_venta_tratamiento || "").trim().toLowerCase();
+  const alicuota = tratamiento === "gravado" ? Number(iva_venta_alicuota) || 0 : 0;
+  const netoSugerido = costo * (1 + margen / 100);
+  const ivaSugerido = tratamiento === "gravado" ? netoSugerido * alicuota / 100 : 0;
+  const precioFinalSugerido = Number(aplicarRedondeo(netoSugerido + ivaSugerido, redondeo).toFixed(2));
+  const precioManual = Number(precio_venta) || 0;
+  const modo = precio_venta_modo === "automatico" ? "automatico" : "manual";
+  const precioVentaFinal = modo === "automatico"
+    ? precioFinalSugerido
+    : Number(precioManual.toFixed(2));
+
+  return {
+    precio_neto_sugerido: Number(netoSugerido.toFixed(2)),
+    iva_sugerido: Number(ivaSugerido.toFixed(2)),
+    precio_final_sugerido: precioFinalSugerido,
+    precio_venta_final: precioVentaFinal,
+    ...descomponerPrecioFinalFiscal(precioVentaFinal, tratamiento, alicuota)
+  };
+}
+
+function enriquecerProductoFiscalNormalizado(producto) {
+  if (producto?.modelo_fiscal !== "normalizado") return producto;
+  const calculoFiscal = calcularPrecioFiscalNormalizado({
+    costo_economico: producto.costo_economico,
+    margen_porcentaje: producto.margen_porcentaje,
+    iva_venta_tratamiento: producto.iva_venta_tratamiento,
+    iva_venta_alicuota: producto.iva_venta_alicuota,
+    redondeo: producto.redondeo,
+    precio_venta: producto.precio_venta,
+    precio_venta_modo: producto.precio_venta_modo
+  });
+
+  return {
+    ...producto,
+    precio_sugerido: calculoFiscal.precio_final_sugerido,
+    precio_neto_sugerido: calculoFiscal.precio_neto_sugerido,
+    iva_sugerido: calculoFiscal.iva_sugerido,
+    precio_final_sugerido: calculoFiscal.precio_final_sugerido,
+    precio_neto_desde_final: calculoFiscal.precio_neto_desde_final,
+    iva_desde_final: calculoFiscal.iva_desde_final
+  };
+}
+
 const PRODUCTO_MODELOS_FISCALES = new Set(["legacy", "normalizado"]);
 const IVA_VENTA_TRATAMIENTOS = new Set(["gravado", "exento", "no_gravado"]);
+const PRECIO_VENTA_MODOS = new Set(["manual", "automatico"]);
 
 function normalizarFiscalProducto(input = {}, existente = null) {
   const tieneCampo = (campo) => Object.prototype.hasOwnProperty.call(input, campo);
@@ -1176,6 +1258,34 @@ function normalizarFiscalProducto(input = {}, existente = null) {
     iva_venta_alicuota: alicuota,
     modelo_fiscal: modeloFiscal
   };
+}
+
+function normalizarPrecioVentaModo(input = {}, existente = null, modeloFiscal = "legacy") {
+  const tieneCampo = (campo) => Object.prototype.hasOwnProperty.call(input, campo);
+  const errorModo = (message) => {
+    const error = new Error(message);
+    error.statusCode = 400;
+    return error;
+  };
+
+  if (tieneCampo("precio_venta_modo")) {
+    const modo = String(input.precio_venta_modo || "").trim().toLowerCase();
+    if (!PRECIO_VENTA_MODOS.has(modo)) {
+      throw errorModo("El modo de precio de venta es invalido");
+    }
+    return modo;
+  }
+
+  if (existente?.precio_venta_modo) {
+    const modoExistente = String(existente.precio_venta_modo || "").trim().toLowerCase();
+    return PRECIO_VENTA_MODOS.has(modoExistente) ? modoExistente : "manual";
+  }
+
+  if (modeloFiscal === "normalizado") {
+    return Number(input.precio_venta) > 0 ? "manual" : "automatico";
+  }
+
+  return "manual";
 }
 
 async function generarCodigoProducto(categoriaId) {
@@ -1277,6 +1387,7 @@ async function registrarCambiosProducto(productoId, anterior, nuevo, usuario = "
     "iva_venta_tratamiento",
     "iva_venta_alicuota",
     "modelo_fiscal",
+    "precio_venta_modo",
     "categoria_id",
     "redondeo"
   ];
@@ -1819,12 +1930,21 @@ app.post("/productos", async (req, res) => {
       ? await calcularCostoProductoCompuestoPayload(componentes, costos_extra, rendimientoPost)
       : usaCostos ? calcularCostoPorRendimiento(costos_insumos) : Number(precio_compra) || 0;
     const costoFinal = calcularCostoFinal(costoBase, iva_porcentaje, precio_compra_incluye_iva ? 1 : 0);
-    const precioVentaFinal = Number(precio_venta) || calcularPrecioSugerido(
-      costoFinal,
-      categoriaData?.margen_porcentaje || 0,
-      redondeo
-    );
     const fiscalProducto = normalizarFiscalProducto(req.body);
+    const precioVentaModo = normalizarPrecioVentaModo(req.body, null, fiscalProducto.modelo_fiscal);
+    const precioVentaFinal = fiscalProducto.modelo_fiscal === "normalizado"
+      ? calcularPrecioFiscalNormalizado({
+          ...fiscalProducto,
+          margen_porcentaje: categoriaData?.margen_porcentaje || 0,
+          redondeo,
+          precio_venta,
+          precio_venta_modo: precioVentaModo
+        }).precio_venta_final
+      : Number(precio_venta) || calcularPrecioSugerido(
+          costoFinal,
+          categoriaData?.margen_porcentaje || 0,
+          redondeo
+        );
     const configGlobal = await getConfiguracionGlobal();
     const codigoManual = String(codigo || "").trim();
     const codigoAutomaticoActivo = configGlobal.stock_codigo_automatico !== false;
@@ -1844,8 +1964,8 @@ app.post("/productos", async (req, res) => {
       `INSERT INTO productos
       (nombre, categoria, precio_compra, precio_venta, stock, maneja_stock, proveedor_principal, proveedor_id, activo, observaciones, imagen_url, iva_porcentaje, precio_compra_incluye_iva, costo_final, categoria_id, redondeo,
        codigo, descripcion, stock_minimo, unidad_medida, codigo_barras, marca, presentacion, ubicacion, vencimiento, alerta_stock_minimo, usa_costos_varios, precio_referencial_proveedor, agregar_proveedor_info, es_combo, aplica_para_combo, tipo, rendimiento_receta,
-       costo_economico, iva_venta_tratamiento, iva_venta_alicuota, modelo_fiscal)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       costo_economico, iva_venta_tratamiento, iva_venta_alicuota, modelo_fiscal, precio_venta_modo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         String(nombre).trim(),
         categoria || "",
@@ -1883,7 +2003,8 @@ app.post("/productos", async (req, res) => {
         fiscalProducto.costo_economico,
         fiscalProducto.iva_venta_tratamiento,
         fiscalProducto.iva_venta_alicuota,
-        fiscalProducto.modelo_fiscal
+        fiscalProducto.modelo_fiscal,
+        precioVentaModo
       ]
     );
 
@@ -2010,7 +2131,7 @@ app.get("/productos", async (req, res) => {
         const manejaStockPropio = Number(row.maneja_stock) === 1;
         const stockFisico = Number(row.stock || 0);
         const stock = manejaStockPropio ? stockFisico : stockCompuestoMemoria(row.id, row.rendimiento_receta);
-        return {
+        return enriquecerProductoFiscalNormalizado({
           ...row,
           stock_fisico: manejaStockPropio ? stockFisico : 0,
           stock_disponible: stock,
@@ -2020,13 +2141,13 @@ app.get("/productos", async (req, res) => {
           costo_teorico: costo,
           costo_consumo_unitario: costo,
           precio_sugerido: calcularPrecioSugerido(costo, row.margen_porcentaje, row.redondeo)
-        };
+        });
       }
 
       if (esCombo) {
         const stock = stockCompuestoMemoria(row.id, 1);
         const costo = costoCompuestoMemoria(row.id, 1);
-        return {
+        return enriquecerProductoFiscalNormalizado({
           ...row,
           stock_fisico: 0,
           stock_disponible: stock,
@@ -2034,14 +2155,14 @@ app.get("/productos", async (req, res) => {
           costo_teorico: costo,
           costo_consumo_unitario: costo,
           precio_sugerido: calcularPrecioSugerido(row.costo_final, row.margen_porcentaje, row.redondeo)
-        };
+        });
       }
 
       const esFraccionado = Number(row.usa_costos_varios) === 1 && Number(row.maneja_stock) === 1;
       const stockVendible = esFraccionado ? stockFraccionadoMemoria(row) : Number(row.stock || 0);
       const costoConsumo = costoConsumoMemoria(row);
 
-      return {
+      return enriquecerProductoFiscalNormalizado({
         ...row,
         stock_fisico: Number(row.stock || 0),
         stock_disponible: undefined,
@@ -2049,10 +2170,10 @@ app.get("/productos", async (req, res) => {
         costo_teorico: Number(row.costo_final || row.precio_compra || 0),
         costo_consumo_unitario: costoConsumo,
         precio_sugerido: calcularPrecioSugerido(row.costo_final, row.margen_porcentaje, row.redondeo)
-      };
+      });
     });
 
-    const CAMPOS_COSTO = ["precio_compra","costo_final","costo_teorico","costo_consumo_unitario","margen_porcentaje","precio_sugerido","precio_referencial_proveedor","precio_compra_incluye_iva"];
+    const CAMPOS_COSTO = ["precio_compra","costo_final","costo_teorico","costo_consumo_unitario","margen_porcentaje","precio_sugerido","precio_referencial_proveedor","precio_compra_incluye_iva","costo_economico","precio_neto_sugerido","iva_sugerido","precio_final_sugerido","precio_neto_desde_final","iva_desde_final"];
     const productos = !puedeRol(req, ROLES.ADMIN_ENCARGADO)
       ? enriquecidos.map(p => { const f = { ...p }; CAMPOS_COSTO.forEach(c => delete f[c]); return f; })
       : enriquecidos;
@@ -2155,12 +2276,21 @@ app.put("/productos/:id", async (req, res) => {
       ? await calcularCostoProductoCompuestoPayload(componentes, costos_extra, rendimientoReceta)
       : usaCostos ? calcularCostoPorRendimiento(costos_insumos) : Number(precio_compra) || 0;
     const costoFinal = calcularCostoFinal(costoBase, iva_porcentaje, precio_compra_incluye_iva ? 1 : 0);
-    const precioVentaFinal = Number(precio_venta) || calcularPrecioSugerido(
-      costoFinal,
-      categoriaData?.margen_porcentaje || 0,
-      redondeo
-    );
     const fiscalProducto = normalizarFiscalProducto(req.body, existente);
+    const precioVentaModo = normalizarPrecioVentaModo(req.body, existente, fiscalProducto.modelo_fiscal);
+    const precioVentaFinal = fiscalProducto.modelo_fiscal === "normalizado"
+      ? calcularPrecioFiscalNormalizado({
+          ...fiscalProducto,
+          margen_porcentaje: categoriaData?.margen_porcentaje || 0,
+          redondeo,
+          precio_venta,
+          precio_venta_modo: precioVentaModo
+        }).precio_venta_final
+      : Number(precio_venta) || calcularPrecioSugerido(
+          costoFinal,
+          categoriaData?.margen_porcentaje || 0,
+          redondeo
+        );
 
     await runQuery("BEGIN TRANSACTION");
 
@@ -2172,7 +2302,7 @@ app.put("/productos/:id", async (req, res) => {
            costo_final = ?, categoria_id = ?, redondeo = ?, codigo = ?, descripcion = ?, stock_minimo = ?,
            unidad_medida = ?, codigo_barras = ?, marca = ?, presentacion = ?, ubicacion = ?, vencimiento = ?,
            alerta_stock_minimo = ?, usa_costos_varios = ?, precio_referencial_proveedor = ?, agregar_proveedor_info = ?, es_combo = ?, aplica_para_combo = ?, tipo = ?, rendimiento_receta = ?,
-           costo_economico = ?, iva_venta_tratamiento = ?, iva_venta_alicuota = ?, modelo_fiscal = ?
+           costo_economico = ?, iva_venta_tratamiento = ?, iva_venta_alicuota = ?, modelo_fiscal = ?, precio_venta_modo = ?
        WHERE id = ?`,
       [
         String(nombre).trim(),
@@ -2212,6 +2342,7 @@ app.put("/productos/:id", async (req, res) => {
         fiscalProducto.iva_venta_tratamiento,
         fiscalProducto.iva_venta_alicuota,
         fiscalProducto.modelo_fiscal,
+        precioVentaModo,
         productoId
       ]
     );
