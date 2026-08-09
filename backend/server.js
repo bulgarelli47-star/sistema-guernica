@@ -4563,13 +4563,13 @@ app.post("/ventas", async (req, res) => {
       if (existePendiente) return res.status(409).json({ message: "Ya existe un ticket pendiente con ese identificador." });
     } else if (tipoVenta === "normal" && !esCuentaCorriente && cajaActiva) {
       const dupVenta = await getQuery(
-        "SELECT 1 FROM ventas WHERE caja_id = ? AND fecha = ? AND hora = ? AND total = ? AND tipo = 'normal' AND es_cuenta_corriente = 0 LIMIT 1",
+        "SELECT 1 FROM ventas WHERE caja_id = ? AND fecha = ? AND hora = ? AND ROUND(COALESCE(total, 0) - COALESCE(recargo_monto, 0), 2) = ? AND tipo = 'normal' AND es_cuenta_corriente = 0 AND COALESCE(estado, '') != 'anulado' LIMIT 1",
         [cajaActiva.id, fecha, hora, subtotalVenta]
       );
       if (dupVenta) return res.status(409).json({ message: "Venta duplicada detectada." });
     } else if (esCuentaCorriente && clienteId) {
       const dupCC = await getQuery(
-        "SELECT 1 FROM ventas WHERE cliente_id = ? AND fecha = ? AND hora = ? AND total = ? AND es_cuenta_corriente = 1 LIMIT 1",
+        "SELECT 1 FROM ventas WHERE cliente_id = ? AND fecha = ? AND hora = ? AND ROUND(COALESCE(total, 0) - COALESCE(recargo_monto, 0), 2) = ? AND es_cuenta_corriente = 1 AND COALESCE(estado, '') != 'anulado' LIMIT 1",
         [clienteId, fecha, hora, subtotalVenta]
       );
       if (dupCC) return res.status(409).json({ message: "Venta de cuenta corriente duplicada detectada." });
@@ -4586,7 +4586,7 @@ app.post("/ventas", async (req, res) => {
         fecha,
         hora,
         usuarioVenta,
-        subtotalVenta,
+        total,
         tipoVenta,
         estadoVenta,
         identificadorPendiente,
@@ -7269,9 +7269,9 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
     const resultCobrar = await runQuery(
       `UPDATE ventas
        SET estado = 'cobrada', total = ?, metodo_pago = ?, tipo_cobro = ?, monto_efectivo = ?, monto_debito = ?, caja_id = ?, cuenta_cobro_id = ?, recargo_porcentaje = ?, recargo_monto = ?
-       WHERE id = ? AND estado = 'pendiente'`,
+      WHERE id = ? AND estado = 'pendiente'`,
       [
-        Number(venta.total),
+        recargo.total,
         cobroReal.tipo_cobro,
         cobroReal.tipo_cobro,
         cobroReal.monto_efectivo,

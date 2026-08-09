@@ -633,7 +633,7 @@ async function getResumenPorCuentaDestino({ cajaId } = {}) {
      LEFT JOIN canales c
        ON (c.cuenta_destino_id = a.cuenta_destino_id OR (c.cuenta_destino_id IS NULL AND a.cuenta_destino_id IS NULL))
       AND c.sin_cuenta_destino = a.sin_cuenta_destino
-     ORDER BY a.sin_cuenta_destino ASC, (a.ingresos - a.egresos) DESC, a.cuenta_destino_nombre ASC`,
+     ORDER BY CASE WHEN a.sin_cuenta_destino = 1 THEN 1 ELSE 0 END ASC, (a.ingresos - a.egresos) DESC, a.cuenta_destino_nombre ASC`,
     [cajaId, cajaId, cajaId, cajaId]
   );
 
@@ -666,7 +666,14 @@ async function getResumenPorCuentaDestino({ cajaId } = {}) {
       sin_cuenta_destino: false
     }));
 
-  return [...conMovimientos, ...sinMovimientos];
+  return [...conMovimientos, ...sinMovimientos].sort((a, b) => {
+    if (a.sin_cuenta_destino !== b.sin_cuenta_destino) {
+      return a.sin_cuenta_destino ? 1 : -1;
+    }
+    const balanceDiff = Number(b.balance || 0) - Number(a.balance || 0);
+    if (Math.abs(balanceDiff) > 0.01) return balanceDiff;
+    return String(a.cuenta_destino_nombre || "").localeCompare(String(b.cuenta_destino_nombre || ""), "es");
+  });
 }
 
 async function getConciliacionesCuentaCobro({ cajaId } = {}) {

@@ -50,7 +50,9 @@ function resetOperationalDataStatements() {
     ["DELETE FROM caja_movimientos"],
     ["DELETE FROM caja_aperturas"],
     ["DELETE FROM stock_ajustes_pendientes"],
+    ["DELETE FROM pagos_cc_cobros"],
     ["DELETE FROM pagos_cuenta_corriente"],
+    ["DELETE FROM venta_cobros"],
     ["DELETE FROM detalle_ventas"],
     ["DELETE FROM ventas"],
     ["DELETE FROM pagos"],
@@ -70,6 +72,20 @@ function resetOperationalDataStatements() {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function esperarNuevoSegundo() {
+  await delay(Math.max(20, 1050 - (Date.now() % 1000)));
+}
+
+async function sincronizarVentaAlSegundoActual(dbPath, ventaId) {
+  await esperarNuevoSegundo();
+  const ahora = new Date();
+  await runSql(dbPath, "UPDATE ventas SET fecha = ?, hora = ? WHERE id = ?", [
+    ahora.toISOString().slice(0, 10),
+    ahora.toTimeString().slice(0, 8),
+    ventaId
+  ]);
 }
 
 function getFreePort() {
@@ -1755,12 +1771,12 @@ async function testClientesTipoClienteClasificacion() {
       }, token);
       if (!negocio.response.ok) throw new Error(`Crear cliente negocio fallo: ${negocio.data?.message || negocio.response.status}`);
       if (negocio.data.cliente.tipo_cliente !== "negocio") throw new Error(`El alta debe guardar tipo_cliente negocio. Actual=${negocio.data.cliente.tipo_cliente}`);
-      if (negocio.data.cliente.tipo_cuenta_corriente !== "personal") throw new Error(`El alta debe guardar tipo_cuenta_corriente personal. Actual=${negocio.data.cliente.tipo_cuenta_corriente}`);
+      if (negocio.data.cliente.tipo_cuenta_corriente !== "empleado") throw new Error(`El alta debe normalizar tipo_cuenta_corriente personal a empleado. Actual=${negocio.data.cliente.tipo_cuenta_corriente}`);
 
       const detalleNegocio = await requestJson(baseUrl, "GET", `/clientes/${negocio.data.cliente.id}`, null, token);
       if (!detalleNegocio.response.ok) throw new Error(`GET /clientes/:id fallo: ${detalleNegocio.data?.message || detalleNegocio.response.status}`);
       if (detalleNegocio.data.tipo_cliente !== "negocio") throw new Error(`GET /clientes/:id debe devolver tipo_cliente. Actual=${detalleNegocio.data.tipo_cliente}`);
-      if (detalleNegocio.data.tipo_cuenta_corriente !== "personal") throw new Error(`GET /clientes/:id debe devolver tipo_cuenta_corriente. Actual=${detalleNegocio.data.tipo_cuenta_corriente}`);
+      if (detalleNegocio.data.tipo_cuenta_corriente !== "empleado") throw new Error(`GET /clientes/:id debe devolver tipo_cuenta_corriente normalizado. Actual=${detalleNegocio.data.tipo_cuenta_corriente}`);
 
       const actualizado = await requestJson(baseUrl, "PUT", `/clientes/${negocio.data.cliente.id}`, {
         ...detalleNegocio.data,
@@ -1769,7 +1785,7 @@ async function testClientesTipoClienteClasificacion() {
       }, token);
       if (!actualizado.response.ok) throw new Error(`Editar cliente tipo colaborador fallo: ${actualizado.data?.message || actualizado.response.status}`);
       if (actualizado.data.cliente.tipo_cliente !== "colaborador") throw new Error(`La edicion debe guardar tipo_cliente colaborador. Actual=${actualizado.data.cliente.tipo_cliente}`);
-      if (actualizado.data.cliente.tipo_cuenta_corriente !== "cortesia") throw new Error(`La edicion debe guardar tipo_cuenta_corriente cortesia. Actual=${actualizado.data.cliente.tipo_cuenta_corriente}`);
+      if (actualizado.data.cliente.tipo_cuenta_corriente !== "empresa") throw new Error(`La edicion debe normalizar tipo_cuenta_corriente cortesia a empresa. Actual=${actualizado.data.cliente.tipo_cuenta_corriente}`);
 
       const sinTipo = await requestJson(baseUrl, "POST", "/clientes", {
         nombre: "Cliente Sin Tipo",
@@ -1780,7 +1796,7 @@ async function testClientesTipoClienteClasificacion() {
       }, token);
       if (!sinTipo.response.ok) throw new Error(`Crear cliente sin tipo_cliente fallo: ${sinTipo.data?.message || sinTipo.response.status}`);
       if (sinTipo.data.cliente.tipo_cliente !== "cliente") throw new Error(`Cliente sin tipo_cliente debe quedar como cliente. Actual=${sinTipo.data.cliente.tipo_cliente}`);
-      if (sinTipo.data.cliente.tipo_cuenta_corriente !== "cliente") throw new Error(`Cliente sin tipo_cuenta_corriente debe quedar como cliente. Actual=${sinTipo.data.cliente.tipo_cuenta_corriente}`);
+      if (sinTipo.data.cliente.tipo_cuenta_corriente !== "normal") throw new Error(`Cliente sin tipo_cuenta_corriente debe quedar como normal. Actual=${sinTipo.data.cliente.tipo_cuenta_corriente}`);
 
       const invalido = await requestJson(baseUrl, "POST", "/clientes", {
         nombre: "Cliente Tipo Invalido",
@@ -1793,13 +1809,13 @@ async function testClientesTipoClienteClasificacion() {
       }, token);
       if (!invalido.response.ok) throw new Error(`Crear cliente con tipo invalido fallo: ${invalido.data?.message || invalido.response.status}`);
       if (invalido.data.cliente.tipo_cliente !== "cliente") throw new Error(`Tipo_cliente invalido debe normalizarse a cliente. Actual=${invalido.data.cliente.tipo_cliente}`);
-      if (invalido.data.cliente.tipo_cuenta_corriente !== "cliente") throw new Error(`Tipo_cuenta_corriente invalido debe normalizarse a cliente. Actual=${invalido.data.cliente.tipo_cuenta_corriente}`);
+      if (invalido.data.cliente.tipo_cuenta_corriente !== "normal") throw new Error(`Tipo_cuenta_corriente invalido debe normalizarse a normal. Actual=${invalido.data.cliente.tipo_cuenta_corriente}`);
 
       const listado = await requestJson(baseUrl, "GET", "/clientes?include_inactive=1", null, token);
       if (!listado.response.ok) throw new Error(`GET /clientes fallo: ${listado.data?.message || listado.response.status}`);
       const listadoActualizado = listado.data.find((cliente) => Number(cliente.id) === Number(negocio.data.cliente.id));
       if (listadoActualizado.tipo_cliente !== "colaborador") throw new Error(`GET /clientes debe devolver tipo_cliente actualizado. Actual=${listadoActualizado.tipo_cliente}`);
-      if (listadoActualizado.tipo_cuenta_corriente !== "cortesia") throw new Error(`GET /clientes debe devolver tipo_cuenta_corriente actualizado. Actual=${listadoActualizado.tipo_cuenta_corriente}`);
+      if (listadoActualizado.tipo_cuenta_corriente !== "empresa") throw new Error(`GET /clientes debe devolver tipo_cuenta_corriente actualizado normalizado. Actual=${listadoActualizado.tipo_cuenta_corriente}`);
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -1838,6 +1854,7 @@ async function testClientesHistorialProductosComprados() {
       });
 
       const venta1 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({ cliente_id: clienteId }), token);
+      await delay(1100);
       const venta2 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({ cliente_id: clienteId }), token);
       const ventaProductoB = await requestJson(baseUrl, "POST", "/ventas", {
         usuario: "test",
@@ -1854,6 +1871,7 @@ async function testClientesHistorialProductosComprados() {
       await runSql(dbPath, "UPDATE ventas SET fecha = ? WHERE id = ?", ["2026-01-03", venta2.data.venta_id]);
       await runSql(dbPath, "UPDATE ventas SET fecha = ? WHERE id = ?", ["2026-01-05", ventaProductoB.data.venta_id]);
 
+      await delay(1100);
       const ventaAnulada = await requestJson(baseUrl, "POST", "/ventas", {
         usuario: "test",
         tipo: "normal",
@@ -2341,6 +2359,139 @@ async function testAnularVentaCobradaReponeStock() {
       if (ventaAnulada?.estado !== "anulado") {
         throw new Error(`La venta anulada debe quedar en estado anulado. Estado=${ventaAnulada?.estado}`);
       }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testVentaNormalAnuladaNoBloqueaRepeticionDuplicada() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const ventaDuplicado = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (!ventaDuplicado.response.ok) throw new Error(`Venta base para duplicado fallo: ${ventaDuplicado.data?.message || ventaDuplicado.response.status}`);
+
+      await sincronizarVentaAlSegundoActual(dbPath, ventaDuplicado.data.venta_id);
+      const duplicadoReal = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      assertEqual(duplicadoReal.response.status, 409, "Una venta normal no anulada identica debe seguir bloqueada como duplicado");
+
+      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${ventaDuplicado.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anulacion.response.ok) throw new Error(`Anulacion para repeticion fallo: ${anulacion.data?.message || anulacion.response.status}`);
+
+      const repetidaTrasAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      if (repetidaTrasAnular.response.status === 409) {
+        throw new Error(`Una venta anulada no debe bloquear una repeticion identica. Mensaje=${repetidaTrasAnular.data?.message || "sin mensaje"}`);
+      }
+      if (!repetidaTrasAnular.response.ok) {
+        throw new Error(`Venta repetida tras anulacion debe responder OK. Status=${repetidaTrasAnular.response.status}, mensaje=${repetidaTrasAnular.data?.message || "sin mensaje"}`);
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testVentaNormalConRecargoDuplicadoUsaSubtotalComercial() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      await requestJson(baseUrl, "POST", "/tipos_pago", {
+        codigo: "credito_dup_recargo_test",
+        nombre: "Credito duplicado recargo TEST",
+        orden: 67,
+        usa_recargo: true,
+        porcentaje_recargo: 10
+      }, token);
+      const cuentaCredito = await crearCuentaCobro(baseUrl, token, {
+        nombre: "Terminal duplicado recargo TEST",
+        tipo_pago_codigo: "credito_dup_recargo_test"
+      });
+      const payload = ventaSimplePayload({
+        tipo_cobro: "credito_dup_recargo_test",
+        cuenta_cobro_id: cuentaCredito.id
+      });
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", payload, token);
+      if (!venta.response.ok) throw new Error(`Venta con recargo base fallo: ${venta.data?.message || venta.response.status}`);
+      assertApprox(venta.data.subtotal, 200, "Duplicado recargo: subtotal comercial debe ser 200");
+      assertApprox(venta.data.total, 220, "Duplicado recargo: total final debe incluir recargo");
+
+      await sincronizarVentaAlSegundoActual(dbPath, venta.data.venta_id);
+      const duplicada = await requestJson(baseUrl, "POST", "/ventas", payload, token);
+      assertEqual(duplicada.response.status, 409, "Venta normal con recargo identica no anulada debe bloquearse como duplicado");
+
+      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${venta.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anulacion.response.ok) throw new Error(`Anulacion duplicado recargo fallo: ${anulacion.data?.message || anulacion.response.status}`);
+
+      await sincronizarVentaAlSegundoActual(dbPath, venta.data.venta_id);
+      const repetida = await requestJson(baseUrl, "POST", "/ventas", payload, token);
+      if (repetida.response.status === 409) {
+        throw new Error(`Venta normal con recargo anulada no debe bloquear repeticion. Mensaje=${repetida.data?.message || "sin mensaje"}`);
+      }
+      if (!repetida.response.ok) throw new Error(`Venta normal con recargo repetida fallo: ${repetida.data?.message || repetida.response.status}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testCuentaCorrienteAnuladaNoBloqueaDuplicado() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const clienteResult = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: "Cliente CC Duplicado Test",
+        dni_cuit: `ccdup-${Date.now().toString().slice(-8)}`,
+        tipo_persona: "fisica",
+        habilita_cuenta_corriente: true,
+        activo: true
+      }, token);
+      if (!clienteResult.response.ok) throw new Error(`Crear cliente CC duplicado fallo: ${clienteResult.data?.message || clienteResult.response.status}`);
+      const payload = ventaSimplePayload({
+        es_cuenta_corriente: true,
+        cliente_id: clienteResult.data.cliente.id,
+        tipo_cobro: undefined
+      });
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", payload, token);
+      if (!venta.response.ok) throw new Error(`Venta CC base duplicado fallo: ${venta.data?.message || venta.response.status}`);
+
+      await sincronizarVentaAlSegundoActual(dbPath, venta.data.venta_id);
+      const duplicada = await requestJson(baseUrl, "POST", "/ventas", payload, token);
+      assertEqual(duplicada.response.status, 409, "Cuenta corriente identica no anulada debe mantener proteccion 409");
+
+      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${venta.data.venta_id}/anular-cc`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anulacion.response.ok) throw new Error(`Anulacion CC duplicado fallo: ${anulacion.data?.message || anulacion.response.status}`);
+
+      await sincronizarVentaAlSegundoActual(dbPath, venta.data.venta_id);
+      const repetida = await requestJson(baseUrl, "POST", "/ventas", payload, token);
+      if (repetida.response.status === 409) {
+        throw new Error(`Cuenta corriente anulada no debe bloquear repeticion. Mensaje=${repetida.data?.message || "sin mensaje"}`);
+      }
+      if (!repetida.response.ok) throw new Error(`Cuenta corriente repetida tras anulacion fallo: ${repetida.data?.message || repetida.response.status}`);
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -3320,6 +3471,7 @@ async function testResumenReporteExcluyeVentasAnuladas() {
       const ventaOk = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
       if (!ventaOk.response.ok) throw new Error(`Venta cobrada fallo: ${ventaOk.data?.message || ventaOk.response.status}`);
 
+      await delay(1100);
       const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
       if (!ventaAnular.response.ok) throw new Error(`Venta a anular fallo: ${ventaAnular.data?.message || ventaAnular.response.status}`);
 
@@ -3420,8 +3572,10 @@ async function testResumenReporteCalculaTicketPromedio() {
 
       const v1 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
       if (!v1.response.ok) throw new Error(`Venta 1 ticket promedio fallo: ${v1.data?.message || v1.response.status}`);
+      await delay(1100);
       const v2 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
       if (!v2.response.ok) throw new Error(`Venta 2 ticket promedio fallo: ${v2.data?.message || v2.response.status}`);
+      await delay(1100);
       const v3 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
       if (!v3.response.ok) throw new Error(`Venta 3 ticket promedio fallo: ${v3.data?.message || v3.response.status}`);
 
@@ -3678,6 +3832,7 @@ async function testProductosMasVendidosExcluyeVentasAnuladas() {
       const ventaOk = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
       if (!ventaOk.response.ok) throw new Error(`Venta cobrada fallo: ${ventaOk.data?.message || ventaOk.response.status}`);
 
+      await delay(1100);
       const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
       if (!ventaAnular.response.ok) throw new Error(`Venta a anular fallo: ${ventaAnular.data?.message || ventaAnular.response.status}`);
 
@@ -5422,6 +5577,7 @@ async function testVentasAplicanRecargosMetodosPago() {
       if (!efectivo.response.ok) throw new Error(`Venta efectivo sin recargo fallo: ${efectivo.data?.message || efectivo.response.status}`);
       assertApprox(efectivo.data.total, 200, "Venta efectivo sin recargo conserva total");
 
+      await esperarNuevoSegundo();
       const debito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "debito",
         cuenta_cobro_id: cuentaDebito.id
@@ -5429,6 +5585,7 @@ async function testVentasAplicanRecargosMetodosPago() {
       if (!debito.response.ok) throw new Error(`Venta debito sin recargo fallo: ${debito.data?.message || debito.response.status}`);
       assertApprox(debito.data.total, 200, "Venta debito sin recargo conserva total");
 
+      await esperarNuevoSegundo();
       const credito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "credito_general_test",
         cuenta_cobro_id: cuentaCredito.id,
@@ -5486,6 +5643,7 @@ async function testRecargoPersistenteEnVentas() {
       assertApprox(detalleEfectivo.venta.total, 200, "persist: total efectivo no cambia");
 
       // Test 2: venta con recargo guarda porcentaje y monto
+      await delay(1100);
       const ventaCredito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "credito_persist_test",
         cuenta_cobro_id: cuentaCredito.id
@@ -5570,6 +5728,7 @@ async function testVentasCuotasYPendientesNoDuplicanRecargo() {
       assertApprox(ventaCuotas.data.recargo_monto, 20, "Venta credito con cuotas debe aplicar recargo de la cuota");
       assertApprox(ventaCuotas.data.total, 220, "Venta credito con 3 cuotas debe totalizar 220");
 
+      await esperarNuevoSegundo();
       const ventaSinCuotas = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "credito_sin_cuotas_test",
         cuenta_cobro_id: cuentaCreditoSinCuotas.id,
@@ -5917,24 +6076,28 @@ async function testCuentasCobroEtapa2PagosYVentas() {
       if (ventaBilleteraSinCuenta.response.ok) throw new Error("Venta billetera sin cuenta_cobro_id debe fallar");
       assertEqual(ventaBilleteraSinCuenta.response.status, 400, "Venta billetera sin cuenta debe devolver 400");
 
+      await delay(1100);
       const ventaCreditoConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "credito_digital_test",
         cuenta_cobro_id: cuentaCredito.id
       }), token);
       if (!ventaCreditoConCuenta.response.ok) throw new Error(`Venta credito con cuenta valida fallo: ${ventaCreditoConCuenta.data?.message || ventaCreditoConCuenta.response.status}`);
 
+      await delay(1100);
       const ventaTransferenciaConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "transferencia",
         cuenta_cobro_id: cuentaTransferencia.id
       }), token);
       if (!ventaTransferenciaConCuenta.response.ok) throw new Error(`Venta transferencia con cuenta valida fallo: ${ventaTransferenciaConCuenta.data?.message || ventaTransferenciaConCuenta.response.status}`);
 
+      await delay(1100);
       const ventaQrConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "qr_digital_test",
         cuenta_cobro_id: cuentaQr.id
       }), token);
       if (!ventaQrConCuenta.response.ok) throw new Error(`Venta QR con cuenta valida fallo: ${ventaQrConCuenta.data?.message || ventaQrConCuenta.response.status}`);
 
+      await delay(1100);
       const ventaBilleteraConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "billetera_digital_test",
         cuenta_cobro_id: cuentaBilletera.id
@@ -5957,6 +6120,7 @@ async function testCuentasCobroEtapa2PagosYVentas() {
       if (ventaMixtaSinCuenta.response.ok) throw new Error("Venta mixta con parte digital sin cuenta debe fallar");
       assertEqual(ventaMixtaSinCuenta.response.status, 400, "Venta mixta digital sin cuenta debe devolver 400");
 
+      await delay(1100);
       const ventaMixtaConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "mixto",
         monto_efectivo: 80,
@@ -5972,6 +6136,7 @@ async function testCuentasCobroEtapa2PagosYVentas() {
       if (ventaTipoIncorrecto.response.ok) throw new Error("Venta con cuenta_cobro_id de otro tipo_cobro debe fallar");
       assertEqual(ventaTipoIncorrecto.response.status, 400, "Venta con cuenta_cobro_id de otro tipo_cobro debe devolver 400");
 
+      await delay(1100);
       const ventaLegacy = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "efectivo",
         cuenta_cobro_id: null
@@ -6327,24 +6492,28 @@ async function testCajaResumenPorCuentaDestino() {
       }), token);
       if (!ventaPoint.response.ok) throw new Error(`Venta Point destino fallo: ${ventaPoint.data?.message || ventaPoint.response.status}`);
 
+      await delay(1100);
       const ventaQr = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "transferencia",
         cuenta_cobro_id: qr.id
       }), token);
       if (!ventaQr.response.ok) throw new Error(`Venta QR destino fallo: ${ventaQr.data?.message || ventaQr.response.status}`);
 
+      await delay(1100);
       const ventaCanalSinDestino = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "efectivo",
         cuenta_cobro_id: legacySinDestino.id
       }), token);
       if (!ventaCanalSinDestino.response.ok) throw new Error(`Venta canal sin destino fallo: ${ventaCanalSinDestino.data?.message || ventaCanalSinDestino.response.status}`);
 
+      await delay(1100);
       const ventaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "efectivo",
         cuenta_cobro_id: null
       }), token);
       if (!ventaSinCuenta.response.ok) throw new Error(`Venta sin cuenta destino fallo: ${ventaSinCuenta.data?.message || ventaSinCuenta.response.status}`);
 
+      await delay(1100);
       const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "debito",
         cuenta_cobro_id: point.id
@@ -6454,6 +6623,7 @@ async function testConciliacionManualPorCuentaDestino() {
         cuenta_cobro_id: cuentaMp.id
       }), token);
       if (!ventaMp.response.ok) throw new Error(`Venta MP conciliacion destino fallo: ${ventaMp.data?.message || ventaMp.response.status}`);
+      await delay(1100);
       const ventaBanco = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "transferencia",
         cuenta_cobro_id: cuentaBanco.id
@@ -6545,18 +6715,21 @@ async function testCajaResumenPorCuentaCobro() {
       }), token);
       if (!ventaEfectivo.response.ok) throw new Error(`Venta efectivo con cuenta fallo: ${ventaEfectivo.data?.message || ventaEfectivo.response.status}`);
 
+      await delay(1100);
       const ventaDebito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "debito",
         cuenta_cobro_id: cuentaDebito.id
       }), token);
       if (!ventaDebito.response.ok) throw new Error(`Venta debito con cuenta fallo: ${ventaDebito.data?.message || ventaDebito.response.status}`);
 
+      await delay(1100);
       const ventaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "efectivo",
         cuenta_cobro_id: null
       }), token);
       if (!ventaSinCuenta.response.ok) throw new Error(`Venta sin cuenta fallo: ${ventaSinCuenta.data?.message || ventaSinCuenta.response.status}`);
 
+      await delay(1100);
       const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "efectivo",
         cuenta_cobro_id: cuentaEfectivo.id
@@ -6611,21 +6784,21 @@ async function testCajaResumenPorCuentaCobro() {
         throw new Error(`Resumen por cuenta debe incluir ambas cuentas y Sin cuenta. Actual=${JSON.stringify(resumenAbierta.cuentas)}`);
       }
 
-      assertApprox(efectivo.ingresos, 200, "Venta con cuenta_cobro debe sumar ingreso correcto");
+      assertApprox(efectivo.ingresos, 400, "Venta con cuenta_cobro y efectivo sin cuenta explicita deben sumar ingreso correcto");
       assertApprox(efectivo.egresos, 50, "Pago registrado con cuenta_cobro debe sumar egreso correcto");
-      assertApprox(efectivo.balance, 150, "Balance cuenta efectivo debe ser ingresos - egresos");
-      assertEqual(efectivo.ventas, 1, "Venta anulada no debe contar como venta por cuenta");
+      assertApprox(efectivo.balance, 350, "Balance cuenta efectivo debe ser ingresos - egresos");
+      assertEqual(efectivo.ventas, 2, "Venta anulada no debe contar como venta por cuenta");
       assertEqual(efectivo.pagos, 1, "Pago pendiente no debe contar como pago por cuenta");
 
       assertApprox(debito.ingresos, 200, "Varias cuentas deben separar ingresos");
       assertApprox(debito.egresos, 30, "Varias cuentas deben separar egresos");
       assertApprox(debito.balance, 170, "Balance cuenta debito debe ser ingresos - egresos");
 
-      assertApprox(sinCuenta.ingresos, 200, "Movimientos sin cuenta deben sumar ingresos en Sin cuenta");
+      assertApprox(sinCuenta.ingresos, 0, "Ventas efectivo sin cuenta explicita deben asignarse al canal efectivo activo");
       assertApprox(sinCuenta.egresos, 20, "Movimientos sin cuenta deben sumar egresos en Sin cuenta");
-      assertApprox(sinCuenta.balance, 180, "Balance Sin cuenta debe ser ingresos - egresos");
+      assertApprox(sinCuenta.balance, -20, "Balance Sin cuenta debe ser ingresos - egresos");
 
-      if (resumenAbierta.cuentas[0].cuenta_nombre !== "Sin cuenta") {
+      if (resumenAbierta.cuentas[0].cuenta_nombre !== "Caja efectivo resumen TEST") {
         throw new Error(`Resumen debe ordenarse por mayor balance DESC. Primero=${resumenAbierta.cuentas[0].cuenta_nombre}`);
       }
 
@@ -6633,7 +6806,7 @@ async function testCajaResumenPorCuentaCobro() {
       const resumenCerrada = await getCajaResumenCuentas(baseUrl, token);
       assertEqual(resumenCerrada.caja.id, cajaCerrada.id, "Resumen por cuenta sin caja abierta debe usar ultima caja cerrada");
       const efectivoCerrada = resumenCerrada.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Caja efectivo resumen TEST");
-      assertApprox(efectivoCerrada?.balance, 150, "Resumen por cuenta de ultima caja cerrada debe conservar balance");
+      assertApprox(efectivoCerrada?.balance, 350, "Resumen por cuenta de ultima caja cerrada debe conservar balance");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -6659,11 +6832,14 @@ async function testConciliacionManualPorCuentaCobro() {
         orden: 20
       });
 
-      for (const payload of [
+      const ventasConciliacion = [
         { tipo_cobro: "efectivo", cuenta_cobro_id: cuentaEfectivo.id },
         { tipo_cobro: "debito", cuenta_cobro_id: cuentaDebito.id },
         { tipo_cobro: "efectivo", cuenta_cobro_id: null }
-      ]) {
+      ];
+      for (let i = 0; i < ventasConciliacion.length; i += 1) {
+        if (i > 0) await delay(1100);
+        const payload = ventasConciliacion[i];
         const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(payload), token);
         if (!venta.response.ok) throw new Error(`Venta para conciliacion fallo: ${venta.data?.message || venta.response.status}`);
       }
@@ -6672,9 +6848,8 @@ async function testConciliacionManualPorCuentaCobro() {
       assertEqual(resumenAntes.caja.id, apertura.id, "Conciliaciones sin caja_id deben tomar caja abierta");
       const efectivo = resumenAntes.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Caja efectivo conciliacion TEST");
       const debito = resumenAntes.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Terminal debito conciliacion TEST");
-      const sinCuenta = resumenAntes.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Sin cuenta");
 
-      if (!efectivo || !debito || !sinCuenta) {
+      if (!efectivo || !debito) {
         throw new Error(`Resumen para conciliacion incompleto: ${JSON.stringify(resumenAntes.cuentas)}`);
       }
 
@@ -6718,8 +6893,8 @@ async function testConciliacionManualPorCuentaCobro() {
       const ceroSinCuenta = await guardarConciliacionCuenta(baseUrl, token, {
         caja_id: apertura.id,
         cuenta_cobro_id: null,
-        monto_sistema: sinCuenta.balance,
-        monto_real: sinCuenta.balance,
+        monto_sistema: 0,
+        monto_real: 0,
         observaciones: "TEST sin cuenta conciliado",
         usuario: "test"
       });
@@ -6787,18 +6962,21 @@ async function testReporteCuentasCobro() {
       }), token);
       if (!ventaEfectivo.response.ok) throw new Error(`Venta efectivo reporte cuentas fallo: ${ventaEfectivo.data?.message || ventaEfectivo.response.status}`);
 
+      await delay(1100);
       const ventaDebito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "debito",
         cuenta_cobro_id: cuentaDebito.id
       }), token);
       if (!ventaDebito.response.ok) throw new Error(`Venta debito reporte cuentas fallo: ${ventaDebito.data?.message || ventaDebito.response.status}`);
 
+      await delay(1100);
       const ventaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "efectivo",
         cuenta_cobro_id: null
       }), token);
       if (!ventaSinCuenta.response.ok) throw new Error(`Venta sin cuenta reporte cuentas fallo: ${ventaSinCuenta.data?.message || ventaSinCuenta.response.status}`);
 
+      await delay(1100);
       const ventaAnulada = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "efectivo",
         cuenta_cobro_id: cuentaEfectivo.id
@@ -6875,10 +7053,10 @@ async function testReporteCuentasCobro() {
         throw new Error(`Reporte debe incluir cuentas y Sin cuenta. Actual=${JSON.stringify(data)}`);
       }
 
-      assertApprox(repEfectivo.ingresos, 200, "Reporte debe devolver ingresos por cuenta");
+      assertApprox(repEfectivo.ingresos, 400, "Reporte debe devolver ingresos por cuenta");
       assertApprox(repEfectivo.egresos, 50, "Reporte debe devolver egresos por cuenta");
-      assertApprox(repEfectivo.balance, 150, "Reporte debe calcular balance ingresos - egresos");
-      assertEqual(repEfectivo.ventas, 1, "Reporte debe excluir ventas anuladas");
+      assertApprox(repEfectivo.balance, 350, "Reporte debe calcular balance ingresos - egresos");
+      assertEqual(repEfectivo.ventas, 2, "Reporte debe excluir ventas anuladas");
       assertEqual(repEfectivo.pagos, 1, "Reporte debe excluir pagos pendientes");
       assertApprox(repEfectivo.diferencias, 10, "Reporte debe sumar diferencias conciliadas en valor absoluto");
       if (repEfectivo.estado_conciliacion !== "diferencia") {
@@ -6892,14 +7070,14 @@ async function testReporteCuentasCobro() {
         throw new Error(`Cuenta conciliada debe quedar conciliado. Actual=${repDebito.estado_conciliacion}`);
       }
 
-      assertApprox(repSinCuenta.ingresos, 200, "Reporte debe incluir ingresos Sin cuenta");
+      assertApprox(repSinCuenta.ingresos, 0, "Reporte debe asignar efectivo sin cuenta explicita al canal efectivo activo");
       assertApprox(repSinCuenta.egresos, 20, "Reporte debe incluir egresos Sin cuenta");
-      assertApprox(repSinCuenta.balance, 180, "Reporte debe calcular balance Sin cuenta");
+      assertApprox(repSinCuenta.balance, -20, "Reporte debe calcular balance Sin cuenta");
       if (repSinCuenta.estado_conciliacion !== "pendiente") {
         throw new Error(`Sin conciliacion debe quedar pendiente. Actual=${repSinCuenta.estado_conciliacion}`);
       }
 
-      if (data[0].cuenta_nombre !== "Sin cuenta") {
+      if (data[0].cuenta_nombre !== "Reporte cuenta efectivo TEST") {
         throw new Error(`Reporte debe ordenar por balance DESC. Primero=${data[0].cuenta_nombre}`);
       }
 
@@ -6955,6 +7133,7 @@ async function testVentasPorDiaExcluyeAnuladas() {
       const ventaOk = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
       if (!ventaOk.response.ok) throw new Error(`Venta cobrada fallo: ${ventaOk.data?.message || ventaOk.response.status}`);
 
+      await delay(1100);
       const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
       if (!ventaAnular.response.ok) throw new Error(`Venta a anular fallo: ${ventaAnular.data?.message || ventaAnular.response.status}`);
 
@@ -6988,6 +7167,7 @@ async function testVentasPorDiaAgrupaVentas() {
       // Dos ventas del mismo dia (hoy)
       const v1 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
       if (!v1.response.ok) throw new Error(`Venta 1 fallo: ${v1.data?.message || v1.response.status}`);
+      await delay(1100);
       const v2 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
       if (!v2.response.ok) throw new Error(`Venta 2 fallo: ${v2.data?.message || v2.response.status}`);
 
@@ -9564,6 +9744,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testRecetaSinStockComoComponenteNoDescuentaDirecto);
   await _run(testVentaRecetaSinStockGeneraAjustePendiente);
   await _run(testAnularRecetaSinStockCancelaPendienteSinReponerAprobado);
+  await _run(testVentaNormalAnuladaNoBloqueaRepeticionDuplicada);
   await _run(testPermisosColaborador);
   await _run(testFinanzasResumenBackendV1);
   await _run(testFinanzasResumenV15);
@@ -9647,6 +9828,8 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testTipoPagoModificaNombreYOrden);
   await _run(testTiposPagoRecargosYCuotasCrud);
   await _run(testVentasAplicanRecargosMetodosPago);
+  await _run(testVentaNormalConRecargoDuplicadoUsaSubtotalComercial);
+  await _run(testCuentaCorrienteAnuladaNoBloqueaDuplicado);
   await _run(testVentasCuotasYPendientesNoDuplicanRecargo);
   await _run(testRecargoPersistenteEnVentas);
   await _run(testTipoPagoDesactiva);

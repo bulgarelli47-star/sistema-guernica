@@ -16,7 +16,8 @@ function normalizarPerfilCliente(valor) {
 
 function normalizarTipoCuentaCorriente(valor) {
   const tipo = String(valor || "").trim().toLowerCase();
-  return TIPOS_CUENTA_CORRIENTE_PERMITIDOS.has(tipo) ? tipo : "normal";
+  const legacy = { cliente: "normal", personal: "empleado", produccion: "empresa", interna: "empresa", cortesia: "empresa" };
+  return TIPOS_CUENTA_CORRIENTE_PERMITIDOS.has(tipo) ? tipo : legacy[tipo] || "normal";
 }
 
 function parseClientePayload(body) {
