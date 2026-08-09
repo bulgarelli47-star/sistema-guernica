@@ -8137,11 +8137,14 @@ app.get("/configuracion", async (req, res) => {
   try {
     const configCompleta = await getConfiguracionGlobal();
     const config = sanitizarConfiguracionParaRol(configCompleta, req.usuario?.rol);
+    const puedeVerEstadoClaveMaestra = Object.prototype.hasOwnProperty.call(config, "autorizacion_clave_maestra");
+    const autorizacionClaveMaestraConfigurada = puedeVerEstadoClaveMaestra && !!String(configCompleta.autorizacion_clave_maestra || "").trim();
     if (Object.prototype.hasOwnProperty.call(config, "autorizacion_clave_maestra")) {
       config.autorizacion_clave_maestra = "";
     }
     return res.json({
       config,
+      autorizacion_clave_maestra_configurada: autorizacionClaveMaestraConfigurada,
       schema: Object.fromEntries(
         Object.entries(CONFIGURACION_DEFAULTS)
           .filter(([clave]) => Object.prototype.hasOwnProperty.call(config, clave))
@@ -8196,8 +8199,14 @@ app.put("/configuracion", async (req, res) => {
     }
     await runQuery("COMMIT");
 
-    const config = await getConfiguracionGlobal();
-    return res.json({ message: "Configuracion guardada", config });
+    const configCompleta = await getConfiguracionGlobal();
+    const config = sanitizarConfiguracionParaRol(configCompleta, req.usuario?.rol);
+    const puedeVerEstadoClaveMaestra = Object.prototype.hasOwnProperty.call(config, "autorizacion_clave_maestra");
+    const autorizacionClaveMaestraConfigurada = puedeVerEstadoClaveMaestra && !!String(configCompleta.autorizacion_clave_maestra || "").trim();
+    if (Object.prototype.hasOwnProperty.call(config, "autorizacion_clave_maestra")) {
+      config.autorizacion_clave_maestra = "";
+    }
+    return res.json({ message: "Configuracion guardada", config, autorizacion_clave_maestra_configurada: autorizacionClaveMaestraConfigurada });
   } catch (error) {
     try {
       await runQuery("ROLLBACK");

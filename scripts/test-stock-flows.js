@@ -691,8 +691,11 @@ async function testPermisosColaborador() {
       if (!configAdmin.data?.config?.permisos_acciones_roles?.caja?.colaborador) {
         throw new Error("La configuracion debe exponer permisos para rol colaborador");
       }
-      if (!configAdmin.data?.config?.autorizacion_clave_maestra) {
-        throw new Error("Admin debe recibir configuracion sensible completa");
+      if (configAdmin.data?.config?.autorizacion_clave_maestra !== "") {
+        throw new Error("Admin no debe recibir la clave maestra en claro");
+      }
+      if (configAdmin.data?.autorizacion_clave_maestra_configurada !== true) {
+        throw new Error("Admin debe recibir el estado de clave maestra configurada");
       }
       await requestJson(baseUrl, "POST", "/usuarios", {
         nombre: "Colaborador Test",
