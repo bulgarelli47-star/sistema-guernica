@@ -3778,7 +3778,15 @@ async function testProductoModeloFiscalF1ACompatibilidad() {
       const sufijo = Date.now().toString().slice(-8);
       const categoriaId = await crearCategoria(baseUrl, token, `TEST Fiscal ${sufijo}`);
 
-      const legacy = await getProduct(baseUrl, token, 11);
+      const legacy = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST Fiscal Legacy Base ${sufijo}`,
+        categoria: `TEST Fiscal ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 100,
+        precio_venta: 180,
+        iva_porcentaje: 3,
+        precio_compra_incluye_iva: false
+      });
       if (legacy.modelo_fiscal !== "legacy") {
         throw new Error(`Producto legacy existente debe quedar marcado como legacy. Actual=${legacy.modelo_fiscal}`);
       }
@@ -4024,8 +4032,8 @@ async function testProductoModeloFiscalF1ACompatibilidad() {
       }, token);
       assertEqual(invalido.response.status, 400, "Tratamiento IVA venta invalido debe rechazarse");
 
-      await runSql(dbPath, "UPDATE productos SET iva_porcentaje = 5 WHERE id = ?", [11]);
-      const legacyIibb = await getProduct(baseUrl, token, 11);
+      await runSql(dbPath, "UPDATE productos SET iva_porcentaje = 5 WHERE id = ?", [legacy.id]);
+      const legacyIibb = await getProduct(baseUrl, token, legacy.id);
       assertApprox(legacyIibb.iva_porcentaje, 5, "Valor legacy ambiguo iva_porcentaje=5 debe conservarse");
       if (legacyIibb.modelo_fiscal !== "legacy") {
         throw new Error(`Valor legacy ambiguo no debe convertir modelo_fiscal. Actual=${legacyIibb.modelo_fiscal}`);
@@ -4302,6 +4310,92 @@ async function testProductoMotorFiscalNormalizadoF1B1() {
       assertApprox(costoNullAutomatico.precio_venta, 0, "costo_economico null sin precio manual debe producir precio deterministico 0");
       assertApprox(costoNullAutomatico.precio_neto_sugerido, 0, "costo_economico null no debe inferir neto desde precio_compra");
       assertApprox(costoNullAutomatico.iva_sugerido, 0, "costo_economico null no debe inferir IVA desde IMP");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAumentoMasivoProtegeProductosNormalizadosF1B2() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const sufijo = Date.now().toString().slice(-8);
+      const categoriaMixtaId = await crearCategoria(baseUrl, token, `TEST Aumento Mixto ${sufijo}`, {
+        margen_porcentaje: 50
+      });
+      const categoriaLegacyId = await crearCategoria(baseUrl, token, `TEST Aumento Legacy ${sufijo}`, {
+        margen_porcentaje: 50
+      });
+
+      const legacyMixto = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST Aumento Legacy Mixto ${sufijo}`,
+        categoria: `TEST Aumento Mixto ${sufijo}`,
+        categoria_id: categoriaMixtaId,
+        precio_compra: 100,
+        costo_final: 121,
+        precio_venta: 200,
+        stock: 1,
+        activo: true
+      });
+      const normalizadoMixto = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST Aumento Normalizado ${sufijo}`,
+        categoria: `TEST Aumento Mixto ${sufijo}`,
+        categoria_id: categoriaMixtaId,
+        precio_compra: 100,
+        precio_venta: 0,
+        costo_economico: 50,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "gravado",
+        iva_venta_alicuota: 21,
+        stock: 1,
+        activo: true
+      });
+
+      const rechazado = await requestJson(baseUrl, "PATCH", "/productos/aumento-masivo", {
+        categoria_id: categoriaMixtaId,
+        porcentaje: 10,
+        campo: "ambos"
+      }, token);
+      assertEqual(rechazado.response.status, 409, "Aumento masivo mixto con normalizados debe rechazarse");
+
+      const legacyMixtoDespues = await getProduct(baseUrl, token, legacyMixto.id);
+      const normalizadoMixtoDespues = await getProduct(baseUrl, token, normalizadoMixto.id);
+      assertApprox(legacyMixtoDespues.precio_compra, legacyMixto.precio_compra, "Aumento rechazado no debe cambiar precio_compra legacy");
+      assertApprox(legacyMixtoDespues.precio_venta, legacyMixto.precio_venta, "Aumento rechazado no debe cambiar precio_venta legacy");
+      assertApprox(normalizadoMixtoDespues.precio_venta, normalizadoMixto.precio_venta, "Aumento rechazado no debe cambiar precio_venta normalizado");
+      assertApprox(normalizadoMixtoDespues.costo_economico, 50, "Aumento rechazado no debe cambiar costo_economico normalizado");
+      if (normalizadoMixtoDespues.precio_venta_modo !== normalizadoMixto.precio_venta_modo) {
+        throw new Error(`Aumento rechazado no debe cambiar modo normalizado. Actual=${normalizadoMixtoDespues.precio_venta_modo}`);
+      }
+
+      const legacySolo = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST Aumento Legacy Solo ${sufijo}`,
+        categoria: `TEST Aumento Legacy ${sufijo}`,
+        categoria_id: categoriaLegacyId,
+        precio_compra: 100,
+        precio_venta: 200,
+        iva_porcentaje: 21,
+        precio_compra_incluye_iva: false,
+        stock: 1,
+        activo: true
+      });
+      const aplicado = await requestJson(baseUrl, "PATCH", "/productos/aumento-masivo", {
+        categoria_id: categoriaLegacyId,
+        porcentaje: 10,
+        campo: "ambos"
+      }, token);
+      if (!aplicado.response.ok) {
+        throw new Error(`Aumento masivo legacy-only debe seguir funcionando: ${aplicado.data?.message || aplicado.response.status}`);
+      }
+      const legacySoloDespues = await getProduct(baseUrl, token, legacySolo.id);
+      assertApprox(legacySoloDespues.precio_compra, 110, "Aumento legacy-only debe actualizar precio_compra");
+      assertApprox(legacySoloDespues.precio_venta, 220, "Aumento legacy-only debe actualizar precio_venta");
+      assertApprox(legacySoloDespues.costo_final, 133.1, "Aumento legacy-only debe actualizar costo_final");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -10351,6 +10445,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testConfiguracionCodigoAutomaticoProductos);
   await _run(testProductoModeloFiscalF1ACompatibilidad);
   await _run(testProductoMotorFiscalNormalizadoF1B1);
+  await _run(testAumentoMasivoProtegeProductosNormalizadosF1B2);
   await _run(testProductosMasVendidosDevuelveClaves);
   await _run(testProductosMasVendidosExcluyeVentasAnuladas);
   await _run(testProductosMasVendidosOrdenaPorCantidad);

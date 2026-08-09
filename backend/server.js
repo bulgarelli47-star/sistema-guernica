@@ -2698,6 +2698,13 @@ app.patch("/productos/aumento-masivo", async (req, res) => {
       return res.status(404).json({ message: "No hay productos que cumplan la condicion" });
     }
 
+    const incluyeNormalizados = productos.some((producto) => producto.modelo_fiscal === "normalizado");
+    if (incluyeNormalizados) {
+      return res.status(409).json({
+        message: "El aumento incluye productos con calculo fiscal normalizado. Ajustalos individualmente por ahora."
+      });
+    }
+
     const factor = 1 + porcentaje / 100;
     for (const producto of productos) {
       const precioCompra = ["precio_compra", "ambos"].includes(campo)
