@@ -699,6 +699,75 @@
 
     .edit-payment-card {
       width: min(560px, 100%);
+      max-height: calc(100vh - 56px);
+      overflow: hidden;
+      padding: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      background: #f8fafc;
+    }
+
+    #editarPagoModal .modal-header,
+    #eliminarPagoModal .modal-header {
+      margin: 0;
+      padding: 16px 18px;
+      border: 0;
+      border-radius: 0;
+      background: linear-gradient(135deg, #16052e 0%, #2a1450 100%);
+      color: #fff;
+    }
+
+    #editarPagoModal .modal-header h2,
+    #eliminarPagoModal .modal-header h2 {
+      margin: 0;
+    }
+
+    #editarPagoModal .modal-header p,
+    #eliminarPagoModal .modal-header p {
+      margin: 4px 0 0;
+      color: rgba(255, 255, 255, .72);
+      font-size: 12px;
+    }
+
+    #editarPagoModal .modal-header .close-button,
+    #eliminarPagoModal .modal-header .close-button {
+      border-color: rgba(255, 255, 255, .22);
+      background: rgba(255, 255, 255, .1);
+      color: #fff;
+      box-shadow: none;
+      flex: 0 0 auto;
+    }
+
+    #editarPagoModal .modal-body,
+    #eliminarPagoModal .modal-body {
+      min-height: 0;
+      overflow: auto;
+      padding: 16px 18px 18px;
+      background: #f8fafc;
+    }
+
+    #editarPagoClaveSection,
+    #editarPagoFormSection,
+    #eliminarPagoModal .delete-payment-warning,
+    #eliminarPagoResumen,
+    #eliminarPagoClaveSection {
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #ffffff;
+      box-shadow: 0 10px 24px rgba(17, 24, 39, .04);
+    }
+
+    #editarPagoFormSection {
+      gap: 12px;
+    }
+
+    #editarPagoModal .modal-footer,
+    #eliminarPagoModal .modal-footer {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+      justify-content: flex-end;
     }
 
     .edit-payment-password {
@@ -735,10 +804,6 @@
     .edit-payment-auth {
       display: none;
       margin-top: 12px;
-      padding: 12px;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      background: #f8fafc;
     }
 
     .edit-payment-auth p {
@@ -757,10 +822,6 @@
     .delete-payment-summary {
       display: grid;
       gap: 8px;
-      padding: 12px;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      background: #f8fafc;
       font-size: 13px;
     }
 
@@ -768,6 +829,33 @@
       display: flex;
       justify-content: space-between;
       gap: 12px;
+    }
+
+    .delete-payment-warning {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin: 0;
+      background: #fef2f2 !important;
+      border-color: rgba(220, 38, 38, .28) !important;
+      color: #991b1b !important;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+
+    .delete-payment-warning::before {
+      content: "!";
+      display: inline-grid;
+      place-items: center;
+      width: 20px;
+      height: 20px;
+      flex: 0 0 20px;
+      border-radius: 999px;
+      background: rgba(220, 38, 38, .14);
+      color: #dc2626;
+      font-size: 12px;
+      font-weight: 900;
     }
 
     .button.danger {
@@ -927,6 +1015,219 @@
       .kpi-line {
         display: none;
       }
+
+      .payment-history-table-wrap {
+        overflow: visible !important;
+      }
+
+      .payment-history-table-wrap table,
+      .payment-history-table-wrap thead,
+      .payment-history-table-wrap tbody,
+      .payment-history-table-wrap tr,
+      .payment-history-table-wrap td {
+        width: 100%;
+      }
+
+      .payment-history-table-wrap table,
+      .payment-history-table-wrap tbody,
+      #listaPagos {
+        display: block;
+      }
+
+      .payment-history-table-wrap thead {
+        display: none;
+      }
+
+      #listaPagos {
+        display: grid;
+        gap: 10px;
+      }
+
+      #listaPagos tr {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px 10px;
+        padding: 10px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: #ffffff;
+        box-shadow: 0 10px 28px rgba(15, 23, 42, .06);
+      }
+
+      #listaPagos tr.payment-history-empty {
+        grid-template-columns: 1fr;
+      }
+
+      #listaPagos td {
+        display: grid;
+        gap: 2px;
+        min-width: 0;
+        padding: 0;
+        border-bottom: 0;
+        color: var(--text);
+        overflow-wrap: anywhere;
+      }
+
+      #listaPagos td::before {
+        content: attr(data-label);
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: .04em;
+        line-height: 1.15;
+        text-transform: uppercase;
+      }
+
+      #listaPagos .payment-cell-type,
+      #listaPagos .payment-cell-amount {
+        grid-column: auto;
+      }
+
+      #listaPagos .payment-cell-type::before,
+      #listaPagos .payment-cell-amount::before,
+      #listaPagos .payment-cell-date::before,
+      #listaPagos .payment-cell-provider::before,
+      #listaPagos .payment-cell-receipt::before {
+        content: none;
+      }
+
+      #listaPagos .payment-cell-type {
+        align-content: start;
+        color: var(--text);
+        font-size: 14px;
+        font-weight: 900;
+        line-height: 1.2;
+      }
+
+      #listaPagos .payment-cell-date {
+        grid-column: 1 / -1;
+        margin-top: -2px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.2;
+      }
+
+      #listaPagos .payment-cell-provider,
+      #listaPagos .payment-cell-receipt,
+      #listaPagos .payment-cell-actions {
+        grid-column: 1 / -1;
+      }
+
+      #listaPagos .payment-cell-provider {
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 850;
+        line-height: 1.2;
+      }
+
+      #listaPagos .payment-cell-receipt {
+        margin-top: -2px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.2;
+      }
+
+      #listaPagos .payment-cell-amount {
+        justify-items: end;
+        align-content: start;
+        text-align: right;
+        color: var(--primary);
+        font-size: 19px;
+        font-weight: 900;
+        line-height: 1.1;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+        overflow-wrap: normal;
+      }
+
+      #listaPagos .payment-cell-method,
+      #listaPagos .payment-cell-account,
+      #listaPagos .payment-cell-tax,
+      #listaPagos .payment-cell-status,
+      #listaPagos .payment-cell-impact {
+        align-content: start;
+        font-size: 12px;
+      }
+
+      #listaPagos .payment-cell-impact {
+        grid-column: 1 / -1;
+      }
+
+      #listaPagos .payment-cell-status {
+        align-content: start;
+      }
+
+      #listaPagos .payment-cell-status .pill {
+        width: max-content;
+      }
+
+      #listaPagos .payment-cell-actions {
+        padding-top: 6px;
+        border-top: 1px solid rgba(148, 163, 184, .24);
+      }
+
+      #listaPagos .payment-cell-actions:empty {
+        display: none;
+      }
+
+      #listaPagos .payment-cell-actions > div {
+        display: flex !important;
+        justify-content: flex-end !important;
+        gap: 6px !important;
+        flex-wrap: wrap !important;
+      }
+
+      #listaPagos .payment-cell-actions .button {
+        min-height: 38px;
+        padding: 7px 10px !important;
+        font-size: 12px !important;
+      }
+
+      #editarPagoModal .edit-payment-card,
+      #eliminarPagoModal .edit-payment-card {
+        width: min(100%, calc(100vw - 20px));
+        max-height: calc(100vh - 20px);
+      }
+
+      #editarPagoModal .modal-header,
+      #eliminarPagoModal .modal-header {
+        padding: 14px;
+      }
+
+      #editarPagoModal .modal-header .close-button,
+      #eliminarPagoModal .modal-header .close-button {
+        width: 44px;
+        height: 44px;
+        min-width: 44px;
+      }
+
+      #editarPagoModal .modal-body,
+      #eliminarPagoModal .modal-body {
+        padding: 12px;
+      }
+
+      .edit-payment-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .edit-payment-password {
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+
+      #editarPagoModal .modal-footer,
+      #eliminarPagoModal .modal-footer {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 8px;
+        align-items: stretch;
+      }
+
+      #editarPagoModal .modal-footer > *,
+      #eliminarPagoModal .modal-footer > * {
+        flex: none;
+        min-height: 44px;
+      }
     }
     /* Modal UI unification layer - non invasive */
     :where(.modal,.modal-backdrop){background:rgba(17,24,39,.52);padding:clamp(12px,3vw,28px);overflow:auto;overscroll-behavior:contain}
@@ -1067,7 +1368,7 @@
             <button type="button" class="icon-button" id="abrirPagoModal" aria-label="Registrar pago" title="Registrar pago"><span class="app-icon icon-add" aria-hidden="true"></span></button>
           </div>
         </div>
-        <div style="overflow:auto;">
+        <div class="payment-history-table-wrap" style="overflow:auto;">
           <table>
             <thead>
               <tr>
@@ -1081,10 +1382,11 @@
                 <th>IVA favor</th>
                 <th class="sortable" data-sort="estado">Estado</th>
                 <th>Canal de pago</th>
+                <th>Acciones</th>
               </tr>
             </thead>
             <tbody id="listaPagos">
-              <tr><td colspan="10">Cargando pagos...</td></tr>
+              <tr class="payment-history-empty"><td colspan="11">Cargando pagos...</td></tr>
             </tbody>
           </table>
         </div>
@@ -1217,7 +1519,7 @@
     <article class="modal-card edit-payment-card" role="dialog" aria-modal="true">
       <div class="modal-header">
         <div><h2>Editar pago</h2><p id="editarPagoSubtitulo"></p></div>
-        <button type="button" id="cerrarEditarPago" style="border:1px solid #e2e8f0;border-radius:10px;width:36px;height:36px;background:#fff;cursor:pointer;font-size:18px">✕</button>
+        <button type="button" class="close-button" id="cerrarEditarPago" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
       <div class="modal-body">
       <div id="editarPagoClaveSection">
@@ -1252,7 +1554,7 @@
         </div>
         <div class="modal-footer modal-actions" id="editarPagoFooter">
           <button type="button" id="cerrarEditarPago2" class="button secondary">Cancelar</button>
-          <button type="button" id="guardarEditarPago" class="button">Guardar cambios</button>
+          <button type="button" id="guardarEditarPago" class="button success">Guardar cambios</button>
         </div>
       </div>
       </div>
@@ -1264,10 +1566,10 @@
     <article class="modal-card edit-payment-card" role="dialog" aria-modal="true">
       <div class="modal-header">
         <div><h2>Eliminar pago</h2><p id="eliminarPagoSubtitulo"></p></div>
-        <button type="button" id="cerrarEliminarPago" style="border:1px solid #e2e8f0;border-radius:10px;width:36px;height:36px;background:#fff;cursor:pointer;font-size:18px">x</button>
+        <button type="button" class="close-button" id="cerrarEliminarPago" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
       <div class="modal-body">
-        <p class="muted" style="margin:0">Esta accion eliminara el registro seleccionado.</p>
+        <p class="delete-payment-warning">Esta acción eliminará el registro seleccionado.</p>
         <div class="delete-payment-summary" id="eliminarPagoResumen"></div>
         <div id="eliminarPagoClaveSection" class="edit-payment-auth">
           <p>Ingresa la clave maestra para continuar.</p>
@@ -1638,7 +1940,7 @@
       renderizarKpis(pagosActuales);
 
       if (pagosActuales.length === 0) {
-        listaPagos.innerHTML = '<tr><td colspan="10">No hay pagos registrados.</td></tr>';
+        listaPagos.innerHTML = '<tr class="payment-history-empty"><td colspan="11">No hay pagos registrados.</td></tr>';
         resumenPagosMostrados.innerText = "Mostrando 0 pagos";
         return;
       }
@@ -1672,6 +1974,7 @@
 
       pagosVisibles.forEach((pago) => {
         const row = document.createElement("tr");
+        row.className = "payment-history-row";
         const pendiente = pago.estado === "pendiente";
         const impacto = pendiente
           ? "Pendiente"
@@ -1680,18 +1983,21 @@
             : Number(pago.monto_efectivo || 0) > 0
               ? "Caja"
               : "Cuenta/Billetera";
+        const accionesPago = puedeAccionProtegidaPagos()
+          ? `<div style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" class="button secondary" style="padding:5px 9px;font-size:11px" data-editar-pago="${pago.id}">Editar</button><button type="button" class="button secondary" style="padding:5px 9px;font-size:11px" data-eliminar-pago="${pago.id}">Eliminar</button></div>`
+          : "";
         row.innerHTML = `
-          <td>${pago.fecha || "-"} ${pago.hora || ""}</td>
-          <td>${impactoLabel(pago.categoria_pago || pago.proveedor_tipo_impacto)}</td>
-          <td>${pago.proveedor_nombre || "Sin proveedor"}</td>
-          <td>${pago.comprobante || "-"} ${pago.numero_comprobante || ""}</td>
-          <td>${pago.tipo_pago || "-"}</td>
-          <td>${pago.cuenta_cobro_nombre || pago.cuenta_destino || "-"}</td>
-          <td>${money(pago.monto_total)}</td>
-          <td>${money(ivaFavorPago(pago))}</td>
-          <td><span class="pill ${pendiente ? "pending" : ""}">${pendiente ? "Pendiente" : "Registrado"}</span></td>
-          <td>${impacto}</td>
-          <td>${puedeAccionProtegidaPagos() ? `<div style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" class="button secondary" style="padding:5px 9px;font-size:11px" data-editar-pago="${pago.id}">Editar</button><button type="button" class="button secondary" style="padding:5px 9px;font-size:11px" data-eliminar-pago="${pago.id}">Eliminar</button></div>` : ""}</td>
+          <td class="payment-cell-date" data-label="Fecha">${pago.fecha || "-"} ${pago.hora || ""}</td>
+          <td class="payment-cell-type" data-label="Tipo de gasto">${impactoLabel(pago.categoria_pago || pago.proveedor_tipo_impacto)}</td>
+          <td class="payment-cell-provider" data-label="Proveedor">${pago.proveedor_nombre || "Sin proveedor"}</td>
+          <td class="payment-cell-receipt" data-label="Comprobante">${pago.comprobante || "-"} ${pago.numero_comprobante || ""}</td>
+          <td class="payment-cell-method" data-label="Forma">${pago.tipo_pago || "-"}</td>
+          <td class="payment-cell-account" data-label="Cuenta">${pago.cuenta_cobro_nombre || pago.cuenta_destino || "-"}</td>
+          <td class="payment-cell-amount" data-label="Importe">${money(pago.monto_total)}</td>
+          <td class="payment-cell-tax" data-label="IVA favor">${money(ivaFavorPago(pago))}</td>
+          <td class="payment-cell-status" data-label="Estado"><span class="pill ${pendiente ? "pending" : ""}">${pendiente ? "Pendiente" : "Registrado"}</span></td>
+          <td class="payment-cell-impact" data-label="Canal de pago">${impacto}</td>
+          <td class="payment-cell-actions" data-label="Acciones">${accionesPago}</td>
         `;
         row.querySelector('[data-editar-pago]')?.addEventListener('click', () => abrirEditarPago(pago));
         row.querySelector('[data-eliminar-pago]')?.addEventListener('click', () => eliminarPago(pago));
@@ -1732,7 +2038,7 @@
         renderizarPagos(await res.json());
       } catch (error) {
         console.error("Error al cargar pagos:", error);
-        listaPagos.innerHTML = '<tr><td colspan="10">Error al cargar pagos.</td></tr>';
+        listaPagos.innerHTML = '<tr class="payment-history-empty"><td colspan="11">Error al cargar pagos.</td></tr>';
         mostrarMensaje("No se pudo obtener pagos desde el servidor", true);
       }
     }

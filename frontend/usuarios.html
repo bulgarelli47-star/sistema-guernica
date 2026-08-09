@@ -59,6 +59,17 @@
     .user-box .logout-btn:hover{background:rgba(220,38,38,.18)!important;border-color:rgba(248,113,113,.30)!important;color:#fff!important}
     .user-box .logout-btn:focus-visible{outline:none!important;box-shadow:0 0 0 3px rgba(248,113,113,.18)!important}
     @media(max-width:860px){.topbar{align-items:flex-start;flex-direction:column}.topbar-left{flex-wrap:wrap}.topbar-divider{display:none}}
+    .user-secondary-login,.user-contact-mobile{display:none}
+    #usuarioModal .dialog,#passwordModal .dialog,#eliminarUsuarioModal .dialog{padding:0;overflow:hidden;background:#f8fafc}
+    #usuarioModal .dialog-head,#passwordModal .dialog-head,#eliminarUsuarioModal .dialog-head{position:static;top:auto;margin:0;padding:14px 16px;border:0;border-radius:0;background:linear-gradient(135deg,#16052e 0%,#2a1450 100%);color:#fff;box-shadow:none}
+    #usuarioModal .dialog-head h2,#passwordModal .dialog-head h2,#eliminarUsuarioModal .dialog-head h2{color:#fff}
+    #usuarioModal .dialog-head .message,#passwordModal .dialog-head .message,#eliminarUsuarioModal .dialog-head .message{color:rgba(255,255,255,.72);min-height:0}
+    #usuarioModal .dialog-head .icon-button,#passwordModal .dialog-head .icon-button,#eliminarUsuarioModal .dialog-head .icon-button{width:44px;height:44px;border-color:rgba(255,255,255,.22);background:rgba(255,255,255,.1);color:#fff;flex:0 0 auto}
+    #usuarioModal form,#passwordModal form,#eliminarUsuarioModal .delete-dialog-body{padding:14px 16px}
+    #usuarioModal .dialog-actions,#passwordModal .dialog-actions,#eliminarUsuarioModal .dialog-actions{position:static;bottom:auto;margin:0;padding:12px 16px;border-top:1px solid var(--border);background:#fff}
+    .delete-dialog-body{display:grid;gap:12px}.delete-user-card{border:1px solid var(--border);border-radius:14px;background:#fff;padding:12px;display:grid;gap:6px}.delete-user-card strong{font-size:16px}.danger-note{border:1px solid rgba(220,38,38,.22);background:rgba(220,38,38,.08);color:#991b1b;border-radius:14px;padding:10px 12px;font-weight:750;line-height:1.35}
+    @media(max-width:520px){.main{padding:12px 10px 18px;gap:10px}.card{padding:12px;border-radius:16px}.user-management-card .section-head{align-items:flex-start}.user-management-card .toolbar{width:100%;justify-content:flex-start}.user-management-card .button{min-height:40px}.user-management-card .summary{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}.user-management-card .summary-box{min-height:0;padding:10px 11px}.user-management-card .summary-box span{font-size:10px}.user-management-card .summary-box strong{font-size:18px}.user-filters-card .filters{grid-template-columns:minmax(0,1.4fr) minmax(120px,.6fr);width:100%;min-width:0}.user-filters-card .filters label:first-child{grid-column:1 / -1}.table-wrap{overflow:visible}.table{display:block;min-width:0;width:100%;border-spacing:0}.table thead{display:none}.table tbody{display:grid;gap:8px}.table tr{position:relative;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 10px;width:100%;min-width:0;padding:10px 58px 10px 10px;border:1px solid var(--border);border-radius:14px;background:#fff;box-shadow:0 10px 24px rgba(17,24,39,.08)}.table td{display:grid;gap:2px;min-width:0;padding:0;background:transparent;border:0!important;border-radius:0!important;font-size:12px;line-height:1.2;overflow-wrap:anywhere}.table td::before{content:attr(data-label);color:var(--muted);font-size:10px;font-weight:900;line-height:1.1;letter-spacing:.04em;text-transform:uppercase}.table .user-main-cell{grid-column:1 / -1;display:block;padding-right:2px}.table .user-main-cell::before,.table .user-actions-cell::before{content:none}.table .user-main-cell strong{display:block;min-width:0;font-size:16px;line-height:1.18;overflow-wrap:anywhere}.table .user-login-cell{display:none}.user-secondary-login{display:block;margin-top:2px;font-size:12px;line-height:1.15}.user-secondary-id{display:none}.table .user-access-cell,.table .user-contact-cell{grid-column:auto}.table .user-contact-cell.is-wide{grid-column:1 / -1}.table .user-contact-cell.is-empty{color:var(--muted)}.user-contact-desktop{display:none}.user-contact-mobile{display:block}.table .user-actions-cell{position:absolute;top:8px;right:8px;display:block}.table .user-actions-cell .dots-button{width:44px;height:44px;border-radius:12px}.badge{min-height:24px;padding:4px 8px;font-size:11px}.actions-popup{max-width:calc(100vw - 16px)}#usuarioModal .dialog,#passwordModal .dialog,#eliminarUsuarioModal .dialog{width:min(100%,calc(100vw - 20px));max-height:calc(100dvh - 20px)}#usuarioModal .dialog-head,#passwordModal .dialog-head,#eliminarUsuarioModal .dialog-head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:8px}#usuarioModal .dialog-head>div,#passwordModal .dialog-head>div,#eliminarUsuarioModal .dialog-head>div{min-width:0}#usuarioModal .grid,#passwordModal .grid{grid-template-columns:1fr}#usuarioModal input,#usuarioModal select,#passwordModal input,#passwordModal select{min-width:0;min-height:44px}#usuarioModal .dialog-actions,#passwordModal .dialog-actions,#eliminarUsuarioModal .dialog-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}#usuarioModal .dialog-actions>* ,#passwordModal .dialog-actions>* ,#eliminarUsuarioModal .dialog-actions>*{flex:none;min-height:44px}}
+    @media(max-width:360px){.user-filters-card .filters{grid-template-columns:1fr}.table tr{grid-template-columns:1fr}.table .user-actions-cell{position:static;grid-column:1 / -1;justify-self:end;margin-top:-2px}#usuarioModal .dialog-actions,#passwordModal .dialog-actions,#eliminarUsuarioModal .dialog-actions{grid-template-columns:1fr}}
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=6" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -110,7 +121,7 @@
 
   <div class="modal" id="usuarioModal" aria-hidden="true">
     <div class="dialog">
-      <div class="dialog-head"><div><h2 id="modalTitulo">Nuevo usuario</h2><p class="message" id="modalMensaje"></p></div><button class="icon-button" id="cerrarModal" type="button" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button></div>
+      <div class="dialog-head"><div><h2 id="modalTitulo">Nuevo usuario</h2><p class="message" id="modalMensaje"></p></div><button class="icon-button" id="cerrarModal" type="button" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button></div>
       <form id="usuarioForm">
         <input type="hidden" id="usuarioId">
         <div class="grid">
@@ -130,7 +141,7 @@
 
   <div class="modal" id="passwordModal" aria-hidden="true">
     <div class="dialog">
-      <div class="dialog-head"><div><h2>Cambiar contraseña</h2><p class="message" id="passwordMensaje"></p></div><button class="icon-button" id="cerrarPasswordModal" type="button" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button></div>
+      <div class="dialog-head"><div><h2>Cambiar contraseña</h2><p class="message" id="passwordMensaje"></p></div><button class="icon-button" id="cerrarPasswordModal" type="button" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button></div>
       <form id="passwordForm">
         <input type="hidden" id="passwordUsuarioId">
         <div class="grid">
@@ -142,9 +153,27 @@
     </div>
   </div>
 
+  <div class="modal" id="eliminarUsuarioModal" aria-hidden="true">
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="eliminarUsuarioTitulo">
+      <div class="dialog-head"><div><h2 id="eliminarUsuarioTitulo">Eliminar usuario</h2><p class="message">Esta acción requiere confirmación.</p></div><button class="icon-button" id="cerrarEliminarUsuario" type="button" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button></div>
+      <div class="delete-dialog-body">
+        <div class="delete-user-card">
+          <strong id="eliminarUsuarioNombre">Usuario</strong>
+          <span class="muted" id="eliminarUsuarioLogin">Usuario: -</span>
+          <span class="muted" id="eliminarUsuarioRol">Rol: -</span>
+          <span class="muted" id="eliminarUsuarioEstado">Estado: -</span>
+        </div>
+        <div class="danger-note">Esta acción eliminará el usuario seleccionado.</div>
+      </div>
+      <div class="dialog-actions"><button class="button ghost" id="cancelarEliminarUsuario" type="button">Cancelar</button><button class="button danger" id="confirmarEliminarUsuario" type="button">Eliminar usuario</button></div>
+    </div>
+  </div>
+
   <script>
     const $ = (id) => document.getElementById(id);
     const state = { usuarios: [], filtrados: [], config: {} };
+    let usuarioEliminarPendiente = null;
+    let modalTriggerActivo = null;
     const roles = { admin: "Dueño", encargado: "Encargado", colaborador: "Colaborador", operador: "Colaborador", caja: "Colaborador" };
     const normalizarRol = (rol) => ({ operador: "colaborador", caja: "colaborador", cajero: "colaborador" }[String(rol || "").toLowerCase()] || String(rol || "colaborador").toLowerCase());
     const readUser = (storage) => { try { return JSON.parse(storage.getItem("guernicaUser") || "null"); } catch { return null; } };
@@ -158,6 +187,29 @@
     function msg(el, text, type = "") { el.className = `message ${type}`; el.textContent = text; }
     function fecha(value) { return value ? new Date(value).toLocaleString("es-AR") : "Sin acceso"; }
     function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[c])); }
+    function abrirModalSeguro(modal, focoInicial = null) {
+      const active = document.activeElement;
+      if (active && !modal.contains(active)) modalTriggerActivo = active;
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+      requestAnimationFrame(() => {
+        if (focoInicial && typeof focoInicial.focus === "function") focoInicial.focus({ preventScroll: true });
+      });
+    }
+    function cerrarModalSeguro(modal) {
+      if (!modal) return;
+      const active = document.activeElement;
+      if (active && modal.contains(active)) {
+        if (modalTriggerActivo && modalTriggerActivo.isConnected && typeof modalTriggerActivo.focus === "function") {
+          modalTriggerActivo.focus({ preventScroll: true });
+        } else if (typeof active.blur === "function") {
+          active.blur();
+        }
+      }
+      modal.classList.remove("open");
+      modal.setAttribute("aria-hidden", "true");
+      if (!document.querySelector(".modal.open")) modalTriggerActivo = null;
+    }
     function renderResumen() {
       const total = state.usuarios.length;
       const activos = state.usuarios.filter((u) => u.activo).length;
@@ -180,14 +232,14 @@
     function renderTabla() {
       $("emptyState").hidden = state.filtrados.length !== 0;
       $("tablaUsuarios").innerHTML = state.filtrados.map((u) => `
-        <tr>
-          <td><div class="user-name"><strong>${escapeHtml(u.nombre)}</strong><small class="muted">ID ${u.id}</small></div></td>
-          <td>${escapeHtml(u.usuario)}</td>
-          <td><span class="badge role">${escapeHtml(roles[normalizarRol(u.rol)] || u.rol)}</span></td>
-          <td><span class="badge ${u.activo ? "ok" : "off"}">${u.activo ? "Activo" : "Inactivo"}</span></td>
-          <td>${fecha(u.ultimo_acceso)}</td>
-          <td><small>${escapeHtml(u.email || "-")}<br>${escapeHtml(u.telefono || "-")}</small></td>
-          <td><div class="actions-menu">
+        <tr class="user-row">
+          <td class="user-main-cell" data-label="Nombre"><div class="user-name"><strong>${escapeHtml(u.nombre)}</strong><small class="muted user-secondary-login">${escapeHtml(u.usuario)}</small><small class="muted user-secondary-id">ID ${u.id}</small></div></td>
+          <td class="user-login-cell" data-label="Usuario">${escapeHtml(u.usuario)}</td>
+          <td class="user-role-cell" data-label="Rol"><span class="badge role">${escapeHtml(roles[normalizarRol(u.rol)] || u.rol)}</span></td>
+          <td class="user-status-cell" data-label="Estado"><span class="badge ${u.activo ? "ok" : "off"}">${u.activo ? "Activo" : "Inactivo"}</span></td>
+          <td class="user-access-cell" data-label="Último acceso">${fecha(u.ultimo_acceso)}</td>
+          <td class="user-contact-cell ${u.email || u.telefono ? "" : "is-empty"} ${u.email && u.telefono ? "is-wide" : ""}" data-label="Contacto"><small class="user-contact-desktop">${escapeHtml(u.email || "-")}<br>${escapeHtml(u.telefono || "-")}</small><small class="user-contact-mobile">${escapeHtml([u.email, u.telefono].filter(Boolean).join(" · ") || "Sin dato")}</small></td>
+          <td class="user-actions-cell" data-label="Acciones"><div class="actions-menu">
             <button class="dots-button" data-menu="${u.id}" aria-label="Acciones para ${escapeHtml(u.nombre)}" title="Acciones">···</button>
             <div class="actions-popup" id="actMenu_${u.id}">
               <button class="menu-action" data-action="edit" data-id="${u.id}"><span class="app-icon icon-edit" aria-hidden="true"></span>Editar</button>
@@ -239,16 +291,48 @@
       $("password").required = !user;
       $("confirmarPassword").required = !user;
       msg($("modalMensaje"), "");
-      $("usuarioModal").classList.add("open");
+      abrirModalSeguro($("usuarioModal"), $("nombre"));
     }
-    function cerrarUsuario() { $("usuarioModal").classList.remove("open"); }
+    function cerrarUsuario() { cerrarModalSeguro($("usuarioModal")); }
     function abrirPassword(id) {
       $("passwordForm").reset();
       $("passwordUsuarioId").value = id;
       msg($("passwordMensaje"), "");
-      $("passwordModal").classList.add("open");
+      abrirModalSeguro($("passwordModal"), $("nuevaPassword"));
     }
-    function cerrarPassword() { $("passwordModal").classList.remove("open"); }
+    function cerrarPassword() { cerrarModalSeguro($("passwordModal")); }
+    function abrirEliminarUsuario(user) {
+      usuarioEliminarPendiente = user;
+      $("eliminarUsuarioNombre").textContent = user.nombre || "Usuario";
+      $("eliminarUsuarioLogin").textContent = `Usuario: ${user.usuario || "-"}`;
+      $("eliminarUsuarioRol").textContent = `Rol: ${roles[normalizarRol(user.rol)] || user.rol || "-"}`;
+      $("eliminarUsuarioEstado").textContent = `Estado: ${user.activo ? "Activo" : "Inactivo"}`;
+      abrirModalSeguro($("eliminarUsuarioModal"), $("cancelarEliminarUsuario"));
+    }
+    function cerrarEliminarUsuario() {
+      usuarioEliminarPendiente = null;
+      cerrarModalSeguro($("eliminarUsuarioModal"));
+    }
+    async function confirmarEliminarUsuario() {
+      const user = usuarioEliminarPendiente;
+      if (!user) return;
+      $("confirmarEliminarUsuario").disabled = true;
+      try {
+        const res = await fetch(`/usuarios/${user.id}`, { method: "DELETE" });
+        const data = await res.json();
+        if (!res.ok) {
+          cerrarEliminarUsuario();
+          return msg($("mensaje"), data.message || "No se pudo eliminar", "error");
+        }
+        cerrarEliminarUsuario();
+        await cargarUsuarios();
+        return msg($("mensaje"), data.message, "ok");
+      } catch (error) {
+        return msg($("mensaje"), error.message || "No se pudo eliminar", "error");
+      } finally {
+        $("confirmarEliminarUsuario").disabled = false;
+      }
+    }
     async function guardarUsuario(event) {
       event.preventDefault();
       const id = $("usuarioId").value;
@@ -296,13 +380,7 @@
         await cargarUsuarios();
         return msg($("mensaje"), data.message, "ok");
       }
-      if (action === "delete" && window.confirm(`Eliminar usuario ${user.usuario}?`)) {
-        const res = await fetch(`/usuarios/${id}`, { method: "DELETE" });
-        const data = await res.json();
-        if (!res.ok) return msg($("mensaje"), data.message || "No se pudo eliminar", "error");
-        await cargarUsuarios();
-        return msg($("mensaje"), data.message, "ok");
-      }
+      if (action === "delete") return abrirEliminarUsuario(user);
     }
     function cerrarTodosMenus() { document.querySelectorAll(".actions-popup.open").forEach((p) => p.classList.remove("open")); }
     ["buscar","filtroEstado","filtroRol"].forEach((id) => $(id).addEventListener("input", filtrar));
@@ -334,6 +412,19 @@
     $("passwordForm").addEventListener("submit", cambiarPassword);
     $("cerrarModal").onclick = cerrarUsuario; $("cancelarUsuario").onclick = cerrarUsuario;
     $("cerrarPasswordModal").onclick = cerrarPassword; $("cancelarPassword").onclick = cerrarPassword;
+    $("cerrarEliminarUsuario").onclick = cerrarEliminarUsuario; $("cancelarEliminarUsuario").onclick = cerrarEliminarUsuario; $("confirmarEliminarUsuario").onclick = confirmarEliminarUsuario;
+    [$("usuarioModal"), $("passwordModal"), $("eliminarUsuarioModal")].forEach((modal) => {
+      modal.addEventListener("click", (event) => {
+        if (event.target === modal) cerrarModalSeguro(modal);
+      });
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        [$("usuarioModal"), $("passwordModal"), $("eliminarUsuarioModal")].forEach((modal) => {
+          if (modal.classList.contains("open")) cerrarModalSeguro(modal);
+        });
+      }
+    });
     cargarConfiguracion().finally(cargarUsuarios);
   </script>
   <script src="/nav-permissions.js?v=6" defer></script>

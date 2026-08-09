@@ -2611,15 +2611,16 @@
       overflow: hidden;
       background: #f8fafc;
       max-height: calc(100vh - 40px);
+      width: min(1040px, 100%);
       display: grid;
       grid-template-rows: auto minmax(0, 1fr) auto;
     }
 
     #modalArqueoEfectivo .modal-header {
-      align-items: center;
-      gap: 10px;
+      align-items: flex-start;
+      gap: 12px;
       margin: 0;
-      padding: 16px 18px;
+      padding: 14px 18px;
       background: linear-gradient(135deg, #16052e 0%, #2a1450 100%);
       color: #fff;
       border-bottom: 0;
@@ -2631,6 +2632,7 @@
 
     #modalArqueoEfectivo .modal-header h3 {
       margin: 0;
+      line-height: 1.15;
     }
 
     #modalArqueoEfectivo .modal-header .muted {
@@ -2642,7 +2644,7 @@
       flex: 0 0 auto;
       flex-wrap: nowrap;
       align-items: center;
-      gap: 8px;
+      gap: 7px;
       margin-left: auto;
       justify-content: flex-end;
     }
@@ -2654,25 +2656,42 @@
     }
 
     #modalArqueoEfectivo #cerrarModalArqueoEfectivo {
+      width: 38px;
+      height: 38px;
+      min-width: 38px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 10px;
       border-color: rgba(255, 255, 255, .22);
       background: rgba(255, 255, 255, 0.1);
       color: #fff;
       box-shadow: none;
     }
 
+    #modalArqueoEfectivo #cerrarModalArqueoEfectivo .app-icon {
+      width: 18px;
+      height: 18px;
+    }
+
     #modalArqueoEfectivo #guardarArqueoVisual {
       background: #ffffff;
+      order: 2;
     }
 
     #modalArqueoEfectivo #registrarArqueoVisual {
       font-weight: 900;
+      order: 1;
+    }
+
+    #modalArqueoEfectivo #editarArqueoVisual {
+      order: 3;
     }
 
     #modalArqueoEfectivo .modal-body {
       display: grid;
-      gap: 12px;
-      padding: 16px 18px;
-      padding-bottom: 24px;
+      gap: 10px;
+      padding: 12px 14px 18px;
       background: #f8fafc;
       min-height: 0;
       overflow: auto;
@@ -2681,8 +2700,8 @@
 
     #modalArqueoEfectivo .audit-modal-layout {
       display: grid;
-      grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
-      gap: 12px;
+      grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+      gap: 10px;
       align-items: start;
     }
 
@@ -2711,7 +2730,7 @@
       z-index: 4;
       justify-content: space-between;
       gap: 10px;
-      padding: 12px 18px;
+      padding: 10px 18px;
       border-top: 1px solid var(--border);
       background: rgba(255, 255, 255, .96);
       backdrop-filter: blur(8px);
@@ -2770,6 +2789,23 @@
       font-size: 19px;
     }
 
+    #modalArqueoEfectivo .audit-summary-panel {
+      padding: 10px 12px;
+    }
+
+    #modalArqueoEfectivo .audit-summary-panel .audit-modal-section-head {
+      display: none;
+    }
+
+    #modalArqueoEfectivo .audit-mini-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    #modalArqueoEfectivo .audit-mini-grid div {
+      padding: 8px 9px;
+      min-height: auto;
+    }
+
     .audit-distribution-note {
       margin: 0;
       color: var(--muted);
@@ -2816,15 +2852,115 @@
       justify-content: flex-end;
     }
 
-    #modalArqueoEfectivo .denomination-grid {
-      grid-template-columns: 1fr;
-      max-height: min(52vh, 560px);
-      overflow: auto;
-      padding-right: 4px;
+    #modalArqueoEfectivo .denomination-header {
+      display: none;
+    }
+
+    #modalArqueoEfectivo #conteoBilletes.denomination-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      max-height: none;
+      overflow: visible;
+      padding-right: 0;
+      gap: 6px;
     }
 
     #modalArqueoEfectivo .denomination-summary {
       grid-template-columns: 1fr;
+      gap: 6px;
+      margin-top: 0;
+    }
+
+    #modalArqueoEfectivo .denomination-summary .mini-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      min-height: 54px;
+      padding: 9px 10px;
+    }
+
+    #modalArqueoEfectivo .denomination-summary label.mini-card {
+      grid-template-columns: minmax(0, 1fr) minmax(108px, 128px);
+    }
+
+    #modalArqueoEfectivo .denomination-summary .mini-card span {
+      margin-bottom: 0;
+      min-width: 0;
+      line-height: 1.2;
+    }
+
+    #modalArqueoEfectivo .denomination-summary .mini-card strong {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 2px;
+      justify-self: end;
+      text-align: right;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #modalArqueoEfectivo .denomination-summary .mini-card strong span {
+      display: inline;
+      margin-bottom: 0;
+      color: inherit;
+      font-size: inherit;
+      line-height: inherit;
+    }
+
+    #modalArqueoEfectivo .audit-mini-grid strong {
+      display: inline-flex;
+      align-items: baseline;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #modalArqueoEfectivo .denomination-summary .field {
+      width: 100%;
+      min-height: 38px;
+      padding: 6px 8px;
+      text-align: right;
+    }
+
+    #modalArqueoEfectivo #conteoBilletes .denomination-row {
+      grid-template-columns: minmax(70px, auto) minmax(64px, 90px) minmax(72px, 1fr);
+      min-height: 42px;
+      padding: 4px 6px;
+      border-radius: 8px;
+      border: 1px solid rgba(148, 163, 184, .18);
+      background: rgba(255, 255, 255, .72);
+      box-shadow: none;
+      gap: 8px;
+    }
+
+    #modalArqueoEfectivo #conteoBilletes .denomination-value,
+    #modalArqueoEfectivo #conteoBilletes .denomination-subtotal {
+      font-size: 13px;
+      line-height: 1.1;
+      white-space: nowrap;
+    }
+
+    #modalArqueoEfectivo #conteoBilletes .denomination-row .field {
+      width: 100%;
+      min-height: 38px;
+      padding: 5px 7px;
+      border-radius: 8px;
+      text-align: center;
+      font-size: 14px;
+    }
+
+    #modalArqueoEfectivo .audit-modal-section {
+      gap: 8px;
+      padding: 10px;
+      border-radius: 12px;
+      box-shadow: 0 6px 18px rgba(31, 41, 55, .05);
+    }
+
+    #modalArqueoEfectivo .audit-modal-section-head {
+      align-items: center;
+    }
+
+    #modalArqueoEfectivo .audit-distribution-note {
+      margin-top: -2px;
     }
 
     #tab-arqueos .card {
@@ -3313,6 +3449,8 @@
     #modalConciliacionCuenta .concil-modal-header p { display: none; }
     #modalConciliacionCuenta .concil-header-subtitle { margin-top: 4px; color: rgba(255, 255, 255, .72); font-size: 12px; }
     #modalConciliacionCuenta .concil-modal-header .button { border-color: rgba(255, 255, 255, .22); background: rgba(255, 255, 255, .1); color: #fff; box-shadow: none; }
+    #modalConciliacionCuenta #cerrarModalConciliacionCuenta { width: 38px; height: 38px; min-width: 38px; padding: 0; display: inline-grid; place-items: center; border-radius: 10px; flex: 0 0 auto; }
+    #modalConciliacionCuenta #cerrarModalConciliacionCuenta .app-icon { width: 18px; height: 18px; }
     #modalConciliacionCuenta .concil-modal-body { display: grid; gap: 14px; min-height: 0; overflow: auto; padding: 14px 18px 18px; background: #f8fafc; }
     #modalConciliacionCuenta .concil-primary-grid,
     #modalConciliacionCuenta .concil-panel,
@@ -3321,7 +3459,10 @@
     #modalConciliacionCuenta .concil-calc-detail .field-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
     #modalConciliacionCuenta .concil-calc-detail summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 900; }
     #modalConciliacionCuenta .concil-calc-detail[open] summary { margin-bottom: 12px; }
-    #modalConciliacionCuenta .concil-modal-footer { margin: 0; padding: 12px 18px; border-top: 1px solid var(--border); background: rgba(255, 255, 255, .96); backdrop-filter: blur(8px); justify-content: space-between; }
+    #modalConciliacionCuenta .concil-modal-footer { margin: 0; padding: 12px 18px; border-top: 1px solid var(--border); background: rgba(255, 255, 255, .96); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    #modalConciliacionCuenta .concil-modal-footer > * { flex: 0 0 auto; }
+    #modalConciliacionCuenta .concil-modal-footer .muted { min-width: 0; flex: 1 1 auto; font-size: 12px; line-height: 1.35; }
+    #modalConciliacionCuenta .concil-modal-footer #guardarConciliacionCuenta { width: auto; min-height: 44px; height: auto; padding: 11px 16px; flex: 0 0 auto; align-self: center; }
     .concil-cierre-toggle { width: 100%; text-align: left; border: 1px dashed var(--border); border-radius: 10px; background: #fafafe; color: var(--muted); padding: 8px 12px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 8px; }
     .concil-cierre-toggle:hover { background: var(--primary-soft); color: var(--primary); border-color: var(--primary); }
     .concil-cierre-toggle .toggle-icon { transition: transform .2s; font-style: normal; }
@@ -3745,7 +3886,9 @@
       }
 
       #modalArqueoEfectivo .modal-card {
-        padding: 14px;
+        padding: 0;
+        width: min(100%, calc(100vw - 20px));
+        max-height: calc(100vh - 20px);
       }
 
       .denomination-header,
@@ -3760,14 +3903,16 @@
       }
 
       #modalArqueoEfectivo .modal-header {
-        align-items: stretch;
-        flex-direction: column;
+        align-items: flex-start;
+        flex-direction: row;
+        padding: 12px 14px;
       }
 
       #modalArqueoEfectivo .modal-header-actions {
-        width: 100%;
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        width: auto;
+        display: flex;
+        flex: 0 0 auto;
+        margin-left: auto;
       }
 
       .audit-modal-actions {
@@ -3779,13 +3924,72 @@
         order: -1;
       }
 
-      #modalArqueoEfectivo .modal-header-actions .button {
-        width: 100%;
-        min-width: 0;
+      #modalArqueoEfectivo .modal-header > .modal-header-actions .button {
+        width: 44px;
+        height: 44px;
+        min-width: 44px;
+        min-height: 44px;
+        flex: 0 0 44px;
+        padding: 0;
       }
 
       .audit-modal-actions .button {
         flex: 1 1 120px;
+      }
+
+      #modalArqueoEfectivo .modal-body {
+        padding: 10px;
+        gap: 9px;
+      }
+
+      #modalArqueoEfectivo .audit-summary-panel {
+        padding: 9px;
+      }
+
+      #modalArqueoEfectivo #conteoBilletes.denomination-grid {
+        grid-template-columns: 1fr;
+        max-height: none;
+        overflow: visible;
+        padding-right: 0;
+      }
+
+      #modalArqueoEfectivo #conteoBilletes .denomination-row {
+        grid-template-columns: minmax(72px, .8fr) minmax(76px, .75fr) minmax(92px, 1fr);
+        gap: 7px;
+        min-height: 46px;
+        padding: 4px 6px;
+      }
+
+      #modalArqueoEfectivo #conteoBilletes .denomination-row .field {
+        min-height: 42px;
+        font-size: 15px;
+      }
+
+      #modalArqueoEfectivo .denomination-summary {
+        grid-template-columns: 1fr;
+      }
+
+      #modalArqueoEfectivo .modal-footer {
+        padding: 10px;
+        align-items: stretch;
+      }
+
+      #modalArqueoEfectivo .modal-footer > .muted {
+        flex: 1 1 100%;
+      }
+
+      #modalArqueoEfectivo .modal-footer .modal-header-actions {
+        width: 100%;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+      }
+
+      #modalArqueoEfectivo .modal-footer .modal-header-actions .button {
+        min-height: 44px;
+      }
+
+      #modalArqueoEfectivo .modal-footer #registrarArqueoVisual {
+        grid-column: 1 / -1;
       }
     }
     /* Modal UI unification layer - non invasive */
@@ -3829,6 +4033,335 @@
   <link rel="stylesheet" href="/user-menu.css?v=4" />
   <style>
     @media (max-width: 520px) {
+      #modalConciliacionCuenta .concil-modal-footer {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+        align-items: stretch;
+        justify-content: stretch;
+      }
+
+      #modalConciliacionCuenta .concil-modal-footer > * {
+        flex: none;
+      }
+
+      #modalConciliacionCuenta .concil-modal-footer .muted {
+        flex: none;
+        line-height: 1.35;
+      }
+
+      #modalConciliacionCuenta .concil-modal-footer #guardarConciliacionCuenta {
+        width: 100%;
+        min-height: 44px;
+        height: auto;
+        padding: 11px 16px;
+        flex: none;
+        align-self: start;
+      }
+
+      #tab-movimientos .table-scroll,
+      .cash-closures-table-wrap {
+        overflow: visible !important;
+        max-height: none;
+      }
+
+      #tab-movimientos .table-scroll table,
+      #tab-movimientos .table-scroll thead,
+      #tab-movimientos .table-scroll tbody,
+      #tab-movimientos .table-scroll tr,
+      #tab-movimientos .table-scroll td,
+      .cash-closures-table-wrap table,
+      .cash-closures-table-wrap thead,
+      .cash-closures-table-wrap tbody,
+      .cash-closures-table-wrap tr,
+      .cash-closures-table-wrap td {
+        width: 100%;
+      }
+
+      #tab-movimientos .table-scroll table,
+      #tab-movimientos .table-scroll tbody,
+      #tablaMovimientosBody,
+      .cash-closures-table-wrap table,
+      .cash-closures-table-wrap tbody,
+      #cierresHistoricosBody {
+        display: block;
+      }
+
+      #tab-movimientos .table-scroll thead,
+      .cash-closures-table-wrap thead {
+        display: none;
+      }
+
+      #tablaMovimientosBody,
+      #cierresHistoricosBody {
+        display: grid;
+        gap: 10px;
+      }
+
+      #tablaMovimientosBody tr,
+      #cierresHistoricosBody tr {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px 10px;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: #ffffff;
+        box-shadow: 0 10px 28px rgba(15, 23, 42, .06);
+      }
+
+      #tablaMovimientosBody tr.cash-table-empty,
+      #cierresHistoricosBody tr.cash-table-empty {
+        grid-template-columns: 1fr;
+      }
+
+      #tablaMovimientosBody td,
+      #cierresHistoricosBody td {
+        display: grid;
+        gap: 3px;
+        min-width: 0;
+        padding: 0;
+        border-bottom: 0;
+        overflow-wrap: anywhere;
+      }
+
+      #tablaMovimientosBody td::before,
+      #cierresHistoricosBody td::before {
+        content: attr(data-label);
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: .04em;
+        line-height: 1.15;
+        text-transform: uppercase;
+      }
+
+      #tablaMovimientosBody .cash-movement-cell-type,
+      #tablaMovimientosBody .cash-movement-cell-description,
+      #tablaMovimientosBody .cash-movement-cell-amount,
+      #tablaMovimientosBody .cash-movement-cell-actions,
+      #cierresHistoricosBody .cash-closure-cell-date,
+      #cierresHistoricosBody .cash-closure-cell-amount,
+      #cierresHistoricosBody .cash-closure-cell-difference,
+      #cierresHistoricosBody .cash-closure-cell-actions {
+        grid-column: 1 / -1;
+      }
+
+      #tablaMovimientosBody .cash-movement-cell-type,
+      #cierresHistoricosBody .cash-closure-cell-date {
+        font-size: 15px;
+        font-weight: 900;
+      }
+
+      #tablaMovimientosBody .cash-movement-cell-amount,
+      #cierresHistoricosBody .cash-closure-cell-amount,
+      #cierresHistoricosBody .cash-closure-cell-difference {
+        font-size: 18px;
+        font-weight: 900;
+        line-height: 1.1;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+
+      #tablaMovimientosBody .cash-movement-row.ingreso .cash-movement-cell-amount {
+        color: var(--success);
+      }
+
+      #tablaMovimientosBody .cash-movement-row.egreso .cash-movement-cell-amount {
+        color: var(--danger);
+      }
+
+      #tablaMovimientosBody .cash-movement-cell-actions,
+      #cierresHistoricosBody .cash-closure-cell-actions {
+        padding-top: 4px;
+        border-top: 1px solid rgba(148, 163, 184, .24);
+      }
+
+      #tablaMovimientosBody .cash-movement-cell-actions .button,
+      #cierresHistoricosBody .cash-closure-cell-actions .button {
+        min-height: 40px;
+      }
+
+      #tablaMovimientosBody tr.cash-movement-row {
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 7px 10px;
+        padding: 10px;
+      }
+
+      #tablaMovimientosBody .cash-movement-cell-type {
+        grid-column: 1 / 2;
+        grid-row: 1;
+        align-self: center;
+        display: inline-flex;
+        width: fit-content;
+        max-width: 100%;
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: rgba(34, 163, 90, .12);
+        color: var(--success);
+        font-size: 12px;
+        font-weight: 900;
+        letter-spacing: .02em;
+        text-transform: uppercase;
+      }
+
+      #tablaMovimientosBody .cash-movement-row.egreso .cash-movement-cell-type {
+        background: rgba(224, 82, 82, .12);
+        color: var(--danger);
+      }
+
+      #tablaMovimientosBody .cash-movement-cell-amount {
+        grid-column: 2 / 3;
+        grid-row: 1;
+        justify-self: end;
+        align-self: center;
+        font-size: 19px;
+        text-align: right;
+      }
+
+      #tablaMovimientosBody .cash-movement-cell-time {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      #tablaMovimientosBody .cash-movement-cell-description {
+        grid-column: 1 / -1;
+        grid-row: 3;
+        padding-top: 2px;
+        font-size: 14px;
+        font-weight: 750;
+        line-height: 1.25;
+      }
+
+      #tablaMovimientosBody .cash-movement-cell-method,
+      #tablaMovimientosBody .cash-movement-cell-user {
+        grid-row: 4;
+      }
+
+      #tablaMovimientosBody .cash-movement-cell-origin {
+        grid-column: 1 / -1;
+        grid-row: 5;
+      }
+
+      #tablaMovimientosBody .cash-movement-cell-actions {
+        grid-column: 1 / -1;
+        padding-top: 2px;
+        border-top: 0;
+        justify-self: end;
+      }
+
+      #tablaMovimientosBody .cash-movement-cell-actions.no-action {
+        display: none;
+      }
+
+      #tablaMovimientosBody .cash-movement-cell-actions .button {
+        width: auto;
+        min-width: 84px;
+        min-height: 40px;
+        padding: 8px 12px;
+      }
+
+      #tablaMovimientosBody .cash-movement-cell-type::before,
+      #tablaMovimientosBody .cash-movement-cell-time::before,
+      #tablaMovimientosBody .cash-movement-cell-description::before,
+      #tablaMovimientosBody .cash-movement-cell-amount::before,
+      #tablaMovimientosBody .cash-movement-cell-actions::before {
+        content: none;
+      }
+
+      #cierresHistoricosBody tr.cash-closure-row {
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 7px 10px;
+        padding: 10px;
+      }
+
+      #cierresHistoricosBody .cash-closure-cell-date {
+        grid-column: 1 / 2;
+        grid-row: 1;
+        font-size: 15px;
+        font-weight: 900;
+        line-height: 1.15;
+      }
+
+      #cierresHistoricosBody .cash-closure-cell-status {
+        grid-column: 2 / 3;
+        grid-row: 1;
+        justify-self: end;
+        align-self: start;
+        width: auto;
+      }
+
+      #cierresHistoricosBody .cash-closure-status-pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 26px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: rgba(34, 163, 90, .12);
+        color: var(--success);
+        font-size: 11px;
+        font-weight: 900;
+      }
+
+      #cierresHistoricosBody .cash-closure-cell-user {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      #cierresHistoricosBody .cash-closure-cell-open,
+      #cierresHistoricosBody .cash-closure-cell-close {
+        grid-row: 3;
+      }
+
+      #cierresHistoricosBody .cash-closure-cell-amount,
+      #cierresHistoricosBody .cash-closure-cell-difference {
+        grid-column: auto;
+        font-size: 14px;
+      }
+
+      #cierresHistoricosBody .cash-closure-cell-difference {
+        color: var(--text);
+      }
+
+      #cierresHistoricosBody .cash-closure-cell-difference.diff-ok {
+        color: var(--success);
+      }
+
+      #cierresHistoricosBody .cash-closure-cell-difference.diff-alert {
+        color: var(--danger);
+      }
+
+      #cierresHistoricosBody .cash-closure-cell-actions {
+        grid-column: 2 / 3;
+        justify-self: end;
+        align-self: end;
+        padding-top: 0;
+        border-top: 0;
+      }
+
+      #cierresHistoricosBody .cash-closure-cell-actions .button {
+        width: 42px;
+        min-width: 42px;
+        height: 42px;
+        min-height: 42px;
+        padding: 0;
+        display: inline-grid;
+        place-items: center;
+        font-size: 18px;
+      }
+
+      #cierresHistoricosBody .cash-closure-cell-date::before,
+      #cierresHistoricosBody .cash-closure-cell-user::before,
+      #cierresHistoricosBody .cash-closure-cell-status::before,
+      #cierresHistoricosBody .cash-closure-cell-actions::before {
+        content: none;
+      }
+
       .tabs {
         width: 100%;
         max-width: 100%;
@@ -4224,7 +4757,7 @@
                 </tr>
               </thead>
               <tbody id="tablaMovimientosBody">
-                <tr><td colspan="8">Cargando movimientos...</td></tr>
+                <tr class="cash-table-empty"><td colspan="8">Cargando movimientos...</td></tr>
               </tbody>
             </table>
           </div>
@@ -4449,7 +4982,7 @@
               <button type="button" class="button secondary compact" id="exportarCierresHistoricos">Exportar</button>
             </div>
           </div>
-          <div style="overflow:auto;">
+          <div class="cash-closures-table-wrap" style="overflow:auto;">
             <table class="compact-table">
               <thead>
                 <tr>
@@ -4468,7 +5001,7 @@
                 </tr>
               </thead>
               <tbody id="cierresHistoricosBody">
-                <tr><td colspan="12">Cargando cierres...</td></tr>
+                <tr class="cash-table-empty"><td colspan="12">Cargando cierres...</td></tr>
               </tbody>
             </table>
           </div>
@@ -4803,7 +5336,7 @@
               <h3 style="margin: 0;">Arqueo efectivo</h3>
               <div class="muted">Control físico de billetes, caja cambio y dinero resguardado.</div>
             </div>
-            <button type="button" class="button secondary compact" id="cerrarModalArqueoEfectivo">Cerrar</button>
+            <button type="button" class="button secondary compact" id="cerrarModalArqueoEfectivo" title="Cerrar" aria-label="Cerrar arqueo"><span class="app-icon icon-close" aria-hidden="true"></span></button>
           </div>
           <div class="modal-body cash-audit-modal-grid">
             <section class="audit-modal-section audit-summary-panel">
@@ -4817,7 +5350,7 @@
                 <div class="audit-primary-kpi"><small>Total contado</small><strong id="modalArqueoContado">$0.00</strong></div>
                 <div><small>Diferencia</small><strong id="modalArqueoDiferencia">$0.00</strong></div>
                 <div><small>Esperado por sistema</small><strong id="modalArqueoEsperado">$0.00</strong></div>
-                <div><small>Con esto arrancÃ³ el dÃ­a</small><strong id="modalArqueoSaldoInicial">$0.00</strong></div>
+                <div><small>Con esto arrancará el día</small><strong id="modalArqueoSaldoInicial">$0.00</strong></div>
               </div>
             </section>
             <div class="audit-modal-layout">
@@ -4886,7 +5419,7 @@
             <div class="concil-header-subtitle">Controla el saldo real y la diferencia contra el sistema.</div>
             <p>Controlá el saldo real y definí cómo inicia el próximo turno.</p>
             </div>
-            <button type="button" class="button secondary compact" id="cerrarModalConciliacionCuenta">Cerrar</button>
+            <button type="button" class="button secondary compact" id="cerrarModalConciliacionCuenta" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
           </div>
           <input type="hidden" id="conciliacionCajaId" />
           <input type="hidden" id="conciliacionCuentaId" />
@@ -4978,7 +5511,7 @@
           </div>
 
           <div class="modal-footer modal-actions concil-modal-footer">
-            <div class="muted">Esperado viene del sistema; real es el control manual. No modifica movimientos ni cierres.</div>
+            <div class="muted">No modifica movimientos ni cierres.</div>
             <button type="button" class="button success" id="guardarConciliacionCuenta">Guardar conciliación</button>
           </div>
         </div>
@@ -6216,18 +6749,19 @@
 
     function renderizarConteoBilletes() {
       conteoBilletes.innerHTML = "";
-      [...denominaciones].sort((a, b) => b - a).forEach((denominacion) => {
+      denominaciones.forEach((denominacion) => {
         const fila = document.createElement("div");
         fila.className = "mini-card denomination-row";
         const valor = document.createElement("span");
         valor.className = "denomination-value";
-        valor.textContent = money(denominacion);
+        valor.textContent = formatearDenominacion(denominacion);
         const input = document.createElement("input");
         input.type = "number";
         input.min = "0";
         input.step = "1";
         input.value = "0";
         input.className = "field";
+        input.setAttribute("aria-label", `Cantidad de billetes de ${formatearDenominacion(denominacion)}`);
         const subtotal = document.createElement("strong");
         subtotal.className = "denomination-subtotal";
         subtotal.textContent = money(0);
@@ -6243,6 +6777,15 @@
         fila.appendChild(subtotal);
         conteoBilletes.appendChild(fila);
       });
+    }
+
+    function formatearDenominacion(valor) {
+      return new Intl.NumberFormat("es-AR", {
+        style: "currency",
+        currency: "ARS",
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0
+      }).format(Number(valor) || 0);
     }
 
     function actualizarSubtotalesConteo() {
@@ -6706,7 +7249,7 @@
       movimientosFiltrados = Array.isArray(movimientos) ? movimientos : [];
 
       if (!movimientosFiltrados.length) {
-        tablaMovimientosBody.innerHTML = '<tr><td colspan="8">Sin movimientos.</td></tr>';
+        tablaMovimientosBody.innerHTML = '<tr class="cash-table-empty"><td colspan="8">Sin movimientos.</td></tr>';
         movimientosPageInfo.innerText = "Sin movimientos.";
         movimientosPagination.innerHTML = "";
         return;
@@ -6725,15 +7268,16 @@
         const descripcion = buildOperacionDescripcion(movimiento);
         const puedeEditar = esMovimientoCajaManual(movimiento);
         const row = document.createElement("tr");
+        row.className = `cash-movement-row ${getMovimientoTipo(movimiento) === "egreso" ? "egreso" : "ingreso"}`;
         row.innerHTML = `
-          <td>${movimiento.hora || "-"}</td>
-          <td>${tipo}</td>
-          <td>${origen}</td>
-          <td>${descripcion}</td>
-          <td>${movimiento.tipo_cobro || "-"}</td>
-          <td>${money(movimiento.total)}</td>
-          <td>${getMovimientoUsuario(movimiento)}</td>
-          <td>${puedeEditar ? '<button type="button" class="button secondary compact" data-editar-movimiento>Editar</button>' : "-"}</td>
+          <td class="cash-movement-cell-time" data-label="Hora">${movimiento.hora || "-"}</td>
+          <td class="cash-movement-cell-type" data-label="Tipo">${tipo}</td>
+          <td class="cash-movement-cell-origin" data-label="Origen">${origen}</td>
+          <td class="cash-movement-cell-description" data-label="Descripción">${descripcion}</td>
+          <td class="cash-movement-cell-method" data-label="Método">${movimiento.tipo_cobro || "-"}</td>
+          <td class="cash-movement-cell-amount" data-label="Importe">${money(movimiento.total)}</td>
+          <td class="cash-movement-cell-user" data-label="Usuario">${getMovimientoUsuario(movimiento)}</td>
+          <td class="cash-movement-cell-actions${puedeEditar ? "" : " no-action"}" data-label="Acciones">${puedeEditar ? '<button type="button" class="button secondary compact" data-editar-movimiento>Editar</button>' : ""}</td>
         `;
         const botonEditar = row.querySelector("[data-editar-movimiento]");
         if (botonEditar) {
@@ -6796,20 +7340,22 @@
 
     function buildCierreHistoricoRow(cierre) {
       const resumen = cierre.resumen_snapshot || {};
+      const diferencia = Number(cierre.diferencia || 0);
+      const diferenciaClass = Math.abs(diferencia) < 0.01 ? "diff-ok" : "diff-alert";
       return `
-        <tr>
-          <td>${cierre.fecha || "-"}</td>
-          <td>${usuarioVisibleCaja(cierre.usuario)}</td>
-          <td>${cierre.hora || "-"}</td>
-          <td>${cierre.hora_cierre || "-"}</td>
-          <td>${money(resumen.total_efectivo || 0)}</td>
-          <td>${money(resumen.total_debito_tarjeta ?? resumen.total_debito ?? 0)}</td>
-          <td>${resumen.operaciones_mixtas || 0}</td>
-          <td>${money(resumen.total_pagos_general || 0)}</td>
-          <td>${money(cierre.efectivo_esperado)}</td>
-          <td>${money(cierre.diferencia)}</td>
-          <td>${cierre.estado || "-"}</td>
-          <td><button type="button" class="button secondary compact" data-cierre-id="${cierre.id}" title="Ver cierre">&#128065;</button></td>
+        <tr class="cash-closure-row">
+          <td class="cash-closure-cell-date" data-label="Fecha">${cierre.fecha || "-"}</td>
+          <td class="cash-closure-cell-user" data-label="Usuario">${usuarioVisibleCaja(cierre.usuario)}</td>
+          <td class="cash-closure-cell-open" data-label="Apertura">${cierre.hora || "-"}</td>
+          <td class="cash-closure-cell-close" data-label="Cierre">${cierre.hora_cierre || "-"}</td>
+          <td data-label="Total efectivo">${money(resumen.total_efectivo || 0)}</td>
+          <td data-label="Total débito / crédito">${money(resumen.total_debito_tarjeta ?? resumen.total_debito ?? 0)}</td>
+          <td data-label="Total mixtas">${resumen.operaciones_mixtas || 0}</td>
+          <td data-label="Total pagos">${money(resumen.total_pagos_general || 0)}</td>
+          <td class="cash-closure-cell-amount" data-label="Efectivo esperado">${money(cierre.efectivo_esperado)}</td>
+          <td class="cash-closure-cell-difference ${diferenciaClass}" data-label="Diferencia">${money(cierre.diferencia)}</td>
+          <td class="cash-closure-cell-status" data-label="Estado"><span class="cash-closure-status-pill">${cierre.estado || "-"}</span></td>
+          <td class="cash-closure-cell-actions" data-label="Acciones"><button type="button" class="button secondary compact" data-cierre-id="${cierre.id}" title="Ver cierre" aria-label="Ver cierre">&#128065;</button></td>
         </tr>
       `;
     }
@@ -6879,7 +7425,7 @@
       const cierresVisibles = getCierresHistoricosVisibles();
 
       if (!cierresVisibles.length) {
-        cierresHistoricosBody.innerHTML = '<tr><td colspan="12">No hay cajas cerradas todavia.</td></tr>';
+        cierresHistoricosBody.innerHTML = '<tr class="cash-table-empty"><td colspan="12">No hay cajas cerradas todavia.</td></tr>';
         cierresPageInfo.innerText = cierresFiltroTexto ? "Sin cierres para el filtro aplicado." : "Sin cierres.";
         cierresPagination.innerHTML = "";
         return;

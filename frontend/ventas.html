@@ -1755,8 +1755,6 @@
         z-index: 2;
         align-items: flex-start;
         padding: max(14px, env(safe-area-inset-top)) 14px 12px;
-        background: #ffffff;
-        border-bottom: 1px solid var(--border);
       }
 
       #modalProductos.catalogo-completo .modal-header > div {
@@ -1776,19 +1774,6 @@
       #modalProductos.catalogo-completo .modal-header p {
         font-size: 12px;
         line-height: 1.35;
-      }
-
-      #modalProductos.catalogo-completo .modal-header-close {
-        display: inline-grid;
-        place-items: center;
-        flex: 0 0 auto;
-        width: 44px;
-        height: 44px;
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        background: #ffffff;
-        color: var(--text);
-        cursor: pointer;
       }
 
       #modalProductos.catalogo-completo #modalBuscadorTodos {
@@ -1831,7 +1816,7 @@
         background: #ffffff;
       }
 
-      #modalProductos.catalogo-completo #cerrarModalProductos {
+      #modalProductos.catalogo-completo #vaciarTicketModalProductos {
         min-height: 44px;
       }
 
@@ -2001,6 +1986,7 @@
     :where(.close,.icon-button,.mib.icon-only){display:inline-grid;place-items:center;flex:0 0 auto;border-radius:10px}
     @media(max-width:860px){:where(.modal,.modal-backdrop){padding:10px}.modal>.modal-card,.modal-backdrop>.modal-card,.modal>.dialog,.modal>.modal-window{width:min(100%,calc(100vw - 20px));max-height:calc(100vh - 20px);border-radius:16px}:where(.modal-actions,.dialog-actions,.modal-footer){justify-content:stretch}:where(.modal-actions>* , .dialog-actions>* , .modal-footer>*){flex:1 1 140px}}
     .atlas-modal-card{padding:0;overflow:hidden;background:#f8fafc}.atlas-modal-card>.modal-header{margin:0;border:0;border-radius:0;padding:16px 18px;background:linear-gradient(135deg,#16052e 0%,#2a1450 100%);color:#fff;box-shadow:none}.atlas-modal-card>.modal-header p{color:rgba(255,255,255,.72)}.atlas-modal-card .modal-body,.atlas-modal-card .cobro-modal-body{padding:16px 18px;background:#f8fafc}.atlas-modal-card .checkout-section,.atlas-modal-card .support-card,.atlas-modal-card .client-select-card{border:1px solid var(--border);border-radius:16px;background:#fff;box-shadow:0 10px 24px rgba(17,24,39,.04)}.atlas-modal-close{width:38px;height:38px;border-radius:10px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.1);color:#fff;display:inline-grid;place-items:center;cursor:pointer}.atlas-modal-card>.modal-footer,.atlas-modal-card>.inline-actions{margin:0;padding:12px 18px;border-top:1px solid var(--border);background:#fff}.atlas-modal-card>.modal-footer[aria-hidden="true"]{display:none}.cobro-modal-card.atlas-modal-card{width:min(720px,100%);max-height:calc(100vh - 56px);display:grid;grid-template-rows:auto minmax(0,1fr) auto}.cobro-modal-card.atlas-modal-card .cobro-modal-body{overflow:auto}.payment-button.disabled-by-account{opacity:.45}.payment-button.disabled-by-account::after{content:"Sin cuenta";font-size:10px;color:var(--danger);font-weight:800;margin-top:2px}.client-select-card{padding:14px}.client-select-card .field{margin-top:8px}
+    #modalProductos .atlas-modal-card{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;width:min(980px,100%);max-height:calc(100vh - 56px)}#modalProductos .atlas-modal-card>.modal-header{align-items:flex-start}#modalProductos .modal-header-close{display:inline-grid}#modalProductos .atlas-modal-close{flex:0 0 auto;min-width:38px}#modalProductos #modalBuscadorTodos{margin:16px 18px 0;width:calc(100% - 36px)}#modalProductos .modal-body{min-height:0;overflow:auto}#modalProductos .modal-footer{justify-content:flex-end}#modalProductos #vaciarTicketModalProductos{min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:8px}#modalProductos #vaciarTicketModalProductos:disabled{opacity:.5;cursor:not-allowed}@media(max-width:520px){#modalProductos .atlas-modal-close{width:44px;height:44px;min-width:44px}}
     .cobro-system-message{margin:0 18px 12px;padding:11px 13px;border-radius:12px;border:1px solid rgba(224,82,82,.28);background:rgba(224,82,82,.1);color:#991b1b;font-weight:800;font-size:13px;line-height:1.35}.cobro-system-message.hidden{display:none}
     /* Cobros V2 — D2.1/D2.3 */
     [data-payment="mixto"] { display: none !important; }
@@ -2543,20 +2529,20 @@
   </div>
 
   <div class="modal" id="modalProductos">
-    <div class="modal-card">
+    <div class="modal-card atlas-modal-card">
       <div class="modal-header">
         <div>
           <h3 id="modalProductosTitulo">Productos</h3>
           <p class="muted">Vista ampliada de la seccion seleccionada.</p>
         </div>
-        <button type="button" class="modal-header-close" id="cerrarModalProductosHeader" aria-label="Cerrar catalogo">Cerrar</button>
+        <button type="button" class="atlas-modal-close modal-header-close" id="cerrarModalProductosHeader" title="Cerrar" aria-label="Cerrar catálogo"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
       <input type="text" id="modalBuscadorTodos" class="search-input" placeholder="Buscar por nombre, código o categoría..." style="display:none; margin-bottom:12px;">
       <div class="modal-body">
       <div id="modalProductosGrid" class="product-grid"></div>
       </div>
       <div class="modal-footer modal-actions">
-        <button type="button" class="button secondary" id="cerrarModalProductos">Cerrar</button>
+        <button type="button" class="button danger" id="vaciarTicketModalProductos"><span class="app-icon icon-delete" aria-hidden="true"></span>Vaciar carrito</button>
       </div>
     </div>
   </div>
@@ -2715,7 +2701,7 @@
     const modalComboSubtitulo = document.getElementById("modalComboSubtitulo");
     const modalComboDetalle = document.getElementById("modalComboDetalle");
     let comboActual = null;
-    const cerrarModalProductos = document.getElementById("cerrarModalProductos");
+    const vaciarTicketModalProductos = document.getElementById("vaciarTicketModalProductos");
     const cerrarModalProductosHeader = document.getElementById("cerrarModalProductosHeader");
     const abrirCliente = document.getElementById("abrirCliente");
     const clienteResumen = document.getElementById("ticketTitle");
@@ -4055,6 +4041,12 @@
       botonGuardarPendiente.innerText = currentPendingId ? "Guardar cambios" : "Guardar como pendiente";
     }
 
+    function actualizarEstadoVaciarTicketModal() {
+      if (vaciarTicketModalProductos) {
+        vaciarTicketModalProductos.disabled = ticket.length === 0;
+      }
+    }
+
     function marcarPendienteEditado() {
       if (!currentPendingId) {
         return;
@@ -4105,6 +4097,7 @@
         actualizarVuelto();
         actualizarResumenCobroTicket();
         renderBannerResolucionAjusteStock();
+        actualizarEstadoVaciarTicketModal();
         return;
       }
 
@@ -4192,6 +4185,7 @@
       actualizarVuelto();
       actualizarResumenCobroTicket();
       renderBannerResolucionAjusteStock();
+      actualizarEstadoVaciarTicketModal();
     }
 
     async function agregarAlTicket(producto) {
@@ -5560,8 +5554,10 @@
       cerrarModal(modalPendientes);
     });
 
-    cerrarModalProductos.addEventListener("click", function () {
-      cerrarModalProductosSeguro();
+    vaciarTicketModalProductos.addEventListener("click", function () {
+      if (ticket.length === 0) return;
+      resetTicketEditor();
+      mostrarMensaje("Carrito vaciado");
     });
 
     cerrarModalProductosHeader.addEventListener("click", cerrarModalProductosSeguro);

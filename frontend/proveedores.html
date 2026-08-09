@@ -453,7 +453,16 @@
     .pill.off { background: rgba(224, 82, 82, 0.12); color: var(--danger); }
     .pill.warn { background: rgba(217, 154, 33, 0.14); color: var(--warning); }
     .muted { color: var(--muted); }
-    .message { min-height: 20px; font-weight: 700; margin: 0; }
+    .message {
+      min-height: 20px;
+      max-width: 100%;
+      font-weight: 700;
+      margin: 0;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: normal;
+      line-height: 1.35;
+    }
 
     .modal {
       position: fixed;
@@ -560,6 +569,197 @@
       .topbar-divider { display: none; }
       .top-actions { justify-content: flex-start; }
       .form-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 520px) {
+      .main {
+        padding: 12px 10px 18px;
+        gap: 10px;
+      }
+      .card {
+        border-radius: 16px;
+        padding: 12px;
+      }
+      .kpi-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .kpi-grid .kpi:first-child {
+        grid-column: 1 / -1;
+      }
+      .kpi {
+        min-height: 0;
+        padding: 10px 11px;
+        gap: 4px;
+      }
+      .kpi strong {
+        font-size: 18px;
+        line-height: 1.1;
+      }
+      .toolbar {
+        align-items: flex-start;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .toolbar > div:first-child {
+        min-width: 0;
+      }
+      .toolbar h2 {
+        font-size: 18px;
+        line-height: 1.15;
+      }
+      .toolbar-actions {
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .toolbar-actions .button {
+        min-height: 42px;
+      }
+      .filters {
+        width: 100%;
+        min-width: 0;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .filters input[type="search"] {
+        grid-column: 1 / -1;
+      }
+      .field {
+        min-width: 0;
+        min-height: 44px;
+      }
+      .message {
+        max-width: calc(100vw - 24px);
+      }
+      .notifications-dropdown {
+        position: fixed;
+        top: calc(env(safe-area-inset-top, 0px) + 70px);
+        left: 12px;
+        right: 12px;
+        width: auto;
+        max-width: calc(100vw - 24px);
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+      .notification-item {
+        min-width: 0;
+      }
+      .providers-table-wrap {
+        overflow: visible !important;
+        max-width: 100%;
+      }
+      .providers-table-wrap table,
+      .providers-table-wrap thead,
+      .providers-table-wrap tbody {
+        display: block;
+        width: 100%;
+      }
+      .providers-table-wrap thead {
+        display: none;
+      }
+      #tablaProveedores {
+        display: grid;
+        gap: 10px;
+      }
+      #tablaProveedores tr {
+        position: relative;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px 10px;
+        width: 100%;
+        min-width: 0;
+        padding: 12px 58px 12px 12px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: #fff;
+        box-shadow: 0 10px 24px rgba(17, 24, 39, 0.08);
+      }
+      #tablaProveedores td {
+        display: grid;
+        min-width: 0;
+        gap: 3px;
+        padding: 0;
+        border-bottom: 0;
+        font-size: 13px;
+        line-height: 1.25;
+        overflow-wrap: anywhere;
+      }
+      #tablaProveedores td::before {
+        content: attr(data-label);
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 900;
+        line-height: 1.1;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      #tablaProveedores .providers-empty-row {
+        display: block;
+        padding: 14px;
+        text-align: center;
+      }
+      #tablaProveedores .providers-empty-row td {
+        display: block;
+        text-align: center;
+        color: var(--muted);
+      }
+      #tablaProveedores .providers-empty-row td::before,
+      #tablaProveedores .provider-main-cell::before,
+      #tablaProveedores .provider-actions-cell::before {
+        content: none;
+      }
+      #tablaProveedores .provider-main-cell {
+        grid-column: 1 / -1;
+        display: block;
+        padding-right: 2px;
+      }
+      #tablaProveedores .provider-main-cell strong {
+        display: block;
+        min-width: 0;
+        color: var(--text);
+        font-size: 16px;
+        line-height: 1.2;
+        overflow-wrap: anywhere;
+      }
+      #tablaProveedores .provider-main-cell .muted {
+        display: block;
+        margin-top: 3px;
+        font-size: 12px;
+      }
+      #tablaProveedores .provider-email-cell,
+      #tablaProveedores .provider-impact-cell {
+        grid-column: 1 / -1;
+      }
+      #tablaProveedores .provider-balance-cell {
+        font-weight: 800;
+      }
+      #tablaProveedores .provider-status-cell {
+        align-content: start;
+      }
+      #tablaProveedores .provider-actions-cell {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        display: block;
+      }
+      #tablaProveedores .provider-actions-cell .dots-button {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+      }
+    }
+    @media (max-width: 360px) {
+      .filters {
+        grid-template-columns: 1fr;
+      }
+      #tablaProveedores tr {
+        grid-template-columns: 1fr;
+      }
+      #tablaProveedores .provider-actions-cell {
+        position: static;
+        grid-column: 1 / -1;
+        justify-self: end;
+        margin-top: -2px;
+      }
     }
     /* Modal UI unification layer - non invasive */
     :where(.modal,.modal-backdrop){background:rgba(17,24,39,.52);padding:clamp(12px,3vw,28px);overflow:auto;overscroll-behavior:contain}
@@ -719,7 +919,7 @@
         </div>
         <p id="contadorListado" style="font-size:12px;font-weight:700;color:var(--muted);margin:4px 0;"></p>
 
-        <div style="overflow:auto;">
+        <div class="providers-table-wrap" style="overflow:auto;">
           <table>
             <thead>
               <tr>
@@ -737,7 +937,7 @@
               </tr>
             </thead>
             <tbody id="tablaProveedores">
-              <tr><td colspan="11">Cargando proveedores...</td></tr>
+              <tr class="providers-empty-row"><td colspan="11">Cargando proveedores...</td></tr>
             </tbody>
           </table>
         </div>
@@ -996,6 +1196,7 @@
     let proveedorEditandoId = null;
     let proveedorPago = null;
     let configProveedores = {};
+    let modalTriggerActivo = null;
     const kpiGrid = document.querySelector(".kpi-grid");
 
     function money(valor) {
@@ -1094,13 +1295,29 @@
     }
 
     function abrirModal(modal) {
+      const active = document.activeElement;
+      if (active && !modal.contains(active)) {
+        modalTriggerActivo = active;
+      }
       modal.classList.add("open");
       modal.setAttribute("aria-hidden", "false");
     }
 
     function cerrarModal(modal) {
+      if (!modal) return;
+      const active = document.activeElement;
+      if (active && modal.contains(active)) {
+        if (modalTriggerActivo && modalTriggerActivo.isConnected && typeof modalTriggerActivo.focus === "function") {
+          modalTriggerActivo.focus({ preventScroll: true });
+        } else if (typeof active.blur === "function") {
+          active.blur();
+        }
+      }
       modal.classList.remove("open");
       modal.setAttribute("aria-hidden", "true");
+      if (!document.querySelector(".modal.open")) {
+        modalTriggerActivo = null;
+      }
     }
 
     function limpiarFormulario() {
@@ -1197,7 +1414,7 @@
       tablaProveedores.innerHTML = "";
 
       if (items.length === 0) {
-        tablaProveedores.innerHTML = '<tr><td colspan="11">No hay proveedores para mostrar.</td></tr>';
+        tablaProveedores.innerHTML = '<tr class="providers-empty-row"><td colspan="11">No hay proveedores para mostrar.</td></tr>';
         document.getElementById("contadorListado").textContent = "";
         return;
       }
@@ -1224,6 +1441,7 @@
 
       visibles.forEach((proveedor) => {
         const row = document.createElement("tr");
+        row.className = "provider-row";
         const activo = Number(proveedor.activo) === 1;
         const saldo = Number(proveedor.saldo_pendiente || 0);
         const acciones = esVistaReducida()
@@ -1237,17 +1455,17 @@
                 <button type="button" class="menu-action danger" data-action="eliminar">Eliminar</button>
               `;
         row.innerHTML = `
-          <td><strong>${proveedor.nombre}</strong><br><span class="muted">CUIT ${proveedor.cuit || "-"}</span></td>
-          <td>${proveedor.contacto || proveedor.alias || "-"}</td>
-          <td>${proveedor.telefono || "-"}</td>
-          <td>${proveedor.email || "-"}</td>
-          <td>${categoriaProveedorLabel(proveedor)}</td>
-          <td>${money(proveedor.compras_mes)}</td>
-          <td>${impactoLabel(proveedor.tipo_impacto)}<br><span class="muted">${permiteIvaFavor(proveedor) ? "IVA a favor" : "Sin IVA crédito"}</span></td>
-          <td><span class="pill ${saldo > 0 ? "warn" : ""}">${money(saldo)}</span></td>
-          <td>${proveedor.ultima_compra || "-"}</td>
-          <td><span class="pill ${activo ? "" : "off"}">${activo ? "Activo" : "Inactivo"}</span></td>
-          <td>
+          <td class="provider-main-cell" data-label="Proveedor"><strong>${proveedor.nombre}</strong><br><span class="muted">CUIT ${proveedor.cuit || "-"}</span></td>
+          <td class="provider-contact-cell" data-label="Contacto">${proveedor.contacto || proveedor.alias || "-"}</td>
+          <td class="provider-phone-cell" data-label="Teléfono">${proveedor.telefono || "-"}</td>
+          <td class="provider-email-cell" data-label="Email">${proveedor.email || "-"}</td>
+          <td class="provider-category-cell" data-label="Categoría">${categoriaProveedorLabel(proveedor)}</td>
+          <td class="provider-month-cell" data-label="Pagos mes">${money(proveedor.compras_mes)}</td>
+          <td class="provider-impact-cell" data-label="Impacto">${impactoLabel(proveedor.tipo_impacto)}<br><span class="muted">${permiteIvaFavor(proveedor) ? "IVA a favor" : "Sin IVA crédito"}</span></td>
+          <td class="provider-balance-cell" data-label="Saldo pendiente"><span class="pill ${saldo > 0 ? "warn" : ""}">${money(saldo)}</span></td>
+          <td class="provider-last-cell" data-label="Última compra">${proveedor.ultima_compra || "-"}</td>
+          <td class="provider-status-cell" data-label="Estado"><span class="pill ${activo ? "" : "off"}">${activo ? "Activo" : "Inactivo"}</span></td>
+          <td class="provider-actions-cell" data-label="Acciones">
             <div class="actions-menu">
               <button type="button" class="dots-button" data-action="menu" aria-label="Acciones" title="Acciones"><span class="app-icon icon-more" aria-hidden="true"></span></button>
               <div class="actions-popup">
@@ -1300,7 +1518,7 @@
         renderizarProveedores();
       } catch (error) {
         console.error("Error al cargar proveedores:", error);
-        tablaProveedores.innerHTML = '<tr><td colspan="11">Error al cargar proveedores.</td></tr>';
+        tablaProveedores.innerHTML = '<tr class="providers-empty-row"><td colspan="11">Error al cargar proveedores.</td></tr>';
         mostrarMensaje("No se pudo obtener proveedores desde el servidor", true);
       }
     }
