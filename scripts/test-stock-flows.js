@@ -455,6 +455,11 @@ async function crearProducto(baseUrl, token, payload) {
   return result.data.id;
 }
 
+async function crearProductoFiscal(baseUrl, token, payload) {
+  const id = await crearProducto(baseUrl, token, payload);
+  return getProduct(baseUrl, token, id);
+}
+
 async function crearProductoCompuesto(baseUrl, token, payload) {
   const result = await requestJson(baseUrl, "POST", "/productos_compuestos", {
     precio_venta: 100,
@@ -3756,6 +3761,276 @@ async function testConfiguracionCodigoAutomaticoProductos() {
       if (!String(conCodigo.codigo || "").trim()) {
         throw new Error("Con stock_codigo_automatico=true debe generar codigo al crear sin codigo manual");
       }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testProductoModeloFiscalF1ACompatibilidad() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const sufijo = Date.now().toString().slice(-8);
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST Fiscal ${sufijo}`);
+
+      const legacy = await getProduct(baseUrl, token, 11);
+      if (legacy.modelo_fiscal !== "legacy") {
+        throw new Error(`Producto legacy existente debe quedar marcado como legacy. Actual=${legacy.modelo_fiscal}`);
+      }
+      assertEqual(legacy.costo_economico ?? null, null, "Producto legacy existente no debe autocompletar costo_economico");
+      assertEqual(legacy.iva_venta_tratamiento ?? null, null, "Producto legacy existente no debe autocompletar tratamiento IVA venta");
+      assertEqual(legacy.iva_venta_alicuota ?? null, null, "Producto legacy existente no debe autocompletar alicuota IVA venta");
+
+      const normalizado21 = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST Fiscal Gravado 21 ${sufijo}`,
+        categoria: `TEST Fiscal ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 100,
+        precio_venta: 150,
+        iva_porcentaje: 3,
+        precio_compra_incluye_iva: false,
+        costo_economico: 100,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "gravado",
+        iva_venta_alicuota: 21
+      });
+      if (normalizado21.modelo_fiscal !== "normalizado") {
+        throw new Error(`Producto normalizado debe persistir modelo_fiscal. Actual=${normalizado21.modelo_fiscal}`);
+      }
+      assertApprox(normalizado21.costo_economico, 100, "Producto normalizado debe persistir costo_economico");
+      if (normalizado21.iva_venta_tratamiento !== "gravado") {
+        throw new Error(`Producto normalizado debe persistir tratamiento gravado. Actual=${normalizado21.iva_venta_tratamiento}`);
+      }
+      assertApprox(normalizado21.iva_venta_alicuota, 21, "Producto normalizado debe persistir alicuota 21");
+      assertApprox(normalizado21.iva_porcentaje, 3, "Campo legacy iva_porcentaje no debe recalcularse al crear modelo fiscal nuevo");
+      assertEqual(normalizado21.precio_compra_incluye_iva, 0, "Campo legacy precio_compra_incluye_iva debe seguir presente");
+      assertApprox(normalizado21.costo_final, 103, "Campo legacy costo_final debe seguir usando la formula actual");
+
+      const putNormalizadoSinCamposFiscales = await requestJson(baseUrl, "PUT", `/productos/${normalizado21.id}`, {
+        nombre: `TEST Fiscal Gravado 21 editado ${sufijo}`,
+        categoria: `TEST Fiscal ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 100,
+        precio_venta: 150,
+        stock: Number(normalizado21.stock || 0),
+        maneja_stock: true,
+        activo: true,
+        iva_porcentaje: 3,
+        precio_compra_incluye_iva: false,
+        redondeo: 0,
+        unidad_medida: "unidad",
+        usuario: "test"
+      }, token);
+      if (!putNormalizadoSinCamposFiscales.response.ok) {
+        throw new Error(`PUT normalizado sin campos fiscales fallo: ${putNormalizadoSinCamposFiscales.data?.message || putNormalizadoSinCamposFiscales.response.status}`);
+      }
+      const normalizadoEditado = await getProduct(baseUrl, token, normalizado21.id);
+      if (normalizadoEditado.modelo_fiscal !== "normalizado") {
+        throw new Error(`PUT sin campos fiscales no debe cambiar modelo_fiscal normalizado. Actual=${normalizadoEditado.modelo_fiscal}`);
+      }
+      assertApprox(normalizadoEditado.costo_economico, 100, "PUT sin campos fiscales no debe borrar costo_economico");
+      if (normalizadoEditado.iva_venta_tratamiento !== "gravado") {
+        throw new Error(`PUT sin campos fiscales no debe borrar tratamiento IVA venta. Actual=${normalizadoEditado.iva_venta_tratamiento}`);
+      }
+      assertApprox(normalizadoEditado.iva_venta_alicuota, 21, "PUT sin campos fiscales no debe borrar alicuota IVA venta");
+
+      const legacyCreado = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST Fiscal Legacy ${sufijo}`,
+        categoria: `TEST Fiscal ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 100,
+        precio_venta: 180,
+        iva_porcentaje: 21,
+        precio_compra_incluye_iva: false
+      });
+      if (legacyCreado.modelo_fiscal !== "legacy") {
+        throw new Error(`Producto creado con payload viejo debe quedar legacy. Actual=${legacyCreado.modelo_fiscal}`);
+      }
+      assertApprox(legacyCreado.costo_final, 121, "Producto legacy creado con payload viejo debe conservar calculo costo_final actual");
+      assertApprox(legacyCreado.precio_venta, 180, "Producto legacy creado con payload viejo debe conservar precio_venta actual");
+
+      const putLegacyViejo = await requestJson(baseUrl, "PUT", `/productos/${legacyCreado.id}`, {
+        nombre: `TEST Fiscal Legacy editado ${sufijo}`,
+        categoria: `TEST Fiscal ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 100,
+        precio_venta: 180,
+        stock: Number(legacyCreado.stock || 0),
+        maneja_stock: true,
+        activo: true,
+        iva_porcentaje: 21,
+        precio_compra_incluye_iva: false,
+        redondeo: 0,
+        unidad_medida: "unidad",
+        usuario: "test"
+      }, token);
+      if (!putLegacyViejo.response.ok) {
+        throw new Error(`PUT legacy con payload viejo fallo: ${putLegacyViejo.data?.message || putLegacyViejo.response.status}`);
+      }
+      const legacyEditado = await getProduct(baseUrl, token, legacyCreado.id);
+      if (legacyEditado.modelo_fiscal !== "legacy") {
+        throw new Error(`PUT legacy con payload viejo no debe convertir modelo_fiscal. Actual=${legacyEditado.modelo_fiscal}`);
+      }
+      assertEqual(legacyEditado.costo_economico ?? null, null, "PUT legacy con payload viejo no debe completar costo_economico");
+      assertEqual(legacyEditado.iva_venta_tratamiento ?? null, null, "PUT legacy con payload viejo no debe completar tratamiento IVA venta");
+      assertEqual(legacyEditado.iva_venta_alicuota ?? null, null, "PUT legacy con payload viejo no debe completar alicuota IVA venta");
+      assertApprox(legacyEditado.costo_final, 121, "PUT legacy con payload viejo debe conservar calculo costo_final actual");
+      assertApprox(legacyEditado.precio_venta, 180, "PUT legacy con payload viejo debe conservar precio_venta actual");
+
+      const activarSinTratamiento = await requestJson(baseUrl, "PUT", `/productos/${legacyCreado.id}`, {
+        nombre: `TEST Fiscal Legacy intento normalizar ${sufijo}`,
+        categoria: `TEST Fiscal ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 100,
+        precio_venta: 180,
+        stock: Number(legacyEditado.stock || 0),
+        maneja_stock: true,
+        activo: true,
+        iva_porcentaje: 21,
+        precio_compra_incluye_iva: false,
+        redondeo: 0,
+        unidad_medida: "unidad",
+        modelo_fiscal: "normalizado",
+        usuario: "test"
+      }, token);
+      assertEqual(activarSinTratamiento.response.status, 400, "Producto normalizado sin tratamiento IVA venta debe rechazarse");
+
+      const activarValido = await requestJson(baseUrl, "PUT", `/productos/${legacyCreado.id}`, {
+        nombre: `TEST Fiscal Legacy normalizado ${sufijo}`,
+        categoria: `TEST Fiscal ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 100,
+        precio_venta: 180,
+        stock: Number(legacyEditado.stock || 0),
+        maneja_stock: true,
+        activo: true,
+        iva_porcentaje: 21,
+        precio_compra_incluye_iva: false,
+        redondeo: 0,
+        unidad_medida: "unidad",
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "gravado",
+        iva_venta_alicuota: 21,
+        usuario: "test"
+      }, token);
+      if (!activarValido.response.ok) {
+        throw new Error(`PUT normalizado valido fallo: ${activarValido.data?.message || activarValido.response.status}`);
+      }
+      const legacyNormalizado = await getProduct(baseUrl, token, legacyCreado.id);
+      if (legacyNormalizado.modelo_fiscal !== "normalizado") {
+        throw new Error(`PUT normalizado valido debe activar modelo_fiscal. Actual=${legacyNormalizado.modelo_fiscal}`);
+      }
+      if (legacyNormalizado.iva_venta_tratamiento !== "gravado") {
+        throw new Error(`PUT normalizado valido debe guardar tratamiento gravado. Actual=${legacyNormalizado.iva_venta_tratamiento}`);
+      }
+      assertApprox(legacyNormalizado.iva_venta_alicuota, 21, "PUT normalizado valido debe guardar alicuota 21");
+
+      const normalizado105 = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST Fiscal Gravado 105 ${sufijo}`,
+        categoria: `TEST Fiscal ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 100,
+        precio_venta: 160,
+        costo_economico: 91.25,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "gravado",
+        iva_venta_alicuota: 10.5
+      });
+      if (normalizado105.iva_venta_tratamiento !== "gravado") {
+        throw new Error(`Producto gravado 10.5 debe persistir tratamiento. Actual=${normalizado105.iva_venta_tratamiento}`);
+      }
+      assertApprox(normalizado105.iva_venta_alicuota, 10.5, "Producto gravado 10.5 debe persistir alicuota");
+
+      const normalizadoAExento = await requestJson(baseUrl, "PUT", `/productos/${normalizado105.id}`, {
+        nombre: `TEST Fiscal Gravado 105 exento ${sufijo}`,
+        categoria: `TEST Fiscal ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 100,
+        precio_venta: 160,
+        stock: Number(normalizado105.stock || 0),
+        maneja_stock: true,
+        activo: true,
+        iva_porcentaje: 0,
+        precio_compra_incluye_iva: false,
+        redondeo: 0,
+        unidad_medida: "unidad",
+        iva_venta_tratamiento: "exento",
+        usuario: "test"
+      }, token);
+      if (!normalizadoAExento.response.ok) {
+        throw new Error(`PUT normalizado a exento fallo: ${normalizadoAExento.data?.message || normalizadoAExento.response.status}`);
+      }
+      const normalizadoExento = await getProduct(baseUrl, token, normalizado105.id);
+      if (normalizadoExento.modelo_fiscal !== "normalizado") {
+        throw new Error(`PUT normalizado a exento debe conservar modelo_fiscal. Actual=${normalizadoExento.modelo_fiscal}`);
+      }
+      if (normalizadoExento.iva_venta_tratamiento !== "exento") {
+        throw new Error(`PUT normalizado a exento debe guardar tratamiento exento. Actual=${normalizadoExento.iva_venta_tratamiento}`);
+      }
+      assertApprox(normalizadoExento.iva_venta_alicuota, 0, "PUT normalizado a exento debe normalizar alicuota a 0");
+
+      const exento = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST Fiscal Exento ${sufijo}`,
+        categoria: `TEST Fiscal ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 80,
+        precio_venta: 120,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "exento",
+        iva_venta_alicuota: 21
+      });
+      if (exento.iva_venta_tratamiento !== "exento") {
+        throw new Error(`Producto exento debe persistir tratamiento. Actual=${exento.iva_venta_tratamiento}`);
+      }
+      assertApprox(exento.iva_venta_alicuota, 0, "Producto exento debe normalizar alicuota a 0");
+
+      const noGravado = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST Fiscal No Gravado ${sufijo}`,
+        categoria: `TEST Fiscal ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 80,
+        precio_venta: 120,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "no_gravado",
+        iva_venta_alicuota: 27
+      });
+      if (noGravado.iva_venta_tratamiento !== "no_gravado") {
+        throw new Error(`Producto no_gravado debe persistir tratamiento. Actual=${noGravado.iva_venta_tratamiento}`);
+      }
+      assertApprox(noGravado.iva_venta_alicuota, 0, "Producto no_gravado debe normalizar alicuota a 0");
+
+      const invalido = await requestJson(baseUrl, "POST", "/productos", {
+        nombre: `TEST Fiscal Invalido ${sufijo}`,
+        categoria: `TEST Fiscal ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 50,
+        precio_venta: 90,
+        stock: 1,
+        maneja_stock: true,
+        activo: true,
+        iva_porcentaje: 0,
+        precio_compra_incluye_iva: false,
+        redondeo: 0,
+        unidad_medida: "unidad",
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "iibb",
+        iva_venta_alicuota: 21,
+        usuario: "test"
+      }, token);
+      assertEqual(invalido.response.status, 400, "Tratamiento IVA venta invalido debe rechazarse");
+
+      await runSql(dbPath, "UPDATE productos SET iva_porcentaje = 5 WHERE id = ?", [11]);
+      const legacyIibb = await getProduct(baseUrl, token, 11);
+      assertApprox(legacyIibb.iva_porcentaje, 5, "Valor legacy ambiguo iva_porcentaje=5 debe conservarse");
+      if (legacyIibb.modelo_fiscal !== "legacy") {
+        throw new Error(`Valor legacy ambiguo no debe convertir modelo_fiscal. Actual=${legacyIibb.modelo_fiscal}`);
+      }
+      assertEqual(legacyIibb.iva_venta_alicuota ?? null, null, "Valor legacy ambiguo no debe convertirse a IVA venta");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -9803,6 +10078,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testResumenReporteRespetaFiltroFechas);
   await _run(testReporteStockValorizaSoloStockFisico);
   await _run(testConfiguracionCodigoAutomaticoProductos);
+  await _run(testProductoModeloFiscalF1ACompatibilidad);
   await _run(testProductosMasVendidosDevuelveClaves);
   await _run(testProductosMasVendidosExcluyeVentasAnuladas);
   await _run(testProductosMasVendidosOrdenaPorCantidad);

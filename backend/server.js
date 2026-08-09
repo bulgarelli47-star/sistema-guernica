@@ -529,6 +529,10 @@ async function ensureProductosSchema() {
   await ensureColumn("productos", "aplica_para_combo", "INTEGER NOT NULL DEFAULT 0");
   await ensureColumn("productos", "tipo", "TEXT NOT NULL DEFAULT 'simple'");
   await ensureColumn("productos", "rendimiento_receta", "INTEGER NOT NULL DEFAULT 1");
+  await ensureColumn("productos", "costo_economico", "REAL");
+  await ensureColumn("productos", "iva_venta_tratamiento", "TEXT");
+  await ensureColumn("productos", "iva_venta_alicuota", "REAL");
+  await ensureColumn("productos", "modelo_fiscal", "TEXT NOT NULL DEFAULT 'legacy'");
   await runQuery(`
     CREATE TABLE IF NOT EXISTS categorias (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1105,6 +1109,75 @@ function calcularPrecioSugerido(costoFinal, margenPorcentaje, redondeo) {
   return Number(aplicarRedondeo(sugerido, redondeo).toFixed(2));
 }
 
+const PRODUCTO_MODELOS_FISCALES = new Set(["legacy", "normalizado"]);
+const IVA_VENTA_TRATAMIENTOS = new Set(["gravado", "exento", "no_gravado"]);
+
+function normalizarFiscalProducto(input = {}, existente = null) {
+  const tieneCampo = (campo) => Object.prototype.hasOwnProperty.call(input, campo);
+  const errorFiscal = (message) => {
+    const error = new Error(message);
+    error.statusCode = 400;
+    return error;
+  };
+
+  const modeloBase = tieneCampo("modelo_fiscal")
+    ? input.modelo_fiscal
+    : existente?.modelo_fiscal ?? "legacy";
+  const modeloFiscal = String(modeloBase || "legacy").trim().toLowerCase();
+  if (!PRODUCTO_MODELOS_FISCALES.has(modeloFiscal)) {
+    throw errorFiscal("El modelo fiscal del producto es invalido");
+  }
+
+  const costoBase = tieneCampo("costo_economico")
+    ? input.costo_economico
+    : existente?.costo_economico ?? null;
+  let costoEconomico = null;
+  if (costoBase !== null && costoBase !== undefined && costoBase !== "") {
+    costoEconomico = Number(costoBase);
+    if (!Number.isFinite(costoEconomico) || costoEconomico < 0) {
+      throw errorFiscal("El costo economico debe ser un numero valido");
+    }
+  }
+
+  const tratamientoBase = tieneCampo("iva_venta_tratamiento")
+    ? input.iva_venta_tratamiento
+    : existente?.iva_venta_tratamiento ?? null;
+  let tratamiento = tratamientoBase === null || tratamientoBase === undefined || tratamientoBase === ""
+    ? null
+    : String(tratamientoBase).trim().toLowerCase();
+  if (tratamiento && !IVA_VENTA_TRATAMIENTOS.has(tratamiento)) {
+    throw errorFiscal("El tratamiento de IVA venta es invalido");
+  }
+  if (modeloFiscal === "normalizado" && !tratamiento) {
+    throw errorFiscal("El tratamiento de IVA venta es obligatorio para productos normalizados");
+  }
+
+  const alicuotaBase = tieneCampo("iva_venta_alicuota")
+    ? input.iva_venta_alicuota
+    : existente?.iva_venta_alicuota ?? null;
+  let alicuota = null;
+  if (tratamiento === "exento" || tratamiento === "no_gravado") {
+    alicuota = 0;
+  } else if (tratamiento === "gravado") {
+    alicuota = Number(alicuotaBase);
+    if (!Number.isFinite(alicuota) || alicuota < 0) {
+      throw errorFiscal("La alicuota de IVA venta debe ser un numero valido");
+    }
+  } else if (alicuotaBase !== null && alicuotaBase !== undefined && alicuotaBase !== "") {
+    alicuota = Number(alicuotaBase);
+    if (!Number.isFinite(alicuota) || alicuota < 0) {
+      throw errorFiscal("La alicuota de IVA venta debe ser un numero valido");
+    }
+  }
+
+  return {
+    costo_economico: costoEconomico,
+    iva_venta_tratamiento: tratamiento,
+    iva_venta_alicuota: alicuota,
+    modelo_fiscal: modeloFiscal
+  };
+}
+
 async function generarCodigoProducto(categoriaId) {
   const categoria = categoriaId ? await getQuery("SELECT nombre FROM categorias WHERE id = ?", [categoriaId]) : null;
   const baseNombre = String(categoria?.nombre || "producto").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z]/g, "").toUpperCase() || "PRO";
@@ -1200,6 +1273,10 @@ async function registrarCambiosProducto(productoId, anterior, nuevo, usuario = "
     "iva_porcentaje",
     "precio_compra_incluye_iva",
     "costo_final",
+    "costo_economico",
+    "iva_venta_tratamiento",
+    "iva_venta_alicuota",
+    "modelo_fiscal",
     "categoria_id",
     "redondeo"
   ];
@@ -1747,6 +1824,7 @@ app.post("/productos", async (req, res) => {
       categoriaData?.margen_porcentaje || 0,
       redondeo
     );
+    const fiscalProducto = normalizarFiscalProducto(req.body);
     const configGlobal = await getConfiguracionGlobal();
     const codigoManual = String(codigo || "").trim();
     const codigoAutomaticoActivo = configGlobal.stock_codigo_automatico !== false;
@@ -1765,8 +1843,9 @@ app.post("/productos", async (req, res) => {
     const result = await runQuery(
       `INSERT INTO productos
       (nombre, categoria, precio_compra, precio_venta, stock, maneja_stock, proveedor_principal, proveedor_id, activo, observaciones, imagen_url, iva_porcentaje, precio_compra_incluye_iva, costo_final, categoria_id, redondeo,
-       codigo, descripcion, stock_minimo, unidad_medida, codigo_barras, marca, presentacion, ubicacion, vencimiento, alerta_stock_minimo, usa_costos_varios, precio_referencial_proveedor, agregar_proveedor_info, es_combo, aplica_para_combo, tipo, rendimiento_receta)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       codigo, descripcion, stock_minimo, unidad_medida, codigo_barras, marca, presentacion, ubicacion, vencimiento, alerta_stock_minimo, usa_costos_varios, precio_referencial_proveedor, agregar_proveedor_info, es_combo, aplica_para_combo, tipo, rendimiento_receta,
+       costo_economico, iva_venta_tratamiento, iva_venta_alicuota, modelo_fiscal)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         String(nombre).trim(),
         categoria || "",
@@ -1800,7 +1879,11 @@ app.post("/productos", async (req, res) => {
         es_combo ? 1 : 0,
         aplica_para_combo ? 1 : 0,
         tipoProducto,
-        rendimientoPost
+        rendimientoPost,
+        fiscalProducto.costo_economico,
+        fiscalProducto.iva_venta_tratamiento,
+        fiscalProducto.iva_venta_alicuota,
+        fiscalProducto.modelo_fiscal
       ]
     );
 
@@ -2077,6 +2160,7 @@ app.put("/productos/:id", async (req, res) => {
       categoriaData?.margen_porcentaje || 0,
       redondeo
     );
+    const fiscalProducto = normalizarFiscalProducto(req.body, existente);
 
     await runQuery("BEGIN TRANSACTION");
 
@@ -2087,7 +2171,8 @@ app.put("/productos/:id", async (req, res) => {
            observaciones = ?, imagen_url = ?, iva_porcentaje = ?, precio_compra_incluye_iva = ?,
            costo_final = ?, categoria_id = ?, redondeo = ?, codigo = ?, descripcion = ?, stock_minimo = ?,
            unidad_medida = ?, codigo_barras = ?, marca = ?, presentacion = ?, ubicacion = ?, vencimiento = ?,
-           alerta_stock_minimo = ?, usa_costos_varios = ?, precio_referencial_proveedor = ?, agregar_proveedor_info = ?, es_combo = ?, aplica_para_combo = ?, tipo = ?, rendimiento_receta = ?
+           alerta_stock_minimo = ?, usa_costos_varios = ?, precio_referencial_proveedor = ?, agregar_proveedor_info = ?, es_combo = ?, aplica_para_combo = ?, tipo = ?, rendimiento_receta = ?,
+           costo_economico = ?, iva_venta_tratamiento = ?, iva_venta_alicuota = ?, modelo_fiscal = ?
        WHERE id = ?`,
       [
         String(nombre).trim(),
@@ -2123,6 +2208,10 @@ app.put("/productos/:id", async (req, res) => {
         aplica_para_combo ? 1 : 0,
         tipoProducto,
         rendimientoReceta,
+        fiscalProducto.costo_economico,
+        fiscalProducto.iva_venta_tratamiento,
+        fiscalProducto.iva_venta_alicuota,
+        fiscalProducto.modelo_fiscal,
         productoId
       ]
     );
