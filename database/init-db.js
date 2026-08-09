@@ -184,6 +184,7 @@ async function initDatabase() {
         cliente_id INTEGER,
         es_cuenta_corriente INTEGER NOT NULL DEFAULT 0,
         saldo_pendiente REAL NOT NULL DEFAULT 0,
+        total_venta_original REAL,
         FOREIGN KEY (cliente_id) REFERENCES clientes(id)
       )
     `);
@@ -197,6 +198,7 @@ async function initDatabase() {
     await ensureColumn("ventas", "es_cuenta_corriente", "INTEGER NOT NULL DEFAULT 0");
     await ensureColumn("ventas", "saldo_pendiente", "REAL NOT NULL DEFAULT 0");
     await ensureColumn("ventas", "caja_id", "INTEGER");
+    await ensureColumn("ventas", "total_venta_original", "REAL");
     await ensureColumn("clientes", "direccion", "TEXT");
     await ensureColumn("clientes", "alias", "TEXT");
     await ensureColumn("clientes", "observaciones", "TEXT");
@@ -224,9 +226,21 @@ async function initDatabase() {
         cantidad REAL NOT NULL DEFAULT 0,
         precio_unitario REAL NOT NULL DEFAULT 0,
         subtotal REAL NOT NULL DEFAULT 0,
+        modelo_fiscal_snapshot TEXT,
+        costo_economico_snapshot REAL,
+        iva_venta_tratamiento_snapshot TEXT,
+        iva_venta_alicuota_snapshot REAL,
+        subtotal_neto_snapshot REAL,
+        iva_monto_snapshot REAL,
         FOREIGN KEY (venta_id) REFERENCES ventas(id)
       )
     `);
+    await ensureColumn("detalle_ventas", "modelo_fiscal_snapshot", "TEXT");
+    await ensureColumn("detalle_ventas", "costo_economico_snapshot", "REAL");
+    await ensureColumn("detalle_ventas", "iva_venta_tratamiento_snapshot", "TEXT");
+    await ensureColumn("detalle_ventas", "iva_venta_alicuota_snapshot", "REAL");
+    await ensureColumn("detalle_ventas", "subtotal_neto_snapshot", "REAL");
+    await ensureColumn("detalle_ventas", "iva_monto_snapshot", "REAL");
 
     // Modificadores: no son productos vendidos. Deben quedar pegados al detalle
     // de venta y guardar snapshot historico para anulaciones y reportes.

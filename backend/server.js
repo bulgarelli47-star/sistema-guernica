@@ -511,6 +511,16 @@ async function ensureCuentasCobroSchema() {
   await seedCuentasDestinoDefaults();
 }
 
+async function ensureVentaFiscalSnapshotSchema() {
+  await ensureColumn("ventas", "total_venta_original", "REAL");
+  await ensureColumn("detalle_ventas", "modelo_fiscal_snapshot", "TEXT");
+  await ensureColumn("detalle_ventas", "costo_economico_snapshot", "REAL");
+  await ensureColumn("detalle_ventas", "iva_venta_tratamiento_snapshot", "TEXT");
+  await ensureColumn("detalle_ventas", "iva_venta_alicuota_snapshot", "REAL");
+  await ensureColumn("detalle_ventas", "subtotal_neto_snapshot", "REAL");
+  await ensureColumn("detalle_ventas", "iva_monto_snapshot", "REAL");
+}
+
 async function ensureProductosSchema() {
   await ensureColumn("productos", "codigo", "TEXT");
   await ensureColumn("productos", "descripcion", "TEXT");
@@ -4807,8 +4817,8 @@ app.post("/ventas", async (req, res) => {
     // metodo_pago es alias legacy de tipo_cobro — ambos reciben el mismo valor
     const venta = await runQuery(
       `INSERT INTO ventas
-      (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id, cuenta_cobro_id, recargo_porcentaje, recargo_monto)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id, cuenta_cobro_id, recargo_porcentaje, recargo_monto, total_venta_original)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         fecha,
         hora,
@@ -4827,7 +4837,8 @@ app.post("/ventas", async (req, res) => {
         tipoVenta === "normal" ? cajaActiva.id : null,
         cuentaCobroVenta.cuenta_cobro_id,
         recargoVenta.porcentaje_recargo,
-        recargoVenta.recargo_monto
+        recargoVenta.recargo_monto,
+        total
       ]
     );
 
@@ -4886,6 +4897,9 @@ app.post("/ventas", async (req, res) => {
     }
 
     logError("Error al registrar venta:", error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Error al registrar venta" });
   }
 });
@@ -5776,8 +5790,8 @@ app.post("/clientes/:id/venta-cuenta", async (req, res) => {
     const result = await runQuery(
       `INSERT INTO ventas
       (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro,
-       monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id, total_venta_original)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         fecha,
         hora,
@@ -5793,7 +5807,8 @@ app.post("/clientes/:id/venta-cuenta", async (req, res) => {
         clienteId,
         1,
         total,
-        null
+        null,
+        total
       ]
     );
     const detalles = await replaceVentaDetalle(result.lastID, items);
@@ -5814,6 +5829,9 @@ app.post("/clientes/:id/venta-cuenta", async (req, res) => {
       logError("Rollback venta a cuenta", rollbackError);
     }
     logError("Error al registrar venta a cuenta:", error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Error al registrar venta a cuenta" });
   }
 });
@@ -7407,9 +7425,9 @@ app.put("/ventas/:id/pendiente", async (req, res) => {
     await guardarRecetaSnapshotVenta(ventaId, detalles);
     await runQuery(
       `UPDATE ventas
-       SET total = ?, identificador_pendiente = ?
+       SET total = ?, total_venta_original = ?, identificador_pendiente = ?
        WHERE id = ?`,
-      [total, identificador, ventaId]
+      [total, total, identificador, ventaId]
     );
     await runQuery("COMMIT");
 
@@ -7422,6 +7440,9 @@ app.put("/ventas/:id/pendiente", async (req, res) => {
     }
 
     logError("Error al actualizar ticket pendiente:", error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Error al actualizar ticket pendiente" });
   }
 });
@@ -7495,9 +7516,10 @@ app.post("/ventas/:id/cobrar", async (req, res) => {
 
     const resultCobrar = await runQuery(
       `UPDATE ventas
-       SET estado = 'cobrada', total = ?, metodo_pago = ?, tipo_cobro = ?, monto_efectivo = ?, monto_debito = ?, caja_id = ?, cuenta_cobro_id = ?, recargo_porcentaje = ?, recargo_monto = ?
+       SET estado = 'cobrada', total = ?, total_venta_original = ?, metodo_pago = ?, tipo_cobro = ?, monto_efectivo = ?, monto_debito = ?, caja_id = ?, cuenta_cobro_id = ?, recargo_porcentaje = ?, recargo_monto = ?
       WHERE id = ? AND estado = 'pendiente'`,
       [
+        recargo.total,
         recargo.total,
         cobroReal.tipo_cobro,
         cobroReal.tipo_cobro,
@@ -9158,10 +9180,10 @@ app.post("/tienda/pedidos/:id/convertir-venta", async (req, res) => {
 
     const venta = await runQuery(
       `INSERT INTO ventas
-      (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id, cuenta_cobro_id, recargo_porcentaje, recargo_monto)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (fecha, hora, usuario, total, tipo, estado, identificador_pendiente, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, cliente_id, es_cuenta_corriente, saldo_pendiente, caja_id, cuenta_cobro_id, recargo_porcentaje, recargo_monto, total_venta_original)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [fecha, hora, usuarioVenta, totalVenta, "pendiente", "pendiente", identificadorPendiente,
-       null, null, 0, 0, null, 0, 0, null, null, 0, 0]
+       null, null, 0, 0, null, 0, 0, null, null, 0, 0, totalVenta]
     );
 
     const detalles = await replaceVentaDetalle(venta.lastID, itemsVenta);
@@ -9193,6 +9215,9 @@ app.post("/tienda/pedidos/:id/convertir-venta", async (req, res) => {
     });
   } catch (error) {
     try { await runQuery("ROLLBACK"); } catch {}
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     logError("POST /tienda/pedidos/:id/convertir-venta", error);
     return res.status(500).json({ message: "Error al convertir el pedido." });
   }
@@ -9369,7 +9394,8 @@ Promise.all([
   ensureConfiguracionSchema(),
   ensureTiendaSchema(),
   ensureVentaRecetaSnapshotSchema(),
-  ensureVentaCobrosSchema()
+  ensureVentaCobrosSchema(),
+  ensureVentaFiscalSnapshotSchema()
 ])
   .then(() => migrarVentaCobrosLegacy())
   .then(async () => {

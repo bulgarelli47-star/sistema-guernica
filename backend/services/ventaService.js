@@ -1,5 +1,75 @@
 const { allQuery, getQuery, runQuery } = require("../db");
 
+const IVA_VENTA_TRATAMIENTOS_SNAPSHOT = new Set(["gravado", "exento", "no_gravado"]);
+
+function round2(value) {
+  const numero = Number(value);
+  if (!Number.isFinite(numero)) return 0;
+  return Number(numero.toFixed(2));
+}
+
+function crearErrorSnapshotFiscal(message) {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+}
+
+function normalizarNumeroSnapshot(value, { nullable = false } = {}) {
+  if (value == null || value === "") return nullable ? null : 0;
+  const numero = Number(value);
+  if (!Number.isFinite(numero) || numero < 0) return nullable ? null : 0;
+  return numero;
+}
+
+function buildDetalleVentaSnapshotFiscal({ producto = {}, cantidad = 0, precio_unitario = 0 } = {}) {
+  const modeloFiscal = String(producto?.modelo_fiscal || "legacy").trim().toLowerCase();
+
+  if (modeloFiscal !== "normalizado") {
+    return {
+      modelo_fiscal_snapshot: "legacy",
+      costo_economico_snapshot: null,
+      iva_venta_tratamiento_snapshot: null,
+      iva_venta_alicuota_snapshot: null,
+      subtotal_neto_snapshot: null,
+      iva_monto_snapshot: null
+    };
+  }
+
+  const tratamiento = String(producto?.iva_venta_tratamiento || "").trim().toLowerCase();
+  if (!IVA_VENTA_TRATAMIENTOS_SNAPSHOT.has(tratamiento)) {
+    throw crearErrorSnapshotFiscal("Producto normalizado sin tratamiento IVA de venta valido");
+  }
+
+  const cantidadNormalizada = normalizarNumeroSnapshot(cantidad);
+  const precioUnitarioNormalizado = normalizarNumeroSnapshot(precio_unitario);
+  const subtotal = round2(cantidadNormalizada * precioUnitarioNormalizado);
+  const costoEconomico = normalizarNumeroSnapshot(producto?.costo_economico, { nullable: true });
+  let alicuota = 0;
+  if (tratamiento === "gravado") {
+    const alicuotaRaw = Number(producto?.iva_venta_alicuota);
+    if (producto?.iva_venta_alicuota == null || producto?.iva_venta_alicuota === "" || !Number.isFinite(alicuotaRaw) || alicuotaRaw < 0) {
+      throw crearErrorSnapshotFiscal("Producto normalizado gravado sin alicuota IVA de venta valida");
+    }
+    alicuota = alicuotaRaw;
+  }
+
+  const subtotalNeto = tratamiento === "gravado" && alicuota > 0
+    ? round2(subtotal / (1 + alicuota / 100))
+    : subtotal;
+  const ivaMonto = tratamiento === "gravado"
+    ? round2(subtotal - subtotalNeto)
+    : 0;
+
+  return {
+    modelo_fiscal_snapshot: "normalizado",
+    costo_economico_snapshot: costoEconomico,
+    iva_venta_tratamiento_snapshot: tratamiento,
+    iva_venta_alicuota_snapshot: alicuota,
+    subtotal_neto_snapshot: subtotalNeto,
+    iva_monto_snapshot: ivaMonto
+  };
+}
+
 async function ensureDetalleVentaIngredientesTable() {
   await runQuery(`
     CREATE TABLE IF NOT EXISTS detalle_venta_ingredientes (
@@ -176,21 +246,54 @@ async function replaceVentaDetalle(ventaId, items) {
   }
   await runQuery("DELETE FROM detalle_ventas WHERE venta_id = ?", [ventaId]);
 
+  const productoIds = [...new Set(items.map((item) => Number(item.producto_id || 0)).filter(Boolean))];
+  const productosPorId = new Map();
+  if (productoIds.length) {
+    const placeholders = productoIds.map(() => "?").join(",");
+    const productos = await allQuery(
+      `SELECT id, modelo_fiscal, costo_economico, iva_venta_tratamiento, iva_venta_alicuota
+       FROM productos
+       WHERE id IN (${placeholders})`,
+      productoIds
+    );
+    productos.forEach((producto) => productosPorId.set(Number(producto.id), producto));
+
+    const faltantes = productoIds.filter((id) => !productosPorId.has(id));
+    if (faltantes.length) {
+      throw crearErrorSnapshotFiscal(`Producto no encontrado para snapshot fiscal: ${faltantes.join(", ")}`);
+    }
+  }
+
   const detalles = [];
   for (const item of items) {
     const subtotal = item.cantidad * item.precio_unitario;
+    const productoId = Number(item.producto_id || 0);
+    const productoSnapshot = productoId ? productosPorId.get(productoId) : { modelo_fiscal: "legacy" };
+    const snapshotFiscal = buildDetalleVentaSnapshotFiscal({
+      producto: productoSnapshot,
+      cantidad: item.cantidad,
+      precio_unitario: item.precio_unitario
+    });
 
     const result = await runQuery(
       `INSERT INTO detalle_ventas
-      (venta_id, producto_id, nombre_producto, cantidad, precio_unitario, subtotal)
-      VALUES (?, ?, ?, ?, ?, ?)`,
+      (venta_id, producto_id, nombre_producto, cantidad, precio_unitario, subtotal,
+       modelo_fiscal_snapshot, costo_economico_snapshot, iva_venta_tratamiento_snapshot,
+       iva_venta_alicuota_snapshot, subtotal_neto_snapshot, iva_monto_snapshot)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         ventaId,
         item.producto_id,
         item.nombre_producto,
         item.cantidad,
         item.precio_unitario,
-        subtotal
+        subtotal,
+        snapshotFiscal.modelo_fiscal_snapshot,
+        snapshotFiscal.costo_economico_snapshot,
+        snapshotFiscal.iva_venta_tratamiento_snapshot,
+        snapshotFiscal.iva_venta_alicuota_snapshot,
+        snapshotFiscal.subtotal_neto_snapshot,
+        snapshotFiscal.iva_monto_snapshot
       ]
     );
 
@@ -198,7 +301,8 @@ async function replaceVentaDetalle(ventaId, items) {
       ...item,
       id: result.lastID,
       detalle_venta_id: result.lastID,
-      subtotal
+      subtotal,
+      ...snapshotFiscal
     });
 
     for (const ingrediente of Array.isArray(item.ingredientes) ? item.ingredientes : []) {
@@ -223,7 +327,9 @@ async function replaceVentaDetalle(ventaId, items) {
 
 async function getVentaDetalleRows(ventaId) {
   return allQuery(
-    `SELECT id, venta_id, producto_id, nombre_producto, cantidad, precio_unitario, subtotal
+    `SELECT id, venta_id, producto_id, nombre_producto, cantidad, precio_unitario, subtotal,
+            modelo_fiscal_snapshot, costo_economico_snapshot, iva_venta_tratamiento_snapshot,
+            iva_venta_alicuota_snapshot, subtotal_neto_snapshot, iva_monto_snapshot
      FROM detalle_ventas
      WHERE venta_id = ?
      ORDER BY id ASC`,
@@ -260,6 +366,7 @@ async function getVentaConDetalle(ventaId) {
 }
 
 module.exports = {
+  buildDetalleVentaSnapshotFiscal,
   getPagoCuentaCorrienteTotal,
   getVentaConDetalle,
   getVentaCuentaCorrienteSnapshot,

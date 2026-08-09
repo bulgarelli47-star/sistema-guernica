@@ -4,9 +4,15 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 const sqlite3 = require("sqlite3").verbose();
+const { db: backendDb } = require("../backend/db");
+const { buildDetalleVentaSnapshotFiscal } = require("../backend/services/ventaService");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
+
+function closeBackendDb() {
+  return new Promise((resolve) => backendDb.close(() => resolve()));
+}
 
 function tempDbPath() {
   return path.join(os.tmpdir(), `guernica-test-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
@@ -179,6 +185,22 @@ async function getVentas(baseUrl, token) {
   const { response, data } = await requestJson(baseUrl, "GET", "/ventas", null, token);
   if (!response.ok) throw new Error(`No se pudo listar ventas: ${response.status}`);
   return data;
+}
+
+async function getVentaDb(dbPath, ventaId) {
+  const rows = await allSql(dbPath, "SELECT * FROM ventas WHERE id = ?", [ventaId]);
+  return rows[0] || null;
+}
+
+async function getDetalleVentaDb(dbPath, ventaId) {
+  return allSql(
+    dbPath,
+    `SELECT *
+     FROM detalle_ventas
+     WHERE venta_id = ?
+     ORDER BY id ASC`,
+    [ventaId]
+  );
 }
 
 async function getCajaResumen(baseUrl, token) {
@@ -493,6 +515,12 @@ function ventaSimplePayload(overrides = {}) {
 
 function assertEqual(actual, expected, message) {
   if (Number(actual) !== Number(expected)) {
+    throw new Error(`${message}. Esperado=${expected}, actual=${actual}`);
+  }
+}
+
+function assertSame(actual, expected, message) {
+  if (actual !== expected) {
     throw new Error(`${message}. Esperado=${expected}, actual=${actual}`);
   }
 }
@@ -4396,6 +4424,450 @@ async function testAumentoMasivoProtegeProductosNormalizadosF1B2() {
       assertApprox(legacySoloDespues.precio_compra, 110, "Aumento legacy-only debe actualizar precio_compra");
       assertApprox(legacySoloDespues.precio_venta, 220, "Aumento legacy-only debe actualizar precio_venta");
       assertApprox(legacySoloDespues.costo_final, 133.1, "Aumento legacy-only debe actualizar costo_final");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testVentaSnapshotFiscalF2BHelper() {
+  const productoNormalizado21 = {
+    modelo_fiscal: "normalizado",
+    costo_economico: 50,
+    iva_venta_tratamiento: "gravado",
+    iva_venta_alicuota: 21,
+    iva_porcentaje: 3,
+    precio_compra_incluye_iva: 0,
+    costo_final: 103
+  };
+
+  const gravado21 = buildDetalleVentaSnapshotFiscal({
+    producto: productoNormalizado21,
+    cantidad: 1,
+    precio_unitario: 100
+  });
+  assertSame(gravado21.modelo_fiscal_snapshot, "normalizado", "Snapshot F2B normalizado debe marcar modelo");
+  assertApprox(gravado21.costo_economico_snapshot, 50, "Snapshot F2B debe copiar costo economico valido");
+  assertSame(gravado21.iva_venta_tratamiento_snapshot, "gravado", "Snapshot F2B debe copiar tratamiento gravado");
+  assertApprox(gravado21.iva_venta_alicuota_snapshot, 21, "Snapshot F2B debe copiar alicuota 21");
+  assertApprox(gravado21.subtotal_neto_snapshot, 82.64, "Snapshot F2B gravado 21 debe calcular neto desde subtotal");
+  assertApprox(gravado21.iva_monto_snapshot, 17.36, "Snapshot F2B gravado 21 debe calcular IVA desde subtotal");
+  assertApprox(gravado21.subtotal_neto_snapshot + gravado21.iva_monto_snapshot, 100, "Snapshot F2B neto + IVA debe igualar subtotal");
+
+  const gravado105 = buildDetalleVentaSnapshotFiscal({
+    producto: { ...productoNormalizado21, iva_venta_alicuota: 10.5 },
+    cantidad: 1,
+    precio_unitario: 110.5
+  });
+  assertApprox(gravado105.subtotal_neto_snapshot, 100, "Snapshot F2B gravado 10.5 debe calcular neto");
+  assertApprox(gravado105.iva_monto_snapshot, 10.5, "Snapshot F2B gravado 10.5 debe calcular IVA");
+
+  const exento = buildDetalleVentaSnapshotFiscal({
+    producto: { modelo_fiscal: "normalizado", costo_economico: null, iva_venta_tratamiento: "exento", iva_venta_alicuota: 21 },
+    cantidad: 2,
+    precio_unitario: 75
+  });
+  assertSame(exento.costo_economico_snapshot, null, "Snapshot F2B costo economico NULL debe permanecer NULL");
+  assertApprox(exento.iva_venta_alicuota_snapshot, 0, "Snapshot F2B exento debe normalizar alicuota a 0");
+  assertApprox(exento.subtotal_neto_snapshot, 150, "Snapshot F2B exento neto debe ser subtotal");
+  assertApprox(exento.iva_monto_snapshot, 0, "Snapshot F2B exento IVA debe ser 0");
+
+  const noGravado = buildDetalleVentaSnapshotFiscal({
+    producto: { modelo_fiscal: "normalizado", costo_economico: 20, iva_venta_tratamiento: "no_gravado", iva_venta_alicuota: 27 },
+    cantidad: 1,
+    precio_unitario: 80
+  });
+  assertApprox(noGravado.iva_venta_alicuota_snapshot, 0, "Snapshot F2B no gravado debe normalizar alicuota a 0");
+  assertApprox(noGravado.subtotal_neto_snapshot, 80, "Snapshot F2B no gravado neto debe ser subtotal");
+  assertApprox(noGravado.iva_monto_snapshot, 0, "Snapshot F2B no gravado IVA debe ser 0");
+
+  const cantidadTres = buildDetalleVentaSnapshotFiscal({
+    producto: productoNormalizado21,
+    cantidad: 3,
+    precio_unitario: 100
+  });
+  assertApprox(cantidadTres.subtotal_neto_snapshot, 247.93, "Snapshot F2B cantidad 3 debe calcular neto desde subtotal de linea");
+  assertApprox(cantidadTres.iva_monto_snapshot, 52.07, "Snapshot F2B cantidad 3 debe calcular IVA desde subtotal de linea");
+  assertApprox(cantidadTres.subtotal_neto_snapshot + cantidadTres.iva_monto_snapshot, 300, "Snapshot F2B cantidad 3 debe cerrar contra subtotal");
+
+  const fraccionario = buildDetalleVentaSnapshotFiscal({
+    producto: productoNormalizado21,
+    cantidad: 1.5,
+    precio_unitario: 100
+  });
+  assertApprox(fraccionario.subtotal_neto_snapshot, 123.97, "Snapshot F2B cantidad fraccionaria debe calcular neto desde subtotal");
+  assertApprox(fraccionario.iva_monto_snapshot, 26.03, "Snapshot F2B cantidad fraccionaria debe calcular IVA desde subtotal");
+
+  const legacy = buildDetalleVentaSnapshotFiscal({
+    producto: { modelo_fiscal: "legacy", iva_porcentaje: 21, precio_compra_incluye_iva: 1, costo_final: 121 },
+    cantidad: 1,
+    precio_unitario: 121
+  });
+  assertSame(legacy.modelo_fiscal_snapshot, "legacy", "Snapshot F2B legacy debe marcar modelo legacy");
+  assertSame(legacy.costo_economico_snapshot, null, "Snapshot F2B legacy no debe inferir costo economico");
+  assertSame(legacy.iva_venta_tratamiento_snapshot, null, "Snapshot F2B legacy no debe inferir tratamiento IVA");
+  assertSame(legacy.iva_venta_alicuota_snapshot, null, "Snapshot F2B legacy no debe inferir alicuota IVA");
+  assertSame(legacy.subtotal_neto_snapshot, null, "Snapshot F2B legacy no debe inferir neto");
+  assertSame(legacy.iva_monto_snapshot, null, "Snapshot F2B legacy no debe inferir IVA");
+
+  let invalido = false;
+  try {
+    buildDetalleVentaSnapshotFiscal({
+      producto: { modelo_fiscal: "normalizado", iva_venta_tratamiento: "", iva_venta_alicuota: 21 },
+      cantidad: 1,
+      precio_unitario: 100
+    });
+  } catch {
+    invalido = true;
+  }
+  assertEqual(invalido, true, "Snapshot F2B normalizado sin tratamiento valido debe fallar explicitamente");
+
+  let alicuotaInvalida = false;
+  try {
+    buildDetalleVentaSnapshotFiscal({
+      producto: { modelo_fiscal: "normalizado", iva_venta_tratamiento: "gravado", iva_venta_alicuota: "abc" },
+      cantidad: 1,
+      precio_unitario: 100
+    });
+  } catch {
+    alicuotaInvalida = true;
+  }
+  assertEqual(alicuotaInvalida, true, "Snapshot F2B gravado sin alicuota numerica debe fallar explicitamente");
+}
+
+async function testVentaSnapshotFiscalF2BSchema() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await withServer(dbPath, async () => {});
+    const detalleColumns = await allSql(dbPath, "PRAGMA table_info(detalle_ventas)");
+    const ventasColumns = await allSql(dbPath, "PRAGMA table_info(ventas)");
+    const detalleNames = new Set(detalleColumns.map((column) => column.name));
+    const ventasNames = new Set(ventasColumns.map((column) => column.name));
+
+    [
+      "modelo_fiscal_snapshot",
+      "costo_economico_snapshot",
+      "iva_venta_tratamiento_snapshot",
+      "iva_venta_alicuota_snapshot",
+      "subtotal_neto_snapshot",
+      "iva_monto_snapshot"
+    ].forEach((column) => {
+      if (!detalleNames.has(column)) {
+        throw new Error(`Schema F2B detalle_ventas debe contener ${column}`);
+      }
+    });
+
+    if (!ventasNames.has("total_venta_original")) {
+      throw new Error("Schema F2B ventas debe contener total_venta_original");
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testVentaSnapshotsHistoricosF2CNormalLegacyModificadores() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const sufijo = Date.now().toString().slice(-8);
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST F2C Ventas ${sufijo}`, { margen_porcentaje: 50 });
+      const normalizado = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST F2C Normalizado ${sufijo}`,
+        categoria: `TEST F2C Ventas ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 50,
+        precio_venta: 100,
+        costo_economico: 50,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "gravado",
+        iva_venta_alicuota: 21,
+        precio_venta_modo: "manual",
+        stock: 20,
+        activo: true
+      });
+      const legacy = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST F2C Legacy ${sufijo}`,
+        categoria: `TEST F2C Ventas ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 50,
+        precio_venta: 121,
+        iva_porcentaje: 21,
+        precio_compra_incluye_iva: true,
+        stock: 20,
+        activo: true
+      });
+
+      const ventaNormal = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [{ producto_id: normalizado.id, nombre_producto: normalizado.nombre, cantidad: 1, precio_unitario: 100 }]
+      }, token);
+      if (!ventaNormal.response.ok) throw new Error(`Venta F2C normalizada fallo: ${ventaNormal.data?.message || ventaNormal.response.status}`);
+      const ventaNormalDb = await getVentaDb(dbPath, ventaNormal.data.venta_id);
+      const detalleNormal = (await getDetalleVentaDb(dbPath, ventaNormal.data.venta_id))[0];
+      assertApprox(ventaNormalDb.total_venta_original, 100, "F2C venta normal debe guardar total_venta_original final");
+      assertSame(detalleNormal.modelo_fiscal_snapshot, "normalizado", "F2C venta normal debe persistir modelo normalizado");
+      assertApprox(detalleNormal.costo_economico_snapshot, 50, "F2C venta normal debe persistir costo economico");
+      assertSame(detalleNormal.iva_venta_tratamiento_snapshot, "gravado", "F2C venta normal debe persistir tratamiento gravado");
+      assertApprox(detalleNormal.iva_venta_alicuota_snapshot, 21, "F2C venta normal debe persistir alicuota");
+      assertApprox(detalleNormal.subtotal_neto_snapshot, 82.64, "F2C venta normal debe calcular neto");
+      assertApprox(detalleNormal.iva_monto_snapshot, 17.36, "F2C venta normal debe calcular IVA");
+
+      const ventaLegacy = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [{ producto_id: legacy.id, nombre_producto: legacy.nombre, cantidad: 1, precio_unitario: 121 }]
+      }, token);
+      if (!ventaLegacy.response.ok) throw new Error(`Venta F2C legacy fallo: ${ventaLegacy.data?.message || ventaLegacy.response.status}`);
+      const detalleLegacy = (await getDetalleVentaDb(dbPath, ventaLegacy.data.venta_id))[0];
+      assertSame(detalleLegacy.modelo_fiscal_snapshot, "legacy", "F2C legacy debe marcar snapshot legacy");
+      assertSame(detalleLegacy.costo_economico_snapshot, null, "F2C legacy no debe persistir costo economico");
+      assertSame(detalleLegacy.iva_venta_tratamiento_snapshot, null, "F2C legacy no debe inferir tratamiento");
+      assertSame(detalleLegacy.subtotal_neto_snapshot, null, "F2C legacy no debe inferir neto");
+      assertSame(detalleLegacy.iva_monto_snapshot, null, "F2C legacy no debe inferir IVA");
+
+      const ventaCantidad3 = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [{ producto_id: normalizado.id, nombre_producto: normalizado.nombre, cantidad: 3, precio_unitario: 100 }]
+      }, token);
+      if (!ventaCantidad3.response.ok) throw new Error(`Venta F2C cantidad 3 fallo: ${ventaCantidad3.data?.message || ventaCantidad3.response.status}`);
+      const detalleCantidad3 = (await getDetalleVentaDb(dbPath, ventaCantidad3.data.venta_id))[0];
+      assertApprox(detalleCantidad3.subtotal_neto_snapshot, 247.93, "F2C cantidad 3 debe calcular fiscal desde subtotal de linea");
+      assertApprox(detalleCantidad3.iva_monto_snapshot, 52.07, "F2C cantidad 3 debe calcular IVA desde subtotal de linea");
+
+      await runSql(dbPath, "UPDATE productos SET modelo_fiscal = 'normalizado', costo_economico = 50, iva_venta_tratamiento = 'gravado', iva_venta_alicuota = 21 WHERE id = 11");
+      const mod = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
+        nombre: `TEST F2C Extra ${sufijo}`,
+        tipo: "libre",
+        precio_extra: 200,
+        activo: true
+      }, token);
+      if (!mod.response.ok) throw new Error(`Crear modificador F2C fallo: ${mod.data?.message || mod.response.status}`);
+      await esperarNuevoSegundo();
+      const ventaMods = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [{
+          producto_id: 11,
+          nombre_producto: "Coca Cola 1250",
+          cantidad: 1,
+          precio_unitario: 100,
+          modificadores: [{ modificador_id: mod.data.modificador.id, cantidad: 1 }]
+        }]
+      }, token);
+      if (!ventaMods.response.ok) throw new Error(`Venta F2C con modificador fallo: ${ventaMods.data?.message || ventaMods.response.status}`);
+      const detalleMods = (await getDetalleVentaDb(dbPath, ventaMods.data.venta_id))[0];
+      assertApprox(detalleMods.precio_unitario, 300, "F2C modificador debe persistir precio unitario final");
+      assertApprox(detalleMods.subtotal_neto_snapshot, 247.93, "F2C modificador debe calcular snapshot sobre precio final con extra");
+      assertApprox(detalleMods.iva_monto_snapshot, 52.07, "F2C modificador debe calcular IVA sobre precio final con extra");
+
+      await runSql(dbPath, "UPDATE productos SET modelo_fiscal = 'normalizado', iva_venta_tratamiento = NULL WHERE id = ?", [normalizado.id]);
+      const stockAntesInvalido = (await getProduct(baseUrl, token, normalizado.id)).stock;
+      const ventaInvalida = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [{ producto_id: normalizado.id, nombre_producto: normalizado.nombre, cantidad: 1, precio_unitario: 100 }]
+      }, token);
+      assertEqual(ventaInvalida.response.status, 400, "F2C producto normalizado invalido debe rechazar la venta");
+      const ventasInvalido = await allSql(dbPath, "SELECT COUNT(*) AS total FROM ventas WHERE usuario = 'test' AND total = 100 AND id > ?", [ventaCantidad3.data.venta_id]);
+      assertEqual(ventasInvalido[0].total, 0, "F2C venta invalida no debe dejar venta parcial adicional");
+      assertApprox((await getProduct(baseUrl, token, normalizado.id)).stock, stockAntesInvalido, "F2C venta invalida no debe descontar stock");
+
+      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${ventaNormal.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anulacion.response.ok) throw new Error(`Anular F2C fallo: ${anulacion.data?.message || anulacion.response.status}`);
+      const detalleAnulado = (await getDetalleVentaDb(dbPath, ventaNormal.data.venta_id))[0];
+      assertSame(detalleAnulado.modelo_fiscal_snapshot, "normalizado", "F2C anulacion debe conservar snapshot fiscal");
+      assertApprox(detalleAnulado.iva_monto_snapshot, 17.36, "F2C anulacion debe conservar IVA snapshot");
+
+      const patchCobro = await requestJson(baseUrl, "PATCH", `/ventas/${ventaCantidad3.data.venta_id}/cobro`, {
+        tipo_cobro: "efectivo"
+      }, token);
+      if (!patchCobro.response.ok) throw new Error(`PATCH cobro F2C fallo: ${patchCobro.data?.message || patchCobro.response.status}`);
+      const ventaCantidad3Patch = await getVentaDb(dbPath, ventaCantidad3.data.venta_id);
+      assertApprox(ventaCantidad3Patch.total_venta_original, 300, "F2C cambio metodo cobro no debe modificar total_venta_original");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testVentaSnapshotsHistoricosF2CCuentaCorrienteYPendientes() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const sufijo = Date.now().toString().slice(-8);
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST F2C CC ${sufijo}`, { margen_porcentaje: 50 });
+      const producto = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST F2C CC Prod ${sufijo}`,
+        categoria: `TEST F2C CC ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        costo_economico: 50,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "gravado",
+        iva_venta_alicuota: 21,
+        precio_venta_modo: "manual",
+        stock: 50,
+        activo: true
+      });
+      const cliente = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: `TEST F2C Cliente ${sufijo}`,
+        dni_cuit: `27${sufijo}`,
+        tipo_persona: "fisica",
+        habilita_cuenta_corriente: true,
+        activo: true
+      }, token);
+      if (!cliente.response.ok) throw new Error(`Crear cliente F2C fallo: ${cliente.data?.message || cliente.response.status}`);
+
+      const ventaCC = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        es_cuenta_corriente: true,
+        cliente_id: cliente.data.cliente.id,
+        items: [{ producto_id: producto.id, nombre_producto: producto.nombre, cantidad: 2, precio_unitario: 100 }]
+      }, token);
+      if (!ventaCC.response.ok) throw new Error(`Venta CC F2C fallo: ${ventaCC.data?.message || ventaCC.response.status}`);
+      const ventaCCDb = await getVentaDb(dbPath, ventaCC.data.venta_id);
+      const detalleCC = (await getDetalleVentaDb(dbPath, ventaCC.data.venta_id))[0];
+      assertApprox(ventaCCDb.total_venta_original, 200, "F2C CC debe guardar total_venta_original inicial");
+      assertApprox(detalleCC.subtotal_neto_snapshot, 165.29, "F2C CC debe persistir snapshot fiscal de detalle");
+
+      const pagoCC = await requestJson(baseUrl, "POST", `/ventas/${ventaCC.data.venta_id}/pagar-cuenta-corriente`, {
+        monto_pagado: 50,
+        tipo_cobro: "efectivo"
+      }, token);
+      if (!pagoCC.response.ok) throw new Error(`Pago CC F2C fallo: ${pagoCC.data?.message || pagoCC.response.status}`);
+      const ventaCCPago = await getVentaDb(dbPath, ventaCC.data.venta_id);
+      assertApprox(ventaCCPago.total_venta_original, 200, "F2C pago CC no debe modificar total_venta_original");
+
+      const ventaManualCuenta = await requestJson(baseUrl, "POST", `/clientes/${cliente.data.cliente.id}/venta-cuenta`, {
+        concepto: "TEST F2C cuenta manual",
+        total: 80
+      }, token);
+      if (!ventaManualCuenta.response.ok) throw new Error(`Venta cuenta manual F2C fallo: ${ventaManualCuenta.data?.message || ventaManualCuenta.response.status}`);
+      const detalleManualCuenta = (await getDetalleVentaDb(dbPath, ventaManualCuenta.data.venta_id))[0];
+      assertSame(detalleManualCuenta.modelo_fiscal_snapshot, "legacy", "F2C venta a cuenta sin producto debe snapshotear como legacy explicito");
+      assertSame(detalleManualCuenta.subtotal_neto_snapshot, null, "F2C venta a cuenta sin producto no debe inferir fiscal");
+
+      const pendiente = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "pendiente",
+        identificador_pendiente: `F2C-PEND-${sufijo}`,
+        items: [{ producto_id: producto.id, nombre_producto: producto.nombre, cantidad: 1, precio_unitario: 100 }]
+      }, token);
+      if (!pendiente.response.ok) throw new Error(`Pendiente F2C fallo: ${pendiente.data?.message || pendiente.response.status}`);
+      assertApprox((await getVentaDb(dbPath, pendiente.data.venta_id)).total_venta_original, 100, "F2C pendiente debe guardar total original actual");
+
+      const editarPendiente = await requestJson(baseUrl, "PUT", `/ventas/${pendiente.data.venta_id}/pendiente`, {
+        identificador_pendiente: `F2C-PEND-EDIT-${sufijo}`,
+        items: [{ producto_id: producto.id, nombre_producto: producto.nombre, cantidad: 3, precio_unitario: 100 }]
+      }, token);
+      if (!editarPendiente.response.ok) throw new Error(`Editar pendiente F2C fallo: ${editarPendiente.data?.message || editarPendiente.response.status}`);
+      const ventaPendEdit = await getVentaDb(dbPath, pendiente.data.venta_id);
+      const detallePendEdit = (await getDetalleVentaDb(dbPath, pendiente.data.venta_id))[0];
+      assertApprox(ventaPendEdit.total_venta_original, 300, "F2C editar pendiente debe actualizar total_venta_original");
+      assertApprox(detallePendEdit.subtotal_neto_snapshot, 247.93, "F2C editar pendiente debe reemplazar snapshot fiscal");
+
+      const cobrarPendiente = await requestJson(baseUrl, "POST", `/ventas/${pendiente.data.venta_id}/cobrar`, {
+        tipo_cobro: "efectivo"
+      }, token);
+      if (!cobrarPendiente.response.ok) throw new Error(`Cobrar pendiente F2C fallo: ${cobrarPendiente.data?.message || cobrarPendiente.response.status}`);
+      assertApprox((await getVentaDb(dbPath, pendiente.data.venta_id)).total_venta_original, 300, "F2C cobrar pendiente sin recargo debe congelar total original");
+
+      const tipoRecargo = await requestJson(baseUrl, "POST", "/tipos_pago", {
+        codigo: `credito_f2c_${sufijo}`,
+        nombre: `Credito F2C ${sufijo}`,
+        usa_recargo: true,
+        porcentaje_recargo: 10,
+        impacta_digital: true,
+        requiere_caja_abierta: true
+      }, token);
+      if (!tipoRecargo.response.ok) throw new Error(`Crear tipo recargo F2C fallo: ${tipoRecargo.data?.message || tipoRecargo.response.status}`);
+      const cuentaRecargo = await crearCuentaCobro(baseUrl, token, {
+        nombre: `Terminal F2C ${sufijo}`,
+        tipo_pago_codigo: `credito_f2c_${sufijo}`,
+        tipo_cuenta: "terminal",
+        proveedor_integracion: "interno"
+      });
+      const pendienteRecargo = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "pendiente",
+        identificador_pendiente: `F2C-PEND-REC-${sufijo}`,
+        items: [{ producto_id: producto.id, nombre_producto: producto.nombre, cantidad: 1, precio_unitario: 100 }]
+      }, token);
+      if (!pendienteRecargo.response.ok) throw new Error(`Pendiente recargo F2C fallo: ${pendienteRecargo.data?.message || pendienteRecargo.response.status}`);
+      const cobrarRecargo = await requestJson(baseUrl, "POST", `/ventas/${pendienteRecargo.data.venta_id}/cobrar`, {
+        tipo_cobro: `credito_f2c_${sufijo}`,
+        cuenta_cobro_id: cuentaRecargo.id
+      }, token);
+      if (!cobrarRecargo.response.ok) throw new Error(`Cobrar pendiente con recargo F2C fallo: ${cobrarRecargo.data?.message || cobrarRecargo.response.status}`);
+      const ventaPendRecargo = await getVentaDb(dbPath, pendienteRecargo.data.venta_id);
+      assertApprox(ventaPendRecargo.total, 110, "F2C pendiente cobrado con recargo debe mantener total operativo con recargo");
+      assertApprox(ventaPendRecargo.total_venta_original, 110, "F2C pendiente cobrado con recargo debe congelar total_venta_original con recargo");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testVentaSnapshotsHistoricosF2CTienda() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const sufijo = Date.now().toString().slice(-8);
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST F2C Tienda ${sufijo}`, { margen_porcentaje: 50 });
+      const producto = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST F2C Tienda Prod ${sufijo}`,
+        categoria: `TEST F2C Tienda ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        costo_economico: 50,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "gravado",
+        iva_venta_alicuota: 21,
+        precio_venta_modo: "manual",
+        stock: 20,
+        activo: true
+      });
+      const pedido = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
+        cliente_nombre: "TEST F2C Tienda",
+        items: [{ producto_id: producto.id, cantidad: 2, modificadores: [] }]
+      });
+      if (!pedido.response.ok) throw new Error(`Pedido tienda F2C fallo: ${pedido.data?.message || pedido.response.status}`);
+      await runSql(dbPath, "UPDATE productos SET precio_venta = 999 WHERE id = ?", [producto.id]);
+      const lista = await requestJson(baseUrl, "GET", "/tienda/pedidos", null, token);
+      const pedidoInterno = lista.data.find((item) => item.codigo_publico === pedido.data.codigo_publico);
+      if (!pedidoInterno) throw new Error("Pedido tienda F2C no aparece en listado interno");
+      await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedidoInterno.id}/aceptar`, {}, token);
+      await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedidoInterno.id}/listo`, {}, token);
+      const convertido = await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedidoInterno.id}/convertir-venta`, {}, token);
+      if (!convertido.response.ok) throw new Error(`Convertir tienda F2C fallo: ${convertido.data?.message || convertido.response.status}`);
+      const venta = await getVentaDb(dbPath, convertido.data.venta_id);
+      const detalle = (await getDetalleVentaDb(dbPath, convertido.data.venta_id))[0];
+      assertApprox(venta.total_venta_original, 200, "F2C tienda debe guardar total original desde precio snapshot del pedido");
+      assertApprox(detalle.precio_unitario, 100, "F2C tienda debe conservar precio_unitario_snapshot del pedido");
+      assertApprox(detalle.subtotal_neto_snapshot, 165.29, "F2C tienda debe calcular snapshot fiscal con precio snapshot");
+      assertApprox(detalle.iva_monto_snapshot, 34.71, "F2C tienda debe calcular IVA con precio snapshot");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -10446,6 +10918,11 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testProductoModeloFiscalF1ACompatibilidad);
   await _run(testProductoMotorFiscalNormalizadoF1B1);
   await _run(testAumentoMasivoProtegeProductosNormalizadosF1B2);
+  await _run(testVentaSnapshotFiscalF2BHelper);
+  await _run(testVentaSnapshotFiscalF2BSchema);
+  await _run(testVentaSnapshotsHistoricosF2CNormalLegacyModificadores);
+  await _run(testVentaSnapshotsHistoricosF2CCuentaCorrienteYPendientes);
+  await _run(testVentaSnapshotsHistoricosF2CTienda);
   await _run(testProductosMasVendidosDevuelveClaves);
   await _run(testProductosMasVendidosExcluyeVentasAnuladas);
   await _run(testProductosMasVendidosOrdenaPorCantidad);
@@ -10543,6 +11020,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testVentaCCDesdePostVentasAplicaReglas);
   await _run(testVentaNormalSigueOK);
   await _run(testUsuarioVentaNoEsAdmin);
+  await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
   console.error(error.message);
