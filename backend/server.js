@@ -4919,7 +4919,7 @@ app.get("/clientes/:id/cuenta-corriente", async (req, res) => {
     }
 
     const ventasPendientesBase = await allQuery(
-      `SELECT id, fecha, total, saldo_pendiente
+      `SELECT id, fecha, COALESCE(total_venta_original, total) AS total_historico, saldo_pendiente
        FROM ventas
        WHERE cliente_id = ? AND es_cuenta_corriente = 1 AND saldo_pendiente > 0
        ORDER BY id DESC`,
@@ -4938,7 +4938,7 @@ app.get("/clientes/:id/cuenta-corriente", async (req, res) => {
       ventasPendientes.push({
         id: venta.id,
         fecha: venta.fecha,
-        total_historico: Number(snapshot.venta.total || 0),
+        total_historico: Number(snapshot.venta.total_venta_original ?? snapshot.venta.total ?? venta.total_historico ?? 0),
         total_actual: snapshot.total_actual,
         total_pagado: snapshot.total_pagado,
         saldo_pendiente: snapshot.saldo_actual,
@@ -4969,7 +4969,7 @@ app.get("/clientes/:id/movimientos-cuenta-corriente", async (req, res) => {
     }
 
     const ventas = await allQuery(
-      `SELECT id, fecha, hora, total AS importe, saldo_pendiente, tipo_cobro, identificador_pendiente,
+      `SELECT id, fecha, hora, COALESCE(total_venta_original, total) AS importe, saldo_pendiente, tipo_cobro, identificador_pendiente,
               'venta' AS tipo_movimiento
        FROM ventas
        WHERE cliente_id = ? AND es_cuenta_corriente = 1
@@ -5630,13 +5630,12 @@ app.post("/clientes/:id/cobros-cc/:group_id/revertir", async (req, res) => {
 
         // Leer saldo actual dentro de la transacción para evitar race condition
         const ventaRt = await getQuery(
-          "SELECT saldo_pendiente, total FROM ventas WHERE id = ?",
+          "SELECT saldo_pendiente FROM ventas WHERE id = ?",
           [fila.venta_id]
         );
         const saldoActual = Number(ventaRt?.saldo_pendiente ?? 0);
-        const ventaTotal  = Number(ventaRt?.total ?? 0);
         const montoOriginal = Number(fila.monto_pagado);
-        const nuevoSaldo  = Number(Math.min(ventaTotal, saldoActual + montoOriginal).toFixed(2));
+        const nuevoSaldo  = Number((saldoActual + montoOriginal).toFixed(2));
         const nuevoEstado = nuevoSaldo > 0 ? "cuenta_corriente_pendiente" : "cobrada";
 
         await runQuery(

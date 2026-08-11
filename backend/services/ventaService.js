@@ -221,11 +221,10 @@ async function refreshCuentaCorrienteSaldo(ventaId) {
 
   await runQuery(
     `UPDATE ventas
-     SET saldo_pendiente = ?, total = ?, estado = ?
+     SET saldo_pendiente = ?, estado = ?
      WHERE id = ?`,
     [
       snapshot.saldo_actual,
-      snapshot.total_actual,
       snapshot.saldo_actual === 0 ? "cobrada" : "cuenta_corriente_pendiente",
       ventaId
     ]

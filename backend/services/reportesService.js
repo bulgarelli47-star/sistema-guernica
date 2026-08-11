@@ -40,10 +40,10 @@ async function getResumenReportes({ desde = null, hasta = null } = {}) {
     allQuery(
       `SELECT
          COUNT(*) AS total_ventas,
-         COALESCE(SUM(total), 0) AS valor_comercial_total,
-         COALESCE(SUM(CASE WHEN COALESCE(estado, '') = 'cobrada'   AND COALESCE(es_cuenta_corriente, 0) = 0 THEN total ELSE 0 END), 0) AS ventas_cobradas,
-         COALESCE(SUM(CASE WHEN COALESCE(estado, '') = 'pendiente' AND COALESCE(es_cuenta_corriente, 0) = 0 THEN total ELSE 0 END), 0) AS ventas_pendientes,
-         COALESCE(SUM(CASE WHEN COALESCE(es_cuenta_corriente, 0) = 1 THEN total ELSE 0 END), 0) AS ventas_cuenta_corriente
+         COALESCE(SUM(COALESCE(total_venta_original, total)), 0) AS valor_comercial_total,
+         COALESCE(SUM(CASE WHEN COALESCE(estado, '') = 'cobrada'   AND COALESCE(es_cuenta_corriente, 0) = 0 THEN COALESCE(total_venta_original, total) ELSE 0 END), 0) AS ventas_cobradas,
+         COALESCE(SUM(CASE WHEN COALESCE(estado, '') = 'pendiente' AND COALESCE(es_cuenta_corriente, 0) = 0 THEN COALESCE(total_venta_original, total) ELSE 0 END), 0) AS ventas_pendientes,
+         COALESCE(SUM(CASE WHEN COALESCE(es_cuenta_corriente, 0) = 1 THEN COALESCE(total_venta_original, total) ELSE 0 END), 0) AS ventas_cuenta_corriente
        FROM ventas
        WHERE ${ventasWhere.join(" AND ")}`,
       ventasParams
@@ -216,17 +216,17 @@ async function getReporteVentas({ desde = null, hasta = null, estado = null } = 
     allQuery(
       `SELECT
          COUNT(*) AS operaciones,
-         COALESCE(SUM(v.total), 0) AS total_vendido,
-         COALESCE(SUM(CASE WHEN COALESCE(v.estado, '') = 'cobrada' THEN v.total ELSE 0 END), 0) AS total_cobrado,
-         COALESCE(SUM(CASE WHEN COALESCE(v.estado, '') = 'pendiente' THEN v.total ELSE 0 END), 0) AS total_pendiente,
-         COALESCE(SUM(CASE WHEN COALESCE(v.es_cuenta_corriente, 0) = 1 OR COALESCE(v.estado, '') = 'cuenta_corriente_pendiente' THEN v.total ELSE 0 END), 0) AS total_cuenta_corriente,
+         COALESCE(SUM(COALESCE(v.total_venta_original, v.total)), 0) AS total_vendido,
+         COALESCE(SUM(CASE WHEN COALESCE(v.estado, '') = 'cobrada' THEN COALESCE(v.total_venta_original, v.total) ELSE 0 END), 0) AS total_cobrado,
+         COALESCE(SUM(CASE WHEN COALESCE(v.estado, '') = 'pendiente' THEN COALESCE(v.total_venta_original, v.total) ELSE 0 END), 0) AS total_pendiente,
+         COALESCE(SUM(CASE WHEN COALESCE(v.es_cuenta_corriente, 0) = 1 OR COALESCE(v.estado, '') = 'cuenta_corriente_pendiente' THEN COALESCE(v.total_venta_original, v.total) ELSE 0 END), 0) AS total_cuenta_corriente,
          COALESCE(SUM(CASE WHEN COALESCE(v.es_cuenta_corriente, 0) = 1 OR COALESCE(v.estado, '') = 'cuenta_corriente_pendiente' THEN v.saldo_pendiente ELSE 0 END), 0) AS saldo_cuenta_corriente,
          COALESCE(SUM(v.monto_efectivo), 0) AS monto_efectivo,
          COALESCE(SUM(v.monto_debito), 0) AS monto_debito,
-         COALESCE(SUM(CASE WHEN COALESCE(v.tipo_cobro, v.metodo_pago, '') = 'efectivo' THEN v.total ELSE 0 END), 0) AS ventas_efectivo,
-         COALESCE(SUM(CASE WHEN COALESCE(v.tipo_cobro, v.metodo_pago, '') = 'debito' THEN v.total ELSE 0 END), 0) AS ventas_debito,
-         COALESCE(SUM(CASE WHEN COALESCE(v.tipo_cobro, v.metodo_pago, '') = 'transferencia' THEN v.total ELSE 0 END), 0) AS ventas_transferencia,
-         COALESCE(SUM(CASE WHEN COALESCE(v.tipo_cobro, v.metodo_pago, '') = 'mixto' THEN v.total ELSE 0 END), 0) AS ventas_mixto,
+         COALESCE(SUM(CASE WHEN COALESCE(v.tipo_cobro, v.metodo_pago, '') = 'efectivo' THEN COALESCE(v.total_venta_original, v.total) ELSE 0 END), 0) AS ventas_efectivo,
+         COALESCE(SUM(CASE WHEN COALESCE(v.tipo_cobro, v.metodo_pago, '') = 'debito' THEN COALESCE(v.total_venta_original, v.total) ELSE 0 END), 0) AS ventas_debito,
+         COALESCE(SUM(CASE WHEN COALESCE(v.tipo_cobro, v.metodo_pago, '') = 'transferencia' THEN COALESCE(v.total_venta_original, v.total) ELSE 0 END), 0) AS ventas_transferencia,
+         COALESCE(SUM(CASE WHEN COALESCE(v.tipo_cobro, v.metodo_pago, '') = 'mixto' THEN COALESCE(v.total_venta_original, v.total) ELSE 0 END), 0) AS ventas_mixto,
          COALESCE(SUM(CASE WHEN COALESCE(v.estado, '') = 'pendiente' THEN 1 ELSE 0 END), 0) AS ventas_pendientes,
          COALESCE(SUM(CASE WHEN COALESCE(v.estado, '') = 'cobrada' THEN 1 ELSE 0 END), 0) AS ventas_cobradas,
          COALESCE(SUM(CASE WHEN COALESCE(v.es_cuenta_corriente, 0) = 1 OR COALESCE(v.estado, '') = 'cuenta_corriente_pendiente' THEN 1 ELSE 0 END), 0) AS ventas_cuenta_corriente
@@ -237,7 +237,7 @@ async function getReporteVentas({ desde = null, hasta = null, estado = null } = 
     allQuery(
       `SELECT
          COUNT(*) AS ventas_anuladas,
-         COALESCE(SUM(v.total), 0) AS monto_anulado
+         COALESCE(SUM(COALESCE(v.total_venta_original, v.total)), 0) AS monto_anulado
        FROM ventas v
        WHERE ${anuladasSql}`,
       anuladas.params
@@ -253,9 +253,9 @@ async function getReporteVentas({ desde = null, hasta = null, estado = null } = 
     allQuery(
       `SELECT
          v.fecha,
-         COALESCE(SUM(v.total), 0) AS total,
+         COALESCE(SUM(COALESCE(v.total_venta_original, v.total)), 0) AS total,
          COUNT(*) AS cantidad_ventas,
-         COALESCE(SUM(v.total) / NULLIF(COUNT(*), 0), 0) AS ticket_promedio
+         COALESCE(SUM(COALESCE(v.total_venta_original, v.total)) / NULLIF(COUNT(*), 0), 0) AS ticket_promedio
        FROM ventas v
        WHERE ${productivasSql}
        GROUP BY v.fecha
@@ -311,7 +311,7 @@ async function getReporteVentas({ desde = null, hasta = null, estado = null } = 
       `SELECT
          COALESCE(v.estado, 'sin_estado') AS estado,
          COUNT(*) AS cantidad,
-         COALESCE(SUM(v.total), 0) AS total
+         COALESCE(SUM(COALESCE(v.total_venta_original, v.total)), 0) AS total
        FROM ventas v
        WHERE ${todasSql}
        GROUP BY estado
@@ -326,8 +326,8 @@ async function getReporteVentas({ desde = null, hasta = null, estado = null } = 
            CAST(SUBSTR(v.hora, 1, 2) AS INTEGER) + 1
          ) AS franja,
          COUNT(*) AS cantidad_ventas,
-         COALESCE(SUM(v.total), 0) AS total_vendido,
-         COALESCE(SUM(v.total) / NULLIF(COUNT(*), 0), 0) AS ticket_promedio
+         COALESCE(SUM(COALESCE(v.total_venta_original, v.total)), 0) AS total_vendido,
+         COALESCE(SUM(COALESCE(v.total_venta_original, v.total)) / NULLIF(COUNT(*), 0), 0) AS ticket_promedio
        FROM ventas v
        WHERE ${productivasSql}
        GROUP BY hora_num
@@ -338,8 +338,8 @@ async function getReporteVentas({ desde = null, hasta = null, estado = null } = 
       `SELECT
          COALESCE(v.usuario, 'Sin usuario') AS usuario_nombre,
          COUNT(*) AS cantidad_ventas,
-         COALESCE(SUM(v.total), 0) AS total_vendido,
-         COALESCE(SUM(v.total) / NULLIF(COUNT(*), 0), 0) AS ticket_promedio
+         COALESCE(SUM(COALESCE(v.total_venta_original, v.total)), 0) AS total_vendido,
+         COALESCE(SUM(COALESCE(v.total_venta_original, v.total)) / NULLIF(COUNT(*), 0), 0) AS ticket_promedio
        FROM ventas v
        WHERE ${productivasSql}
        GROUP BY usuario_nombre
@@ -1042,7 +1042,7 @@ async function getVentasPorDia({ desde = null, hasta = null } = {}) {
   return allQuery(
     `SELECT
        fecha,
-       COALESCE(SUM(total), 0) AS total,
+       COALESCE(SUM(COALESCE(total_venta_original, total)), 0) AS total,
        COUNT(*)                AS cantidad_ventas
      FROM ventas
      WHERE ${where.join(" AND ")}
@@ -1545,7 +1545,7 @@ async function getReporteCuentasCorrientes({
        SELECT
          v.cliente_id,
          COUNT(*) AS ventas_periodo,
-         COALESCE(SUM(v.total), 0) AS monto_ventas_periodo
+         COALESCE(SUM(COALESCE(v.total_venta_original, v.total)), 0) AS monto_ventas_periodo
        FROM ventas v
        WHERE ${ventasPeriodoWhere.join(" AND ")}
        GROUP BY v.cliente_id
@@ -1616,7 +1616,7 @@ async function getReporteCuentasCorrientes({
            v.cliente_id,
            c.nombre AS cliente_nombre,
            'venta' AS tipo_movimiento,
-           v.total AS importe,
+           COALESCE(v.total_venta_original, v.total) AS importe,
            v.saldo_pendiente,
            v.tipo_cobro,
            v.id AS venta_id

@@ -4874,6 +4874,157 @@ async function testVentaSnapshotsHistoricosF2CTienda() {
   }
 }
 
+async function testCuentaCorrienteSeparaVentaHistoricaYDeudaF2D() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const sufijo = Date.now().toString().slice(-8);
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST F2D ${sufijo}`, { margen_porcentaje: 0 });
+      const producto = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST F2D Producto ${sufijo}`,
+        categoria: `TEST F2D ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_venta: 3500,
+        costo_economico: 1000,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "gravado",
+        iva_venta_alicuota: 21,
+        precio_venta_modo: "manual",
+        stock: 20,
+        activo: true
+      });
+      const productoInactivoNombre = `TEST F2D Inactivo ${sufijo}`;
+      const productoInactivoId = await crearProducto(baseUrl, token, {
+        nombre: productoInactivoNombre,
+        categoria: `TEST F2D ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_venta: 700,
+        stock: 20,
+        activo: false
+      });
+      const cliente = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: `TEST F2D Cliente ${sufijo}`,
+        dni_cuit: `20${sufijo}`,
+        tipo_persona: "fisica",
+        habilita_cuenta_corriente: true,
+        activo: true
+      }, token);
+      if (!cliente.response.ok) throw new Error(`Crear cliente F2D fallo: ${cliente.data?.message || cliente.response.status}`);
+      const clienteId = cliente.data.cliente.id;
+
+      const ventaCC = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        es_cuenta_corriente: true,
+        cliente_id: clienteId,
+        items: [{ producto_id: producto.id, nombre_producto: producto.nombre, cantidad: 1, precio_unitario: 3500 }]
+      }, token);
+      if (!ventaCC.response.ok) throw new Error(`Crear venta CC F2D fallo: ${ventaCC.data?.message || ventaCC.response.status}`);
+      let ventaDb = await getVentaDb(dbPath, ventaCC.data.venta_id);
+      assertApprox(ventaDb.total, 3500, "F2D CC nueva debe guardar ventas.total historico");
+      assertApprox(ventaDb.total_venta_original, 3500, "F2D CC nueva debe guardar total_venta_original historico");
+      assertApprox(ventaDb.saldo_pendiente, 3500, "F2D CC nueva debe iniciar saldo igual a venta");
+
+      await runSql(dbPath, "UPDATE productos SET precio_venta = 4000 WHERE id = ?", [producto.id]);
+      const cc4000 = await requestJson(baseUrl, "GET", `/clientes/${clienteId}/cuenta-corriente`, null, token);
+      if (!cc4000.response.ok) throw new Error(`GET cuenta corriente F2D fallo: ${cc4000.data?.message || cc4000.response.status}`);
+      ventaDb = await getVentaDb(dbPath, ventaCC.data.venta_id);
+      assertApprox(ventaDb.total, 3500, "F2D refresh no debe reescribir ventas.total");
+      assertApprox(ventaDb.total_venta_original, 3500, "F2D refresh no debe reescribir total_venta_original");
+      assertApprox(ventaDb.saldo_pendiente, 4000, "F2D refresh debe actualizar solo saldo por precio vigente");
+      const ventaPendiente4000 = cc4000.data.ventas_pendientes.find((venta) => Number(venta.id) === Number(ventaCC.data.venta_id));
+      assertApprox(ventaPendiente4000.total_actual, 4000, "F2D snapshot CC debe seguir calculando total_actual");
+      assertApprox(ventaPendiente4000.total_historico, 3500, "F2D endpoint CC debe exponer total historico separado");
+
+      const pagoParcial = await requestJson(baseUrl, "POST", `/ventas/${ventaCC.data.venta_id}/pagar-cuenta-corriente`, {
+        monto_pagado: 1000,
+        tipo_cobro: "efectivo"
+      }, token);
+      if (!pagoParcial.response.ok) throw new Error(`Pago parcial F2D fallo: ${pagoParcial.data?.message || pagoParcial.response.status}`);
+      ventaDb = await getVentaDb(dbPath, ventaCC.data.venta_id);
+      assertApprox(ventaDb.total, 3500, "F2D pago parcial no debe cambiar ventas.total");
+      assertApprox(ventaDb.total_venta_original, 3500, "F2D pago parcial no debe cambiar total_venta_original");
+      assertApprox(ventaDb.saldo_pendiente, 3000, "F2D pago parcial debe descontar saldo vigente");
+
+      await runSql(dbPath, "UPDATE productos SET precio_venta = 4500 WHERE id = ?", [producto.id]);
+      await requestJson(baseUrl, "GET", `/clientes/${clienteId}/cuenta-corriente`, null, token);
+      ventaDb = await getVentaDb(dbPath, ventaCC.data.venta_id);
+      assertApprox(ventaDb.total, 3500, "F2D segundo refresh mantiene ventas.total");
+      assertApprox(ventaDb.total_venta_original, 3500, "F2D segundo refresh mantiene total_venta_original");
+      assertApprox(ventaDb.saldo_pendiente, 3500, "F2D segundo refresh recalcula deuda vigente menos pagos");
+
+      const pagoTotal = await requestJson(baseUrl, "POST", `/ventas/${ventaCC.data.venta_id}/pagar-cuenta-corriente`, {
+        monto_pagado: 3500,
+        tipo_cobro: "efectivo"
+      }, token);
+      if (!pagoTotal.response.ok) throw new Error(`Pago total F2D fallo: ${pagoTotal.data?.message || pagoTotal.response.status}`);
+      ventaDb = await getVentaDb(dbPath, ventaCC.data.venta_id);
+      assertApprox(ventaDb.total, 3500, "F2D pago total no debe cambiar ventas.total");
+      assertApprox(ventaDb.total_venta_original, 3500, "F2D pago total no debe cambiar total_venta_original");
+      assertApprox(ventaDb.saldo_pendiente, 0, "F2D pago total debe saldar deuda");
+      assertSame(ventaDb.estado, "cobrada", "F2D pago total debe marcar cobrada");
+
+      const ventaInactiva = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        es_cuenta_corriente: true,
+        cliente_id: clienteId,
+        items: [{ producto_id: productoInactivoId, nombre_producto: productoInactivoNombre, cantidad: 1, precio_unitario: 700 }]
+      }, token);
+      if (!ventaInactiva.response.ok) throw new Error(`Crear venta inactiva F2D fallo: ${ventaInactiva.data?.message || ventaInactiva.response.status}`);
+      await runSql(dbPath, "UPDATE productos SET precio_venta = 900, activo = 0 WHERE id = ?", [productoInactivoId]);
+      await requestJson(baseUrl, "GET", `/clientes/${clienteId}/cuenta-corriente`, null, token);
+      const ventaInactivaDb = await getVentaDb(dbPath, ventaInactiva.data.venta_id);
+      assertApprox(ventaInactivaDb.total, 700, "F2D producto inactivo mantiene venta historica");
+      assertApprox(ventaInactivaDb.saldo_pendiente, 700, "F2D producto inactivo conserva deuda con precio historico");
+
+      const detalleAntesAnular = (await getDetalleVentaDb(dbPath, ventaInactiva.data.venta_id))[0];
+      const anularCC = await requestJson(baseUrl, "POST", `/ventas/${ventaInactiva.data.venta_id}/anular-cc`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anularCC.response.ok) throw new Error(`Anular CC F2D fallo: ${anularCC.data?.message || anularCC.response.status}`);
+      const ventaAnulada = await getVentaDb(dbPath, ventaInactiva.data.venta_id);
+      const detalleDespuesAnular = (await getDetalleVentaDb(dbPath, ventaInactiva.data.venta_id))[0];
+      assertApprox(ventaAnulada.total, 700, "F2D anulacion no debe modificar ventas.total");
+      assertApprox(ventaAnulada.total_venta_original, 700, "F2D anulacion no debe modificar total_venta_original");
+      assertSame(detalleDespuesAnular.modelo_fiscal_snapshot, detalleAntesAnular.modelo_fiscal_snapshot, "F2D anulacion debe conservar snapshot fiscal");
+
+      const pendiente = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "pendiente",
+        identificador_pendiente: `F2D-PEND-${sufijo}`,
+        items: [{ producto_id: producto.id, nombre_producto: producto.nombre, cantidad: 1, precio_unitario: 100 }]
+      }, token);
+      if (!pendiente.response.ok) throw new Error(`Pendiente F2D fallo: ${pendiente.data?.message || pendiente.response.status}`);
+      const editarPendiente = await requestJson(baseUrl, "PUT", `/ventas/${pendiente.data.venta_id}/pendiente`, {
+        identificador_pendiente: `F2D-PEND-EDIT-${sufijo}`,
+        items: [{ producto_id: producto.id, nombre_producto: producto.nombre, cantidad: 2, precio_unitario: 100 }]
+      }, token);
+      if (!editarPendiente.response.ok) throw new Error(`Editar pendiente F2D fallo: ${editarPendiente.data?.message || editarPendiente.response.status}`);
+      assertApprox((await getVentaDb(dbPath, pendiente.data.venta_id)).total_venta_original, 200, "F2D pendiente editable actualiza total original");
+      const cobrarPendiente = await requestJson(baseUrl, "POST", `/ventas/${pendiente.data.venta_id}/cobrar`, { tipo_cobro: "efectivo" }, token);
+      if (!cobrarPendiente.response.ok) throw new Error(`Cobrar pendiente F2D fallo: ${cobrarPendiente.data?.message || cobrarPendiente.response.status}`);
+      const editarCobrada = await requestJson(baseUrl, "PUT", `/ventas/${pendiente.data.venta_id}/pendiente`, {
+        identificador_pendiente: `F2D-PEND-NO-${sufijo}`,
+        items: [{ producto_id: producto.id, nombre_producto: producto.nombre, cantidad: 3, precio_unitario: 100 }]
+      }, token);
+      assertEqual(editarCobrada.response.status, 404, "F2D pendiente cobrada no debe poder editarse como pendiente");
+      assertApprox((await getVentaDb(dbPath, pendiente.data.venta_id)).total_venta_original, 200, "F2D pendiente cobrada conserva total definitivo");
+
+      const reporteVentas = await requestJson(baseUrl, "GET", "/reportes/ventas", null, token);
+      if (!reporteVentas.response.ok) throw new Error(`Reporte ventas F2D fallo: ${reporteVentas.data?.message || reporteVentas.response.status}`);
+      assertApprox(reporteVentas.data.resumen.total_cuenta_corriente, 3500, "F2D reporte historico debe usar total original de CC no deuda recalculada");
+      assertApprox(reporteVentas.data.resumen.saldo_cuenta_corriente, 0, "F2D reporte de deuda debe usar saldo_pendiente vigente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testMovimientoManualRegistraStockAnteriorYNuevo() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -10923,6 +11074,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testVentaSnapshotsHistoricosF2CNormalLegacyModificadores);
   await _run(testVentaSnapshotsHistoricosF2CCuentaCorrienteYPendientes);
   await _run(testVentaSnapshotsHistoricosF2CTienda);
+  await _run(testCuentaCorrienteSeparaVentaHistoricaYDeudaF2D);
   await _run(testProductosMasVendidosDevuelveClaves);
   await _run(testProductosMasVendidosExcluyeVentasAnuladas);
   await _run(testProductosMasVendidosOrdenaPorCantidad);

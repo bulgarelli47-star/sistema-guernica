@@ -129,9 +129,10 @@ function roundMoney(value) {
 async function calcularDeudaActualizadaCliente(clienteId) {
   const rows = await allQuery(
     `SELECT v.id AS venta_id,
-            v.total AS venta_total,
+            COALESCE(v.total_venta_original, v.total) AS venta_total,
             v.saldo_pendiente,
             v.estado AS venta_estado,
+            COALESCE(pagos.total_pagado, 0) AS total_pagado,
             dv.producto_id,
             COALESCE(dv.nombre_producto, p.nombre, 'Producto sin nombre') AS nombre_producto,
             dv.cantidad,
@@ -142,6 +143,11 @@ async function calcularDeudaActualizadaCliente(clienteId) {
      FROM ventas v
      INNER JOIN detalle_ventas dv ON dv.venta_id = v.id
      LEFT JOIN productos p ON p.id = dv.producto_id
+     LEFT JOIN (
+       SELECT venta_id, COALESCE(SUM(monto_pagado), 0) AS total_pagado
+       FROM pagos_cuenta_corriente
+       GROUP BY venta_id
+     ) pagos ON pagos.venta_id = v.id
      WHERE v.cliente_id = ?
        AND v.es_cuenta_corriente = 1
        AND COALESCE(v.saldo_pendiente, 0) > 0
@@ -158,24 +164,21 @@ async function calcularDeudaActualizadaCliente(clienteId) {
   rows.forEach((row) => {
     const ventaTotal = Number(row.venta_total) || 0;
     const saldoPendiente = Number(row.saldo_pendiente) || 0;
-    const proporcionPendiente = ventaTotal > 0 ? Math.min(1, Math.max(0, saldoPendiente / ventaTotal)) : 1;
+    const totalPagado = Number(row.total_pagado) || 0;
     const cantidad = Number(row.cantidad) || 0;
     const subtotalHistorico = Number(row.subtotal) || (cantidad * (Number(row.precio_unitario) || 0));
     const precioParaRecalculo = Number(row.producto_activo) === 1
       ? Number(row.precio_actual) || Number(row.precio_unitario) || 0
       : Number(row.precio_unitario) || 0;
-    const historicoPendiente = subtotalHistorico * proporcionPendiente;
-    const actualizadoPendiente = cantidad * precioParaRecalculo * proporcionPendiente;
     const key = row.producto_id == null ? `sin_producto:${row.nombre_producto}` : String(row.producto_id);
-
-    deudaHistorica += historicoPendiente;
-    deudaActualizada += actualizadoPendiente;
 
     if (!ventasMap.has(row.venta_id)) {
       ventasMap.set(row.venta_id, {
         venta_id: row.venta_id,
         total_historico: ventaTotal,
         saldo_anterior: saldoPendiente,
+        total_pagado: totalPagado,
+        total_actualizado_bruto: 0,
         saldo_actualizado: 0,
         diferencia: 0,
         estado_anterior: row.venta_estado,
@@ -183,7 +186,8 @@ async function calcularDeudaActualizadaCliente(clienteId) {
       });
     }
     const venta = ventasMap.get(row.venta_id);
-    venta.saldo_actualizado += actualizadoPendiente;
+    const subtotalActualizado = cantidad * precioParaRecalculo;
+    venta.total_actualizado_bruto += subtotalActualizado;
     venta.items.push({
       producto_id: row.producto_id,
       nombre_producto: row.nombre_producto,
@@ -193,8 +197,8 @@ async function calcularDeudaActualizadaCliente(clienteId) {
       producto_activo: Number(row.producto_activo) === 1,
       subtotal_historico: roundMoney(subtotalHistorico),
       subtotal_actualizado: roundMoney(cantidad * precioParaRecalculo),
-      saldo_historico_proporcional: roundMoney(historicoPendiente),
-      saldo_actualizado_proporcional: roundMoney(actualizadoPendiente)
+      saldo_historico_proporcional: 0,
+      saldo_actualizado_proporcional: 0
     });
 
     if (!productosMap.has(key)) {
@@ -207,11 +211,35 @@ async function calcularDeudaActualizadaCliente(clienteId) {
         producto_activo: Number(row.producto_activo) === 1
       });
     }
-    const producto = productosMap.get(key);
-    producto.deuda_historica += historicoPendiente;
-    producto.deuda_actualizada += actualizadoPendiente;
-    producto.diferencia = producto.deuda_actualizada - producto.deuda_historica;
   });
+
+  for (const venta of ventasMap.values()) {
+    const saldoHistorico = Math.max(0, Number(venta.total_historico || 0) - Number(venta.total_pagado || 0));
+    const saldoActualizado = Math.max(0, Number(venta.total_actualizado_bruto || 0) - Number(venta.total_pagado || 0));
+    const ratioHistorico = Number(venta.total_historico || 0) > 0 ? Math.min(1, saldoHistorico / Number(venta.total_historico || 0)) : 1;
+    const ratioActualizado = Number(venta.total_actualizado_bruto || 0) > 0 ? Math.min(1, saldoActualizado / Number(venta.total_actualizado_bruto || 0)) : 1;
+
+    venta.saldo_actualizado = saldoActualizado;
+    deudaHistorica += saldoHistorico;
+    deudaActualizada += saldoActualizado;
+
+    venta.items = venta.items.map((item) => {
+      const historicoPendiente = Number(item.subtotal_historico || 0) * ratioHistorico;
+      const actualizadoPendiente = Number(item.subtotal_actualizado || 0) * ratioActualizado;
+      const key = item.producto_id == null ? `sin_producto:${item.nombre_producto}` : String(item.producto_id);
+      const producto = productosMap.get(key);
+      if (producto) {
+        producto.deuda_historica += historicoPendiente;
+        producto.deuda_actualizada += actualizadoPendiente;
+        producto.diferencia = producto.deuda_actualizada - producto.deuda_historica;
+      }
+      return {
+        ...item,
+        saldo_historico_proporcional: roundMoney(historicoPendiente),
+        saldo_actualizado_proporcional: roundMoney(actualizadoPendiente)
+      };
+    });
+  }
 
   const productosAfectados = [...productosMap.values()]
     .map((producto) => ({
