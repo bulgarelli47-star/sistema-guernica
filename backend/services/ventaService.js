@@ -70,6 +70,143 @@ function buildDetalleVentaSnapshotFiscal({ producto = {}, cantidad = 0, precio_u
   };
 }
 
+function esNumeroFinito(value) {
+  const numero = Number(value);
+  return Number.isFinite(numero);
+}
+
+function normalizarTotalLinea(item) {
+  if (esNumeroFinito(item?.subtotal)) return round2(Number(item.subtotal));
+  return round2(normalizarNumeroSnapshot(item?.cantidad) * normalizarNumeroSnapshot(item?.precio_unitario));
+}
+
+function crearBucketFiscal(tratamiento, alicuota = 0) {
+  return {
+    tratamiento,
+    alicuota: round2(alicuota),
+    neto: 0,
+    iva: 0,
+    total: 0
+  };
+}
+
+function sumarBucketFiscal(buckets, tratamiento, alicuota, neto, iva) {
+  const alicuotaNormalizada = tratamiento === "gravado" ? round2(alicuota) : 0;
+  const key = `${tratamiento}:${alicuotaNormalizada}`;
+  if (!buckets.has(key)) {
+    buckets.set(key, crearBucketFiscal(tratamiento, alicuotaNormalizada));
+  }
+  const bucket = buckets.get(key);
+  bucket.neto = round2(bucket.neto + neto);
+  bucket.iva = round2(bucket.iva + iva);
+  bucket.total = round2(bucket.total + neto + iva);
+}
+
+function buildResumenFiscalVenta(venta = {}, items = []) {
+  const rows = Array.isArray(items) ? items : [];
+  const totalHistorico = round2(venta?.total_venta_original ?? venta?.total ?? 0);
+  const recargoMonto = round2(venta?.recargo_monto ?? 0);
+  const subtotalItems = round2(rows.reduce((acc, item) => acc + normalizarTotalLinea(item), 0));
+  const diferenciaFueraItems = round2(totalHistorico - subtotalItems);
+  const diferenciaComercialInconsistente = Math.abs(diferenciaFueraItems - recargoMonto) > 0.01;
+  const recargoRequiereClasificacion = recargoMonto > 0;
+  const buckets = new Map();
+
+  let normalizados = 0;
+  let legacy = 0;
+  let sinSnapshot = 0;
+  let invalidos = 0;
+  let montoSinClasificacionFiscal = 0;
+
+  for (const item of rows) {
+    const subtotalLinea = normalizarTotalLinea(item);
+    const modelo = item?.modelo_fiscal_snapshot == null || item?.modelo_fiscal_snapshot === ""
+      ? null
+      : String(item.modelo_fiscal_snapshot).trim().toLowerCase();
+
+    if (modelo !== "normalizado") {
+      if (modelo === "legacy") legacy += 1;
+      else sinSnapshot += 1;
+      montoSinClasificacionFiscal = round2(montoSinClasificacionFiscal + subtotalLinea);
+      continue;
+    }
+
+    const tratamiento = String(item?.iva_venta_tratamiento_snapshot || "").trim().toLowerCase();
+    const neto = Number(item?.subtotal_neto_snapshot);
+    const iva = Number(item?.iva_monto_snapshot);
+    const alicuota = Number(item?.iva_venta_alicuota_snapshot || 0);
+
+    if (!IVA_VENTA_TRATAMIENTOS_SNAPSHOT.has(tratamiento) || !Number.isFinite(neto) || !Number.isFinite(iva) || !Number.isFinite(alicuota)) {
+      invalidos += 1;
+      montoSinClasificacionFiscal = round2(montoSinClasificacionFiscal + subtotalLinea);
+      continue;
+    }
+
+    normalizados += 1;
+    sumarBucketFiscal(buckets, tratamiento, tratamiento === "gravado" ? alicuota : 0, round2(neto), round2(iva));
+  }
+
+  const alicuotas = Array.from(buckets.values())
+    .map((bucket) => ({
+      ...bucket,
+      neto: round2(bucket.neto),
+      iva: round2(bucket.iva),
+      total: round2(bucket.total)
+    }))
+    .sort((a, b) => {
+      const orden = { gravado: 0, exento: 1, no_gravado: 2 };
+      if (orden[a.tratamiento] !== orden[b.tratamiento]) return orden[a.tratamiento] - orden[b.tratamiento];
+      return a.alicuota - b.alicuota;
+    });
+
+  const netoGravado = round2(alicuotas
+    .filter((bucket) => bucket.tratamiento === "gravado")
+    .reduce((acc, bucket) => acc + bucket.neto, 0));
+  const ivaTotal = round2(alicuotas
+    .filter((bucket) => bucket.tratamiento === "gravado")
+    .reduce((acc, bucket) => acc + bucket.iva, 0));
+  const montoExento = round2(alicuotas
+    .filter((bucket) => bucket.tratamiento === "exento")
+    .reduce((acc, bucket) => acc + bucket.total, 0));
+  const montoNoGravado = round2(alicuotas
+    .filter((bucket) => bucket.tratamiento === "no_gravado")
+    .reduce((acc, bucket) => acc + bucket.total, 0));
+  const subtotalClasificado = round2(alicuotas.reduce((acc, bucket) => acc + bucket.total, 0));
+  const cierreFiscalItems = Math.abs(round2(subtotalClasificado + montoSinClasificacionFiscal) - subtotalItems) <= 0.01;
+
+  let coberturaItems = "sin_snapshot";
+  if (rows.length > 0) {
+    if (normalizados === rows.length) coberturaItems = "completa";
+    else if (legacy === rows.length) coberturaItems = "legacy";
+    else if (sinSnapshot === rows.length) coberturaItems = "sin_snapshot";
+    else coberturaItems = "parcial";
+  }
+
+  return {
+    total_historico: totalHistorico,
+    subtotal_items: subtotalItems,
+    recargo_monto: recargoMonto,
+    diferencia_fuera_items: diferenciaFueraItems,
+    diferencia_comercial_inconsistente: diferenciaComercialInconsistente,
+
+    neto_gravado: netoGravado,
+    iva_total: ivaTotal,
+    monto_exento: montoExento,
+    monto_no_gravado: montoNoGravado,
+    monto_sin_clasificacion_fiscal: montoSinClasificacionFiscal,
+    alicuotas,
+
+    cobertura_items: coberturaItems,
+    recargo_requiere_clasificacion: recargoRequiereClasificacion,
+    cierre_fiscal_items: cierreFiscalItems,
+    snapshot_integracion_completo: coberturaItems === "completa"
+      && !recargoRequiereClasificacion
+      && !diferenciaComercialInconsistente
+      && cierreFiscalItems
+      && invalidos === 0
+  };
+}
+
 async function ensureDetalleVentaIngredientesTable() {
   await runQuery(`
     CREATE TABLE IF NOT EXISTS detalle_venta_ingredientes (
@@ -361,11 +498,16 @@ async function getVentaConDetalle(ventaId) {
       [item.id]
     );
   }
-  return { venta, items };
+  return {
+    venta,
+    items,
+    resumen_fiscal: buildResumenFiscalVenta(venta, items)
+  };
 }
 
 module.exports = {
   buildDetalleVentaSnapshotFiscal,
+  buildResumenFiscalVenta,
   getPagoCuentaCorrienteTotal,
   getVentaConDetalle,
   getVentaCuentaCorrienteSnapshot,

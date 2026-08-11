@@ -5,7 +5,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 const sqlite3 = require("sqlite3").verbose();
 const { db: backendDb } = require("../backend/db");
-const { buildDetalleVentaSnapshotFiscal } = require("../backend/services/ventaService");
+const { buildDetalleVentaSnapshotFiscal, buildResumenFiscalVenta } = require("../backend/services/ventaService");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -5019,6 +5019,311 @@ async function testCuentaCorrienteSeparaVentaHistoricaYDeudaF2D() {
       if (!reporteVentas.response.ok) throw new Error(`Reporte ventas F2D fallo: ${reporteVentas.data?.message || reporteVentas.response.status}`);
       assertApprox(reporteVentas.data.resumen.total_cuenta_corriente, 3500, "F2D reporte historico debe usar total original de CC no deuda recalculada");
       assertApprox(reporteVentas.data.resumen.saldo_cuenta_corriente, 0, "F2D reporte de deuda debe usar saldo_pendiente vigente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testResumenFiscalHistoricoF2EHelper() {
+  const normalizado21 = {
+    modelo_fiscal_snapshot: "normalizado",
+    iva_venta_tratamiento_snapshot: "gravado",
+    iva_venta_alicuota_snapshot: 21,
+    subtotal_neto_snapshot: 82.64,
+    iva_monto_snapshot: 17.36,
+    cantidad: 1,
+    precio_unitario: 100,
+    subtotal: 100
+  };
+  const normalizado105 = {
+    modelo_fiscal_snapshot: "normalizado",
+    iva_venta_tratamiento_snapshot: "gravado",
+    iva_venta_alicuota_snapshot: 10.5,
+    subtotal_neto_snapshot: 100,
+    iva_monto_snapshot: 10.5,
+    cantidad: 1,
+    precio_unitario: 110.5,
+    subtotal: 110.5
+  };
+  const exento = {
+    modelo_fiscal_snapshot: "normalizado",
+    iva_venta_tratamiento_snapshot: "exento",
+    iva_venta_alicuota_snapshot: 0,
+    subtotal_neto_snapshot: 80,
+    iva_monto_snapshot: 0,
+    cantidad: 1,
+    precio_unitario: 80,
+    subtotal: 80
+  };
+  const noGravado = {
+    modelo_fiscal_snapshot: "normalizado",
+    iva_venta_tratamiento_snapshot: "no_gravado",
+    iva_venta_alicuota_snapshot: 0,
+    subtotal_neto_snapshot: 70,
+    iva_monto_snapshot: 0,
+    cantidad: 1,
+    precio_unitario: 70,
+    subtotal: 70
+  };
+  const legacy = {
+    modelo_fiscal_snapshot: "legacy",
+    cantidad: 1,
+    precio_unitario: 200,
+    subtotal: 200
+  };
+  const sinSnapshot = {
+    cantidad: 1,
+    precio_unitario: 150,
+    subtotal: 150
+  };
+
+  const solo21 = buildResumenFiscalVenta({ total_venta_original: 100, total: 999 }, [normalizado21]);
+  assertApprox(solo21.total_historico, 100, "F2E debe usar total_venta_original como autoridad historica");
+  assertApprox(solo21.subtotal_items, 100, "F2E debe sumar subtotales de items");
+  assertApprox(solo21.neto_gravado, 82.64, "F2E IVA21 debe sumar neto persistido");
+  assertApprox(solo21.iva_total, 17.36, "F2E IVA21 debe sumar IVA persistido");
+  assertEqual(solo21.alicuotas.length, 1, "F2E venta IVA21 debe tener un bucket");
+  assertApprox(solo21.alicuotas[0].total, 100, "F2E bucket IVA21 debe cerrar total");
+  assertSame(solo21.cobertura_items, "completa", "F2E normalizado puro debe ser cobertura completa");
+  assertEqual(solo21.snapshot_integracion_completo, true, "F2E normalizado sin recargo debe quedar listo para integracion posterior");
+
+  const dosAlicuotas = buildResumenFiscalVenta({ total_venta_original: 210.5 }, [normalizado21, normalizado105]);
+  assertEqual(dosAlicuotas.alicuotas.length, 2, "F2E debe separar IVA21 e IVA10.5");
+  assertApprox(dosAlicuotas.alicuotas.find((item) => item.alicuota === 10.5).iva, 10.5, "F2E bucket IVA10.5 debe existir");
+  assertApprox(dosAlicuotas.alicuotas.find((item) => item.alicuota === 21).iva, 17.36, "F2E bucket IVA21 debe existir");
+
+  const gravadoExento = buildResumenFiscalVenta({ total_venta_original: 180 }, [normalizado21, exento]);
+  assertApprox(gravadoExento.monto_exento, 80, "F2E exento debe separarse de gravado");
+  assertSame(gravadoExento.alicuotas.find((item) => item.tratamiento === "exento").tratamiento, "exento", "F2E debe incluir bucket exento");
+
+  const gravadoNoGravado = buildResumenFiscalVenta({ total_venta_original: 170 }, [normalizado21, noGravado]);
+  assertApprox(gravadoNoGravado.monto_no_gravado, 70, "F2E no_gravado debe separarse de exento");
+  assertSame(gravadoNoGravado.alicuotas.find((item) => item.tratamiento === "no_gravado").tratamiento, "no_gravado", "F2E debe incluir bucket no_gravado");
+
+  const mixtoLegacy = buildResumenFiscalVenta({ total_venta_original: 300 }, [normalizado21, legacy]);
+  assertSame(mixtoLegacy.cobertura_items, "parcial", "F2E mezcla normalizado + legacy debe ser parcial");
+  assertApprox(mixtoLegacy.monto_sin_clasificacion_fiscal, 200, "F2E legacy queda fuera de neto/IVA conocido");
+  assertApprox(mixtoLegacy.neto_gravado, 82.64, "F2E mezcla no debe inferir IVA legacy");
+  assertEqual(mixtoLegacy.snapshot_integracion_completo, false, "F2E cobertura parcial no queda lista para integracion");
+
+  const soloLegacy = buildResumenFiscalVenta({ total_venta_original: 200 }, [legacy]);
+  assertSame(soloLegacy.cobertura_items, "legacy", "F2E solo legacy debe clasificar como legacy");
+  assertApprox(soloLegacy.monto_sin_clasificacion_fiscal, 200, "F2E legacy completo queda sin clasificacion fiscal");
+  assertApprox(soloLegacy.iva_total, 0, "F2E legacy no infiere IVA");
+
+  const preF2 = buildResumenFiscalVenta({ total: 150 }, [sinSnapshot]);
+  assertSame(preF2.cobertura_items, "sin_snapshot", "F2E pre-F2 sin snapshot debe leerse sin fallar");
+  assertApprox(preF2.total_historico, 150, "F2E pre-F2 debe usar fallback total");
+  assertApprox(preF2.monto_sin_clasificacion_fiscal, 150, "F2E pre-F2 queda sin clasificacion fiscal");
+
+  const conRecargo = buildResumenFiscalVenta({ total_venta_original: 110, recargo_monto: 10 }, [normalizado21]);
+  assertApprox(conRecargo.recargo_monto, 10, "F2E debe exponer recargo");
+  assertApprox(conRecargo.diferencia_fuera_items, 10, "F2E diferencia total-items debe coincidir con recargo");
+  assertEqual(conRecargo.recargo_requiere_clasificacion, true, "F2E recargo requiere clasificacion futura");
+  assertEqual(conRecargo.diferencia_comercial_inconsistente, false, "F2E diferencia igual a recargo no es inconsistente");
+  assertEqual(conRecargo.snapshot_integracion_completo, false, "F2E recargo pendiente impide integracion completa");
+
+  const inconsistente = buildResumenFiscalVenta({ total_venta_original: 115, recargo_monto: 10 }, [normalizado21]);
+  assertApprox(inconsistente.diferencia_fuera_items, 15, "F2E debe exponer diferencia fuera de items");
+  assertEqual(inconsistente.diferencia_comercial_inconsistente, true, "F2E diferencia distinta del recargo debe marcar inconsistencia");
+
+  assertApprox(solo21.neto_gravado + solo21.iva_total + solo21.monto_exento + solo21.monto_no_gravado, solo21.subtotal_items, "F2E venta completa debe cerrar matematicamente contra items");
+}
+
+async function testResumenFiscalHistoricoF2EIntegracion() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const sufijo = Date.now().toString().slice(-8);
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST F2E ${sufijo}`, { margen_porcentaje: 0 });
+      const prod21 = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST F2E IVA21 ${sufijo}`,
+        categoria: `TEST F2E ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        costo_economico: 50,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "gravado",
+        iva_venta_alicuota: 21,
+        precio_venta_modo: "manual",
+        stock: 50,
+        activo: true
+      });
+      const prod105 = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST F2E IVA105 ${sufijo}`,
+        categoria: `TEST F2E ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_venta: 110.5,
+        costo_economico: 50,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "gravado",
+        iva_venta_alicuota: 10.5,
+        precio_venta_modo: "manual",
+        stock: 50,
+        activo: true
+      });
+      const prodExento = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST F2E Exento ${sufijo}`,
+        categoria: `TEST F2E ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_venta: 80,
+        costo_economico: 40,
+        modelo_fiscal: "normalizado",
+        iva_venta_tratamiento: "exento",
+        iva_venta_alicuota: 0,
+        precio_venta_modo: "manual",
+        stock: 50,
+        activo: true
+      });
+      const prodLegacy = await crearProductoFiscal(baseUrl, token, {
+        nombre: `TEST F2E Legacy ${sufijo}`,
+        categoria: `TEST F2E ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_compra: 50,
+        precio_venta: 200,
+        iva_porcentaje: 21,
+        precio_compra_incluye_iva: true,
+        stock: 50,
+        activo: true
+      });
+
+      const ventaMixta = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [
+          { producto_id: prod21.id, nombre_producto: prod21.nombre, cantidad: 1, precio_unitario: 100 },
+          { producto_id: prod105.id, nombre_producto: prod105.nombre, cantidad: 1, precio_unitario: 110.5 },
+          { producto_id: prodExento.id, nombre_producto: prodExento.nombre, cantidad: 1, precio_unitario: 80 }
+        ]
+      }, token);
+      if (!ventaMixta.response.ok) throw new Error(`Venta F2E mixta fallo: ${ventaMixta.data?.message || ventaMixta.response.status}`);
+      const detalleMixta = await getVentaDetalle(baseUrl, token, ventaMixta.data.venta_id);
+      assertApprox(detalleMixta.resumen_fiscal.total_historico, 290.5, "F2E detalle debe exponer total historico");
+      assertEqual(detalleMixta.resumen_fiscal.alicuotas.length, 3, "F2E detalle debe exponer buckets IVA21, IVA10.5 y exento");
+      assertApprox(detalleMixta.resumen_fiscal.iva_total, 27.86, "F2E detalle debe sumar IVA persistido");
+      assertApprox(detalleMixta.resumen_fiscal.monto_exento, 80, "F2E detalle debe separar exento");
+      assertSame(detalleMixta.resumen_fiscal.cobertura_items, "completa", "F2E detalle normalizado debe quedar completo");
+      assertEqual(detalleMixta.resumen_fiscal.snapshot_integracion_completo, true, "F2E detalle completo sin recargo queda listo para integracion posterior");
+
+      await runSql(dbPath, "UPDATE productos SET precio_venta = 999, iva_venta_alicuota = 27 WHERE id = ?", [prod21.id]);
+      const detalleTrasCambioProducto = await getVentaDetalle(baseUrl, token, ventaMixta.data.venta_id);
+      assertApprox(detalleTrasCambioProducto.resumen_fiscal.alicuotas.find((item) => item.alicuota === 21).iva, 17.36, "F2E resumen no debe reinterpretar desde producto actual");
+
+      await esperarNuevoSegundo();
+      const ventaParcial = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [
+          { producto_id: prod21.id, nombre_producto: prod21.nombre, cantidad: 1, precio_unitario: 100 },
+          { producto_id: prodLegacy.id, nombre_producto: prodLegacy.nombre, cantidad: 1, precio_unitario: 200 }
+        ]
+      }, token);
+      if (!ventaParcial.response.ok) throw new Error(`Venta F2E parcial fallo: ${ventaParcial.data?.message || ventaParcial.response.status}`);
+      const detalleParcial = await getVentaDetalle(baseUrl, token, ventaParcial.data.venta_id);
+      assertSame(detalleParcial.resumen_fiscal.cobertura_items, "parcial", "F2E normalizado + legacy debe quedar parcial");
+      assertApprox(detalleParcial.resumen_fiscal.monto_sin_clasificacion_fiscal, 200, "F2E legacy queda sin clasificacion fiscal en detalle real");
+
+      await esperarNuevoSegundo();
+      const ventaLegacy = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        items: [{ producto_id: prodLegacy.id, nombre_producto: prodLegacy.nombre, cantidad: 1, precio_unitario: 200 }]
+      }, token);
+      if (!ventaLegacy.response.ok) throw new Error(`Venta F2E legacy fallo: ${ventaLegacy.data?.message || ventaLegacy.response.status}`);
+      const detalleLegacy = await getVentaDetalle(baseUrl, token, ventaLegacy.data.venta_id);
+      assertSame(detalleLegacy.resumen_fiscal.cobertura_items, "legacy", "F2E solo legacy queda legacy");
+      assertApprox(detalleLegacy.resumen_fiscal.iva_total, 0, "F2E legacy real no infiere IVA");
+
+      await runSql(dbPath, "UPDATE detalle_ventas SET modelo_fiscal_snapshot = NULL, subtotal_neto_snapshot = NULL, iva_monto_snapshot = NULL WHERE venta_id = ?", [ventaLegacy.data.venta_id]);
+      const detallePreF2 = await getVentaDetalle(baseUrl, token, ventaLegacy.data.venta_id);
+      assertSame(detallePreF2.resumen_fiscal.cobertura_items, "sin_snapshot", "F2E venta sin snapshot debe leerse sin error");
+
+      const tipoRecargo = await requestJson(baseUrl, "POST", "/tipos_pago", {
+        codigo: `credito_f2e_${sufijo}`,
+        nombre: `Credito F2E ${sufijo}`,
+        usa_recargo: true,
+        porcentaje_recargo: 10,
+        impacta_digital: true,
+        requiere_caja_abierta: true
+      }, token);
+      if (!tipoRecargo.response.ok) throw new Error(`Crear tipo recargo F2E fallo: ${tipoRecargo.data?.message || tipoRecargo.response.status}`);
+      const cuentaRecargo = await crearCuentaCobro(baseUrl, token, {
+        nombre: `Terminal F2E ${sufijo}`,
+        tipo_pago_codigo: `credito_f2e_${sufijo}`,
+        tipo_cuenta: "terminal",
+        proveedor_integracion: "interno"
+      });
+      await esperarNuevoSegundo();
+      const ventaRecargo = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: `credito_f2e_${sufijo}`,
+        cuenta_cobro_id: cuentaRecargo.id,
+        items: [{ producto_id: prod21.id, nombre_producto: prod21.nombre, cantidad: 1, precio_unitario: 100 }]
+      }, token);
+      if (!ventaRecargo.response.ok) throw new Error(`Venta F2E recargo fallo: ${ventaRecargo.data?.message || ventaRecargo.response.status}`);
+      const detalleRecargo = await getVentaDetalle(baseUrl, token, ventaRecargo.data.venta_id);
+      assertApprox(detalleRecargo.resumen_fiscal.recargo_monto, 10, "F2E recargo debe exponerse separado");
+      assertApprox(detalleRecargo.resumen_fiscal.diferencia_fuera_items, 10, "F2E diferencia fuera de items coincide con recargo");
+      assertEqual(detalleRecargo.resumen_fiscal.recargo_requiere_clasificacion, true, "F2E recargo no se asigna a IVA");
+      assertEqual(detalleRecargo.resumen_fiscal.snapshot_integracion_completo, false, "F2E recargo pendiente impide integracion completa");
+
+      const cliente = await requestJson(baseUrl, "POST", "/clientes", {
+        nombre: `TEST F2E Cliente ${sufijo}`,
+        dni_cuit: `30${sufijo}`,
+        tipo_persona: "fisica",
+        habilita_cuenta_corriente: true,
+        activo: true
+      }, token);
+      if (!cliente.response.ok) throw new Error(`Crear cliente F2E fallo: ${cliente.data?.message || cliente.response.status}`);
+      await runSql(dbPath, "UPDATE productos SET precio_venta = 3500, iva_venta_alicuota = 21 WHERE id = ?", [prod21.id]);
+      await esperarNuevoSegundo();
+      const ventaCC = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        es_cuenta_corriente: true,
+        cliente_id: cliente.data.cliente.id,
+        items: [{ producto_id: prod21.id, nombre_producto: prod21.nombre, cantidad: 1, precio_unitario: 3500 }]
+      }, token);
+      if (!ventaCC.response.ok) throw new Error(`Venta CC F2E fallo: ${ventaCC.data?.message || ventaCC.response.status}`);
+      await runSql(dbPath, "UPDATE productos SET precio_venta = 4500 WHERE id = ?", [prod21.id]);
+      await requestJson(baseUrl, "GET", `/clientes/${cliente.data.cliente.id}/cuenta-corriente`, null, token);
+      const ventaCCDb = await getVentaDb(dbPath, ventaCC.data.venta_id);
+      const detalleCC = await getVentaDetalle(baseUrl, token, ventaCC.data.venta_id);
+      assertApprox(ventaCCDb.saldo_pendiente, 4500, "F2E CC mantiene deuda actualizada separada");
+      assertApprox(detalleCC.resumen_fiscal.total_historico, 3500, "F2E resumen CC usa total historico, no saldo_pendiente");
+
+      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${ventaMixta.data.venta_id}/anular-cobrada`, {
+        authorization_code: "1234"
+      }, token);
+      if (!anulacion.response.ok) throw new Error(`Anular venta F2E fallo: ${anulacion.data?.message || anulacion.response.status}`);
+      const detalleAnulada = await getVentaDetalle(baseUrl, token, ventaMixta.data.venta_id);
+      assertSame(detalleAnulada.venta.estado, "anulado", "F2E anulada conserva estado");
+      assertSame(detalleAnulada.resumen_fiscal.cobertura_items, "completa", "F2E anulada conserva resumen fiscal historico");
+
+      const pendiente = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "pendiente",
+        identificador_pendiente: `F2E-PEND-${sufijo}`,
+        items: [{ producto_id: prod21.id, nombre_producto: prod21.nombre, cantidad: 1, precio_unitario: 100 }]
+      }, token);
+      if (!pendiente.response.ok) throw new Error(`Pendiente F2E fallo: ${pendiente.data?.message || pendiente.response.status}`);
+      const editarPendiente = await requestJson(baseUrl, "PUT", `/ventas/${pendiente.data.venta_id}/pendiente`, {
+        identificador_pendiente: `F2E-PEND-EDIT-${sufijo}`,
+        items: [{ producto_id: prod21.id, nombre_producto: prod21.nombre, cantidad: 2, precio_unitario: 100 }]
+      }, token);
+      if (!editarPendiente.response.ok) throw new Error(`Editar pendiente F2E fallo: ${editarPendiente.data?.message || editarPendiente.response.status}`);
+      const detallePendiente = await getVentaDetalle(baseUrl, token, pendiente.data.venta_id);
+      assertApprox(detallePendiente.resumen_fiscal.subtotal_items, 200, "F2E pendiente editado refleja version vigente");
+      assertApprox(detallePendiente.resumen_fiscal.total_historico, 200, "F2E pendiente editado actualiza total historico mientras es borrador");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -11075,6 +11380,8 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testVentaSnapshotsHistoricosF2CCuentaCorrienteYPendientes);
   await _run(testVentaSnapshotsHistoricosF2CTienda);
   await _run(testCuentaCorrienteSeparaVentaHistoricaYDeudaF2D);
+  await _run(testResumenFiscalHistoricoF2EHelper);
+  await _run(testResumenFiscalHistoricoF2EIntegracion);
   await _run(testProductosMasVendidosDevuelveClaves);
   await _run(testProductosMasVendidosExcluyeVentasAnuladas);
   await _run(testProductosMasVendidosOrdenaPorCantidad);
