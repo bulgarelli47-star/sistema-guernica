@@ -6,6 +6,11 @@ const { spawn } = require("child_process");
 const sqlite3 = require("sqlite3").verbose();
 const { db: backendDb } = require("../backend/db");
 const { buildDetalleVentaSnapshotFiscal, buildResumenFiscalVenta } = require("../backend/services/ventaService");
+const {
+  buildResumenIvaComprobante,
+  normalizarCompra,
+  normalizarComprobanteCompra
+} = require("../backend/services/compraService");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -5357,6 +5362,176 @@ async function testMovimientoManualRegistraStockAnteriorYNuevo() {
   } finally {
     fs.rmSync(dbPath, { force: true });
   }
+}
+
+function assertColumnasIncluidas(columnas, requeridas, contexto) {
+  const nombres = columnas.map((column) => column.name);
+  for (const columna of requeridas) {
+    if (!nombres.includes(columna)) {
+      throw new Error(`${contexto}: falta columna ${columna}`);
+    }
+  }
+}
+
+async function testCompraSchemaF3B() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await withServer(dbPath, async () => {
+      const comprasCols = await allSql(dbPath, "PRAGMA table_info(compras)");
+      const comprobantesCols = await allSql(dbPath, "PRAGMA table_info(compra_comprobantes)");
+      const ivaCols = await allSql(dbPath, "PRAGMA table_info(compra_comprobante_iva)");
+      assertColumnasIncluidas(comprasCols, [
+        "id", "proveedor_id", "fecha_compra", "hora", "concepto", "tipo_impacto", "moneda",
+        "total_compra", "saldo_pendiente", "estado", "observaciones", "usuario", "created_at", "updated_at"
+      ], "F3B compras schema");
+      assertColumnasIncluidas(comprobantesCols, [
+        "id", "compra_id", "tipo_comprobante", "punto_venta", "numero_comprobante",
+        "fecha_emision", "fecha_recepcion", "proveedor_nombre_snapshot", "proveedor_cuit_snapshot",
+        "condicion_iva_proveedor_snapshot", "moneda", "neto_gravado", "iva_total",
+        "monto_exento", "monto_no_gravado", "otros_tributos", "total_comprobante",
+        "estado", "observaciones", "created_at", "updated_at"
+      ], "F3B compra_comprobantes schema");
+      assertColumnasIncluidas(ivaCols, [
+        "id", "comprobante_id", "alicuota", "neto_gravado", "iva_monto"
+      ], "F3B compra_comprobante_iva schema");
+
+      const pagosCols = await allSql(dbPath, "PRAGMA table_info(pagos)");
+      if (pagosCols.some((column) => column.name === "compra_id")) {
+        throw new Error("F3B no debe agregar compra_id a pagos todavia");
+      }
+
+      const comprasAntesPago = await allSql(dbPath, "SELECT COUNT(*) AS total FROM compras");
+      await runSql(dbPath, `
+        INSERT INTO pagos (
+          proveedor_id, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito,
+          fecha, hora, estado, categoria_pago, iva_credito_fiscal
+        )
+        VALUES (NULL, 'Pago legacy F3B', 50, 'efectivo', 50, 0, '2026-01-10', '10:00:00', 'registrado', 'proveedor', 10)
+      `);
+      const comprasDespuesPago = await allSql(dbPath, "SELECT COUNT(*) AS total FROM compras");
+      assertEqual(comprasDespuesPago[0].total, comprasAntesPago[0].total, "F3B pago legacy no debe crear compras");
+
+      const proveedor = await runSql(dbPath, `
+        INSERT INTO proveedores (
+          nombre, cuit, condicion_iva, tipo_comprobante, iva_alicuota, activo
+        )
+        VALUES ('Proveedor F3B', '30-12345678-9', 'responsable_inscripto', 'factura_a', 21, 1)
+      `);
+      const compra = await runSql(dbPath, `
+        INSERT INTO compras (
+          proveedor_id, fecha_compra, hora, concepto, tipo_impacto, total_compra,
+          saldo_pendiente, estado, usuario, created_at, updated_at
+        )
+        VALUES (?, '2026-01-11', '11:00:00', 'Factura mercaderia F3B',
+          'costo_variable_mercaderia', 121, 121, 'pendiente', 'admin', datetime('now'), datetime('now'))
+      `, [proveedor.lastID]);
+      const compraDb = (await allSql(dbPath, "SELECT total_compra, saldo_pendiente, estado FROM compras WHERE id = ?", [compra.lastID]))[0];
+      assertApprox(compraDb.total_compra, 121, "F3B total_compra representa valor adquirido");
+      assertApprox(compraDb.saldo_pendiente, 121, "F3B saldo_pendiente puede existir sin pagos vinculados");
+      assertSame(compraDb.estado, "pendiente", "F3B compra inicia pendiente");
+
+      const comprobante = await runSql(dbPath, `
+        INSERT INTO compra_comprobantes (
+          compra_id, tipo_comprobante, punto_venta, numero_comprobante, fecha_emision,
+          fecha_recepcion, proveedor_nombre_snapshot, proveedor_cuit_snapshot,
+          condicion_iva_proveedor_snapshot, neto_gravado, iva_total, total_comprobante,
+          estado, created_at, updated_at
+        )
+        VALUES (?, 'factura_a', '0001', '00000042', '2026-01-11', '2026-01-11',
+          'Proveedor F3B Snapshot', '30-12345678-9', 'responsable_inscripto',
+          100, 21, 121, 'registrado', datetime('now'), datetime('now'))
+      `, [compra.lastID]);
+      await runSql(dbPath, `
+        INSERT INTO compra_comprobante_iva (comprobante_id, alicuota, neto_gravado, iva_monto)
+        VALUES (?, 21, 100, 21)
+      `, [comprobante.lastID]);
+
+      const comprobanteDb = (await allSql(dbPath, `
+        SELECT proveedor_nombre_snapshot, proveedor_cuit_snapshot, condicion_iva_proveedor_snapshot
+        FROM compra_comprobantes WHERE id = ?
+      `, [comprobante.lastID]))[0];
+      assertSame(comprobanteDb.proveedor_nombre_snapshot, "Proveedor F3B Snapshot", "F3B comprobante preserva nombre snapshot");
+      assertSame(comprobanteDb.proveedor_cuit_snapshot, "30-12345678-9", "F3B comprobante preserva CUIT snapshot");
+      assertSame(comprobanteDb.condicion_iva_proveedor_snapshot, "responsable_inscripto", "F3B comprobante preserva condicion IVA snapshot");
+
+      const indicesIva = await allSql(dbPath, "PRAGMA index_list(compra_comprobante_iva)");
+      const indiceUnico = indicesIva.find((indice) => indice.name === "idx_compra_comprobante_iva_unique");
+      assertEqual(indiceUnico?.unique, 1, "F3B IVA por comprobante debe tener indice unico por alicuota");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testCompraResumenIvaF3BHelper() {
+  const compra = normalizarCompra({
+    proveedor_id: 7,
+    fecha_compra: "2026-01-12",
+    total_compra: 121,
+    saldo_pendiente: 121
+  });
+  assertEqual(compra.proveedor_id, 7, "F3B normaliza proveedor compra");
+  assertSame(compra.estado, "pendiente", "F3B compra normalizada usa estado pendiente");
+  assertApprox(compra.total_compra, 121, "F3B compra normaliza total");
+
+  const iva21 = buildResumenIvaComprobante({ total_comprobante: 121 }, [
+    { alicuota: 21, neto_gravado: 100, iva_monto: 21 }
+  ]);
+  assertApprox(iva21.neto_gravado_calculado, 100, "F3B IVA21 suma neto documental");
+  assertApprox(iva21.iva_total_calculado, 21, "F3B IVA21 suma IVA documental");
+  assertApprox(iva21.total_componentes, 121, "F3B IVA21 cierra total fiscal");
+  assertEqual(iva21.cierre_consistente, true, "F3B IVA21 debe cerrar");
+
+  const iva105 = buildResumenIvaComprobante({ total_comprobante: 110.5 }, [
+    { alicuota: 10.5, neto_gravado: 100, iva_monto: 10.5 }
+  ]);
+  assertApprox(iva105.iva_total_calculado, 10.5, "F3B IVA10.5 suma IVA documental");
+
+  const multi = buildResumenIvaComprobante({ total_comprobante: 176.25 }, [
+    { alicuota: 21, neto_gravado: 100, iva_monto: 21 },
+    { alicuota: 10.5, neto_gravado: 50, iva_monto: 5.25 }
+  ]);
+  assertEqual(multi.alicuotas.length, 2, "F3B multialicuota debe conservar dos buckets");
+  assertApprox(multi.neto_gravado_calculado, 150, "F3B multialicuota suma netos");
+  assertApprox(multi.iva_total_calculado, 26.25, "F3B multialicuota suma IVA");
+  assertApprox(multi.total_componentes, 176.25, "F3B multialicuota cierra total");
+
+  const exento = buildResumenIvaComprobante({ total_comprobante: 50, monto_exento: 50 }, []);
+  assertApprox(exento.monto_exento, 50, "F3B exento queda separado");
+  assertApprox(exento.monto_no_gravado, 0, "F3B exento no se mezcla con no gravado");
+
+  const noGravado = buildResumenIvaComprobante({ total_comprobante: 70, monto_no_gravado: 70 }, []);
+  assertApprox(noGravado.monto_no_gravado, 70, "F3B no gravado queda separado");
+  assertApprox(noGravado.monto_exento, 0, "F3B no gravado no se mezcla con exento");
+
+  const tributos = buildResumenIvaComprobante({ total_comprobante: 126, otros_tributos: 5 }, [
+    { alicuota: 21, neto_gravado: 100, iva_monto: 21 }
+  ]);
+  assertApprox(tributos.total_componentes, 126, "F3B otros tributos participa del cierre");
+  assertEqual(tributos.cierre_consistente, true, "F3B otros tributos puede cerrar documento");
+
+  const diferencia = buildResumenIvaComprobante({ total_comprobante: 125 }, [
+    { alicuota: 21, neto_gravado: 100, iva_monto: 21 }
+  ]);
+  assertApprox(diferencia.diferencia, 4, "F3B helper detecta diferencia documental");
+  assertEqual(diferencia.cierre_consistente, false, "F3B diferencia documental debe marcar inconsistencia");
+
+  const comprobanteConProveedor = normalizarComprobanteCompra({
+    tipo_comprobante: "factura_a",
+    total_comprobante: 110.5
+  }, {
+    nombre: "Proveedor default 21",
+    cuit: "30-87654321-0",
+    condicion_iva: "responsable_inscripto",
+    tipo_comprobante: "factura_a",
+    iva_alicuota: 21
+  });
+  const defaultNoAutoridad = buildResumenIvaComprobante(comprobanteConProveedor, [
+    { alicuota: 10.5, neto_gravado: 100, iva_monto: 10.5 }
+  ]);
+  assertApprox(defaultNoAutoridad.iva_total_calculado, 10.5, "F3B proveedor.iva_alicuota no altera IVA documental");
+  assertSame(comprobanteConProveedor.proveedor_nombre_snapshot, "Proveedor default 21", "F3B helper preserva snapshot proveedor");
 }
 
 async function testProductosMasVendidosDevuelveClaves() {
@@ -11382,6 +11557,8 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCuentaCorrienteSeparaVentaHistoricaYDeudaF2D);
   await _run(testResumenFiscalHistoricoF2EHelper);
   await _run(testResumenFiscalHistoricoF2EIntegracion);
+  await _run(testCompraSchemaF3B);
+  await _run(testCompraResumenIvaF3BHelper);
   await _run(testProductosMasVendidosDevuelveClaves);
   await _run(testProductosMasVendidosExcluyeVentasAnuladas);
   await _run(testProductosMasVendidosOrdenaPorCantidad);

@@ -448,6 +448,64 @@ async function initDatabase() {
     await ensureColumn("pagos", "iva_credito_fiscal", "REAL NOT NULL DEFAULT 0");
 
     await runQuery(`
+      CREATE TABLE IF NOT EXISTS compras (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proveedor_id INTEGER NOT NULL,
+        fecha_compra TEXT NOT NULL,
+        hora TEXT,
+        concepto TEXT,
+        tipo_impacto TEXT NOT NULL DEFAULT 'otro_no_computable',
+        moneda TEXT NOT NULL DEFAULT 'ARS',
+        total_compra REAL NOT NULL DEFAULT 0,
+        saldo_pendiente REAL NOT NULL DEFAULT 0,
+        estado TEXT NOT NULL DEFAULT 'pendiente',
+        observaciones TEXT,
+        usuario TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (proveedor_id) REFERENCES proveedores(id)
+      )
+    `);
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS compra_comprobantes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        compra_id INTEGER NOT NULL,
+        tipo_comprobante TEXT NOT NULL,
+        punto_venta TEXT,
+        numero_comprobante TEXT,
+        fecha_emision TEXT,
+        fecha_recepcion TEXT,
+        proveedor_nombre_snapshot TEXT,
+        proveedor_cuit_snapshot TEXT,
+        condicion_iva_proveedor_snapshot TEXT,
+        moneda TEXT NOT NULL DEFAULT 'ARS',
+        neto_gravado REAL,
+        iva_total REAL,
+        monto_exento REAL,
+        monto_no_gravado REAL,
+        otros_tributos REAL,
+        total_comprobante REAL NOT NULL DEFAULT 0,
+        estado TEXT NOT NULL DEFAULT 'registrado',
+        observaciones TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (compra_id) REFERENCES compras(id)
+      )
+    `);
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS compra_comprobante_iva (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        comprobante_id INTEGER NOT NULL,
+        alicuota REAL NOT NULL,
+        neto_gravado REAL NOT NULL DEFAULT 0,
+        iva_monto REAL NOT NULL DEFAULT 0,
+        FOREIGN KEY (comprobante_id) REFERENCES compra_comprobantes(id)
+      )
+    `);
+
+    await runQuery(`
       CREATE TABLE IF NOT EXISTS configuracion_global (
         clave TEXT PRIMARY KEY,
         valor TEXT NOT NULL,
@@ -533,6 +591,10 @@ async function initDatabase() {
     await runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_producto ON movimientos_stock(producto_id)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_movimientos_caja ON caja_movimientos(caja_id)");
     await runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_dni_cuit_unique ON clientes(dni_cuit) WHERE dni_cuit IS NOT NULL AND TRIM(dni_cuit) != ''");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_compras_proveedor_estado ON compras(proveedor_id, estado)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobantes_compra ON compra_comprobantes(compra_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobante_iva_comprobante ON compra_comprobante_iva(comprobante_id)");
+    await runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_compra_comprobante_iva_unique ON compra_comprobante_iva(comprobante_id, alicuota)");
 
     const existingUser = await getQuery(
       "SELECT * FROM usuarios WHERE usuario = ?",
