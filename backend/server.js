@@ -131,6 +131,14 @@ const {
   setActivoCuentaDestino
 } = require("./services/cuentaDestinoService");
 const {
+  buildResumenIvaComprobante,
+  getTotalPagadoCompra,
+  normalizarCompra,
+  normalizarComprobanteCompra,
+  refreshCompraSaldo,
+  round2: roundCompra2
+} = require("./services/compraService");
+const {
   aplicarStockComponentesSnapshot,
   aplicarStockDiffComponentesExtra,
   borrarSnapshotsDetalles,
@@ -441,9 +449,11 @@ async function ensureProveedoresSchema() {
   await ensureColumn("proveedores", "tipo_comprobante", "TEXT NOT NULL DEFAULT 'otro'");
   await ensureColumn("proveedores", "iva_alicuota", "REAL NOT NULL DEFAULT 21");
   await ensureColumn("pagos", "iva_credito_fiscal", "REAL NOT NULL DEFAULT 0");
+  await ensureColumn("pagos", "compra_id", "INTEGER");
 }
 
 async function ensureComprasSchema() {
+  await ensureColumn("pagos", "compra_id", "INTEGER");
   await runQuery(`
     CREATE TABLE IF NOT EXISTS compras (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -503,6 +513,7 @@ async function ensureComprasSchema() {
   await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobantes_compra ON compra_comprobantes(compra_id)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobante_iva_comprobante ON compra_comprobante_iva(comprobante_id)");
   await runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_compra_comprobante_iva_unique ON compra_comprobante_iva(comprobante_id, alicuota)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_pagos_compra ON pagos(compra_id)");
 }
 
 async function ensureTiposPagoSchema() {
@@ -3955,6 +3966,318 @@ app.delete("/proveedores/:id", async (req, res) => {
   }
 });
 
+async function buildCompraResumen(compra) {
+  const totalPagado = await getTotalPagadoCompra(compra.id, { getQuery });
+  const totalComprobantesRow = await getQuery(
+    "SELECT COALESCE(SUM(total_comprobante), 0) AS total_comprobantes FROM compra_comprobantes WHERE compra_id = ? AND estado != 'anulado'",
+    [compra.id]
+  );
+  const totalCompra = roundCompra2(compra.total_compra || 0);
+  const totalComprobantes = roundCompra2(totalComprobantesRow?.total_comprobantes || 0);
+  return {
+    total_compra: totalCompra,
+    total_pagado: totalPagado,
+    saldo_pendiente: roundCompra2(compra.saldo_pendiente || 0),
+    estado: compra.estado,
+    total_comprobantes: totalComprobantes,
+    diferencia_compra_comprobantes: roundCompra2(totalCompra - totalComprobantes)
+  };
+}
+
+async function getCompraBase(compraId) {
+  return getQuery(
+    `SELECT c.*, p.nombre AS proveedor_nombre, p.cuit AS proveedor_cuit,
+            p.condicion_iva AS proveedor_condicion_iva
+     FROM compras c
+     JOIN proveedores p ON p.id = c.proveedor_id
+     WHERE c.id = ?`,
+    [compraId]
+  );
+}
+
+async function getCompraDetalle(compraId) {
+  const compra = await getCompraBase(compraId);
+  if (!compra) return null;
+  const comprobantes = await allQuery(
+    "SELECT * FROM compra_comprobantes WHERE compra_id = ? ORDER BY fecha_emision DESC, id DESC",
+    [compraId]
+  );
+  const comprobantesConIva = [];
+  for (const comprobante of comprobantes) {
+    const alicuotas = await allQuery(
+      "SELECT alicuota, neto_gravado, iva_monto FROM compra_comprobante_iva WHERE comprobante_id = ? ORDER BY alicuota ASC",
+      [comprobante.id]
+    );
+    comprobantesConIva.push({
+      ...comprobante,
+      alicuotas,
+      resumen_iva: buildResumenIvaComprobante(comprobante, alicuotas)
+    });
+  }
+  const pagos = await allQuery(
+    `SELECT p.*, cc.nombre AS cuenta_cobro_nombre
+     FROM pagos p
+     LEFT JOIN cuentas_cobro cc ON cc.id = p.cuenta_cobro_id
+     WHERE p.compra_id = ?
+     ORDER BY p.fecha DESC, p.hora DESC, p.id DESC`,
+    [compraId]
+  );
+  return {
+    compra,
+    comprobantes: comprobantesConIva,
+    pagos,
+    resumen_pago: await buildCompraResumen(compra)
+  };
+}
+
+app.get("/compras", async (req, res) => {
+  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para consultar compras"))) return;
+
+  try {
+    const compras = await allQuery(
+      `SELECT c.*, p.nombre AS proveedor_nombre, p.cuit AS proveedor_cuit
+       FROM compras c
+       JOIN proveedores p ON p.id = c.proveedor_id
+       ORDER BY c.fecha_compra DESC, c.id DESC`
+    );
+    const data = [];
+    for (const compra of compras) {
+      data.push({
+        ...compra,
+        resumen_pago: await buildCompraResumen(compra)
+      });
+    }
+    return res.json(data);
+  } catch (error) {
+    logError("Error al listar compras:", error);
+    return res.status(500).json({ message: "Error al obtener compras" });
+  }
+});
+
+app.get("/compras/:id", async (req, res) => {
+  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para consultar compras"))) return;
+
+  try {
+    const detalle = await getCompraDetalle(Number(req.params.id));
+    if (!detalle) return res.status(404).json({ message: "Compra no encontrada" });
+    return res.json(detalle);
+  } catch (error) {
+    logError("Error al obtener compra:", error);
+    return res.status(500).json({ message: "Error al obtener compra" });
+  }
+});
+
+app.post("/compras", async (req, res) => {
+  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para registrar compras"))) return;
+
+  try {
+    const proveedorId = Number(req.body.proveedor_id || 0);
+    const proveedor = await getQuery("SELECT id FROM proveedores WHERE id = ? AND activo = 1", [proveedorId]);
+    if (!proveedor) return res.status(400).json({ message: "Proveedor invalido" });
+
+    const nowParts = getNowParts();
+    const compra = normalizarCompra({
+      ...req.body,
+      proveedor_id: proveedorId,
+      fecha_compra: /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.fecha_compra || "")) ? String(req.body.fecha_compra) : nowParts.fecha,
+      hora: req.body.hora || nowParts.hora,
+      saldo_pendiente: req.body.total_compra,
+      estado: "pendiente",
+      usuario: req.usuario?.nombre || req.usuario?.usuario || null
+    });
+
+    if (compra.total_compra <= 0) {
+      return res.status(400).json({ message: "El total de la compra debe ser mayor a cero" });
+    }
+
+    const result = await runQuery(
+      `INSERT INTO compras
+       (proveedor_id, fecha_compra, hora, concepto, tipo_impacto, moneda, total_compra,
+        saldo_pendiente, estado, observaciones, usuario, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+      [
+        compra.proveedor_id,
+        compra.fecha_compra,
+        compra.hora,
+        compra.concepto,
+        compra.tipo_impacto,
+        compra.moneda,
+        compra.total_compra,
+        compra.total_compra,
+        "pendiente",
+        compra.observaciones,
+        compra.usuario
+      ]
+    );
+
+    const detalle = await getCompraDetalle(result.lastID);
+    return res.status(201).json({ message: "Compra registrada correctamente", ...detalle });
+  } catch (error) {
+    logError("Error al registrar compra:", error);
+    return res.status(500).json({ message: "Error al registrar compra" });
+  }
+});
+
+app.post("/compras/:id/comprobantes", async (req, res) => {
+  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para registrar comprobantes de compra"))) return;
+
+  const compraId = Number(req.params.id);
+  try {
+    const compra = await getCompraBase(compraId);
+    if (!compra) return res.status(404).json({ message: "Compra no encontrada" });
+
+    const proveedor = {
+      nombre: compra.proveedor_nombre,
+      cuit: compra.proveedor_cuit,
+      condicion_iva: compra.proveedor_condicion_iva
+    };
+    const comprobante = normalizarComprobanteCompra({ ...req.body, compra_id: compraId }, proveedor);
+    if (comprobante.total_comprobante <= 0) {
+      return res.status(400).json({ message: "El total del comprobante debe ser mayor a cero" });
+    }
+    const alicuotas = Array.isArray(req.body.alicuotas) ? req.body.alicuotas : [];
+    const resumen = buildResumenIvaComprobante(comprobante, alicuotas);
+    const netoGravado = comprobante.neto_gravado === null ? resumen.neto_gravado_calculado : comprobante.neto_gravado;
+    const ivaTotal = comprobante.iva_total === null ? resumen.iva_total_calculado : comprobante.iva_total;
+
+    await runQuery("BEGIN TRANSACTION");
+    const result = await runQuery(
+      `INSERT INTO compra_comprobantes
+       (compra_id, tipo_comprobante, punto_venta, numero_comprobante, fecha_emision, fecha_recepcion,
+        proveedor_nombre_snapshot, proveedor_cuit_snapshot, condicion_iva_proveedor_snapshot,
+        moneda, neto_gravado, iva_total, monto_exento, monto_no_gravado, otros_tributos,
+        total_comprobante, estado, observaciones, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+      [
+        compraId,
+        comprobante.tipo_comprobante,
+        comprobante.punto_venta,
+        comprobante.numero_comprobante,
+        comprobante.fecha_emision,
+        comprobante.fecha_recepcion,
+        comprobante.proveedor_nombre_snapshot,
+        comprobante.proveedor_cuit_snapshot,
+        comprobante.condicion_iva_proveedor_snapshot,
+        comprobante.moneda,
+        netoGravado,
+        ivaTotal,
+        comprobante.monto_exento,
+        comprobante.monto_no_gravado,
+        comprobante.otros_tributos,
+        comprobante.total_comprobante,
+        "registrado",
+        comprobante.observaciones
+      ]
+    );
+    for (const alicuota of resumen.alicuotas) {
+      await runQuery(
+        `INSERT INTO compra_comprobante_iva (comprobante_id, alicuota, neto_gravado, iva_monto)
+         VALUES (?, ?, ?, ?)`,
+        [result.lastID, alicuota.alicuota, alicuota.neto_gravado, alicuota.iva_monto]
+      );
+    }
+    await runQuery("COMMIT");
+
+    const detalle = await getCompraDetalle(compraId);
+    return res.status(201).json({
+      message: "Comprobante registrado correctamente",
+      comprobante_id: result.lastID,
+      resumen_iva: resumen,
+      ...detalle
+    });
+  } catch (error) {
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("Error al registrar comprobante de compra:", error);
+    return res.status(500).json({ message: "Error al registrar comprobante de compra" });
+  }
+});
+
+app.post("/compras/:id/pagos", async (req, res) => {
+  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para registrar pagos"))) return;
+
+  const compraId = Number(req.params.id);
+  try {
+    const compra = await getCompraBase(compraId);
+    if (!compra) return res.status(404).json({ message: "Compra no encontrada" });
+    if (String(compra.estado || "").toLowerCase() === "anulada") {
+      return res.status(400).json({ message: "La compra anulada no admite pagos" });
+    }
+
+    const montoTotal = Number(req.body.monto_total ?? req.body.monto) || 0;
+    if (montoTotal <= 0) {
+      return res.status(400).json({ message: "El monto debe ser mayor a cero" });
+    }
+
+    const totalPagado = await getTotalPagadoCompra(compraId, { getQuery });
+    const saldoActual = Math.max(0, roundCompra2(Number(compra.total_compra || 0) - totalPagado));
+    if (montoTotal > saldoActual + 0.01) {
+      return res.status(400).json({ message: `El pago supera el saldo pendiente de la compra (${saldoActual})` });
+    }
+
+    const tipoPago = String(req.body.tipo_pago || "").trim().toLowerCase();
+    const cobro = resolvePagoData(montoTotal, tipoPago, req.body.monto_efectivo, req.body.monto_debito);
+    if (!cobro) {
+      return res.status(400).json({ message: "Los montos del pago no son validos" });
+    }
+
+    const cuentaCobro = await validarCuentaCobroPago(req.body.cuenta_cobro_id ?? null, cobro, { estado: "registrado" });
+    if (!cuentaCobro.ok) {
+      return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
+    }
+
+    const cajaActiva = await getCajaAbiertaActual();
+    if (!cajaActiva) {
+      return res.status(400).json({ message: "No hay una caja abierta para registrar el pago" });
+    }
+
+    const nowParts = getNowParts();
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.fecha || "")) ? String(req.body.fecha) : nowParts.fecha;
+    const hora = nowParts.hora;
+    const categoriaPago = PROVEEDOR_IMPACTOS.has(String(compra.tipo_impacto || "").trim().toLowerCase())
+      ? String(compra.tipo_impacto).trim().toLowerCase()
+      : "otro_no_computable";
+    const concepto = String(req.body.concepto || compra.concepto || `Pago compra #${compraId}`).trim();
+
+    await runQuery("BEGIN TRANSACTION");
+    const result = await runQuery(
+      `INSERT INTO pagos
+       (proveedor_id, compra_id, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito, fecha, hora,
+        estado, caja_id, categoria_pago, comprobante, numero_comprobante, cuenta_destino, referencia,
+        observaciones, es_cuenta_corriente, iva_credito_fiscal, cuenta_cobro_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'registrado', ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+      [
+        compra.proveedor_id,
+        compraId,
+        concepto,
+        montoTotal,
+        cobro.tipo_cobro,
+        cobro.monto_efectivo,
+        cobro.monto_debito,
+        fecha,
+        hora,
+        cajaActiva.id,
+        categoriaPago,
+        String(req.body.comprobante || "").trim(),
+        String(req.body.numero_comprobante || "").trim(),
+        String(req.body.cuenta_destino || "").trim(),
+        String(req.body.referencia || "").trim(),
+        String(req.body.observaciones || "").trim(),
+        cuentaCobro.cuenta_cobro_id
+      ]
+    );
+    await refreshCompraSaldo(compraId, { getQuery, runQuery });
+    await runQuery("COMMIT");
+
+    const detalle = await getCompraDetalle(compraId);
+    const pago = await getQuery("SELECT * FROM pagos WHERE id = ?", [result.lastID]);
+    return res.status(201).json({ message: "Pago de compra registrado correctamente", pago, ...detalle });
+  } catch (error) {
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("Error al registrar pago de compra:", error);
+    return res.status(500).json({ message: "Error al registrar pago de compra" });
+  }
+});
+
 // Listar pagos
 app.get("/pagos", async (req, res) => {
   try {
@@ -3965,6 +4288,7 @@ app.get("/pagos", async (req, res) => {
               cc.nombre AS cuenta_cobro_nombre,
               CASE
                 WHEN p.estado != 'pendiente'
+                 AND p.compra_id IS NULL
                  AND pr.condicion_iva = 'responsable_inscripto'
                  AND pr.tipo_comprobante = 'factura_a'
                  AND COALESCE(pr.iva_alicuota, 0) > 0
@@ -4339,6 +4663,10 @@ app.delete("/tipos_pago/:id", async (req, res) => {
 app.post("/pagos", async (req, res) => {
   if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para registrar pagos"))) return;
 
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, "compra_id")) {
+    return res.status(400).json({ message: "Los pagos vinculados a compra deben registrarse desde /compras/:id/pagos" });
+  }
+
   const proveedorId = req.body.proveedor_id ? Number(req.body.proveedor_id) : null;
   const concepto = String(req.body.concepto || "").trim();
   const montoTotal = Number(req.body.monto_total) || 0;
@@ -4491,6 +4819,9 @@ app.put("/pagos/:id", async (req, res) => {
   try {
     const pago = await getQuery("SELECT * FROM pagos WHERE id = ?", [pagoId]);
     if (!pago) return res.status(404).json({ message: "Pago no encontrado" });
+    if (pago.compra_id) {
+      return res.status(409).json({ message: "Los pagos vinculados a compra no se editan desde el flujo legacy." });
+    }
 
     let tieneArqueo = false;
     let cajaEstado = null;
@@ -4575,6 +4906,9 @@ app.delete("/pagos/:id", async (req, res) => {
 
     await runQuery("BEGIN TRANSACTION");
     await runQuery("DELETE FROM pagos WHERE id = ?", [pagoId]);
+    if (pago.compra_id) {
+      await refreshCompraSaldo(pago.compra_id, { getQuery, runQuery });
+    }
     await runQuery("COMMIT");
     return res.json({ message: "Pago eliminado" });
   } catch (error) {

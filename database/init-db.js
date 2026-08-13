@@ -446,6 +446,7 @@ async function initDatabase() {
     await ensureColumn("pagos", "observaciones", "TEXT");
     await ensureColumn("pagos", "es_cuenta_corriente", "INTEGER NOT NULL DEFAULT 0");
     await ensureColumn("pagos", "iva_credito_fiscal", "REAL NOT NULL DEFAULT 0");
+    await ensureColumn("pagos", "compra_id", "INTEGER");
 
     await runQuery(`
       CREATE TABLE IF NOT EXISTS compras (
@@ -595,6 +596,7 @@ async function initDatabase() {
     await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobantes_compra ON compra_comprobantes(compra_id)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobante_iva_comprobante ON compra_comprobante_iva(comprobante_id)");
     await runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_compra_comprobante_iva_unique ON compra_comprobante_iva(comprobante_id, alicuota)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_pagos_compra ON pagos(compra_id)");
 
     const existingUser = await getQuery(
       "SELECT * FROM usuarios WHERE usuario = ?",

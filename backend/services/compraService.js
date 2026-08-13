@@ -31,6 +31,48 @@ function normalizarImporte(value, fallback = 0) {
   return round2(number);
 }
 
+function calcularEstadoCompra({ total_compra, total_pagado, estado_actual } = {}) {
+  if (String(estado_actual || "").trim().toLowerCase() === "anulada") {
+    return "anulada";
+  }
+  const total = normalizarImporte(total_compra);
+  const pagado = normalizarImporte(total_pagado);
+  const saldo = Math.max(0, round2(total - pagado));
+  if (saldo <= 0) return "saldada";
+  if (pagado > 0) return "parcial";
+  return "pendiente";
+}
+
+async function getTotalPagadoCompra(compraId, { getQuery }) {
+  const row = await getQuery(
+    "SELECT COALESCE(SUM(monto_total), 0) AS total_pagado FROM pagos WHERE compra_id = ?",
+    [compraId]
+  );
+  return round2(row?.total_pagado || 0);
+}
+
+async function refreshCompraSaldo(compraId, { getQuery, runQuery }) {
+  const compra = await getQuery("SELECT * FROM compras WHERE id = ?", [compraId]);
+  if (!compra) return null;
+  const totalPagado = await getTotalPagadoCompra(compraId, { getQuery });
+  const saldoPendiente = Math.max(0, round2(Number(compra.total_compra || 0) - totalPagado));
+  const estado = calcularEstadoCompra({
+    total_compra: compra.total_compra,
+    total_pagado: totalPagado,
+    estado_actual: compra.estado
+  });
+  await runQuery(
+    "UPDATE compras SET saldo_pendiente = ?, estado = ?, updated_at = datetime('now') WHERE id = ?",
+    [saldoPendiente, estado, compraId]
+  );
+  return {
+    ...compra,
+    total_pagado: totalPagado,
+    saldo_pendiente: saldoPendiente,
+    estado
+  };
+}
+
 function normalizarAlicuota(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) return 0;
@@ -132,6 +174,9 @@ module.exports = {
   ESTADOS_COMPRA,
   ESTADOS_COMPROBANTE_COMPRA,
   round2,
+  calcularEstadoCompra,
+  getTotalPagadoCompra,
+  refreshCompraSaldo,
   normalizarCompra,
   normalizarComprobanteCompra,
   buildResumenIvaComprobante

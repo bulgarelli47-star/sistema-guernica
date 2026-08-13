@@ -5378,6 +5378,11 @@ async function testCompraSchemaF3B() {
   fs.copyFileSync(SOURCE_DB, dbPath);
   try {
     await withServer(dbPath, async () => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM compra_comprobante_iva"],
+        ["DELETE FROM compra_comprobantes"],
+        ["DELETE FROM compras"]
+      ]);
       const comprasCols = await allSql(dbPath, "PRAGMA table_info(compras)");
       const comprobantesCols = await allSql(dbPath, "PRAGMA table_info(compra_comprobantes)");
       const ivaCols = await allSql(dbPath, "PRAGMA table_info(compra_comprobante_iva)");
@@ -5397,9 +5402,7 @@ async function testCompraSchemaF3B() {
       ], "F3B compra_comprobante_iva schema");
 
       const pagosCols = await allSql(dbPath, "PRAGMA table_info(pagos)");
-      if (pagosCols.some((column) => column.name === "compra_id")) {
-        throw new Error("F3B no debe agregar compra_id a pagos todavia");
-      }
+      assertColumnasIncluidas(pagosCols, ["compra_id"], "F3C pagos schema");
 
       const comprasAntesPago = await allSql(dbPath, "SELECT COUNT(*) AS total FROM compras");
       await runSql(dbPath, `
@@ -5532,6 +5535,184 @@ async function testCompraResumenIvaF3BHelper() {
   ]);
   assertApprox(defaultNoAutoridad.iva_total_calculado, 10.5, "F3B proveedor.iva_alicuota no altera IVA documental");
   assertSame(comprobanteConProveedor.proveedor_nombre_snapshot, "Proveedor default 21", "F3B helper preserva snapshot proveedor");
+}
+
+async function testCompraPagosRealesF3C() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM compra_comprobante_iva"],
+        ["DELETE FROM compra_comprobantes"],
+        ["DELETE FROM compras"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3C ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia",
+        condicion_iva: "responsable_inscripto",
+        tipo_comprobante: "factura_a",
+        iva_alicuota: 21
+      });
+
+      const compraRes = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id,
+        fecha_compra: "2026-02-01",
+        concepto: "Compra F3C factura 121000",
+        tipo_impacto: "costo_variable_mercaderia",
+        total_compra: 121000,
+        observaciones: "Compra sin pago inicial"
+      }, token);
+      if (!compraRes.response.ok) throw new Error(`F3C crear compra fallo: ${compraRes.data?.message || compraRes.response.status}`);
+      const compraId = compraRes.data.compra.id;
+      assertApprox(compraRes.data.resumen_pago.total_compra, 121000, "F3C compra total inicial");
+      assertApprox(compraRes.data.resumen_pago.total_pagado, 0, "F3C compra inicia sin pagos");
+      assertApprox(compraRes.data.resumen_pago.saldo_pendiente, 121000, "F3C compra inicia con saldo completo");
+      assertSame(compraRes.data.resumen_pago.estado, "pendiente", "F3C compra inicia pendiente");
+
+      const resumenSinCaja = await getCajaResumen(baseUrl, token);
+      assertApprox(resumenSinCaja.resumen.total_pagos_general, 0, "F3C crear compra no mueve caja");
+
+      const comprobanteRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a",
+        punto_venta: "0001",
+        numero_comprobante: "00000121",
+        fecha_emision: "2026-02-01",
+        fecha_recepcion: "2026-02-01",
+        total_comprobante: 121000,
+        alicuotas: [{ alicuota: 21, neto_gravado: 100000, iva_monto: 21000 }]
+      }, token);
+      if (!comprobanteRes.response.ok) throw new Error(`F3C registrar comprobante fallo: ${comprobanteRes.data?.message || comprobanteRes.response.status}`);
+      assertSame(comprobanteRes.data.comprobantes[0].proveedor_nombre_snapshot, proveedor.nombre, "F3C comprobante guarda snapshot proveedor");
+      assertApprox(comprobanteRes.data.comprobantes[0].iva_total, 21000, "F3C IVA documental pertenece al comprobante");
+      assertApprox(comprobanteRes.data.resumen_pago.total_comprobantes, 121000, "F3C resumen suma total comprobantes");
+      assertApprox(comprobanteRes.data.resumen_pago.diferencia_compra_comprobantes, 0, "F3C compra y comprobante pueden cerrar sin bloquear");
+
+      const resumenPostComprobante = await getCajaResumen(baseUrl, token);
+      assertApprox(resumenPostComprobante.resumen.total_pagos_general, 0, "F3C comprobante no mueve caja");
+
+      const pagoSinCaja = await requestJson(baseUrl, "POST", `/compras/${compraId}/pagos`, {
+        monto_total: 50000,
+        tipo_pago: "efectivo"
+      }, token);
+      assertEqual(pagoSinCaja.response.status, 400, "F3C pago de compra sin caja abierta debe fallar");
+
+      await abrirCaja(baseUrl, token, 200000);
+      const pago1 = await requestJson(baseUrl, "POST", `/compras/${compraId}/pagos`, {
+        monto_total: 50000,
+        tipo_pago: "efectivo",
+        concepto: "Pago parcial F3C 1"
+      }, token);
+      if (!pago1.response.ok) throw new Error(`F3C pago parcial fallo: ${pago1.data?.message || pago1.response.status}`);
+      assertApprox(pago1.data.resumen_pago.total_pagado, 50000, "F3C primer pago suma total_pagado");
+      assertApprox(pago1.data.resumen_pago.saldo_pendiente, 71000, "F3C primer pago deja saldo parcial");
+      assertSame(pago1.data.resumen_pago.estado, "parcial", "F3C primer pago deja compra parcial");
+      assertApprox(pago1.data.pago.iva_credito_fiscal, 0, "F3C pago vinculado no guarda IVA credito");
+
+      const putLegacy = await requestJson(baseUrl, "PUT", `/pagos/${pago1.data.pago.id}`, {
+        concepto: "No debe editarse",
+        monto_total: 1
+      }, token);
+      assertEqual(putLegacy.response.status, 409, "F3C PUT legacy no debe modificar pago vinculado a compra");
+
+      const sobrepago = await requestJson(baseUrl, "POST", `/compras/${compraId}/pagos`, {
+        monto_total: 80000,
+        tipo_pago: "efectivo"
+      }, token);
+      assertEqual(sobrepago.response.status, 400, "F3C no permite sobrepago");
+      const pagosTrasSobrepago = await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos WHERE compra_id = ?", [compraId]);
+      assertEqual(pagosTrasSobrepago[0].total, 1, "F3C sobrepago no inserta pago parcial");
+
+      const pago2 = await requestJson(baseUrl, "POST", `/compras/${compraId}/pagos`, {
+        monto_total: 71000,
+        tipo_pago: "efectivo",
+        concepto: "Pago parcial F3C 2"
+      }, token);
+      if (!pago2.response.ok) throw new Error(`F3C segundo pago fallo: ${pago2.data?.message || pago2.response.status}`);
+      assertApprox(pago2.data.resumen_pago.total_pagado, 121000, "F3C dos pagos cancelan una compra");
+      assertApprox(pago2.data.resumen_pago.saldo_pendiente, 0, "F3C compra queda sin saldo");
+      assertSame(pago2.data.resumen_pago.estado, "saldada", "F3C compra queda saldada");
+      assertApprox(pago2.data.resumen_pago.total_compra, 121000, "F3C dos pagos no duplican total de compra");
+      assertApprox(pago2.data.pago.iva_credito_fiscal, 0, "F3C segundo pago tampoco guarda IVA credito");
+
+      const pagosDb = await allSql(dbPath, "SELECT monto_total, iva_credito_fiscal FROM pagos WHERE compra_id = ? ORDER BY id", [compraId]);
+      assertEqual(pagosDb.length, 2, "F3C compra tiene dos pagos reales vinculados");
+      assertApprox(pagosDb[0].iva_credito_fiscal, 0, "F3C pago 1 IVA cero");
+      assertApprox(pagosDb[1].iva_credito_fiscal, 0, "F3C pago 2 IVA cero");
+      const comprobanteDb = (await allSql(dbPath, "SELECT iva_total FROM compra_comprobantes WHERE compra_id = ?", [compraId]))[0];
+      assertApprox(comprobanteDb.iva_total, 21000, "F3C IVA documental permanece independiente de pagos");
+
+      const resumenCaja = await getCajaResumen(baseUrl, token);
+      assertApprox(resumenCaja.resumen.total_pagos_general, 121000, "F3C solo pagos reales mueven caja");
+
+      const deletePago2 = await requestJson(baseUrl, "DELETE", `/pagos/${pago2.data.pago.id}`, { clave_maestra: "1234" }, token);
+      if (!deletePago2.response.ok) throw new Error(`F3C delete pago compra fallo: ${deletePago2.data?.message || deletePago2.response.status}`);
+      const compraTrasDelete = await requestJson(baseUrl, "GET", `/compras/${compraId}`, null, token);
+      if (!compraTrasDelete.response.ok) throw new Error(`F3C obtener compra post delete fallo: ${compraTrasDelete.data?.message || compraTrasDelete.response.status}`);
+      assertApprox(compraTrasDelete.data.resumen_pago.total_pagado, 50000, "F3C delete recalcula total pagado");
+      assertApprox(compraTrasDelete.data.resumen_pago.saldo_pendiente, 71000, "F3C delete recupera saldo");
+      assertSame(compraTrasDelete.data.resumen_pago.estado, "parcial", "F3C delete devuelve compra a parcial");
+
+      await cerrarCaja(baseUrl, token, 200000, 200000, 0);
+      const deleteCajaCerrada = await requestJson(baseUrl, "DELETE", `/pagos/${pago1.data.pago.id}`, { clave_maestra: "1234" }, token);
+      assertEqual(deleteCajaCerrada.response.status, 403, "F3C no elimina pago de compra en caja cerrada");
+
+      const legacyInyectado = await requestJson(baseUrl, "POST", "/pagos", {
+        proveedor_id: proveedor.id,
+        compra_id: compraId,
+        concepto: "Bypass compra_id F3C",
+        monto_total: 10,
+        tipo_pago: "efectivo",
+        estado: "registrado"
+      }, token);
+      assertEqual(legacyInyectado.response.status, 400, "F3C POST /pagos no acepta compra_id inyectado");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testCompraCompatibilidadPagosLegacyF3C() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM compra_comprobante_iva"],
+        ["DELETE FROM compra_comprobantes"],
+        ["DELETE FROM compras"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const proveedor = await crearProveedor(baseUrl, token);
+
+      const pagoLegacy = await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "Pago legacy F3C registrado",
+        monto_total: 300,
+        tipo_pago: "efectivo",
+        estado: "registrado"
+      });
+      assertEqual(pagoLegacy.compra_id || 0, 0, "F3C pago legacy registrado conserva compra_id NULL");
+      assertApprox(pagoLegacy.iva_credito_fiscal, 52.07, "F3C pago legacy mantiene IVA credito estimado");
+
+      const pagoPendiente = await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "Pago legacy F3C pendiente",
+        monto_total: 400,
+        tipo_pago: "efectivo",
+        estado: "pendiente"
+      });
+      assertSame(pagoPendiente.estado, "pendiente", "F3C pago legacy pendiente sigue permitido");
+      assertEqual(pagoPendiente.caja_id || 0, 0, "F3C pago legacy pendiente no mueve caja");
+      assertEqual(pagoPendiente.compra_id || 0, 0, "F3C pago legacy pendiente conserva compra_id NULL");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
 }
 
 async function testProductosMasVendidosDevuelveClaves() {
@@ -11559,6 +11740,8 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testResumenFiscalHistoricoF2EIntegracion);
   await _run(testCompraSchemaF3B);
   await _run(testCompraResumenIvaF3BHelper);
+  await _run(testCompraPagosRealesF3C);
+  await _run(testCompraCompatibilidadPagosLegacyF3C);
   await _run(testProductosMasVendidosDevuelveClaves);
   await _run(testProductosMasVendidosExcluyeVentasAnuladas);
   await _run(testProductosMasVendidosOrdenaPorCantidad);
