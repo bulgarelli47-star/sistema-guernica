@@ -81,6 +81,86 @@ async function refreshCompraSaldo(compraId, { getQuery, runQuery }) {
   };
 }
 
+async function refreshCostoReferencialProveedorProducto({ producto_id, proveedor_id } = {}, { getQuery, runQuery }) {
+  const productoId = Number(producto_id || 0);
+  const proveedorId = Number(proveedor_id || 0);
+  if (!productoId || !proveedorId) {
+    return { actualizado: false, motivo: "datos_insuficientes" };
+  }
+
+  const relacion = await getQuery(
+    `SELECT id, precio_compra, fecha_actualizacion
+     FROM producto_proveedores
+     WHERE producto_id = ? AND proveedor_id = ?
+     ORDER BY es_principal DESC, id DESC
+     LIMIT 1`,
+    [productoId, proveedorId]
+  );
+  if (!relacion) {
+    return { actualizado: false, motivo: "relacion_inexistente" };
+  }
+
+  const ultimaRecepcionActiva = await getQuery(
+    `SELECT ci.costo_unitario, cr.fecha
+     FROM compra_recepcion_items cri
+     JOIN compra_recepciones cr ON cr.id = cri.recepcion_id
+     JOIN compra_items ci ON ci.id = cri.compra_item_id
+     JOIN compras c ON c.id = cr.compra_id
+     WHERE cri.producto_id = ?
+       AND c.proveedor_id = ?
+       AND cr.estado = 'registrada'
+       AND COALESCE(cri.costo_referencial_actualizado, 0) = 1
+     ORDER BY cr.fecha DESC, COALESCE(cr.hora, '') DESC, cr.id DESC, cri.id DESC
+     LIMIT 1`,
+    [productoId, proveedorId]
+  );
+
+  if (ultimaRecepcionActiva) {
+    await runQuery(
+      "UPDATE producto_proveedores SET precio_compra = ?, fecha_actualizacion = ? WHERE id = ?",
+      [round2(ultimaRecepcionActiva.costo_unitario), ultimaRecepcionActiva.fecha || null, relacion.id]
+    );
+    return {
+      actualizado: true,
+      origen: "ultima_recepcion_activa",
+      precio_compra: round2(ultimaRecepcionActiva.costo_unitario),
+      fecha_actualizacion: ultimaRecepcionActiva.fecha || null
+    };
+  }
+
+  const baseline = await getQuery(
+    `SELECT cri.precio_proveedor_anterior_snapshot, cri.fecha_precio_proveedor_anterior_snapshot
+     FROM compra_recepcion_items cri
+     JOIN compra_recepciones cr ON cr.id = cri.recepcion_id
+     JOIN compras c ON c.id = cr.compra_id
+     WHERE cri.producto_id = ?
+       AND c.proveedor_id = ?
+       AND COALESCE(cri.costo_referencial_actualizado, 0) = 1
+     ORDER BY cr.fecha ASC, COALESCE(cr.hora, '') ASC, cr.id ASC, cri.id ASC
+     LIMIT 1`,
+    [productoId, proveedorId]
+  );
+
+  if (!baseline) {
+    return { actualizado: false, motivo: "sin_recepciones_f3" };
+  }
+
+  await runQuery(
+    "UPDATE producto_proveedores SET precio_compra = ?, fecha_actualizacion = ? WHERE id = ?",
+    [
+      baseline.precio_proveedor_anterior_snapshot == null ? null : round2(baseline.precio_proveedor_anterior_snapshot),
+      baseline.fecha_precio_proveedor_anterior_snapshot || null,
+      relacion.id
+    ]
+  );
+  return {
+    actualizado: true,
+    origen: "baseline_previo_f3",
+    precio_compra: baseline.precio_proveedor_anterior_snapshot == null ? null : round2(baseline.precio_proveedor_anterior_snapshot),
+    fecha_actualizacion: baseline.fecha_precio_proveedor_anterior_snapshot || null
+  };
+}
+
 function normalizarAlicuota(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) return 0;
@@ -332,6 +412,7 @@ module.exports = {
   calcularEstadoCompra,
   getTotalPagadoCompra,
   refreshCompraSaldo,
+  refreshCostoReferencialProveedorProducto,
   normalizarCompra,
   normalizarCompraItem,
   normalizarComprobanteCompra,

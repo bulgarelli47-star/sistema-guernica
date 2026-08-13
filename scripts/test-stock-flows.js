@@ -5866,7 +5866,9 @@ async function testCompraItemsRecepcionesF3D2Schema() {
       ], "F3D-2 compra_recepciones schema");
       assertColumnasIncluidas(await allSql(dbPath, "PRAGMA table_info(compra_recepcion_items)"), [
         "id", "recepcion_id", "compra_item_id", "producto_id", "cantidad_recibida",
-        "unidad_snapshot", "movimiento_stock_id", "created_at"
+        "unidad_snapshot", "movimiento_stock_id", "movimiento_stock_reversa_id",
+        "precio_proveedor_anterior_snapshot", "fecha_precio_proveedor_anterior_snapshot",
+        "costo_referencial_actualizado", "created_at"
       ], "F3D-2 compra_recepcion_items schema");
 
       const proveedor = await runSql(dbPath, `
@@ -6210,7 +6212,8 @@ async function testCompraRecepcionOperativaF3D3() {
       assertApprox(productoDespues.costo_final, productoAntes.costo_final, "F3D3 no modifica productos.costo_final");
       assertApprox(productoDespues.costo_economico, productoAntes.costo_economico, "F3D3 no modifica productos.costo_economico");
       assertApprox(productoDespues.precio_venta, productoAntes.precio_venta, "F3D3 no modifica productos.precio_venta");
-      assertApprox(proveedorPrecioDespues.precio_compra, proveedorPrecioAntes.precio_compra, "F3D3 no modifica producto_proveedores.precio_compra");
+      assertApprox(proveedorPrecioAntes.precio_compra, 12, "F3D3 fixture conserva baseline proveedor");
+      assertApprox(proveedorPrecioDespues.precio_compra, 2, "F3D4 actualiza producto_proveedores.precio_compra cuando existe asociacion");
 
       const pagosDespues = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos WHERE compra_id = ?", [compraId]))[0].total;
       assertEqual(pagosDespues, pagosAntes, "F3D3 recepcion no crea pagos");
@@ -6220,6 +6223,287 @@ async function testCompraRecepcionOperativaF3D3() {
       assertApprox(cajaDespues.resumen.total_pagos_general, cajaAntes.resumen.total_pagos_general, "F3D3 recepcion no mueve caja");
       const ivaDespues = (await allSql(dbPath, "SELECT iva_total FROM compra_comprobantes WHERE compra_id = ?", [compraId]))[0].iva_total;
       assertApprox(ivaDespues, ivaAntes, "F3D3 recepcion no modifica IVA documental");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testCompraRecepcionReversaCostoReferencialF3D4() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM compra_recepcion_items"],
+        ["DELETE FROM compra_recepciones"],
+        ["DELETE FROM compra_items"],
+        ["DELETE FROM compra_comprobante_iva"],
+        ["DELETE FROM compra_comprobantes"],
+        ["DELETE FROM compras"],
+        ["DELETE FROM producto_proveedores"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3D4 ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3D4 Cat ${Date.now()}`, { maneja_stock: true });
+
+      const crearCompra = async (concepto, total = 1000) => {
+        const compra = await requestJson(baseUrl, "POST", "/compras", {
+          proveedor_id: proveedor.id,
+          fecha_compra: "2026-05-01",
+          concepto,
+          tipo_impacto: "costo_variable_mercaderia",
+          total_compra: total
+        }, token);
+        if (!compra.response.ok) throw new Error(`F3D4 crear compra fallo: ${compra.data?.message || compra.response.status}`);
+        return compra.data.compra.id;
+      };
+      const crearItemsCompra = async (compraId, items) => {
+        const res = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, { items }, token);
+        if (!res.response.ok) throw new Error(`F3D4 crear items fallo: ${res.data?.message || res.response.status}`);
+        return res.data.items;
+      };
+      const recibir = async (compraId, key, items, fecha = "2026-05-02") => {
+        const res = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+          idempotency_key: key,
+          fecha,
+          items
+        }, token);
+        if (!res.response.ok) throw new Error(`F3D4 recepcion fallo: ${res.data?.message || res.response.status}`);
+        return res.data.recepcion;
+      };
+      const anular = (compraId, recepcionId, motivo = "Correccion test F3D4") =>
+        requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones/${recepcionId}/anular`, { motivo }, token);
+      const precioProveedor = async (productoId) =>
+        (await allSql(dbPath, "SELECT precio_compra, fecha_actualizacion, es_principal FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoId, proveedor.id]))[0];
+      const camposProducto = async (productoId) =>
+        (await allSql(dbPath, "SELECT precio_compra, costo_final, costo_economico, precio_venta, precio_venta_modo, proveedor_id, proveedor_principal FROM productos WHERE id = ?", [productoId]))[0];
+
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `F3D4 Producto Ref ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D4",
+        stock: 0,
+        unidad_medida: "unidad",
+        precio_compra: 50,
+        costo_final: 55,
+        costo_economico: 60,
+        precio_venta: 100,
+        precio_venta_modo: "manual",
+        maneja_stock: true
+      });
+      await runSql(dbPath, `
+        INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+        VALUES (?, ?, 90, '2026-04-01', 1)
+      `, [productoId, proveedor.id]);
+
+      const compraId = await crearCompra("Compra F3D4 referencia", 2200);
+      const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a",
+        total_comprobante: 1210,
+        alicuotas: [{ alicuota: 21, neto_gravado: 1000, iva_monto: 210 }]
+      }, token);
+      if (!comprobante.response.ok) throw new Error(`F3D4 comprobante fallo: ${comprobante.data?.message || comprobante.response.status}`);
+      const items = await crearItemsCompra(compraId, [
+        { producto_id: productoId, cantidad_comprada: 10, costo_unitario: 100, afecta_stock: 1 },
+        { producto_id: productoId, cantidad_comprada: 10, costo_unitario: 120, afecta_stock: 1 }
+      ]);
+      const item100 = items.find((item) => Number(item.costo_unitario) === 100);
+      const item120 = items.find((item) => Number(item.costo_unitario) === 120);
+
+      const productoAntes = await camposProducto(productoId);
+      const pagosAntes = (await allSql(dbPath, "SELECT COUNT(*) AS total, COALESCE(SUM(monto_total), 0) AS monto FROM pagos WHERE compra_id = ?", [compraId]))[0];
+      const compraAntes = (await allSql(dbPath, "SELECT total_compra, saldo_pendiente, estado FROM compras WHERE id = ?", [compraId]))[0];
+      const cajaAntes = await getCajaResumen(baseUrl, token);
+      const ivaAntes = (await allSql(dbPath, "SELECT iva_total FROM compra_comprobantes WHERE compra_id = ?", [compraId]))[0].iva_total;
+
+      const recep100 = await recibir(compraId, "f3d4-ref-100", [{ compra_item_id: item100.id, cantidad_recibida: 10 }], "2026-05-02");
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 10, "F3D4 R1 incrementa stock");
+      assertApprox((await precioProveedor(productoId)).precio_compra, 100, "F3D4 R1 actualiza costo referencial");
+      const snapshotR1 = (await allSql(dbPath, "SELECT precio_proveedor_anterior_snapshot, fecha_precio_proveedor_anterior_snapshot, costo_referencial_actualizado FROM compra_recepcion_items WHERE recepcion_id = ?", [recep100.id]))[0];
+      assertApprox(snapshotR1.precio_proveedor_anterior_snapshot, 90, "F3D4 snapshot guarda precio proveedor previo");
+      assertSame(snapshotR1.fecha_precio_proveedor_anterior_snapshot, "2026-04-01", "F3D4 snapshot guarda fecha previa");
+      assertEqual(snapshotR1.costo_referencial_actualizado, 1, "F3D4 marca actualizacion referencial");
+
+      const recep120 = await recibir(compraId, "f3d4-ref-120", [{ compra_item_id: item120.id, cantidad_recibida: 10 }], "2026-05-03");
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 20, "F3D4 R2 incrementa stock");
+      assertApprox((await precioProveedor(productoId)).precio_compra, 120, "F3D4 ultima recepcion activa manda");
+
+      const movimientosAntesAnularR2 = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock WHERE producto_id = ?", [productoId]))[0].total;
+      const anulaR2 = await anular(compraId, recep120.id);
+      if (!anulaR2.response.ok) throw new Error(`F3D4 anular R2 fallo: ${anulaR2.data?.message || anulaR2.response.status}`);
+      assertEqual(anulaR2.data.idempotent_replay, false, "F3D4 primera anulacion no es replay");
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 10, "F3D4 anular ultima compensa stock");
+      assertApprox((await precioProveedor(productoId)).precio_compra, 100, "F3D4 anular ultima vuelve a recepcion activa anterior");
+      const reverseR2 = (await allSql(dbPath, `
+        SELECT cri.movimiento_stock_id, cri.movimiento_stock_reversa_id, ms.tipo_movimiento
+        FROM compra_recepcion_items cri
+        JOIN movimientos_stock ms ON ms.id = cri.movimiento_stock_reversa_id
+        WHERE cri.recepcion_id = ?
+      `, [recep120.id]))[0];
+      assertEqual(Number(reverseR2.movimiento_stock_id) > 0 ? 1 : 0, 1, "F3D4 conserva movimiento original");
+      assertEqual(Number(reverseR2.movimiento_stock_reversa_id) > 0 ? 1 : 0, 1, "F3D4 vincula movimiento reversa");
+      assertSame(reverseR2.tipo_movimiento, "egreso", "F3D4 reversa usa egreso compatible");
+
+      const replayAnulaR2 = await anular(compraId, recep120.id);
+      assertEqual(replayAnulaR2.response.status, 200, "F3D4 anulacion idempotente devuelve 200");
+      assertEqual(replayAnulaR2.data.idempotent_replay, true, "F3D4 anulacion repetida marca replay");
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 10, "F3D4 anulacion repetida no duplica stock");
+      const movimientosTrasReplayR2 = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock WHERE producto_id = ?", [productoId]))[0].total;
+      assertEqual(movimientosTrasReplayR2, movimientosAntesAnularR2 + 1, "F3D4 anulacion repetida no duplica movimiento");
+
+      const anulaR1 = await anular(compraId, recep100.id);
+      if (!anulaR1.response.ok) throw new Error(`F3D4 anular R1 fallo: ${anulaR1.data?.message || anulaR1.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 0, "F3D4 anular todas restaura stock fisico");
+      const referenciaRestaurada = await precioProveedor(productoId);
+      assertApprox(referenciaRestaurada.precio_compra, 90, "F3D4 sin recepciones activas restaura baseline");
+      assertSame(referenciaRestaurada.fecha_actualizacion, "2026-04-01", "F3D4 restaura fecha baseline");
+
+      const productoDespues = await camposProducto(productoId);
+      for (const campo of ["precio_compra", "costo_final", "costo_economico", "precio_venta"]) {
+        assertApprox(productoDespues[campo], productoAntes[campo], `F3D4 no modifica productos.${campo}`);
+      }
+      assertSame(productoDespues.precio_venta_modo, productoAntes.precio_venta_modo, "F3D4 no modifica precio_venta_modo");
+      assertEqual(Number((await precioProveedor(productoId)).es_principal), 1, "F3D4 no cambia proveedor principal en producto_proveedores");
+
+      const productoAntiguoId = await crearProducto(baseUrl, token, {
+        nombre: `F3D4 Producto Old ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D4",
+        stock: 0,
+        maneja_stock: true
+      });
+      await runSql(dbPath, `
+        INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+        VALUES (?, ?, 90, '2026-04-01', 0)
+      `, [productoAntiguoId, proveedor.id]);
+      const compraOld = await crearCompra("Compra F3D4 anulacion antigua", 1100);
+      const itemsOld = await crearItemsCompra(compraOld, [
+        { producto_id: productoAntiguoId, cantidad_comprada: 5, costo_unitario: 100, afecta_stock: 1 },
+        { producto_id: productoAntiguoId, cantidad_comprada: 5, costo_unitario: 120, afecta_stock: 1 }
+      ]);
+      const oldItem100 = itemsOld.find((item) => Number(item.costo_unitario) === 100);
+      const oldItem120 = itemsOld.find((item) => Number(item.costo_unitario) === 120);
+      const oldR1 = await recibir(compraOld, "f3d4-old-100", [{ compra_item_id: oldItem100.id, cantidad_recibida: 5 }], "2026-05-04");
+      await recibir(compraOld, "f3d4-old-120", [{ compra_item_id: oldItem120.id, cantidad_recibida: 5 }], "2026-05-05");
+      assertApprox((await precioProveedor(productoAntiguoId)).precio_compra, 120, "F3D4 old fixture queda en ultima recepcion");
+      const anulaOld = await anular(compraOld, oldR1.id);
+      if (!anulaOld.response.ok) throw new Error(`F3D4 anular antigua fallo: ${anulaOld.data?.message || anulaOld.response.status}`);
+      assertApprox((await precioProveedor(productoAntiguoId)).precio_compra, 120, "F3D4 anular antigua no pisa recepcion posterior activa");
+
+      const productoSinRelacionId = await crearProducto(baseUrl, token, {
+        nombre: `F3D4 Sin Relacion ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D4",
+        stock: 3,
+        precio_compra: 11,
+        costo_final: 12,
+        costo_economico: 13,
+        precio_venta: 20,
+        maneja_stock: true
+      });
+      const productoSinRelacionAntes = await camposProducto(productoSinRelacionId);
+      const compraSinRelacion = await crearCompra("Compra F3D4 sin relacion", 77);
+      const itemSinRelacion = (await crearItemsCompra(compraSinRelacion, [
+        { producto_id: productoSinRelacionId, cantidad_comprada: 4, costo_unitario: 77, afecta_stock: 1 }
+      ]))[0];
+      await recibir(compraSinRelacion, "f3d4-sin-relacion", [{ compra_item_id: itemSinRelacion.id, cantidad_recibida: 4 }], "2026-05-06");
+      assertApprox((await getProduct(baseUrl, token, productoSinRelacionId)).stock, 7, "F3D4 sin relacion igual recibe stock");
+      const relacionesCreadas = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoSinRelacionId, proveedor.id]))[0].total;
+      assertEqual(relacionesCreadas, 0, "F3D4 no crea producto_proveedores silenciosamente");
+      const productoSinRelacionDespues = await camposProducto(productoSinRelacionId);
+      for (const campo of ["precio_compra", "costo_final", "costo_economico", "precio_venta"]) {
+        assertApprox(productoSinRelacionDespues[campo], productoSinRelacionAntes[campo], `F3D4 sin relacion no modifica productos.${campo}`);
+      }
+
+      const productoRollbackAId = await crearProducto(baseUrl, token, {
+        nombre: `F3D4 Rollback A ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D4",
+        stock: 0,
+        maneja_stock: true
+      });
+      const productoRollbackBId = await crearProducto(baseUrl, token, {
+        nombre: `F3D4 Rollback B ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D4",
+        stock: 0,
+        maneja_stock: true
+      });
+      const compraRollback = await crearCompra("Compra F3D4 rollback reversa", 100);
+      const itemsRollback = await crearItemsCompra(compraRollback, [
+        { producto_id: productoRollbackAId, cantidad_comprada: 5, costo_unitario: 10, afecta_stock: 1 },
+        { producto_id: productoRollbackBId, cantidad_comprada: 5, costo_unitario: 10, afecta_stock: 1 }
+      ]);
+      const recepRollback = await recibir(compraRollback, "f3d4-rollback", [
+        { compra_item_id: itemsRollback[0].id, cantidad_recibida: 5 },
+        { compra_item_id: itemsRollback[1].id, cantidad_recibida: 5 }
+      ], "2026-05-07");
+      await runSql(dbPath, "UPDATE productos SET stock = 2 WHERE id = ?", [productoRollbackBId]);
+      const stockRollbackAAntes = (await getProduct(baseUrl, token, productoRollbackAId)).stock;
+      const movimientosRollbackAntes = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock"))[0].total;
+      const anulaRollback = await anular(compraRollback, recepRollback.id);
+      assertEqual(anulaRollback.response.status, 409, "F3D4 reversa multi-item falla si una linea no tiene stock");
+      assertApprox((await getProduct(baseUrl, token, productoRollbackAId)).stock, stockRollbackAAntes, "F3D4 rollback no revierte item valido parcialmente");
+      assertApprox((await getProduct(baseUrl, token, productoRollbackBId)).stock, 2, "F3D4 rollback conserva item insuficiente");
+      assertEqual((await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock"))[0].total, movimientosRollbackAntes, "F3D4 rollback no crea movimientos compensatorios");
+      assertSame((await allSql(dbPath, "SELECT estado FROM compra_recepciones WHERE id = ?", [recepRollback.id]))[0].estado, "registrada", "F3D4 rollback no marca recepcion anulada");
+
+      const ingAId = await crearProducto(baseUrl, token, {
+        nombre: `F3D4 Ing A ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D4",
+        stock: 100,
+        maneja_stock: true
+      });
+      const ingBId = await crearProducto(baseUrl, token, {
+        nombre: `F3D4 Ing B ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D4",
+        stock: 100,
+        maneja_stock: true
+      });
+      const compuestoId = await crearProductoCompuesto(baseUrl, token, {
+        nombre: `F3D4 Compuesto ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D4",
+        tipo: "compuesto",
+        maneja_stock: true,
+        stock: 5,
+        componentes: [
+          { producto_id: ingAId, cantidad: 1 },
+          { producto_id: ingBId, cantidad: 2 }
+        ],
+        costos_extra: []
+      });
+      await runSql(dbPath, "UPDATE productos SET maneja_stock = 1, stock = 5 WHERE id = ?", [compuestoId]);
+      const compraCompuesto = await crearCompra("Compra F3D4 compuesto", 100);
+      const itemCompuesto = (await crearItemsCompra(compraCompuesto, [
+        { producto_id: compuestoId, cantidad_comprada: 10, costo_unitario: 10, afecta_stock: 1 }
+      ]))[0];
+      const recepCompuesto = await recibir(compraCompuesto, "f3d4-compuesto", [{ compra_item_id: itemCompuesto.id, cantidad_recibida: 10 }], "2026-05-08");
+      assertApprox((await getProduct(baseUrl, token, compuestoId)).stock, 15, "F3D4 compuesto recibido aumenta stock propio");
+      const anulaCompuesto = await anular(compraCompuesto, recepCompuesto.id);
+      if (!anulaCompuesto.response.ok) throw new Error(`F3D4 anular compuesto fallo: ${anulaCompuesto.data?.message || anulaCompuesto.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, compuestoId)).stock, 5, "F3D4 anular compuesto baja solo compuesto");
+      assertApprox((await getProduct(baseUrl, token, ingAId)).stock, 100, "F3D4 anular compuesto no toca componente A");
+      assertApprox((await getProduct(baseUrl, token, ingBId)).stock, 100, "F3D4 anular compuesto no toca componente B");
+
+      const pagosDespues = (await allSql(dbPath, "SELECT COUNT(*) AS total, COALESCE(SUM(monto_total), 0) AS monto FROM pagos WHERE compra_id = ?", [compraId]))[0];
+      assertEqual(pagosDespues.total, pagosAntes.total, "F3D4 anular recepcion no modifica pagos");
+      assertApprox(pagosDespues.monto, pagosAntes.monto, "F3D4 anular recepcion no modifica montos de pago");
+      const compraDespues = (await allSql(dbPath, "SELECT total_compra, saldo_pendiente, estado FROM compras WHERE id = ?", [compraId]))[0];
+      assertApprox(compraDespues.total_compra, compraAntes.total_compra, "F3D4 anular recepcion no modifica total_compra");
+      assertApprox(compraDespues.saldo_pendiente, compraAntes.saldo_pendiente, "F3D4 anular recepcion no modifica deuda");
+      assertSame(compraDespues.estado, compraAntes.estado, "F3D4 anular recepcion no modifica estado financiero");
+      const cajaDespues = await getCajaResumen(baseUrl, token);
+      assertApprox(cajaDespues.resumen.total_pagos_general, cajaAntes.resumen.total_pagos_general, "F3D4 anular recepcion no mueve caja");
+      const ivaDespues = (await allSql(dbPath, "SELECT iva_total FROM compra_comprobantes WHERE compra_id = ?", [compraId]))[0].iva_total;
+      assertApprox(ivaDespues, ivaAntes, "F3D4 anular recepcion no modifica IVA documental");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -12260,6 +12544,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCompraItemsRecepcionesF3D2Helper);
   await _run(testCompraItemsRecepcionesF3D2Schema);
   await _run(testCompraRecepcionOperativaF3D3);
+  await _run(testCompraRecepcionReversaCostoReferencialF3D4);
   await _run(testProductosMasVendidosDevuelveClaves);
   await _run(testProductosMasVendidosExcluyeVentasAnuladas);
   await _run(testProductosMasVendidosOrdenaPorCantidad);

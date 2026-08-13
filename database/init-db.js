@@ -552,13 +552,22 @@ async function initDatabase() {
         cantidad_recibida REAL NOT NULL,
         unidad_snapshot TEXT,
         movimiento_stock_id INTEGER,
+        movimiento_stock_reversa_id INTEGER,
+        precio_proveedor_anterior_snapshot REAL,
+        fecha_precio_proveedor_anterior_snapshot TEXT,
+        costo_referencial_actualizado INTEGER NOT NULL DEFAULT 0,
         created_at TEXT,
         FOREIGN KEY (recepcion_id) REFERENCES compra_recepciones(id),
         FOREIGN KEY (compra_item_id) REFERENCES compra_items(id),
         FOREIGN KEY (producto_id) REFERENCES productos(id),
-        FOREIGN KEY (movimiento_stock_id) REFERENCES movimientos_stock(id)
+        FOREIGN KEY (movimiento_stock_id) REFERENCES movimientos_stock(id),
+        FOREIGN KEY (movimiento_stock_reversa_id) REFERENCES movimientos_stock(id)
       )
     `);
+    await ensureColumn("compra_recepcion_items", "movimiento_stock_reversa_id", "INTEGER");
+    await ensureColumn("compra_recepcion_items", "precio_proveedor_anterior_snapshot", "REAL");
+    await ensureColumn("compra_recepcion_items", "fecha_precio_proveedor_anterior_snapshot", "TEXT");
+    await ensureColumn("compra_recepcion_items", "costo_referencial_actualizado", "INTEGER NOT NULL DEFAULT 0");
 
     await runQuery(`
       CREATE TABLE IF NOT EXISTS configuracion_global (

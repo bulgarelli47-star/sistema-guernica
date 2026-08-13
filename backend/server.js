@@ -139,6 +139,7 @@ const {
   normalizarCompraItem,
   normalizarComprobanteCompra,
   refreshCompraSaldo,
+  refreshCostoReferencialProveedorProducto,
   round2: roundCompra2,
   round4: roundCompra4,
   validarCantidadRecepcion
@@ -558,13 +559,22 @@ async function ensureComprasSchema() {
       cantidad_recibida REAL NOT NULL,
       unidad_snapshot TEXT,
       movimiento_stock_id INTEGER,
+      movimiento_stock_reversa_id INTEGER,
+      precio_proveedor_anterior_snapshot REAL,
+      fecha_precio_proveedor_anterior_snapshot TEXT,
+      costo_referencial_actualizado INTEGER NOT NULL DEFAULT 0,
       created_at TEXT,
       FOREIGN KEY (recepcion_id) REFERENCES compra_recepciones(id),
       FOREIGN KEY (compra_item_id) REFERENCES compra_items(id),
       FOREIGN KEY (producto_id) REFERENCES productos(id),
-      FOREIGN KEY (movimiento_stock_id) REFERENCES movimientos_stock(id)
+      FOREIGN KEY (movimiento_stock_id) REFERENCES movimientos_stock(id),
+      FOREIGN KEY (movimiento_stock_reversa_id) REFERENCES movimientos_stock(id)
     )
   `);
+  await ensureColumn("compra_recepcion_items", "movimiento_stock_reversa_id", "INTEGER");
+  await ensureColumn("compra_recepcion_items", "precio_proveedor_anterior_snapshot", "REAL");
+  await ensureColumn("compra_recepcion_items", "fecha_precio_proveedor_anterior_snapshot", "TEXT");
+  await ensureColumn("compra_recepcion_items", "costo_referencial_actualizado", "INTEGER NOT NULL DEFAULT 0");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_compras_proveedor_estado ON compras(proveedor_id, estado)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobantes_compra ON compra_comprobantes(compra_id)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobante_iva_comprobante ON compra_comprobante_iva(comprobante_id)");
@@ -4131,6 +4141,10 @@ async function getCompraDetalle(compraId) {
       cantidad_recibida: row.cantidad_recibida,
       unidad_snapshot: row.unidad_snapshot,
       movimiento_stock_id: row.movimiento_stock_id,
+      movimiento_stock_reversa_id: row.movimiento_stock_reversa_id,
+      precio_proveedor_anterior_snapshot: row.precio_proveedor_anterior_snapshot,
+      fecha_precio_proveedor_anterior_snapshot: row.fecha_precio_proveedor_anterior_snapshot,
+      costo_referencial_actualizado: row.costo_referencial_actualizado,
       created_at: row.created_at
     });
   }
@@ -4173,13 +4187,26 @@ async function getRecepcionCompraConItems(recepcionId) {
   const recepcion = await getQuery("SELECT * FROM compra_recepciones WHERE id = ?", [recepcionId]);
   if (!recepcion) return null;
   const items = await allQuery(
-    `SELECT id, recepcion_id, compra_item_id, producto_id, cantidad_recibida, unidad_snapshot, movimiento_stock_id, created_at
+    `SELECT id, recepcion_id, compra_item_id, producto_id, cantidad_recibida, unidad_snapshot,
+            movimiento_stock_id, movimiento_stock_reversa_id, precio_proveedor_anterior_snapshot,
+            fecha_precio_proveedor_anterior_snapshot, costo_referencial_actualizado, created_at
      FROM compra_recepcion_items
      WHERE recepcion_id = ?
      ORDER BY compra_item_id ASC`,
     [recepcionId]
   );
   return { ...recepcion, items };
+}
+
+async function getRelacionProductoProveedor(productoId, proveedorId) {
+  return getQuery(
+    `SELECT id, precio_compra, fecha_actualizacion
+     FROM producto_proveedores
+     WHERE producto_id = ? AND proveedor_id = ?
+     ORDER BY es_principal DESC, id DESC
+     LIMIT 1`,
+    [productoId, proveedorId]
+  );
 }
 
 app.get("/compras", async (req, res) => {
@@ -4452,18 +4479,25 @@ app.post("/compras/:id/recepciones", async (req, res) => {
     );
 
     for (const recepcionItem of recepcionItems) {
-      const stockAnterior = roundCompra4(Number(recepcionItem.producto.stock || 0));
+      const relacionProveedor = await getRelacionProductoProveedor(recepcionItem.producto.id, compra.proveedor_id);
+      const productoActual = await getQuery("SELECT stock FROM productos WHERE id = ?", [recepcionItem.producto.id]);
+      const stockAnterior = roundCompra4(Number(productoActual?.stock || 0));
       const stockNuevo = roundCompra4(stockAnterior + recepcionItem.cantidad);
       const itemResult = await runQuery(
         `INSERT INTO compra_recepcion_items
-         (recepcion_id, compra_item_id, producto_id, cantidad_recibida, unidad_snapshot, movimiento_stock_id, created_at)
-         VALUES (?, ?, ?, ?, ?, NULL, datetime('now'))`,
+         (recepcion_id, compra_item_id, producto_id, cantidad_recibida, unidad_snapshot,
+          movimiento_stock_id, precio_proveedor_anterior_snapshot,
+          fecha_precio_proveedor_anterior_snapshot, costo_referencial_actualizado, created_at)
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, datetime('now'))`,
         [
           recepcionResult.lastID,
           recepcionItem.item.id,
           recepcionItem.producto.id,
           recepcionItem.cantidad,
-          recepcionItem.item.unidad_snapshot
+          recepcionItem.item.unidad_snapshot,
+          relacionProveedor ? relacionProveedor.precio_compra : null,
+          relacionProveedor ? relacionProveedor.fecha_actualizacion : null,
+          relacionProveedor ? 1 : 0
         ]
       );
       await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockNuevo, recepcionItem.producto.id]);
@@ -4488,6 +4522,12 @@ app.post("/compras/:id/recepciones", async (req, res) => {
         [movimientoResult.lastID, itemResult.lastID]
       );
       recepcionItem.producto.stock = stockNuevo;
+      if (relacionProveedor) {
+        await refreshCostoReferencialProveedorProducto(
+          { producto_id: recepcionItem.producto.id, proveedor_id: compra.proveedor_id },
+          { getQuery, runQuery }
+        );
+      }
     }
 
     await runQuery("COMMIT");
@@ -4504,6 +4544,144 @@ app.post("/compras/:id/recepciones", async (req, res) => {
     try { await runQuery("ROLLBACK"); } catch {}
     logError("Error al registrar recepcion de compra:", error);
     return res.status(500).json({ message: "Error al registrar recepcion de compra" });
+  }
+});
+
+app.post("/compras/:id/recepciones/:recepcionId/anular", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_ajustar", "No tenes permisos para anular recepciones"))) return;
+
+  const compraId = Number(req.params.id);
+  const recepcionId = Number(req.params.recepcionId);
+  const motivo = String(req.body?.motivo || "").trim();
+  if (!motivo) {
+    return res.status(400).json({ message: "Debe informar un motivo para anular la recepcion" });
+  }
+
+  try {
+    await runQuery("BEGIN IMMEDIATE");
+    const compra = await getCompraBase(compraId);
+    if (!compra) {
+      await runQuery("ROLLBACK");
+      return res.status(404).json({ message: "Compra no encontrada" });
+    }
+
+    const recepcion = await getQuery(
+      "SELECT * FROM compra_recepciones WHERE id = ? AND compra_id = ?",
+      [recepcionId, compraId]
+    );
+    if (!recepcion) {
+      await runQuery("ROLLBACK");
+      return res.status(404).json({ message: "Recepcion no encontrada para esta compra" });
+    }
+    if (String(recepcion.estado || "").toLowerCase() === "anulada") {
+      await runQuery("ROLLBACK");
+      const detalle = await getCompraDetalle(compraId);
+      const recepcionActual = await getRecepcionCompraConItems(recepcionId);
+      return res.status(200).json({
+        message: "Recepcion ya anulada",
+        idempotent_replay: true,
+        recepcion: recepcionActual,
+        ...detalle
+      });
+    }
+
+    const items = await allQuery(
+      `SELECT cri.*, ci.costo_unitario, p.stock, p.nombre
+       FROM compra_recepcion_items cri
+       JOIN compra_items ci ON ci.id = cri.compra_item_id
+       JOIN productos p ON p.id = cri.producto_id
+       WHERE cri.recepcion_id = ?
+       ORDER BY cri.id ASC`,
+      [recepcionId]
+    );
+    if (!items.length) {
+      await runQuery("ROLLBACK");
+      return res.status(400).json({ message: "La recepcion no tiene items para anular" });
+    }
+    if (items.some((item) => item.movimiento_stock_reversa_id != null)) {
+      await runQuery("ROLLBACK");
+      return res.status(409).json({ message: "La recepcion ya tiene movimientos de reversa registrados" });
+    }
+
+    const cantidadPorProducto = new Map();
+    const stockPorProducto = new Map();
+    for (const item of items) {
+      const productoId = Number(item.producto_id);
+      const stockActual = roundCompra4(Number(item.stock || 0));
+      const cantidad = roundCompra4(Number(item.cantidad_recibida || 0));
+      cantidadPorProducto.set(productoId, roundCompra4((cantidadPorProducto.get(productoId) || 0) + cantidad));
+      stockPorProducto.set(productoId, stockActual);
+    }
+    for (const [productoId, cantidadTotal] of cantidadPorProducto.entries()) {
+      const stockActual = stockPorProducto.get(productoId) || 0;
+      if (stockActual + 0.0001 < cantidadTotal) {
+        await runQuery("ROLLBACK");
+        return res.status(409).json({
+          message: "La recepcion no puede anularse porque parte del stock ya no esta disponible."
+        });
+      }
+    }
+
+    const nowParts = getNowParts();
+    const usuario = String(req.usuario?.nombre || req.usuario?.usuario || "admin").trim() || "admin";
+    const productosAfectados = new Set();
+    for (const item of items) {
+      const cantidad = roundCompra4(Number(item.cantidad_recibida || 0));
+      const productoActual = await getQuery("SELECT stock FROM productos WHERE id = ?", [item.producto_id]);
+      const stockAnterior = roundCompra4(Number(productoActual?.stock || 0));
+      const stockNuevo = roundCompra4(stockAnterior - cantidad);
+      await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockNuevo, item.producto_id]);
+      const movimientoResult = await runQuery(
+        `INSERT INTO movimientos_stock
+         (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, proveedor_id, usuario, fecha, hora)
+         VALUES (?, 'egreso', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          item.producto_id,
+          cantidad,
+          stockAnterior,
+          stockNuevo,
+          `Anulacion recepcion #${recepcionId} de compra #${compraId}`,
+          compra.proveedor_id,
+          usuario,
+          nowParts.fecha,
+          nowParts.hora
+        ]
+      );
+      await runQuery(
+        "UPDATE compra_recepcion_items SET movimiento_stock_reversa_id = ? WHERE id = ?",
+        [movimientoResult.lastID, item.id]
+      );
+      productosAfectados.add(Number(item.producto_id));
+    }
+
+    await runQuery(
+      `UPDATE compra_recepciones
+       SET estado = 'anulada', anulada_at = datetime('now'), anulada_por = ?, motivo_anulacion = ?
+       WHERE id = ?`,
+      [usuario, motivo, recepcionId]
+    );
+
+    for (const productoId of productosAfectados) {
+      await refreshCostoReferencialProveedorProducto(
+        { producto_id: productoId, proveedor_id: compra.proveedor_id },
+        { getQuery, runQuery }
+      );
+    }
+
+    await runQuery("COMMIT");
+
+    const detalle = await getCompraDetalle(compraId);
+    const recepcionAnulada = await getRecepcionCompraConItems(recepcionId);
+    return res.status(200).json({
+      message: "Recepcion anulada correctamente",
+      idempotent_replay: false,
+      recepcion: recepcionAnulada,
+      ...detalle
+    });
+  } catch (error) {
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("Error al anular recepcion de compra:", error);
+    return res.status(500).json({ message: "Error al anular recepcion de compra" });
   }
 });
 
