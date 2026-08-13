@@ -507,6 +507,60 @@ async function initDatabase() {
     `);
 
     await runQuery(`
+      CREATE TABLE IF NOT EXISTS compra_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        compra_id INTEGER NOT NULL,
+        producto_id INTEGER,
+        descripcion_snapshot TEXT NOT NULL,
+        cantidad_comprada REAL NOT NULL,
+        unidad_snapshot TEXT,
+        costo_unitario REAL NOT NULL DEFAULT 0,
+        subtotal REAL NOT NULL DEFAULT 0,
+        afecta_stock INTEGER NOT NULL DEFAULT 0,
+        observaciones TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (compra_id) REFERENCES compras(id),
+        FOREIGN KEY (producto_id) REFERENCES productos(id)
+      )
+    `);
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS compra_recepciones (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        compra_id INTEGER NOT NULL,
+        fecha TEXT NOT NULL,
+        hora TEXT,
+        observaciones TEXT,
+        usuario TEXT,
+        estado TEXT NOT NULL DEFAULT 'registrada',
+        idempotency_key TEXT,
+        created_at TEXT,
+        anulada_at TEXT,
+        anulada_por TEXT,
+        motivo_anulacion TEXT,
+        FOREIGN KEY (compra_id) REFERENCES compras(id)
+      )
+    `);
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS compra_recepcion_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        recepcion_id INTEGER NOT NULL,
+        compra_item_id INTEGER NOT NULL,
+        producto_id INTEGER NOT NULL,
+        cantidad_recibida REAL NOT NULL,
+        unidad_snapshot TEXT,
+        movimiento_stock_id INTEGER,
+        created_at TEXT,
+        FOREIGN KEY (recepcion_id) REFERENCES compra_recepciones(id),
+        FOREIGN KEY (compra_item_id) REFERENCES compra_items(id),
+        FOREIGN KEY (producto_id) REFERENCES productos(id),
+        FOREIGN KEY (movimiento_stock_id) REFERENCES movimientos_stock(id)
+      )
+    `);
+
+    await runQuery(`
       CREATE TABLE IF NOT EXISTS configuracion_global (
         clave TEXT PRIMARY KEY,
         valor TEXT NOT NULL,
@@ -597,6 +651,12 @@ async function initDatabase() {
     await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobante_iva_comprobante ON compra_comprobante_iva(comprobante_id)");
     await runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_compra_comprobante_iva_unique ON compra_comprobante_iva(comprobante_id, alicuota)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_pagos_compra ON pagos(compra_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_items_compra ON compra_items(compra_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_items_producto ON compra_items(producto_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_recepciones_compra ON compra_recepciones(compra_id)");
+    await runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_compra_recepciones_idempotency ON compra_recepciones(compra_id, idempotency_key)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_recepcion_items_recepcion ON compra_recepcion_items(recepcion_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_recepcion_items_item ON compra_recepcion_items(compra_item_id)");
 
     const existingUser = await getQuery(
       "SELECT * FROM usuarios WHERE usuario = ?",
