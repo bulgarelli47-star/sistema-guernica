@@ -5946,6 +5946,286 @@ async function testCompraItemsRecepcionesF3D2Schema() {
   }
 }
 
+async function testCompraRecepcionOperativaF3D3() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM compra_recepcion_items"],
+        ["DELETE FROM compra_recepciones"],
+        ["DELETE FROM compra_items"],
+        ["DELETE FROM compra_comprobante_iva"],
+        ["DELETE FROM compra_comprobantes"],
+        ["DELETE FROM compras"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3D3 ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3D3 Cat ${Date.now()}`, { maneja_stock: true });
+      const productoAId = await crearProducto(baseUrl, token, {
+        nombre: `F3D3 Producto A ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D3",
+        stock: 10,
+        unidad_medida: "unidad",
+        precio_compra: 12,
+        costo_final: 13,
+        costo_economico: 14,
+        precio_venta: 30,
+        maneja_stock: true
+      });
+      const productoBId = await crearProducto(baseUrl, token, {
+        nombre: `F3D3 Producto B ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D3",
+        stock: 20,
+        unidad_medida: "unidad",
+        maneja_stock: true
+      });
+      const productoCId = await crearProducto(baseUrl, token, {
+        nombre: `F3D3 Producto C ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D3",
+        stock: 30,
+        unidad_medida: "unidad",
+        maneja_stock: true
+      });
+      const productoFracId = await crearProducto(baseUrl, token, {
+        nombre: `F3D3 Producto KG ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D3",
+        stock: 1,
+        unidad_medida: "kg",
+        maneja_stock: true
+      });
+      const productoNoStockId = await crearProducto(baseUrl, token, {
+        nombre: `F3D3 Servicio ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D3",
+        stock: 0,
+        unidad_medida: "unidad",
+        maneja_stock: false
+      });
+      await runSql(dbPath, `
+        INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+        VALUES (?, ?, 12, '2026-04-01', 1)
+      `, [productoAId, proveedor.id]);
+
+      const compraRes = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id,
+        fecha_compra: "2026-04-01",
+        concepto: "Compra F3D3 recepcion",
+        tipo_impacto: "costo_variable_mercaderia",
+        total_compra: 1000
+      }, token);
+      if (!compraRes.response.ok) throw new Error(`F3D3 crear compra fallo: ${compraRes.data?.message || compraRes.response.status}`);
+      const compraId = compraRes.data.compra.id;
+
+      const comprobanteRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a",
+        total_comprobante: 121,
+        alicuotas: [{ alicuota: 21, neto_gravado: 100, iva_monto: 21 }]
+      }, token);
+      if (!comprobanteRes.response.ok) throw new Error(`F3D3 comprobante fallo: ${comprobanteRes.data?.message || comprobanteRes.response.status}`);
+
+      const invalidNullStock = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ descripcion_snapshot: "Invalido", cantidad_comprada: 1, costo_unitario: 1, afecta_stock: 1 }]
+      }, token);
+      assertEqual(invalidNullStock.response.status, 400, "F3D3 rechaza producto NULL con afecta_stock 1");
+
+      const invalidNoStock = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ producto_id: productoNoStockId, cantidad_comprada: 1, costo_unitario: 1, afecta_stock: 1 }]
+      }, token);
+      assertEqual(invalidNoStock.response.status, 400, "F3D3 rechaza producto maneja_stock 0 con afecta_stock 1");
+
+      const invalidSubtotal = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ producto_id: productoAId, cantidad_comprada: 10, costo_unitario: 5, subtotal: 65, afecta_stock: 1 }]
+      }, token);
+      assertEqual(invalidSubtotal.response.status, 400, "F3D3 rechaza subtotal materialmente inconsistente");
+
+      const itemsRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [
+          { producto_id: productoAId, cantidad_comprada: 100, costo_unitario: 2, afecta_stock: 1 },
+          { producto_id: productoBId, cantidad_comprada: 5, costo_unitario: 3, afecta_stock: 1 },
+          { producto_id: productoCId, cantidad_comprada: 10, costo_unitario: 4, afecta_stock: 1 },
+          { producto_id: productoFracId, cantidad_comprada: 10.5, costo_unitario: 10, afecta_stock: 1 },
+          { descripcion_snapshot: "Flete F3D3", cantidad_comprada: 1, costo_unitario: 50, afecta_stock: 0 }
+        ]
+      }, token);
+      if (!itemsRes.response.ok) throw new Error(`F3D3 crear items fallo: ${itemsRes.data?.message || itemsRes.response.status}`);
+      const itemA = itemsRes.data.items.find((item) => Number(item.producto_id) === Number(productoAId));
+      const itemB = itemsRes.data.items.find((item) => Number(item.producto_id) === Number(productoBId));
+      const itemC = itemsRes.data.items.find((item) => Number(item.producto_id) === Number(productoCId));
+      const itemFrac = itemsRes.data.items.find((item) => Number(item.producto_id) === Number(productoFracId));
+      const itemDesc = itemsRes.data.items.find((item) => item.producto_id == null);
+      assertSame(itemA.descripcion_snapshot, (await getProduct(baseUrl, token, productoAId)).nombre, "F3D3 snapshot descripcion usa nombre del producto");
+      assertSame(itemFrac.unidad_snapshot, "kg", "F3D3 snapshot unidad usa unidad fisica del producto");
+      assertApprox(itemA.subtotal, 200, "F3D3 subtotal se calcula al crear item");
+      assertEqual(itemDesc.afecta_stock, 0, "F3D3 item descriptivo queda sin stock");
+
+      const compraAnulada = await runSql(dbPath, `
+        INSERT INTO compras (proveedor_id, fecha_compra, hora, concepto, total_compra, saldo_pendiente, estado)
+        VALUES (?, '2026-04-01', '10:00:00', 'Compra anulada F3D3', 10, 10, 'anulada')
+      `, [proveedor.id]);
+      const itemCompraAnulada = await requestJson(baseUrl, "POST", `/compras/${compraAnulada.lastID}/items`, {
+        items: [{ producto_id: productoAId, cantidad_comprada: 1, costo_unitario: 1, afecta_stock: 1 }]
+      }, token);
+      assertEqual(itemCompraAnulada.response.status, 400, "F3D3 compra anulada no admite nuevos items");
+
+      const productoAntes = (await allSql(dbPath, "SELECT stock, precio_compra, costo_final, costo_economico, precio_venta FROM productos WHERE id = ?", [productoAId]))[0];
+      const proveedorPrecioAntes = (await allSql(dbPath, "SELECT precio_compra FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoAId, proveedor.id]))[0];
+      const pagosAntes = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos WHERE compra_id = ?", [compraId]))[0].total;
+      const cajaAntes = await getCajaResumen(baseUrl, token);
+      const ivaAntes = (await allSql(dbPath, "SELECT iva_total FROM compra_comprobantes WHERE compra_id = ?", [compraId]))[0].iva_total;
+
+      const recepcion1 = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+        idempotency_key: "f3d3-a-60",
+        fecha: "2026-04-02",
+        observaciones: "Recepcion parcial A",
+        items: [{ compra_item_id: itemA.id, cantidad_recibida: 60 }]
+      }, token);
+      if (!recepcion1.response.ok) throw new Error(`F3D3 recepcion 1 fallo: ${recepcion1.data?.message || recepcion1.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, productoAId)).stock, 70, "F3D3 recepcion simple incrementa stock");
+      assertEqual(Number(recepcion1.data.recepcion.items[0].movimiento_stock_id) > 0 ? 1 : 0, 1, "F3D3 recepcion vincula movimiento_stock_id");
+      assertSame(recepcion1.data.items.find((item) => Number(item.id) === Number(itemA.id)).resumen_recepcion.estado_recepcion, "parcial", "F3D3 recepcion parcial queda parcial");
+
+      const movimientosTrasR1 = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock WHERE producto_id = ?", [productoAId]))[0].total;
+      const replay = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+        idempotency_key: "f3d3-a-60",
+        fecha: "2026-04-02",
+        items: [{ compra_item_id: itemA.id, cantidad_recibida: 60 }]
+      }, token);
+      assertEqual(replay.response.status, 200, "F3D3 replay idempotente devuelve 200");
+      assertEqual(replay.data.idempotent_replay, true, "F3D3 replay marca idempotent_replay");
+      assertApprox((await getProduct(baseUrl, token, productoAId)).stock, 70, "F3D3 replay no duplica stock");
+      const movimientosTrasReplay = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock WHERE producto_id = ?", [productoAId]))[0].total;
+      assertEqual(movimientosTrasReplay, movimientosTrasR1, "F3D3 replay no duplica movimientos_stock");
+
+      const replayDistinto = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+        idempotency_key: "f3d3-a-60",
+        items: [{ compra_item_id: itemA.id, cantidad_recibida: 30 }]
+      }, token);
+      assertEqual(replayDistinto.response.status, 409, "F3D3 misma key con payload distinto devuelve conflicto");
+
+      const sobreRecepcion = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+        idempotency_key: "f3d3-a-over",
+        items: [{ compra_item_id: itemA.id, cantidad_recibida: 50 }]
+      }, token);
+      assertEqual(sobreRecepcion.response.status, 400, "F3D3 rechaza sobre-recepcion");
+      assertApprox((await getProduct(baseUrl, token, productoAId)).stock, 70, "F3D3 sobre-recepcion no modifica stock");
+
+      const recepcion2 = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+        idempotency_key: "f3d3-a-40",
+        items: [{ compra_item_id: itemA.id, cantidad_recibida: 40 }]
+      }, token);
+      if (!recepcion2.response.ok) throw new Error(`F3D3 recepcion 2 fallo: ${recepcion2.data?.message || recepcion2.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, productoAId)).stock, 110, "F3D3 segunda recepcion completa stock +100");
+      const compraTrasA = await requestJson(baseUrl, "GET", `/compras/${compraId}`, null, token);
+      assertSame(compraTrasA.data.items.find((item) => Number(item.id) === Number(itemA.id)).resumen_recepcion.estado_recepcion, "completa", "F3D3 item queda completo tras dos recepciones");
+
+      const stockCAntesRollback = (await getProduct(baseUrl, token, productoCId)).stock;
+      const movsAntesRollback = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock"))[0].total;
+      const rollbackMulti = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+        idempotency_key: "f3d3-rollback",
+        items: [
+          { compra_item_id: itemC.id, cantidad_recibida: 10 },
+          { compra_item_id: itemB.id, cantidad_recibida: 10 }
+        ]
+      }, token);
+      assertEqual(rollbackMulti.response.status, 400, "F3D3 multi-item invalido falla completo");
+      assertApprox((await getProduct(baseUrl, token, productoCId)).stock, stockCAntesRollback, "F3D3 rollback conserva stock de item valido");
+      const movsDespuesRollback = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock"))[0].total;
+      assertEqual(movsDespuesRollback, movsAntesRollback, "F3D3 rollback no crea movimientos parciales");
+      const recepRollback = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM compra_recepciones WHERE idempotency_key = 'f3d3-rollback'"))[0].total;
+      assertEqual(recepRollback, 0, "F3D3 rollback no deja recepcion persistida");
+
+      const frac1 = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+        idempotency_key: "f3d3-frac-1",
+        items: [{ compra_item_id: itemFrac.id, cantidad_recibida: 4.25 }]
+      }, token);
+      if (!frac1.response.ok) throw new Error(`F3D3 fraccionario 1 fallo: ${frac1.data?.message || frac1.response.status}`);
+      const frac2 = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+        idempotency_key: "f3d3-frac-2",
+        items: [{ compra_item_id: itemFrac.id, cantidad_recibida: 6.25 }]
+      }, token);
+      if (!frac2.response.ok) throw new Error(`F3D3 fraccionario 2 fallo: ${frac2.data?.message || frac2.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, productoFracId)).stock, 11.5, "F3D3 fraccionarios cierran sin falso positivo");
+
+      const ingAId = await crearProducto(baseUrl, token, {
+        nombre: `F3D3 Ing A ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D3",
+        stock: 100,
+        maneja_stock: true
+      });
+      const ingBId = await crearProducto(baseUrl, token, {
+        nombre: `F3D3 Ing B ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D3",
+        stock: 100,
+        maneja_stock: true
+      });
+      const compuestoId = await crearProductoCompuesto(baseUrl, token, {
+        nombre: `F3D3 Compuesto ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D3",
+        tipo: "compuesto",
+        maneja_stock: true,
+        stock: 5,
+        componentes: [
+          { producto_id: ingAId, cantidad: 1 },
+          { producto_id: ingBId, cantidad: 2 }
+        ],
+        costos_extra: []
+      });
+      await runSql(dbPath, "UPDATE productos SET maneja_stock = 1, stock = 5 WHERE id = ?", [compuestoId]);
+      const compraCompuesto = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id,
+        fecha_compra: "2026-04-03",
+        concepto: "Compra compuesto F3D3",
+        total_compra: 100
+      }, token);
+      if (!compraCompuesto.response.ok) throw new Error(`F3D3 compra compuesto fallo: ${compraCompuesto.data?.message || compraCompuesto.response.status}`);
+      const itemsCompuesto = await requestJson(baseUrl, "POST", `/compras/${compraCompuesto.data.compra.id}/items`, {
+        items: [{ producto_id: compuestoId, cantidad_comprada: 10, costo_unitario: 10, afecta_stock: 1 }]
+      }, token);
+      if (!itemsCompuesto.response.ok) throw new Error(`F3D3 item compuesto fallo: ${itemsCompuesto.data?.message || itemsCompuesto.response.status}`);
+      const itemCompuesto = itemsCompuesto.data.items.find((item) => Number(item.producto_id) === Number(compuestoId));
+      const recepCompuesto = await requestJson(baseUrl, "POST", `/compras/${compraCompuesto.data.compra.id}/recepciones`, {
+        idempotency_key: "f3d3-compuesto",
+        items: [{ compra_item_id: itemCompuesto.id, cantidad_recibida: 10 }]
+      }, token);
+      if (!recepCompuesto.response.ok) throw new Error(`F3D3 recepcion compuesto fallo: ${recepCompuesto.data?.message || recepCompuesto.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, compuestoId)).stock, 15, "F3D3 compuesto recibido incrementa stock propio");
+      assertApprox((await getProduct(baseUrl, token, ingAId)).stock, 100, "F3D3 compuesto recibido no consume componente A");
+      assertApprox((await getProduct(baseUrl, token, ingBId)).stock, 100, "F3D3 compuesto recibido no consume componente B");
+
+      const productoDespues = (await allSql(dbPath, "SELECT precio_compra, costo_final, costo_economico, precio_venta FROM productos WHERE id = ?", [productoAId]))[0];
+      const proveedorPrecioDespues = (await allSql(dbPath, "SELECT precio_compra FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoAId, proveedor.id]))[0];
+      assertApprox(productoDespues.precio_compra, productoAntes.precio_compra, "F3D3 no modifica productos.precio_compra");
+      assertApprox(productoDespues.costo_final, productoAntes.costo_final, "F3D3 no modifica productos.costo_final");
+      assertApprox(productoDespues.costo_economico, productoAntes.costo_economico, "F3D3 no modifica productos.costo_economico");
+      assertApprox(productoDespues.precio_venta, productoAntes.precio_venta, "F3D3 no modifica productos.precio_venta");
+      assertApprox(proveedorPrecioDespues.precio_compra, proveedorPrecioAntes.precio_compra, "F3D3 no modifica producto_proveedores.precio_compra");
+
+      const pagosDespues = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos WHERE compra_id = ?", [compraId]))[0].total;
+      assertEqual(pagosDespues, pagosAntes, "F3D3 recepcion no crea pagos");
+      const compraDb = (await allSql(dbPath, "SELECT saldo_pendiente FROM compras WHERE id = ?", [compraId]))[0];
+      assertApprox(compraDb.saldo_pendiente, 1000, "F3D3 recepcion no modifica deuda de compra");
+      const cajaDespues = await getCajaResumen(baseUrl, token);
+      assertApprox(cajaDespues.resumen.total_pagos_general, cajaAntes.resumen.total_pagos_general, "F3D3 recepcion no mueve caja");
+      const ivaDespues = (await allSql(dbPath, "SELECT iva_total FROM compra_comprobantes WHERE compra_id = ?", [compraId]))[0].iva_total;
+      assertApprox(ivaDespues, ivaAntes, "F3D3 recepcion no modifica IVA documental");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testProductosMasVendidosDevuelveClaves() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -11894,7 +12174,11 @@ async function testRecetaSnapshotGuardadoEnVenta() {
 }
 
 (async () => {
-  const _run = async (fn) => { await fn(); };
+  const testFilter = String(process.env.TEST_FILTER || "").trim();
+  const _run = async (fn) => {
+    if (testFilter && !fn.name.includes(testFilter)) return;
+    await fn();
+  };
   await _run(testRecetaSinStockBloqueaMovimientoManual);
   await _run(testRecetaSinStockComoComponenteNoDescuentaDirecto);
   await _run(testVentaRecetaSinStockGeneraAjustePendiente);
@@ -11975,6 +12259,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCompraCompatibilidadPagosLegacyF3C);
   await _run(testCompraItemsRecepcionesF3D2Helper);
   await _run(testCompraItemsRecepcionesF3D2Schema);
+  await _run(testCompraRecepcionOperativaF3D3);
   await _run(testProductosMasVendidosDevuelveClaves);
   await _run(testProductosMasVendidosExcluyeVentasAnuladas);
   await _run(testProductosMasVendidosOrdenaPorCantidad);

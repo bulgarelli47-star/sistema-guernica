@@ -131,12 +131,17 @@ const {
   setActivoCuentaDestino
 } = require("./services/cuentaDestinoService");
 const {
+  buildResumenItemsCompra,
   buildResumenIvaComprobante,
+  buildResumenRecepcionItem,
   getTotalPagadoCompra,
   normalizarCompra,
+  normalizarCompraItem,
   normalizarComprobanteCompra,
   refreshCompraSaldo,
-  round2: roundCompra2
+  round2: roundCompra2,
+  round4: roundCompra4,
+  validarCantidadRecepcion
 } = require("./services/compraService");
 const {
   aplicarStockComponentesSnapshot,
@@ -4079,12 +4084,102 @@ async function getCompraDetalle(compraId) {
      ORDER BY p.fecha DESC, p.hora DESC, p.id DESC`,
     [compraId]
   );
+  const recepcionRows = await allQuery(
+    `SELECT cri.*, cr.compra_id, cr.fecha, cr.hora, cr.observaciones, cr.usuario, cr.estado,
+            cr.idempotency_key, cr.created_at AS recepcion_created_at,
+            cr.anulada_at, cr.anulada_por, cr.motivo_anulacion
+     FROM compra_recepcion_items cri
+     JOIN compra_recepciones cr ON cr.id = cri.recepcion_id
+     WHERE cr.compra_id = ?
+     ORDER BY cr.fecha ASC, cr.hora ASC, cr.id ASC, cri.id ASC`,
+    [compraId]
+  );
+  const items = await allQuery(
+    `SELECT ci.*
+     FROM compra_items ci
+     WHERE ci.compra_id = ?
+     ORDER BY ci.id ASC`,
+    [compraId]
+  );
+  const itemsConRecepcion = items.map((item) => ({
+    ...item,
+    resumen_recepcion: buildResumenRecepcionItem(item, recepcionRows)
+  }));
+  const recepcionesMap = new Map();
+  for (const row of recepcionRows) {
+    if (!recepcionesMap.has(row.recepcion_id)) {
+      recepcionesMap.set(row.recepcion_id, {
+        id: row.recepcion_id,
+        compra_id: row.compra_id,
+        fecha: row.fecha,
+        hora: row.hora,
+        observaciones: row.observaciones,
+        usuario: row.usuario,
+        estado: row.estado,
+        idempotency_key: row.idempotency_key,
+        created_at: row.recepcion_created_at,
+        anulada_at: row.anulada_at,
+        anulada_por: row.anulada_por,
+        motivo_anulacion: row.motivo_anulacion,
+        items: []
+      });
+    }
+    recepcionesMap.get(row.recepcion_id).items.push({
+      id: row.id,
+      compra_item_id: row.compra_item_id,
+      producto_id: row.producto_id,
+      cantidad_recibida: row.cantidad_recibida,
+      unidad_snapshot: row.unidad_snapshot,
+      movimiento_stock_id: row.movimiento_stock_id,
+      created_at: row.created_at
+    });
+  }
   return {
     compra,
     comprobantes: comprobantesConIva,
+    items: itemsConRecepcion,
+    recepciones: Array.from(recepcionesMap.values()),
+    resumen_items: buildResumenItemsCompra(compra, items),
     pagos,
     resumen_pago: await buildCompraResumen(compra)
   };
+}
+
+async function getCompraRecepcionRows(compraId) {
+  return allQuery(
+    `SELECT cri.*, cr.estado
+     FROM compra_recepcion_items cri
+     JOIN compra_recepciones cr ON cr.id = cri.recepcion_id
+     WHERE cr.compra_id = ?
+     ORDER BY cri.id ASC`,
+    [compraId]
+  );
+}
+
+function normalizarPayloadRecepcion(items) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      compra_item_id: Number(item.compra_item_id),
+      cantidad_recibida: roundCompra4(Number(item.cantidad_recibida))
+    }))
+    .sort((a, b) => a.compra_item_id - b.compra_item_id);
+}
+
+function payloadRecepcionIgual(a, b) {
+  return JSON.stringify(normalizarPayloadRecepcion(a)) === JSON.stringify(normalizarPayloadRecepcion(b));
+}
+
+async function getRecepcionCompraConItems(recepcionId) {
+  const recepcion = await getQuery("SELECT * FROM compra_recepciones WHERE id = ?", [recepcionId]);
+  if (!recepcion) return null;
+  const items = await allQuery(
+    `SELECT id, recepcion_id, compra_item_id, producto_id, cantidad_recibida, unidad_snapshot, movimiento_stock_id, created_at
+     FROM compra_recepcion_items
+     WHERE recepcion_id = ?
+     ORDER BY compra_item_id ASC`,
+    [recepcionId]
+  );
+  return { ...recepcion, items };
 }
 
 app.get("/compras", async (req, res) => {
@@ -4172,6 +4267,243 @@ app.post("/compras", async (req, res) => {
   } catch (error) {
     logError("Error al registrar compra:", error);
     return res.status(500).json({ message: "Error al registrar compra" });
+  }
+});
+
+app.post("/compras/:id/items", async (req, res) => {
+  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para registrar items de compra"))) return;
+
+  const compraId = Number(req.params.id);
+  try {
+    const compra = await getCompraBase(compraId);
+    if (!compra) return res.status(404).json({ message: "Compra no encontrada" });
+    if (String(compra.estado || "").toLowerCase() === "anulada") {
+      return res.status(400).json({ message: "La compra anulada no admite nuevos items" });
+    }
+
+    const payloadItems = Array.isArray(req.body.items) ? req.body.items : [];
+    if (!payloadItems.length) {
+      return res.status(400).json({ message: "Debe informar al menos un item de compra" });
+    }
+
+    const normalizados = [];
+    for (const payload of payloadItems) {
+      const productoId = payload.producto_id === undefined || payload.producto_id === null || payload.producto_id === ""
+        ? null
+        : Number(payload.producto_id);
+      let producto = null;
+      if (productoId) {
+        producto = await getQuery(
+          "SELECT id, nombre, unidad_medida, tipo, maneja_stock, stock, COALESCE(eliminado, 0) AS eliminado FROM productos WHERE id = ?",
+          [productoId]
+        );
+        if (!producto || Number(producto.eliminado) === 1) {
+          return res.status(400).json({ message: "Producto invalido para item de compra" });
+        }
+      }
+      const item = normalizarCompraItem({
+        ...payload,
+        compra_id: compraId,
+        descripcion_snapshot: producto ? producto.nombre : payload.descripcion_snapshot,
+        unidad_snapshot: producto ? producto.unidad_medida : payload.unidad_snapshot
+      }, producto);
+      if (!item.validacion.ok) {
+        return res.status(400).json({ message: item.validacion.errores.join(". ") });
+      }
+      normalizados.push(item);
+    }
+
+    await runQuery("BEGIN TRANSACTION");
+    const ids = [];
+    for (const item of normalizados) {
+      const result = await runQuery(
+        `INSERT INTO compra_items
+         (compra_id, producto_id, descripcion_snapshot, cantidad_comprada, unidad_snapshot,
+          costo_unitario, subtotal, afecta_stock, observaciones, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+        [
+          compraId,
+          item.producto_id,
+          item.descripcion_snapshot,
+          item.cantidad_comprada,
+          item.unidad_snapshot,
+          item.costo_unitario,
+          item.subtotal,
+          item.afecta_stock,
+          item.observaciones
+        ]
+      );
+      ids.push(result.lastID);
+    }
+    await runQuery("COMMIT");
+
+    const detalle = await getCompraDetalle(compraId);
+    const itemsPersistidos = detalle.items.filter((item) => ids.includes(Number(item.id)));
+    return res.status(201).json({
+      message: "Items de compra registrados correctamente",
+      items: itemsPersistidos,
+      ...detalle
+    });
+  } catch (error) {
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("Error al registrar items de compra:", error);
+    return res.status(500).json({ message: "Error al registrar items de compra" });
+  }
+});
+
+app.post("/compras/:id/recepciones", async (req, res) => {
+  if (!(await requirePermiso(req, res, "stock_ajustar", "No tenes permisos para recibir mercaderia"))) return;
+
+  const compraId = Number(req.params.id);
+  const idempotencyKey = String(req.body.idempotency_key || "").trim();
+  if (!idempotencyKey) {
+    return res.status(400).json({ message: "idempotency_key es obligatoria para registrar recepciones" });
+  }
+  const payloadItems = Array.isArray(req.body.items) ? req.body.items : [];
+  if (!payloadItems.length) {
+    return res.status(400).json({ message: "Debe informar al menos un item a recibir" });
+  }
+
+  try {
+    await runQuery("BEGIN IMMEDIATE");
+    const compra = await getCompraBase(compraId);
+    if (!compra) {
+      await runQuery("ROLLBACK");
+      return res.status(404).json({ message: "Compra no encontrada" });
+    }
+    if (String(compra.estado || "").toLowerCase() === "anulada") {
+      await runQuery("ROLLBACK");
+      return res.status(400).json({ message: "La compra anulada no admite recepciones" });
+    }
+
+    const recepcionExistente = await getQuery(
+      "SELECT * FROM compra_recepciones WHERE compra_id = ? AND idempotency_key = ?",
+      [compraId, idempotencyKey]
+    );
+    if (recepcionExistente) {
+      const itemsExistentes = await allQuery(
+        "SELECT compra_item_id, cantidad_recibida FROM compra_recepcion_items WHERE recepcion_id = ? ORDER BY compra_item_id ASC",
+        [recepcionExistente.id]
+      );
+      await runQuery("ROLLBACK");
+      if (String(recepcionExistente.estado || "").toLowerCase() === "anulada") {
+        return res.status(409).json({ message: "La idempotency_key ya pertenece a una recepcion anulada" });
+      }
+      if (!payloadRecepcionIgual(payloadItems, itemsExistentes)) {
+        return res.status(409).json({ message: "La idempotency_key ya fue usada con otro payload" });
+      }
+      const detalle = await getCompraDetalle(compraId);
+      const recepcion = await getRecepcionCompraConItems(recepcionExistente.id);
+      return res.status(200).json({
+        message: "Recepcion ya registrada",
+        idempotent_replay: true,
+        recepcion,
+        ...detalle
+      });
+    }
+
+    const itemIds = new Set();
+    const recepcionItems = [];
+    const recepcionesActuales = await getCompraRecepcionRows(compraId);
+    for (const payload of payloadItems) {
+      const compraItemId = Number(payload.compra_item_id);
+      if (!compraItemId || itemIds.has(compraItemId)) {
+        await runQuery("ROLLBACK");
+        return res.status(400).json({ message: "Los items de recepcion son invalidos o duplicados" });
+      }
+      itemIds.add(compraItemId);
+      const item = await getQuery(
+        "SELECT * FROM compra_items WHERE id = ? AND compra_id = ?",
+        [compraItemId, compraId]
+      );
+      if (!item) {
+        await runQuery("ROLLBACK");
+        return res.status(400).json({ message: "Item de compra invalido para esta recepcion" });
+      }
+      const producto = await getQuery(
+        "SELECT id, nombre, unidad_medida, tipo, maneja_stock, stock, COALESCE(eliminado, 0) AS eliminado FROM productos WHERE id = ?",
+        [item.producto_id]
+      );
+      if (!producto || Number(producto.eliminado) === 1 || Number(producto.maneja_stock) !== 1) {
+        await runQuery("ROLLBACK");
+        return res.status(400).json({ message: "El producto del item no es apto para recibir stock" });
+      }
+      const validacion = validarCantidadRecepcion(item, recepcionesActuales, payload.cantidad_recibida, compra);
+      if (!validacion.ok) {
+        await runQuery("ROLLBACK");
+        return res.status(400).json({ message: validacion.errores.join(". ") });
+      }
+      recepcionItems.push({
+        item,
+        producto,
+        cantidad: validacion.cantidad_nueva
+      });
+    }
+
+    const nowParts = getNowParts();
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.fecha || "")) ? String(req.body.fecha) : nowParts.fecha;
+    const hora = req.body.hora || nowParts.hora;
+    const usuario = String(req.usuario?.nombre || req.usuario?.usuario || "admin").trim() || "admin";
+    const recepcionResult = await runQuery(
+      `INSERT INTO compra_recepciones
+       (compra_id, fecha, hora, observaciones, usuario, estado, idempotency_key, created_at)
+       VALUES (?, ?, ?, ?, ?, 'registrada', ?, datetime('now'))`,
+      [compraId, fecha, hora, String(req.body.observaciones || "").trim(), usuario, idempotencyKey]
+    );
+
+    for (const recepcionItem of recepcionItems) {
+      const stockAnterior = roundCompra4(Number(recepcionItem.producto.stock || 0));
+      const stockNuevo = roundCompra4(stockAnterior + recepcionItem.cantidad);
+      const itemResult = await runQuery(
+        `INSERT INTO compra_recepcion_items
+         (recepcion_id, compra_item_id, producto_id, cantidad_recibida, unidad_snapshot, movimiento_stock_id, created_at)
+         VALUES (?, ?, ?, ?, ?, NULL, datetime('now'))`,
+        [
+          recepcionResult.lastID,
+          recepcionItem.item.id,
+          recepcionItem.producto.id,
+          recepcionItem.cantidad,
+          recepcionItem.item.unidad_snapshot
+        ]
+      );
+      await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockNuevo, recepcionItem.producto.id]);
+      const movimientoResult = await runQuery(
+        `INSERT INTO movimientos_stock
+         (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, proveedor_id, usuario, fecha, hora)
+         VALUES (?, 'ingreso', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          recepcionItem.producto.id,
+          recepcionItem.cantidad,
+          stockAnterior,
+          stockNuevo,
+          `Recepcion de compra #${compraId}`,
+          compra.proveedor_id,
+          usuario,
+          fecha,
+          hora
+        ]
+      );
+      await runQuery(
+        "UPDATE compra_recepcion_items SET movimiento_stock_id = ? WHERE id = ?",
+        [movimientoResult.lastID, itemResult.lastID]
+      );
+      recepcionItem.producto.stock = stockNuevo;
+    }
+
+    await runQuery("COMMIT");
+
+    const detalle = await getCompraDetalle(compraId);
+    const recepcion = await getRecepcionCompraConItems(recepcionResult.lastID);
+    return res.status(201).json({
+      message: "Recepcion registrada correctamente",
+      idempotent_replay: false,
+      recepcion,
+      ...detalle
+    });
+  } catch (error) {
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("Error al registrar recepcion de compra:", error);
+    return res.status(500).json({ message: "Error al registrar recepcion de compra" });
   }
 });
 
