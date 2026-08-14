@@ -1186,6 +1186,15 @@ async function getSaldoInicialCuentaDestinoEnCaja(cajaId, cuentaDestinoId) {
   return Number(Number(arrastre?.saldo_arrastrado || 0).toFixed(2));
 }
 
+function esEventoPosteriorAArqueo(evento, arqueo) {
+  const fechaEvento = String(evento?.fecha || "");
+  const horaEvento = String(evento?.hora || "");
+  const fechaArqueo = String(arqueo?.fecha || "");
+  const horaArqueo = String(arqueo?.hora || "");
+
+  return fechaEvento > fechaArqueo || (fechaEvento === fechaArqueo && horaEvento > horaArqueo);
+}
+
 async function getEstadoEfectivoOperativo({ cajaId } = {}) {
   await ensureCajaArqueosTable();
   await ensureCajaTrasladosInternosTable();
@@ -1228,49 +1237,15 @@ async function getEstadoEfectivoOperativo({ cajaId } = {}) {
   }
 
   const ultimoArqueo = arqueos[arqueos.length - 1];
-  const reservaIds = new Set(
-    arqueos
-      .map((arqueo) => Number(arqueo.cuenta_reserva_id || 0))
-      .filter((id) => id > 0)
-  );
   const traslados = await allQuery(
     `SELECT *
      FROM caja_traslados_internos
      WHERE caja_id = ? AND estado = 'activo'`,
     [caja.id]
   );
-  traslados.forEach((traslado) => {
-    const destinoId = Number(traslado.cuenta_destino_id || 0);
-    const origenId = Number(traslado.cuenta_origen_id || 0);
-    if (reservaIds.has(origenId) || reservaIds.has(destinoId)) return;
-    if (String(traslado.tipo || "") === "arqueo_extraccion" && destinoId > 0) {
-      reservaIds.add(destinoId);
-    }
-  });
-
-  if (reservaIds.size > 1) {
-    return {
-      determinable: false,
-      motivo: "reservas_multiples",
-      caja_id: Number(caja.id),
-      caja_cambio: Number(Number(ultimoArqueo.cambio_retenido || 0).toFixed(2)),
-      reserva: null,
-      total_disponible: null,
-      ultimo_arqueo_id: Number(ultimoArqueo.id),
-      cuenta_cambio_id: Number(ultimoArqueo.cuenta_origen_id || 0) || null,
-      cuenta_reserva_id: null
-    };
-  }
-
-  const cuentaReservaId = [...reservaIds][0] || null;
   const cajaCambio = Number(Number(ultimoArqueo.cambio_retenido || 0).toFixed(2));
   const cuentaCambioId = Number(ultimoArqueo.cuenta_origen_id || 0) || null;
-  let saldoReserva = 0;
-  let saldoInicialReserva = 0;
-  let trasladosRecibidos = 0;
-  let trasladosEnviados = 0;
-  let pagosReserva = 0;
-  let pagosCajaCambio = 0;
+  const cuentaReservaId = Number(ultimoArqueo.cuenta_reserva_id || 0) || null;
   const pagosEfectivos = await allQuery(
     `SELECT monto_total, cuenta_destino_id_snapshot, fecha, hora, id
      FROM pagos
@@ -1280,47 +1255,126 @@ async function getEstadoEfectivoOperativo({ cajaId } = {}) {
        AND cuenta_destino_id_snapshot IS NOT NULL`,
     [caja.id]
   );
+  const cuentasEfectivoDb = await allQuery(
+    `SELECT id, nombre, tipo_destino, activo, orden
+     FROM cuentas_destino
+     WHERE LOWER(COALESCE(tipo_destino, '')) = 'efectivo'
+     ORDER BY orden ASC, id ASC`
+  );
+  const cuentasIds = new Set(cuentasEfectivoDb.map((cuenta) => Number(cuenta.id)));
+  [cuentaCambioId, cuentaReservaId].forEach((id) => {
+    if (id) cuentasIds.add(Number(id));
+  });
+  traslados.forEach((traslado) => {
+    const origenId = Number(traslado.cuenta_origen_id || 0);
+    const destinoId = Number(traslado.cuenta_destino_id || 0);
+    if (origenId) cuentasIds.add(origenId);
+    if (destinoId) cuentasIds.add(destinoId);
+  });
+  pagosEfectivos.forEach((pago) => {
+    const cuentaId = Number(pago.cuenta_destino_id_snapshot || 0);
+    if (cuentaId) cuentasIds.add(cuentaId);
+  });
 
-  if (cuentaReservaId) {
-    saldoInicialReserva = await getSaldoInicialCuentaDestinoEnCaja(caja.id, cuentaReservaId);
+  const cuentasById = new Map(cuentasEfectivoDb.map((cuenta) => [Number(cuenta.id), cuenta]));
+  const cuentas = [];
+  const cuentasNoDeterminables = [];
+  for (const cuentaId of [...cuentasIds].sort((a, b) => {
+    const ordenA = Number(cuentasById.get(a)?.orden ?? 9999);
+    const ordenB = Number(cuentasById.get(b)?.orden ?? 9999);
+    return ordenA === ordenB ? a - b : ordenA - ordenB;
+  })) {
+    const cuentaDb = cuentasById.get(Number(cuentaId));
+    if (!cuentaDb) {
+      cuentasNoDeterminables.push({
+        cuenta_destino_id: Number(cuentaId),
+        motivo: "cuenta_efectivo_no_resoluble"
+      });
+      continue;
+    }
+    const esCajaArqueada = Number(cuentaId) === Number(cuentaCambioId);
+    const saldoInicial = esCajaArqueada
+      ? cajaCambio
+      : await getSaldoInicialCuentaDestinoEnCaja(caja.id, cuentaId);
+    let trasladosRecibidos = 0;
+    let trasladosEnviados = 0;
+    let pagos = 0;
+
     traslados.forEach((traslado) => {
+      if (esCajaArqueada && !esEventoPosteriorAArqueo(traslado, ultimoArqueo)) return;
       const monto = Number(traslado.monto || 0);
-      if (Number(traslado.cuenta_destino_id) === Number(cuentaReservaId)) {
+      if (Number(traslado.cuenta_destino_id) === Number(cuentaId)) {
         trasladosRecibidos += monto;
       }
-      if (Number(traslado.cuenta_origen_id) === Number(cuentaReservaId)) {
+      if (Number(traslado.cuenta_origen_id) === Number(cuentaId)) {
         trasladosEnviados += monto;
       }
     });
-    pagosReserva = pagosEfectivos
-      .filter((pago) => Number(pago.cuenta_destino_id_snapshot) === Number(cuentaReservaId))
+
+    pagos = pagosEfectivos
+      .filter((pago) => Number(pago.cuenta_destino_id_snapshot) === Number(cuentaId))
+      .filter((pago) => !esCajaArqueada || esEventoPosteriorAArqueo(pago, ultimoArqueo))
       .reduce((acc, pago) => acc + Number(pago.monto_total || 0), 0);
-    saldoReserva = Number((saldoInicialReserva + trasladosRecibidos - trasladosEnviados - pagosReserva).toFixed(2));
+
+    cuentas.push({
+      cuenta_destino_id: Number(cuentaId),
+      nombre: cuentaDb.nombre,
+      tipo_destino: cuentaDb.tipo_destino,
+      activa: Number(cuentaDb.activo) === 1,
+      es_caja_arqueada: esCajaArqueada,
+      saldo_inicial: Number(Number(saldoInicial || 0).toFixed(2)),
+      traslados_recibidos: Number(trasladosRecibidos.toFixed(2)),
+      traslados_enviados: Number(trasladosEnviados.toFixed(2)),
+      pagos_efectivos: Number(pagos.toFixed(2)),
+      saldo_actual: Number((Number(saldoInicial || 0) + trasladosRecibidos - trasladosEnviados - pagos).toFixed(2))
+    });
   }
-  if (cuentaCambioId) {
-    pagosCajaCambio = pagosEfectivos
-      .filter((pago) => Number(pago.cuenta_destino_id_snapshot) === Number(cuentaCambioId))
-      .filter((pago) => String(pago.fecha || "") > String(ultimoArqueo.fecha || "") ||
-        (String(pago.fecha || "") === String(ultimoArqueo.fecha || "") && String(pago.hora || "") > String(ultimoArqueo.hora || "")))
-      .reduce((acc, pago) => acc + Number(pago.monto_total || 0), 0);
+
+  const cajaCambioCuenta = cuentaCambioId
+    ? cuentas.find((cuenta) => Number(cuenta.cuenta_destino_id) === Number(cuentaCambioId))
+    : null;
+  const reservaCuenta = cuentaReservaId
+    ? cuentas.find((cuenta) => Number(cuenta.cuenta_destino_id) === Number(cuentaReservaId))
+    : null;
+  const totalDisponible = Number(cuentas.reduce((acc, cuenta) => acc + Number(cuenta.saldo_actual || 0), 0).toFixed(2));
+  if (cuentasNoDeterminables.length > 0) {
+    return {
+      determinable: false,
+      motivo: "cuentas_efectivo_no_determinables",
+      caja_id: Number(caja.id),
+      cuentas,
+      cuentas_no_determinables: cuentasNoDeterminables,
+      total_parcial: totalDisponible,
+      caja_cambio: cajaCambioCuenta ? cajaCambioCuenta.saldo_actual : null,
+      reserva: reservaCuenta ? reservaCuenta.saldo_actual : null,
+      total_disponible: null,
+      ultimo_arqueo_id: Number(ultimoArqueo.id),
+      cuenta_cambio_id: cuentaCambioId,
+      cuenta_reserva_id: cuentaReservaId,
+      saldo_inicial_reserva: reservaCuenta ? reservaCuenta.saldo_inicial : 0,
+      traslados_recibidos: reservaCuenta ? reservaCuenta.traslados_recibidos : 0,
+      traslados_enviados: reservaCuenta ? reservaCuenta.traslados_enviados : 0,
+      pagos_efectivos_reserva: reservaCuenta ? reservaCuenta.pagos_efectivos : 0,
+      pagos_efectivos_caja_cambio: cajaCambioCuenta ? cajaCambioCuenta.pagos_efectivos : 0
+    };
   }
-  const cajaCambioActual = Number((cajaCambio - pagosCajaCambio).toFixed(2));
 
   return {
     determinable: true,
     motivo: null,
     caja_id: Number(caja.id),
-    caja_cambio: cajaCambioActual,
-    reserva: saldoReserva,
-    total_disponible: Number((cajaCambioActual + saldoReserva).toFixed(2)),
+    cuentas,
+    caja_cambio: cajaCambioCuenta ? cajaCambioCuenta.saldo_actual : null,
+    reserva: reservaCuenta ? reservaCuenta.saldo_actual : null,
+    total_disponible: totalDisponible,
     ultimo_arqueo_id: Number(ultimoArqueo.id),
     cuenta_cambio_id: cuentaCambioId,
     cuenta_reserva_id: cuentaReservaId,
-    saldo_inicial_reserva: saldoInicialReserva,
-    traslados_recibidos: Number(trasladosRecibidos.toFixed(2)),
-    traslados_enviados: Number(trasladosEnviados.toFixed(2)),
-    pagos_efectivos_reserva: Number(pagosReserva.toFixed(2)),
-    pagos_efectivos_caja_cambio: Number(pagosCajaCambio.toFixed(2))
+    saldo_inicial_reserva: reservaCuenta ? reservaCuenta.saldo_inicial : 0,
+    traslados_recibidos: reservaCuenta ? reservaCuenta.traslados_recibidos : 0,
+    traslados_enviados: reservaCuenta ? reservaCuenta.traslados_enviados : 0,
+    pagos_efectivos_reserva: reservaCuenta ? reservaCuenta.pagos_efectivos : 0,
+    pagos_efectivos_caja_cambio: cajaCambioCuenta ? cajaCambioCuenta.pagos_efectivos : 0
   };
 }
 

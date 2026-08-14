@@ -10262,7 +10262,7 @@ async function testCajaEstadoEfectivoOperativoCaja03E() {
       );
       const estadoSaliente = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
       assertApprox(estadoSaliente.data.estado.reserva, 100000, "CAJA03E traslado saliente de reserva resta saldo");
-      assertApprox(estadoSaliente.data.estado.total_disponible, 111000, "CAJA03E total descuenta traslado saliente de reserva");
+      assertApprox(estadoSaliente.data.estado.total_disponible, 121000, "CAJA03E/03G traslado saliente de reserva no cambia total efectivo");
 
       const pagos = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos"))[0].total;
       const movimientosCaja = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM caja_movimientos"))[0].total;
@@ -10436,7 +10436,7 @@ async function testCajaOrigenFisicoPagosEfectivoCaja03F() {
       const estadoPagoCambio = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
       assertApprox(estadoPagoCambio.data.estado.reserva, 90000, "CAJA03F pago desde Caja cambio no descuenta Reserva");
       assertApprox(estadoPagoCambio.data.estado.caja_cambio, 10000, "CAJA03F pago desde Caja cambio descuenta cambio actual");
-      assertApprox(estadoPagoCambio.data.estado.total_disponible, 100000, "CAJA03F total no duplica egresos efectivos");
+      assertApprox(estadoPagoCambio.data.estado.total_disponible, 95000, "CAJA03F/03G total descuenta cada cuenta fisica una vez");
 
       const compra = await requestJson(baseUrl, "POST", "/compras", {
         proveedor_id: proveedor.id,
@@ -10458,7 +10458,7 @@ async function testCajaOrigenFisicoPagosEfectivoCaja03F() {
       const estadoPagoCompra = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
       assertApprox(estadoPagoCompra.data.estado.reserva, 80000, "CAJA03F pago compra desde Reserva descuenta saldo operativo");
       assertApprox(estadoPagoCompra.data.estado.caja_cambio, 10000, "CAJA03F pago compra desde Reserva no descuenta caja cambio");
-      assertApprox(estadoPagoCompra.data.estado.total_disponible, 90000, "CAJA03F total final descuenta pagos efectivos atribuidos");
+      assertApprox(estadoPagoCompra.data.estado.total_disponible, 85000, "CAJA03F/03G total final descuenta pagos efectivos atribuidos por cuenta");
       assertApprox(estadoPagoCompra.data.estado.pagos_efectivos_reserva, 30000, "CAJA03F pagos reserva suman POST /pagos y pago de compra");
 
       const pagoBanco = await requestJson(baseUrl, "POST", "/pagos", {
@@ -10509,6 +10509,286 @@ async function testCajaOrigenFisicoPagosEfectivoCaja03F() {
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
+  }
+}
+
+function findEstadoCuentaEfectivo(estado, cuentaId, contexto) {
+  const cuenta = estado?.cuentas?.find((item) => Number(item.cuenta_destino_id) === Number(cuentaId));
+  if (!cuenta) {
+    throw new Error(`${contexto}: no se encontro cuenta ${cuentaId} en estado ${JSON.stringify(estado?.cuentas || [])}`);
+  }
+  return cuenta;
+}
+
+async function testCajaEstadoEfectivoPorCuentaFisicaCaja03G() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM caja_traslados_internos"],
+        ["DELETE FROM caja_arqueos"],
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM conciliaciones_cuentas_cobro"],
+        ["DELETE FROM caja_movimientos"],
+        ["DELETE FROM pagos"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      const apertura = await abrirCaja(baseUrl, token, 6550);
+      const proveedor = await crearProveedor(baseUrl, token);
+      const cajaCambio = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja cambio CAJA03G ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -900
+      });
+      const reserva = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Reserva CAJA03G ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -890
+      });
+      const cajaPagos = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja pagos CAJA03G ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -880
+      });
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, {
+        nombre: `Cuenta efectivo CAJA03G ${Date.now()}`,
+        tipo_pago_codigo: "efectivo",
+        tipo_cuenta: "caja",
+        cuenta_destino_id: cajaCambio.id,
+        orden: -900
+      });
+
+      await runSql(
+        dbPath,
+        `INSERT INTO conciliaciones_cuentas_destino
+         (caja_id, cuenta_destino_id, monto_sistema, monto_real, saldo_inicial, diferencia, estado,
+          decision_cierre, monto_retiro, saldo_arrastrado, observaciones, fecha, hora, usuario)
+         VALUES (?, ?, 0, 30000, 30000, 0, 'conciliado', NULL, 0, 30000, 'Saldo inicial reserva CAJA03G',
+          '2026-07-01', '08:00:00', 'admin')`,
+        [apertura.id, reserva.id]
+      );
+
+      const arqueo1 = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03g-arqueo-1",
+        conteo_detalle: {
+          20: 50,
+          50: 3,
+          100: 200,
+          200: 5,
+          500: 5,
+          1000: 2,
+          2000: 5,
+          10000: 1
+        },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        observaciones: "Arqueo 1 CAJA03G"
+      });
+      assertEqual(arqueo1.response.status, 201, "CAJA03G crea primer arqueo operativo");
+      const arqueo2 = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03g-arqueo-2",
+        conteo_detalle: {
+          100: 110,
+          20000: 2,
+          10000: 1,
+          2000: 3
+        },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        observaciones: "Arqueo 2 CAJA03G"
+      });
+      assertEqual(arqueo2.response.status, 201, "CAJA03G crea segundo arqueo operativo");
+      await runSql(dbPath, "UPDATE caja_arqueos SET fecha = '2026-07-01', hora = '10:00:00' WHERE id = ?", [arqueo1.data.arqueo.id]);
+      await runSql(dbPath, "UPDATE caja_arqueos SET fecha = '2026-07-01', hora = '12:00:00' WHERE id = ?", [arqueo2.data.arqueo.id]);
+      await runSql(dbPath, "UPDATE caja_traslados_internos SET fecha = '2026-07-01', hora = '10:00:00' WHERE arqueo_id = ?", [arqueo1.data.arqueo.id]);
+      await runSql(dbPath, "UPDATE caja_traslados_internos SET fecha = '2026-07-01', hora = '12:00:00' WHERE arqueo_id = ?", [arqueo2.data.arqueo.id]);
+
+      await runSql(
+        dbPath,
+        `INSERT INTO pagos
+         (proveedor_id, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito, fecha, hora, estado,
+          categoria_pago, caja_id, cuenta_cobro_id, cuenta_destino_id_snapshot, es_cuenta_corriente, iva_credito_fiscal)
+         VALUES (?, 'CAJA03G pago pre snapshot caja cambio', 5000, 'efectivo', 5000, 0, '2026-07-01', '11:00:00', 'registrado',
+          'otro_no_computable', ?, ?, ?, 0, 0)`,
+        [proveedor.id, apertura.id, cuentaEfectivo.id, cajaCambio.id]
+      );
+
+      const estadoBase = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertEqual(estadoBase.data.estado.determinable, true, "CAJA03G estado base determinable");
+      assertApprox(findEstadoCuentaEfectivo(estadoBase.data.estado, cajaCambio.id, "CAJA03G base").saldo_actual, 11000, "CAJA03G Caja cambio usa ultimo snapshot y no duplica pago previo");
+      assertApprox(findEstadoCuentaEfectivo(estadoBase.data.estado, reserva.id, "CAJA03G base").saldo_actual, 110000, "CAJA03G Reserva conserva caso simple");
+      assertApprox(findEstadoCuentaEfectivo(estadoBase.data.estado, cajaPagos.id, "CAJA03G base").saldo_actual, 0, "CAJA03G Caja pagos inicia determinada en cero");
+      assertApprox(estadoBase.data.estado.caja_cambio, 11000, "CAJA03G compat caja_cambio intacta");
+      assertApprox(estadoBase.data.estado.reserva, 110000, "CAJA03G compat reserva intacta");
+      assertApprox(estadoBase.data.estado.total_disponible, 121000, "CAJA03G caso simple total 121000");
+
+      await runSql(
+        dbPath,
+        `INSERT INTO caja_traslados_internos
+         (caja_id, arqueo_id, cuenta_origen_id, cuenta_destino_id, monto, tipo, estado, fecha, hora, usuario, observaciones, created_at)
+         VALUES (?, NULL, ?, ?, 30000, 'redistribucion_test', 'activo', '2026-07-01', '13:00:00', 'admin',
+          'Reserva a caja pagos CAJA03G', datetime('now'))`,
+        [apertura.id, reserva.id, cajaPagos.id]
+      );
+      const estadoTraslado = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertApprox(findEstadoCuentaEfectivo(estadoTraslado.data.estado, reserva.id, "CAJA03G traslado").saldo_actual, 80000, "CAJA03G traslado resta cuenta origen");
+      assertApprox(findEstadoCuentaEfectivo(estadoTraslado.data.estado, cajaPagos.id, "CAJA03G traslado").saldo_actual, 30000, "CAJA03G traslado suma cuenta destino");
+      assertApprox(estadoTraslado.data.estado.total_disponible, 121000, "CAJA03G traslado interno no cambia total efectivo");
+
+      await runSql(
+        dbPath,
+        `INSERT INTO pagos
+         (proveedor_id, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito, fecha, hora, estado,
+          categoria_pago, caja_id, cuenta_cobro_id, cuenta_destino_id_snapshot, es_cuenta_corriente, iva_credito_fiscal)
+         VALUES (?, 'CAJA03G pago caja pagos', 20000, 'efectivo', 20000, 0, '2026-07-01', '14:00:00', 'registrado',
+          'otro_no_computable', ?, ?, ?, 0, 0)`,
+        [proveedor.id, apertura.id, cuentaEfectivo.id, cajaPagos.id]
+      );
+      const estadoPagoCajaPagos = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertApprox(findEstadoCuentaEfectivo(estadoPagoCajaPagos.data.estado, cajaCambio.id, "CAJA03G pago caja pagos").saldo_actual, 11000, "CAJA03G pago Caja pagos no toca Caja cambio");
+      assertApprox(findEstadoCuentaEfectivo(estadoPagoCajaPagos.data.estado, reserva.id, "CAJA03G pago caja pagos").saldo_actual, 80000, "CAJA03G pago Caja pagos no toca Reserva");
+      assertApprox(findEstadoCuentaEfectivo(estadoPagoCajaPagos.data.estado, cajaPagos.id, "CAJA03G pago caja pagos").saldo_actual, 10000, "CAJA03G pago Caja pagos descuenta esa ubicacion");
+      assertApprox(estadoPagoCajaPagos.data.estado.total_disponible, 101000, "CAJA03G multi-caja con pago Caja pagos totaliza 101000");
+
+      await runSql(
+        dbPath,
+        `INSERT INTO pagos
+         (proveedor_id, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito, fecha, hora, estado,
+          categoria_pago, caja_id, cuenta_cobro_id, cuenta_destino_id_snapshot, es_cuenta_corriente, iva_credito_fiscal)
+         VALUES (?, 'CAJA03G pago reserva', 10000, 'efectivo', 10000, 0, '2026-07-01', '15:00:00', 'registrado',
+          'otro_no_computable', ?, ?, ?, 0, 0)`,
+        [proveedor.id, apertura.id, cuentaEfectivo.id, reserva.id]
+      );
+      const estadoPagoReserva = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertApprox(findEstadoCuentaEfectivo(estadoPagoReserva.data.estado, reserva.id, "CAJA03G pago reserva").saldo_actual, 70000, "CAJA03G pago Reserva descuenta solo Reserva");
+      assertApprox(findEstadoCuentaEfectivo(estadoPagoReserva.data.estado, cajaPagos.id, "CAJA03G pago reserva").saldo_actual, 10000, "CAJA03G pago Reserva no descuenta Caja pagos");
+      assertApprox(estadoPagoReserva.data.estado.total_disponible, 91000, "CAJA03G total descuenta pago Reserva una vez");
+
+      await runSql(
+        dbPath,
+        `INSERT INTO pagos
+         (proveedor_id, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito, fecha, hora, estado,
+          categoria_pago, caja_id, cuenta_cobro_id, cuenta_destino_id_snapshot, es_cuenta_corriente, iva_credito_fiscal)
+         VALUES (?, 'CAJA03G pago caja cambio post snapshot', 1000, 'efectivo', 1000, 0, '2026-07-01', '16:00:00', 'registrado',
+          'otro_no_computable', ?, ?, ?, 0, 0)`,
+        [proveedor.id, apertura.id, cuentaEfectivo.id, cajaCambio.id]
+      );
+      const estadoPagoCajaCambio = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertApprox(findEstadoCuentaEfectivo(estadoPagoCajaCambio.data.estado, cajaCambio.id, "CAJA03G pago caja cambio").saldo_actual, 10000, "CAJA03G pago post-arqueo descuenta Caja cambio");
+      assertApprox(estadoPagoCajaCambio.data.estado.total_disponible, 90000, "CAJA03G total suma saldos de todas las cuentas");
+
+      await runSql(
+        dbPath,
+        `INSERT INTO pagos
+         (proveedor_id, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito, fecha, hora, estado,
+          categoria_pago, caja_id, cuenta_cobro_id, cuenta_destino_id_snapshot, es_cuenta_corriente, iva_credito_fiscal)
+         VALUES (?, 'Legacy NULL CAJA03G', 777, 'efectivo', 777, 0, '2026-07-01', '17:00:00', 'registrado',
+          'otro_no_computable', ?, NULL, NULL, 0, 0)`,
+        [proveedor.id, apertura.id]
+      );
+      const estadoLegacy = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertApprox(estadoLegacy.data.estado.total_disponible, 90000, "CAJA03G legacy sin cuenta fisica no se reinterpreta");
+      const sumaCuentas = estadoLegacy.data.estado.cuentas.reduce((acc, cuenta) => acc + Number(cuenta.saldo_actual || 0), 0);
+      assertApprox(sumaCuentas, estadoLegacy.data.estado.total_disponible, "CAJA03G total disponible es suma de cuentas efectivas determinadas");
+
+      await runSql(
+        dbPath,
+        `INSERT INTO pagos
+         (proveedor_id, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito, fecha, hora, estado,
+          categoria_pago, caja_id, cuenta_cobro_id, cuenta_destino_id_snapshot, es_cuenta_corriente, iva_credito_fiscal)
+         VALUES (?, 'CAJA03G cuenta fisica no resoluble', 333, 'efectivo', 333, 0, '2026-07-01', '18:00:00', 'registrado',
+          'otro_no_computable', ?, NULL, 99999999, 0, 0)`,
+        [proveedor.id, apertura.id]
+      );
+      const estadoIndeterminable = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertEqual(estadoIndeterminable.data.estado.determinable, false, "CAJA03G cuenta fisica no resoluble vuelve estado global no determinable");
+      assertSame(estadoIndeterminable.data.estado.motivo, "cuentas_efectivo_no_determinables", "CAJA03G informa motivo de cuenta no determinable");
+      assertEqual(estadoIndeterminable.data.estado.total_disponible, null, "CAJA03G no presenta total definitivo si falta una cuenta");
+      assertApprox(estadoIndeterminable.data.estado.total_parcial, 90000, "CAJA03G conserva suma parcial solo como diagnostico");
+      assertEqual(
+        estadoIndeterminable.data.estado.cuentas_no_determinables.some((cuenta) => Number(cuenta.cuenta_destino_id) === 99999999),
+        true,
+        "CAJA03G expone cuenta no determinable"
+      );
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+
+  const dbPathArrastre = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPathArrastre);
+  try {
+    await prepareDb(dbPathArrastre, resetOperationalDataStatements());
+    await withServer(dbPathArrastre, async (baseUrl) => {
+      await prepareDb(dbPathArrastre, [
+        ["DELETE FROM caja_traslados_internos"],
+        ["DELETE FROM caja_arqueos"],
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM caja_movimientos"],
+        ["DELETE FROM pagos"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      const cajaCambio = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja cambio arrastre CAJA03G ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -870
+      });
+      const reserva = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Reserva arrastre CAJA03G ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -860
+      });
+      const cajaArrastre = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja arrastre CAJA03G ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -850
+      });
+      const otraArrastre = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Otra arrastre CAJA03G ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -840
+      });
+      const cerrado = await runSql(
+        dbPathArrastre,
+        `INSERT INTO caja_aperturas (fecha, hora, monto_apertura, saldo_inicial_mp, usuario, estado, hora_cierre)
+         VALUES ('2026-06-30', '08:00:00', 0, 0, 'admin', 'cerrada', '18:00:00')`
+      );
+      await runSql(
+        dbPathArrastre,
+        `INSERT INTO conciliaciones_cuentas_destino
+         (caja_id, cuenta_destino_id, monto_sistema, monto_real, saldo_inicial, diferencia, estado,
+          decision_cierre, monto_retiro, saldo_arrastrado, observaciones, fecha, hora, usuario)
+         VALUES (?, ?, 0, 4321, 0, 0, 'conciliado', 'arrastrar', 0, 4321, 'Arrastre exacto CAJA03G',
+          '2026-06-30', '18:00:00', 'admin')`,
+        [cerrado.lastID, cajaArrastre.id]
+      );
+      await runSql(
+        dbPathArrastre,
+        `INSERT INTO conciliaciones_cuentas_destino
+         (caja_id, cuenta_destino_id, monto_sistema, monto_real, saldo_inicial, diferencia, estado,
+          decision_cierre, monto_retiro, saldo_arrastrado, observaciones, fecha, hora, usuario)
+         VALUES (?, ?, 0, 9876, 0, 0, 'conciliado', 'arrastrar', 0, 9876, 'Otro arrastre CAJA03G',
+          '2026-06-30', '18:00:00', 'admin')`,
+        [cerrado.lastID, otraArrastre.id]
+      );
+
+      await abrirCaja(baseUrl, token, 0);
+      const arqueo = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03g-arrastre-arqueo",
+        conteo_detalle: { 100: 10 },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        observaciones: "Arqueo arrastre CAJA03G"
+      });
+      assertEqual(arqueo.response.status, 201, "CAJA03G crea arqueo para prueba de arrastres");
+      const estado = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertApprox(findEstadoCuentaEfectivo(estado.data.estado, cajaArrastre.id, "CAJA03G arrastre").saldo_actual, 4321, "CAJA03G saldo arrastrado se scopea por cuenta exacta");
+      assertApprox(findEstadoCuentaEfectivo(estado.data.estado, otraArrastre.id, "CAJA03G otro arrastre").saldo_actual, 9876, "CAJA03G no mezcla saldo arrastrado entre cuentas efectivas");
+    });
+  } finally {
+    fs.rmSync(dbPathArrastre, { force: true });
   }
 }
 
@@ -13805,6 +14085,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCajaArqueoOperativoTrasladoCaja03D);
   await _run(testCajaEstadoEfectivoOperativoCaja03E);
   await _run(testCajaOrigenFisicoPagosEfectivoCaja03F);
+  await _run(testCajaEstadoEfectivoPorCuentaFisicaCaja03G);
   await _run(testConciliacionManualPorCuentaDestino);
   await _run(testCajaResumenPorCuentaCobro);
   await _run(testConciliacionManualPorCuentaCobro);
