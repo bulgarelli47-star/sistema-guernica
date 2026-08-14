@@ -7387,11 +7387,195 @@ app.put("/caja/movimientos/:id", async (req, res) => {
   }
 });
 
+function normalizarDecisionesCierreEfectivo(raw) {
+  const fuente = raw?.decisiones_cierre ?? raw?.cuentas ?? raw?.decisiones ?? [];
+  if (Array.isArray(fuente)) {
+    return fuente.map((item) => ({
+      cuenta_destino_id: Number(item?.cuenta_destino_id),
+      monto_retiro: Number(item?.monto_retiro ?? item?.retiro ?? 0)
+    }));
+  }
+  if (fuente && typeof fuente === "object") {
+    return Object.entries(fuente).map(([cuentaId, value]) => ({
+      cuenta_destino_id: Number(cuentaId),
+      monto_retiro: typeof value === "object" && value !== null
+        ? Number(value.monto_retiro ?? value.retiro ?? 0)
+        : Number(value || 0)
+    }));
+  }
+  return [];
+}
+
+async function handlePostCajaCierreModelo1(req, res, fecha, hora) {
+  try {
+    await ensureCajaArqueosTable();
+    await ensureConciliacionesCuentasDestinoTable();
+    await runQuery("BEGIN IMMEDIATE");
+
+    const apertura = await getCajaAbiertaActual();
+    if (!apertura || apertura.estado !== "abierta") {
+      await runQuery("ROLLBACK");
+      return res.status(400).json({ message: "No hay una caja abierta para cerrar" });
+    }
+
+    const ultimoArqueo = await getQuery(
+      `SELECT *
+       FROM caja_arqueos
+       WHERE caja_id = ? AND modelo_arqueo_version = 1
+       ORDER BY fecha DESC, hora DESC, id DESC
+       LIMIT 1`,
+      [apertura.id]
+    );
+    if (!ultimoArqueo) {
+      await runQuery("ROLLBACK");
+      return res.status(400).json({ message: "No existe un arqueo operativo para cerrar caja" });
+    }
+    if (Number(ultimoArqueo.registrado_cierre || 0) !== 1) {
+      await runQuery("ROLLBACK");
+      return res.status(400).json({ message: "El ultimo arqueo operativo debe estar registrado para cierre" });
+    }
+
+    const estadoOperativo = await getEstadoEfectivoOperativo({ cajaId: apertura.id });
+    if (!estadoOperativo?.determinable) {
+      await runQuery("ROLLBACK");
+      return res.status(409).json({ message: "El estado operativo de efectivo no es determinable", estado: estadoOperativo });
+    }
+
+    const cuentas = Array.isArray(estadoOperativo.cuentas) ? estadoOperativo.cuentas : [];
+    if (!cuentas.length) {
+      await runQuery("ROLLBACK");
+      return res.status(409).json({ message: "No hay cuentas efectivas determinadas para cerrar" });
+    }
+
+    const decisiones = normalizarDecisionesCierreEfectivo(req.body);
+    const decisionesMap = new Map();
+    for (const decision of decisiones) {
+      const cuentaId = Number(decision.cuenta_destino_id);
+      const retiro = Number(decision.monto_retiro);
+      if (!Number.isInteger(cuentaId) || cuentaId <= 0) {
+        await runQuery("ROLLBACK");
+        return res.status(400).json({ message: "Cada decision debe indicar una cuenta_destino_id valida" });
+      }
+      if (decisionesMap.has(cuentaId)) {
+        await runQuery("ROLLBACK");
+        return res.status(400).json({ message: `Decision duplicada para cuenta destino ${cuentaId}` });
+      }
+      if (!Number.isFinite(retiro) || retiro < 0) {
+        await runQuery("ROLLBACK");
+        return res.status(400).json({ message: `Monto de retiro invalido para cuenta destino ${cuentaId}` });
+      }
+      decisionesMap.set(cuentaId, Number(retiro.toFixed(2)));
+    }
+
+    const cuentasIds = new Set(cuentas.map((cuenta) => Number(cuenta.cuenta_destino_id)));
+    for (const cuenta of cuentas) {
+      const cuentaId = Number(cuenta.cuenta_destino_id);
+      if (!decisionesMap.has(cuentaId)) {
+        await runQuery("ROLLBACK");
+        return res.status(400).json({ message: `Falta decision de cierre para cuenta destino ${cuentaId}` });
+      }
+    }
+    for (const cuentaId of decisionesMap.keys()) {
+      if (!cuentasIds.has(cuentaId)) {
+        await runQuery("ROLLBACK");
+        return res.status(400).json({ message: `La cuenta destino ${cuentaId} no pertenece al estado operativo determinado` });
+      }
+    }
+
+    const usuario = String(req.body.usuario || req.usuario?.nombre || req.usuario?.usuario || "admin").trim() || "admin";
+    const conciliaciones = [];
+    let totalRetiro = 0;
+    let totalArrastrado = 0;
+    for (const cuenta of cuentas) {
+      const cuentaId = Number(cuenta.cuenta_destino_id);
+      const saldoActual = Number(Number(cuenta.saldo_actual || 0).toFixed(2));
+      const retiro = decisionesMap.get(cuentaId);
+      if (retiro > saldoActual + 0.01) {
+        await runQuery("ROLLBACK");
+        return res.status(400).json({ message: `El retiro (${retiro}) supera el saldo actual (${saldoActual}) de la cuenta destino ${cuentaId}` });
+      }
+      const conciliacion = await guardarConciliacionCuentaDestino({
+        cajaId: apertura.id,
+        cuentaDestinoId: cuentaId,
+        montoSistema: saldoActual,
+        montoReal: saldoActual,
+        saldoInicial: 0,
+        decisionCierre: retiro > 0 ? "retirar" : "arrastrar",
+        montoRetiro: retiro,
+        observaciones: `Cierre operativo efectivo cuenta ${cuentaId}`,
+        usuario,
+        fecha,
+        hora
+      });
+      conciliaciones.push(conciliacion);
+      totalRetiro = Number((totalRetiro + retiro).toFixed(2));
+      totalArrastrado = Number((totalArrastrado + Number(conciliacion.saldo_arrastrado || 0)).toFixed(2));
+    }
+
+    const ventas = await buildCajaSnapshot(apertura.id);
+    const pagosSnapshot = await getPagosCaja(apertura.id);
+    const resumen = buildCajaResumenConSaldoMp(ventas, apertura);
+    await runQuery(
+      `UPDATE caja_aperturas
+       SET estado = 'cerrada',
+           hora_cierre = ?,
+           efectivo_esperado = ?,
+           efectivo_contado = ?,
+           diferencia = 0,
+           monto_caja_apertura = ?,
+           monto_caja_fondo = ?,
+           conteo_detalle = ?,
+           resumen_snapshot = ?,
+           ventas_snapshot = ?,
+           pagos_snapshot = ?
+       WHERE id = ?`,
+      [
+        hora,
+        Number(estadoOperativo.total_disponible || 0),
+        Number(estadoOperativo.total_disponible || 0),
+        totalArrastrado,
+        totalRetiro,
+        JSON.stringify({ modelo_cierre_version: 1 }),
+        JSON.stringify({
+          ...resumen,
+          modelo_cierre_version: 1,
+          estado_efectivo_operativo: estadoOperativo,
+          total_retiro_efectivo: totalRetiro,
+          total_arrastrado_efectivo: totalArrastrado
+        }),
+        JSON.stringify(ventas),
+        JSON.stringify(pagosSnapshot),
+        apertura.id
+      ]
+    );
+
+    await runQuery("COMMIT");
+
+    const cajaCerrada = await getQuery("SELECT * FROM caja_aperturas WHERE id = ?", [apertura.id]);
+    return res.json({
+      message: "Caja cerrada correctamente",
+      caja: cajaCerrada,
+      estado_efectivo_operativo: estadoOperativo,
+      conciliaciones,
+      total_retiro_efectivo: totalRetiro,
+      total_arrastrado_efectivo: totalArrastrado
+    });
+  } catch (error) {
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("Error al cerrar caja modelo operativo:", error);
+    return res.status(error.statusCode || 500).json({ message: error.message || "Error al cerrar caja" });
+  }
+}
+
 // Cerrar caja
 app.post("/caja/cierre", async (req, res) => {
   if (!(await requirePermiso(req, res, "caja_cerrar", "No tenes permisos para cerrar caja"))) return;
 
   const { fecha, hora } = getNowParts();
+  if (Number(req.body?.modelo_cierre_version || 0) === 1) {
+    return handlePostCajaCierreModelo1(req, res, fecha, hora);
+  }
+
   const conteo = req.body.conteo || {};
   const montoCajaApertura = Number(req.body.monto_caja_apertura) || 0;
   const montoCajaFondo = Number(req.body.monto_caja_fondo) || 0;

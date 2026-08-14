@@ -370,6 +370,15 @@ async function cerrarCaja(baseUrl, token, efectivoContado, montoCajaApertura = 0
   return result.data.caja;
 }
 
+async function cerrarCajaOperativo(baseUrl, token, decisionesCierre, overrides = {}) {
+  return requestJson(baseUrl, "POST", "/caja/cierre", {
+    modelo_cierre_version: 1,
+    decisiones_cierre: decisionesCierre,
+    usuario: "test",
+    ...overrides
+  }, token);
+}
+
 async function getCierreDetalle(baseUrl, token, cierreId) {
   const { response, data } = await requestJson(baseUrl, "GET", `/caja/cierres/${cierreId}`, null, token);
   if (!response.ok) throw new Error(`No se pudo obtener cierre ${cierreId}: ${data?.message || response.status}`);
@@ -10520,6 +10529,13 @@ function findEstadoCuentaEfectivo(estado, cuentaId, contexto) {
   return cuenta;
 }
 
+function buildDecisionesCierreDesdeEstado(estado, retirosPorCuenta = {}) {
+  return (estado?.cuentas || []).map((cuenta) => ({
+    cuenta_destino_id: cuenta.cuenta_destino_id,
+    monto_retiro: Number(retirosPorCuenta[cuenta.cuenta_destino_id] || 0)
+  }));
+}
+
 async function testCajaEstadoEfectivoPorCuentaFisicaCaja03G() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -10789,6 +10805,406 @@ async function testCajaEstadoEfectivoPorCuentaFisicaCaja03G() {
     });
   } finally {
     fs.rmSync(dbPathArrastre, { force: true });
+  }
+}
+
+async function testCajaCierreOperativoEfectivoCaja03H() {
+  const dbPathLegacy = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPathLegacy);
+  try {
+    await prepareDb(dbPathLegacy, resetOperationalDataStatements());
+    await withServer(dbPathLegacy, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const caja = await abrirCaja(baseUrl, token, 1000);
+      const cierre = await cerrarCaja(baseUrl, token, 1000, 1000, 0);
+      assertEqual(cierre.id, caja.id, "CAJA03H cierre legacy sigue usando misma caja");
+      assertSame(cierre.estado, "cerrada", "CAJA03H cierre legacy sigue funcionando");
+    });
+  } finally {
+    fs.rmSync(dbPathLegacy, { force: true });
+  }
+
+  const dbPathErrores = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPathErrores);
+  try {
+    await prepareDb(dbPathErrores, resetOperationalDataStatements());
+    await withServer(dbPathErrores, async (baseUrl) => {
+      await prepareDb(dbPathErrores, [
+        ["DELETE FROM caja_traslados_internos"],
+        ["DELETE FROM caja_arqueos"],
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM caja_movimientos"],
+        ["DELETE FROM pagos"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const sinArqueo = await cerrarCajaOperativo(baseUrl, token, []);
+      assertEqual(sinArqueo.response.status, 400, "CAJA03H modelo 1 sin arqueo falla");
+
+      const cajaCambio = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja cambio errores CAJA03H ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -910
+      });
+      const reserva = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Reserva errores CAJA03H ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -900
+      });
+      const arqueoNoRegistrado = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03h-no-registrado",
+        conteo_detalle: { 100: 10 },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 0,
+        observaciones: "No registrado cierre CAJA03H"
+      });
+      assertEqual(arqueoNoRegistrado.response.status, 201, "CAJA03H crea arqueo no registrado");
+      const noRegistrado = await cerrarCajaOperativo(baseUrl, token, [
+        { cuenta_destino_id: cajaCambio.id, monto_retiro: 0 },
+        { cuenta_destino_id: reserva.id, monto_retiro: 0 }
+      ]);
+      assertEqual(noRegistrado.response.status, 400, "CAJA03H ultimo arqueo no registrado para cierre falla");
+
+      const arqueoRegistrado = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03h-registrado-indeterm",
+        conteo_detalle: { 100: 10 },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 1,
+        observaciones: "Registrado indeterminado CAJA03H"
+      });
+      assertEqual(arqueoRegistrado.response.status, 201, "CAJA03H crea arqueo registrado");
+      await runSql(
+        dbPathErrores,
+        `INSERT INTO pagos
+         (concepto, monto_total, tipo_pago, monto_efectivo, monto_debito, fecha, hora, estado,
+          categoria_pago, caja_id, cuenta_destino_id_snapshot, es_cuenta_corriente, iva_credito_fiscal)
+         VALUES ('CAJA03H cuenta no determinable', 10, 'efectivo', 10, 0, '2026-07-02', '10:00:00', 'registrado',
+          'otro_no_computable', (SELECT id FROM caja_aperturas WHERE estado = 'abierta' LIMIT 1), 99999998, 0, 0)`
+      );
+      const indeterminado = await cerrarCajaOperativo(baseUrl, token, [
+        { cuenta_destino_id: cajaCambio.id, monto_retiro: 0 },
+        { cuenta_destino_id: reserva.id, monto_retiro: 0 }
+      ]);
+      assertEqual(indeterminado.response.status, 409, "CAJA03H estado operativo no determinable falla");
+      const cajaAbierta = (await allSql(dbPathErrores, "SELECT estado FROM caja_aperturas WHERE estado = 'abierta'"))[0];
+      assertSame(cajaAbierta.estado, "abierta", "CAJA03H errores no cierran caja");
+    });
+  } finally {
+    fs.rmSync(dbPathErrores, { force: true });
+  }
+
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM caja_traslados_internos"],
+        ["DELETE FROM caja_arqueos"],
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM conciliaciones_cuentas_cobro"],
+        ["DELETE FROM caja_movimientos"],
+        ["DELETE FROM pagos"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      const apertura = await abrirCaja(baseUrl, token, 6550);
+      const cajaCambio = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja cambio CAJA03H ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -930
+      });
+      const reserva = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Reserva CAJA03H ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -920
+      });
+      const cajaPagos = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja pagos CAJA03H ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -910
+      });
+      await runSql(
+        dbPath,
+        `INSERT INTO conciliaciones_cuentas_destino
+         (caja_id, cuenta_destino_id, monto_sistema, monto_real, saldo_inicial, diferencia, estado,
+          decision_cierre, monto_retiro, saldo_arrastrado, observaciones, fecha, hora, usuario)
+         VALUES (?, ?, 0, 30000, 30000, 0, 'conciliado', NULL, 0, 30000, 'Saldo inicial reserva CAJA03H',
+          '2026-07-01', '08:00:00', 'admin')`,
+        [apertura.id, reserva.id]
+      );
+      const arqueo1 = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03h-arqueo-1",
+        conteo_detalle: {
+          20: 50,
+          50: 3,
+          100: 200,
+          200: 5,
+          500: 5,
+          1000: 2,
+          2000: 5,
+          10000: 1
+        },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 0,
+        observaciones: "Arqueo 1 CAJA03H"
+      });
+      const arqueo2 = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03h-arqueo-2",
+        conteo_detalle: {
+          100: 110,
+          20000: 2,
+          10000: 1,
+          2000: 3
+        },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 1,
+        observaciones: "Arqueo 2 CAJA03H"
+      });
+      assertEqual(arqueo1.response.status, 201, "CAJA03H crea arqueo 1");
+      assertEqual(arqueo2.response.status, 201, "CAJA03H crea arqueo 2 registrado");
+      await runSql(dbPath, "UPDATE caja_arqueos SET fecha = '2026-07-01', hora = '10:00:00' WHERE id = ?", [arqueo1.data.arqueo.id]);
+      await runSql(dbPath, "UPDATE caja_arqueos SET fecha = '2026-07-01', hora = '12:00:00' WHERE id = ?", [arqueo2.data.arqueo.id]);
+      await runSql(dbPath, "UPDATE caja_traslados_internos SET fecha = '2026-07-01', hora = '10:00:00' WHERE arqueo_id = ?", [arqueo1.data.arqueo.id]);
+      await runSql(dbPath, "UPDATE caja_traslados_internos SET fecha = '2026-07-01', hora = '12:00:00' WHERE arqueo_id = ?", [arqueo2.data.arqueo.id]);
+      await runSql(
+        dbPath,
+        `INSERT INTO caja_traslados_internos
+         (caja_id, arqueo_id, cuenta_origen_id, cuenta_destino_id, monto, tipo, estado, fecha, hora, usuario, observaciones, created_at)
+         VALUES (?, NULL, ?, ?, 30000, 'redistribucion_test', 'activo', '2026-07-01', '13:00:00', 'admin',
+          'Reserva a caja pagos CAJA03H', datetime('now'))`,
+        [apertura.id, reserva.id, cajaPagos.id]
+      );
+      const estadoAntes = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertApprox(findEstadoCuentaEfectivo(estadoAntes.data.estado, cajaCambio.id, "CAJA03H antes").saldo_actual, 11000, "CAJA03H Caja cambio antes cierre");
+      assertApprox(findEstadoCuentaEfectivo(estadoAntes.data.estado, reserva.id, "CAJA03H antes").saldo_actual, 80000, "CAJA03H Reserva antes cierre");
+      assertApprox(findEstadoCuentaEfectivo(estadoAntes.data.estado, cajaPagos.id, "CAJA03H antes").saldo_actual, 30000, "CAJA03H Caja pagos antes cierre");
+      assertApprox(estadoAntes.data.estado.total_disponible, 121000, "CAJA03H caso 121000 antes cierre");
+
+      const pagosAntes = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos"))[0].total;
+      const movimientosAntes = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM caja_movimientos"))[0].total;
+      const trasladosAntes = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM caja_traslados_internos"))[0].total;
+      const decisionesCompletas = buildDecisionesCierreDesdeEstado(estadoAntes.data.estado);
+      const faltaDecision = await cerrarCajaOperativo(
+        baseUrl,
+        token,
+        decisionesCompletas.filter((decision) => Number(decision.cuenta_destino_id) !== Number(cajaPagos.id))
+      );
+      assertEqual(faltaDecision.response.status, 400, "CAJA03H falta decision de una cuenta falla");
+      const retiroNegativo = await cerrarCajaOperativo(
+        baseUrl,
+        token,
+        buildDecisionesCierreDesdeEstado(estadoAntes.data.estado, { [cajaCambio.id]: -1 })
+      );
+      assertEqual(retiroNegativo.response.status, 400, "CAJA03H retiro negativo falla");
+      const retiroExcesivo = await cerrarCajaOperativo(
+        baseUrl,
+        token,
+        buildDecisionesCierreDesdeEstado(estadoAntes.data.estado, { [reserva.id]: 80000.01 })
+      );
+      assertEqual(retiroExcesivo.response.status, 400, "CAJA03H retiro superior al saldo falla");
+      const conciliacionesTrasErrores = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM conciliaciones_cuentas_destino WHERE observaciones LIKE 'Cierre operativo efectivo%'"))[0].total;
+      assertEqual(conciliacionesTrasErrores, 0, "CAJA03H errores hacen rollback de conciliaciones");
+      const cajaTrasErrores = (await allSql(dbPath, "SELECT estado FROM caja_aperturas WHERE id = ?", [apertura.id]))[0];
+      assertSame(cajaTrasErrores.estado, "abierta", "CAJA03H errores dejan caja abierta");
+
+      const cierre = await cerrarCajaOperativo(
+        baseUrl,
+        token,
+        buildDecisionesCierreDesdeEstado(estadoAntes.data.estado, {
+          [reserva.id]: 50000,
+          [cajaPagos.id]: 30000
+        })
+      );
+      if (!cierre.response.ok) throw new Error(`CAJA03H cierre operativo fallo: ${cierre.data?.message || cierre.response.status}`);
+      assertSame(cierre.data.caja.estado, "cerrada", "CAJA03H cierre modelo 1 cierra caja");
+      assertApprox(cierre.data.total_retiro_efectivo, 80000, "CAJA03H retiro total suma decisiones");
+      assertApprox(cierre.data.total_arrastrado_efectivo, 41000, "CAJA03H arrastre total con retiro parcial y completo");
+      const conciliaciones = await allSql(
+        dbPath,
+        "SELECT cuenta_destino_id, monto_real, monto_retiro, saldo_arrastrado FROM conciliaciones_cuentas_destino WHERE caja_id = ?",
+        [apertura.id]
+      );
+      const byCuenta = new Map(conciliaciones.map((row) => [Number(row.cuenta_destino_id), row]));
+      assertApprox(byCuenta.get(cajaCambio.id).saldo_arrastrado, 11000, "CAJA03H Caja cambio arrastra 11000");
+      assertApprox(byCuenta.get(reserva.id).saldo_arrastrado, 30000, "CAJA03H Reserva retira 50000 y arrastra 30000");
+      assertApprox(byCuenta.get(cajaPagos.id).saldo_arrastrado, 0, "CAJA03H retiro igual saldo completo deja arrastre cero");
+      assertApprox(byCuenta.get(reserva.id).monto_retiro, 50000, "CAJA03H persiste retiro parcial Reserva");
+      assertApprox(byCuenta.get(cajaPagos.id).monto_retiro, 30000, "CAJA03H persiste retiro total Caja pagos");
+      assertEqual((await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos"))[0].total, pagosAntes, "CAJA03H cierre no crea pagos");
+      assertEqual((await allSql(dbPath, "SELECT COUNT(*) AS total FROM caja_movimientos"))[0].total, movimientosAntes, "CAJA03H cierre no crea caja_movimientos");
+      assertEqual((await allSql(dbPath, "SELECT COUNT(*) AS total FROM caja_traslados_internos"))[0].total, trasladosAntes, "CAJA03H cierre no crea traslados internos");
+
+      await abrirCaja(baseUrl, token, 0);
+      const nuevoArqueo = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03h-continuidad",
+        conteo_detalle: { 100: 10 },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 1,
+        observaciones: "Continuidad CAJA03H"
+      });
+      assertEqual(nuevoArqueo.response.status, 201, "CAJA03H crea arqueo siguiente jornada");
+      const estadoSiguiente = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertApprox(findEstadoCuentaEfectivo(estadoSiguiente.data.estado, reserva.id, "CAJA03H continuidad").saldo_inicial, 30000, "CAJA03H siguiente jornada toma arrastre exacto Reserva");
+      assertApprox(findEstadoCuentaEfectivo(estadoSiguiente.data.estado, cajaPagos.id, "CAJA03H continuidad").saldo_inicial, 0, "CAJA03H siguiente jornada toma arrastre exacto Caja pagos");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+
+  const dbPathManipulado = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPathManipulado);
+  try {
+    await prepareDb(dbPathManipulado, resetOperationalDataStatements());
+    await withServer(dbPathManipulado, async (baseUrl) => {
+      await prepareDb(dbPathManipulado, [
+        ["DELETE FROM caja_traslados_internos"],
+        ["DELETE FROM caja_arqueos"],
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM caja_movimientos"],
+        ["DELETE FROM pagos"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      const apertura = await abrirCaja(baseUrl, token, 6550);
+      const cajaCambio = await crearCuentaDestino(baseUrl, token, { nombre: `Caja cambio manip CAJA03H ${Date.now()}`, tipo_destino: "efectivo", orden: -940 });
+      const reserva = await crearCuentaDestino(baseUrl, token, { nombre: `Reserva manip CAJA03H ${Date.now()}`, tipo_destino: "efectivo", orden: -930 });
+      await runSql(
+        dbPathManipulado,
+        `INSERT INTO conciliaciones_cuentas_destino
+         (caja_id, cuenta_destino_id, monto_sistema, monto_real, saldo_inicial, diferencia, estado,
+          decision_cierre, monto_retiro, saldo_arrastrado, observaciones, fecha, hora, usuario)
+         VALUES (?, ?, 0, 30000, 30000, 0, 'conciliado', NULL, 0, 30000, 'Saldo inicial reserva manip CAJA03H',
+          '2026-07-01', '08:00:00', 'admin')`,
+        [apertura.id, reserva.id]
+      );
+      const arqueo1 = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03h-manip-1",
+        conteo_detalle: {
+          20: 50,
+          50: 3,
+          100: 200,
+          200: 5,
+          500: 5,
+          1000: 2,
+          2000: 5,
+          10000: 1
+        },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 0,
+        observaciones: "Manipulado 1 CAJA03H"
+      });
+      const arqueo2 = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03h-manip-2",
+        conteo_detalle: {
+          100: 110,
+          20000: 2,
+          10000: 1,
+          2000: 3
+        },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 1,
+        observaciones: "Manipulado 2 CAJA03H"
+      });
+      assertEqual(arqueo1.response.status, 201, "CAJA03H manip crea arqueo previo");
+      assertEqual(arqueo2.response.status, 201, "CAJA03H manip crea arqueo cierre");
+      const estado = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertApprox(findEstadoCuentaEfectivo(estado.data.estado, reserva.id, "CAJA03H manip").saldo_actual, 110000, "CAJA03H manip saldo backend Reserva 110000");
+      const decisionesManipuladas = buildDecisionesCierreDesdeEstado(estado.data.estado).map((decision) => (
+        Number(decision.cuenta_destino_id) === Number(reserva.id)
+          ? {
+              ...decision,
+              monto_retiro: 50000,
+              saldo_actual: 500000,
+              saldo_arrastrado: 450000
+            }
+          : decision
+      ));
+      const cierre = await cerrarCajaOperativo(baseUrl, token, decisionesManipuladas);
+      if (!cierre.response.ok) throw new Error(`CAJA03H cierre manipulado fallo: ${cierre.data?.message || cierre.response.status}`);
+      const conciliacionReserva = (await allSql(
+        dbPathManipulado,
+        "SELECT monto_real, monto_retiro, saldo_arrastrado FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [apertura.id, reserva.id]
+      ))[0];
+      assertApprox(conciliacionReserva.monto_real, 110000, "CAJA03H ignora saldo_actual enviado por cliente");
+      assertApprox(conciliacionReserva.monto_retiro, 50000, "CAJA03H respeta solo monto_retiro del usuario");
+      assertApprox(conciliacionReserva.saldo_arrastrado, 60000, "CAJA03H calcula arrastre backend, no usa 450000 del cliente");
+    });
+  } finally {
+    fs.rmSync(dbPathManipulado, { force: true });
+  }
+
+  const dbPathArrastrarTodo = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPathArrastrarTodo);
+  try {
+    await prepareDb(dbPathArrastrarTodo, resetOperationalDataStatements());
+    await withServer(dbPathArrastrarTodo, async (baseUrl) => {
+      await prepareDb(dbPathArrastrarTodo, [
+        ["DELETE FROM caja_traslados_internos"],
+        ["DELETE FROM caja_arqueos"],
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM caja_movimientos"],
+        ["DELETE FROM pagos"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      const apertura = await abrirCaja(baseUrl, token, 6550);
+      const cajaCambio = await crearCuentaDestino(baseUrl, token, { nombre: `Caja cambio todo CAJA03H ${Date.now()}`, tipo_destino: "efectivo", orden: -930 });
+      const reserva = await crearCuentaDestino(baseUrl, token, { nombre: `Reserva todo CAJA03H ${Date.now()}`, tipo_destino: "efectivo", orden: -920 });
+      await runSql(
+        dbPathArrastrarTodo,
+        `INSERT INTO conciliaciones_cuentas_destino
+         (caja_id, cuenta_destino_id, monto_sistema, monto_real, saldo_inicial, diferencia, estado,
+          decision_cierre, monto_retiro, saldo_arrastrado, observaciones, fecha, hora, usuario)
+         VALUES (?, ?, 0, 30000, 30000, 0, 'conciliado', NULL, 0, 30000, 'Saldo inicial reserva todo CAJA03H',
+          '2026-07-01', '08:00:00', 'admin')`,
+        [apertura.id, reserva.id]
+      );
+      const arqueo1 = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03h-arrastrar-todo-1",
+        conteo_detalle: {
+          20: 50,
+          50: 3,
+          100: 200,
+          200: 5,
+          500: 5,
+          1000: 2,
+          2000: 5,
+          10000: 1
+        },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 0,
+        observaciones: "Arrastrar todo 1 CAJA03H"
+      });
+      const arqueo = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03h-arrastrar-todo",
+        conteo_detalle: {
+          100: 110,
+          20000: 2,
+          10000: 1,
+          2000: 3
+        },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 1,
+        observaciones: "Arrastrar todo CAJA03H"
+      });
+      assertEqual(arqueo1.response.status, 201, "CAJA03H crea arqueo previo arrastrar todo");
+      assertEqual(arqueo.response.status, 201, "CAJA03H crea arqueo arrastrar todo");
+      const estado = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      const cierre = await cerrarCajaOperativo(baseUrl, token, buildDecisionesCierreDesdeEstado(estado.data.estado));
+      if (!cierre.response.ok) throw new Error(`CAJA03H cierre arrastrar todo fallo: ${cierre.data?.message || cierre.response.status}`);
+      assertApprox(cierre.data.total_retiro_efectivo, 0, "CAJA03H arrastrar todo no retira efectivo");
+      assertApprox(cierre.data.total_arrastrado_efectivo, 121000, "CAJA03H caso 121000 arrastra completo");
+    });
+  } finally {
+    fs.rmSync(dbPathArrastrarTodo, { force: true });
   }
 }
 
@@ -14086,6 +14502,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCajaEstadoEfectivoOperativoCaja03E);
   await _run(testCajaOrigenFisicoPagosEfectivoCaja03F);
   await _run(testCajaEstadoEfectivoPorCuentaFisicaCaja03G);
+  await _run(testCajaCierreOperativoEfectivoCaja03H);
   await _run(testConciliacionManualPorCuentaDestino);
   await _run(testCajaResumenPorCuentaCobro);
   await _run(testConciliacionManualPorCuentaCobro);
