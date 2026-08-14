@@ -1330,6 +1330,30 @@
       margin-bottom: 4px;
     }
 
+    .pending-status {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .pending-status.paid {
+      color: #166534;
+      background: rgba(34, 163, 90, 0.12);
+      border: 1px solid rgba(34, 163, 90, 0.24);
+    }
+
+    .pending-status.cancelled {
+      color: #991b1b;
+      background: rgba(224, 82, 82, 0.12);
+      border: 1px solid rgba(224, 82, 82, 0.24);
+    }
+
     .pending-controls {
       display: grid;
       grid-template-columns: 1fr auto auto;
@@ -2475,7 +2499,7 @@
         </article>
 
         <article class="card support-card">
-          <h3>Historial anulados</h3>
+          <h3>Historial</h3>
           <div class="annulled-list" id="ticketsAnulados"></div>
         </article>
       </div>
@@ -2739,6 +2763,8 @@
     const modificadoresCache = new Map();
     const CONSUMIDOR_FINAL_ID = "1";
     let cobrosMultiples = [];
+    let cobroHistoricoEditando = null;
+    let cobroHistoricoEstadoPrevio = null;
 
     function rolActual(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{rol:"admin"};const raw=String(u.rol||"admin").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,"_");return {administrador:"admin",cajero:"colaborador",caja:"colaborador",operador:"colaborador"}[raw]||raw}
     function usuarioActualVentas(){const parse=(s,k)=>{try{return JSON.parse(s.getItem(k)||"null")}catch{return null}};const u=parse(localStorage,"guernicaUser")||parse(sessionStorage,"guernicaUser")||{};return String(u.usuario||"admin")}
@@ -3561,12 +3587,96 @@
       }, 20);
     }
 
+    async function abrirEditorCobroHistorico(venta) {
+      if (!venta || esVistaReducida()) return;
+      if (!puedeAccion("editar_ticket")) {
+        mostrarMensaje("No tenes permisos para editar tickets", true, { notificar: true });
+        return;
+      }
+      limpiarMensajeCobroVenta();
+      cobroHistoricoEditando = venta;
+      cobroHistoricoEstadoPrevio = {
+        selectedPaymentMode,
+        esCuentaCorriente: esCuentaCorriente.checked,
+        tipoCobro: tipoCobroNormal.value,
+        cuentaCobro: cuentaCobroVenta.value
+      };
+      selectedPaymentMode = venta.tipo_cobro || "efectivo";
+      esCuentaCorriente.checked = false;
+      tipoCobroNormal.value = selectedPaymentMode;
+      montoEfectivoNormal.value = Number(venta.monto_efectivo || 0) || "";
+      montoDebitoNormal.value = Number(venta.monto_debito || 0) || "";
+      cuentaCobroVenta.value = "";
+      await cargarCuentasCobroVenta(tipoCobroNormal.value, venta.cuenta_cobro_id || "");
+      actualizarCobroNormalUI();
+      abrirModal(modalCobroVenta);
+      mostrarMensajeCobroVenta(`Editando cobro del ticket #${venta.id}.`, false);
+    }
+
     function cerrarModalCobroVenta() {
       cerrarModal(modalCobroVenta);
+      cobroHistoricoEditando = null;
+      if (cobroHistoricoEstadoPrevio) {
+        selectedPaymentMode = cobroHistoricoEstadoPrevio.selectedPaymentMode;
+        esCuentaCorriente.checked = cobroHistoricoEstadoPrevio.esCuentaCorriente;
+        tipoCobroNormal.value = cobroHistoricoEstadoPrevio.tipoCobro;
+        cuentaCobroVenta.value = cobroHistoricoEstadoPrevio.cuentaCobro || "";
+        cobroHistoricoEstadoPrevio = null;
+      }
+      actualizarCobroNormalUI();
       actualizarResumenCobroTicket();
     }
 
-    function confirmarModalCobroVenta() {
+    async function guardarCobroHistoricoEditado() {
+      const venta = cobroHistoricoEditando;
+      if (!venta) return false;
+      const total = Number(venta.total || venta.total_venta_original || 0);
+      const cobroActual = resolvePendingCobroInput(
+        tipoCobroNormal.value,
+        montoEfectivoNormal.value,
+        montoDebitoNormal.value,
+        total
+      );
+      if (!cobroActual) {
+        mostrarMensajeCobroVenta("Datos de cobro invalidos para el ticket.", true);
+        return true;
+      }
+      if (!validarCuentaTerminalCobro(cobroActual, { abrirModalSiFalla: false })) {
+        window.setTimeout(() => cuentaCobroVenta?.focus(), 20);
+        return true;
+      }
+      try {
+        const res = await fetch(`/ventas/${venta.id}/cobro`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tipo_cobro: cobroActual.tipo_cobro,
+            monto_efectivo: cobroActual.monto_efectivo,
+            monto_debito: cobroActual.monto_debito,
+            cuenta_cobro_id: cuentaCobroVenta?.value ? Number(cuentaCobroVenta.value) : null
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          mostrarMensajeCobroVenta(obtenerMensajeBackend(data, "No se pudo actualizar el cobro."), true);
+          return true;
+        }
+        cerrarModalCobroVenta();
+        mostrarMensaje(data.message || "Cobro actualizado");
+        await cargarHistorialAnulados();
+        localStorage.setItem('atlas_caja_refresh', Date.now().toString());
+      } catch (error) {
+        console.error("Error al editar cobro historico:", error);
+        mostrarMensajeCobroVenta("Error al actualizar el cobro.", true);
+      }
+      return true;
+    }
+
+    async function confirmarModalCobroVenta() {
+      if (cobroHistoricoEditando) {
+        await guardarCobroHistoricoEditado();
+        return;
+      }
       const cobroActual = {
         tipo_cobro: esCuentaCorriente?.checked ? "cuenta_corriente" : tipoCobroNormal?.value,
         monto_debito: Number(montoDebitoNormal?.value || 0)
@@ -5346,21 +5456,50 @@
       abrirModal(modalPendientes);
     }
 
+    function getEstadoHistorialPendiente(venta) {
+      const estado = String(venta?.estado || "").toLowerCase();
+      if (estado === "cobrada") return { label: "Cobrado", className: "paid" };
+      if (estado === "anulado") return { label: "Anulado", className: "cancelled" };
+      return { label: estado || "Cerrado", className: "" };
+    }
+
+    function getCobroHistorialTexto(venta) {
+      if (String(venta?.estado || "").toLowerCase() !== "cobrada") return "Sin cobro";
+      const metodo = venta.tipo_cobro || venta.metodo_pago || "-";
+      const montoCobrado = Number(venta.monto_efectivo || 0) + Number(venta.monto_debito || 0);
+      const cuenta = venta.cuenta_cobro_nombre ? ` · ${venta.cuenta_cobro_nombre}` : "";
+      return `${metodo}${cuenta} · Cobrado: $${formatearNumero(montoCobrado || venta.total || 0)}`;
+    }
+
     function renderizarAnulados(lista) {
       ticketsAnulados.innerHTML = "";
 
       if (!Array.isArray(lista) || lista.length === 0) {
-        ticketsAnulados.innerHTML = '<div class="empty-state">No hay tickets pendientes anulados.</div>';
+        ticketsAnulados.innerHTML = '<div class="empty-state">No hay tickets pendientes cerrados.</div>';
         return;
       }
 
       lista.forEach((venta) => {
+        const estado = getEstadoHistorialPendiente(venta);
+        const esCobrada = String(venta.estado || "").toLowerCase() === "cobrada";
+        const puedeEditarCobro = esCobrada && !esVistaReducida() && puedeAccion("editar_ticket");
         const bloque = document.createElement("div");
         bloque.className = "annulled-card";
         bloque.innerHTML = `
-          <strong>#${venta.id} - ${venta.identificador_pendiente || "-"}</strong>
-          <div class="muted">Total: $${formatearNumero(venta.total)} | Estado: ${venta.estado}</div>
+          <div class="pending-top">
+            <div>
+              <strong>#${venta.id} - ${venta.identificador_pendiente || "-"}</strong>
+              <div class="muted">${venta.fecha || "-"} ${venta.hora || ""}</div>
+            </div>
+            <span class="pending-status ${estado.className}">${estado.label}</span>
+          </div>
+          <div class="muted">Total: $${formatearNumero(venta.total_venta_original || venta.total || 0)}</div>
+          <div class="muted">${getCobroHistorialTexto(venta)}</div>
+          ${puedeEditarCobro ? '<div class="pending-controls"><div class="muted">Modificar el cobro registrado.</div><button type="button" class="button secondary" data-editar-cobro>Editar</button></div>' : ''}
         `;
+        bloque.querySelector("[data-editar-cobro]")?.addEventListener("click", function () {
+          abrirEditorCobroHistorico(venta);
+        });
         ticketsAnulados.appendChild(bloque);
       });
     }
@@ -5374,14 +5513,14 @@
         }
 
         const data = await res.json();
-        const anulados = data.filter((venta) => {
-          return venta.tipo === "pendiente" && venta.estado === "anulado";
-        });
+        const anulados = data
+          .filter((venta) => venta.tipo === "pendiente" && ["cobrada", "anulado"].includes(String(venta.estado || "").toLowerCase()))
+          .sort((a, b) => `${b.fecha || ""} ${b.hora || ""} ${b.id || 0}`.localeCompare(`${a.fecha || ""} ${a.hora || ""} ${a.id || 0}`));
 
         renderizarAnulados(anulados);
       } catch (error) {
-        console.error("Error al cargar anulados:", error);
-        ticketsAnulados.innerHTML = '<div class="empty-state">Error al cargar tickets anulados.</div>';
+        console.error("Error al cargar historial:", error);
+        ticketsAnulados.innerHTML = '<div class="empty-state">Error al cargar historial.</div>';
       }
     }
 
@@ -5635,7 +5774,13 @@
 
     abrirConfigCobro?.addEventListener("click", abrirModalCobroVenta);
     cerrarConfigCobro?.addEventListener("click", cerrarModalCobroVenta);
-    confirmarConfigCobro?.addEventListener("click", registrarVentaConConfirmacionCuenta);
+    confirmarConfigCobro?.addEventListener("click", async function () {
+      if (cobroHistoricoEditando) {
+        await confirmarModalCobroVenta();
+        return;
+      }
+      registrarVentaConConfirmacionCuenta();
+    });
     enviarPointTicket?.addEventListener("click", enviarIntentoMercadoPagoPoint);
     enviarPointModal?.addEventListener("click", enviarIntentoMercadoPagoPoint);
     modalCobroVenta?.addEventListener("click", function (event) {
