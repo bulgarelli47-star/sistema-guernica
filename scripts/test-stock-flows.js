@@ -346,6 +346,15 @@ async function registrarArqueoCierre(baseUrl, token, efectivoContado) {
   return result.data.arqueo;
 }
 
+async function registrarArqueoOperativo(baseUrl, token, payload) {
+  return requestJson(baseUrl, "POST", "/caja/arqueos", {
+    modelo_arqueo_version: 1,
+    registrado_cierre: 0,
+    usuario: "test",
+    ...payload
+  }, token);
+}
+
 async function cerrarCaja(baseUrl, token, efectivoContado, montoCajaApertura = 0, montoCajaFondo = 0) {
   await registrarArqueoCierre(baseUrl, token, efectivoContado);
   const result = await requestJson(baseUrl, "POST", "/caja/cierre", {
@@ -9911,6 +9920,220 @@ async function testCajaDenominacionesArqueoCaja03C() {
   }
 }
 
+async function testCajaArqueoOperativoTrasladoCaja03D() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  const conteoCanonico = {
+    20: 50,
+    50: 3,
+    100: 200,
+    200: 5,
+    500: 5,
+    1000: 2,
+    2000: 5,
+    10000: 1
+  };
+
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM caja_traslados_internos"],
+        ["DELETE FROM caja_arqueos"],
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM conciliaciones_cuentas_cobro"],
+        ["DELETE FROM caja_movimientos"],
+        ["DELETE FROM pagos"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const cajaCambio = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja cambio CAJA03D ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -700
+      });
+      const reserva = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Reserva CAJA03D ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -690
+      });
+      const banco = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Banco CAJA03D ${Date.now()}`,
+        tipo_destino: "banco",
+        orden: -680
+      });
+      const columnasIdempotencia = await allSql(dbPath, "PRAGMA index_info(idx_caja_arqueos_modelo1_idempotency)");
+      const nombresIdempotencia = columnasIdempotencia.map((columna) => columna.name).join(",");
+      assertSame(nombresIdempotencia, "caja_id,idempotency_key", "CAJA03D idempotencia se scopea por caja");
+
+      const legacy = await registrarArqueoCierre(baseUrl, token, 1000);
+      assertEqual(legacy.modelo_arqueo_version || 0, 0, "CAJA03D arqueo legacy sigue sin modelo 1");
+      const putLegacy = await requestJson(baseUrl, "PUT", `/caja/arqueos/${legacy.id}`, {
+        usuario: "test",
+        conteo: buildConteoMonto(1200),
+        cuentas: [],
+        observaciones: "PUT legacy CAJA03D",
+        registrado_cierre: 1
+      }, token);
+      assertEqual(putLegacy.response.status, 200, "CAJA03D PUT legacy sigue funcionando");
+
+      const origenNoEfectivo = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03d-origen-no-efectivo",
+        conteo_detalle: conteoCanonico,
+        cuenta_origen_id: banco.id,
+        cuenta_reserva_id: reserva.id
+      });
+      assertEqual(origenNoEfectivo.response.status, 400, "CAJA03D rechaza origen no efectivo");
+
+      const destinoNoEfectivo = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03d-destino-no-efectivo",
+        conteo_detalle: conteoCanonico,
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: banco.id
+      });
+      assertEqual(destinoNoEfectivo.response.status, 400, "CAJA03D rechaza destino no efectivo");
+
+      const origenDestinoIguales = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03d-origen-destino-iguales",
+        conteo_detalle: conteoCanonico,
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: cajaCambio.id
+      });
+      assertEqual(origenDestinoIguales.response.status, 400, "CAJA03D rechaza origen igual a destino");
+
+      const faltaDestino = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03d-sin-destino",
+        conteo_detalle: conteoCanonico,
+        cuenta_origen_id: cajaCambio.id
+      });
+      assertEqual(faltaDestino.response.status, 400, "CAJA03D extraccion mayor a cero exige destino");
+
+      const extraccionCero = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03d-extraccion-cero",
+        conteo_detalle: { 20: 10, 100: 5 },
+        cuenta_origen_id: cajaCambio.id,
+        efectivo_contado: 1,
+        cambio_retenido: 1,
+        monto_extraido: 999
+      });
+      assertEqual(extraccionCero.response.status, 201, "CAJA03D extraccion cero crea arqueo modelo 1");
+      assertApprox(extraccionCero.data.arqueo.efectivo_contado, 700, "CAJA03D extraccion cero calcula contado backend");
+      assertApprox(extraccionCero.data.arqueo.cambio_retenido, 700, "CAJA03D extraccion cero retiene todo");
+      assertApprox(extraccionCero.data.arqueo.monto_extraido, 0, "CAJA03D extraccion cero no extrae");
+      assertEqual(extraccionCero.data.traslado ? 1 : 0, 0, "CAJA03D extraccion cero no crea traslado");
+
+      const canonico = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03d-canonico",
+        conteo_detalle: conteoCanonico,
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        efectivo_contado: 1,
+        cambio_retenido: 1,
+        monto_extraido: 1,
+        observaciones: "Canonico CAJA03D"
+      });
+      assertEqual(canonico.response.status, 201, "CAJA03D caso canonico crea arqueo");
+      assertEqual(canonico.data.idempotent_replay, false, "CAJA03D primera creacion no es replay");
+      assertEqual(canonico.data.arqueo.modelo_arqueo_version, 1, "CAJA03D persiste modelo 1");
+      assertApprox(canonico.data.arqueo.efectivo_contado, 46650, "CAJA03D canonico contado backend");
+      assertApprox(canonico.data.arqueo.cambio_retenido, 22650, "CAJA03D canonico cambio backend");
+      assertApprox(canonico.data.arqueo.monto_extraido, 24000, "CAJA03D canonico extraccion backend");
+      assertApprox(canonico.data.traslado.monto, 24000, "CAJA03D traslado persiste monto exacto");
+      assertEqual(canonico.data.traslado.cuenta_origen_id, cajaCambio.id, "CAJA03D traslado origen caja cambio");
+      assertEqual(canonico.data.traslado.cuenta_destino_id, reserva.id, "CAJA03D traslado destino reserva");
+
+      const replay = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03d-canonico",
+        conteo_detalle: conteoCanonico,
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        observaciones: "Canonico CAJA03D"
+      });
+      assertEqual(replay.response.status, 200, "CAJA03D replay idempotente devuelve 200");
+      assertEqual(replay.data.idempotent_replay, true, "CAJA03D replay marca idempotent_replay");
+      const canonicoDuplicados = (await allSql(
+        dbPath,
+        "SELECT COUNT(*) AS total FROM caja_arqueos WHERE idempotency_key = 'caja03d-canonico'"
+      ))[0].total;
+      assertEqual(canonicoDuplicados, 1, "CAJA03D replay no duplica arqueo");
+      const trasladoCanonicoDuplicado = (await allSql(
+        dbPath,
+        "SELECT COUNT(*) AS total FROM caja_traslados_internos WHERE arqueo_id = ?",
+        [canonico.data.arqueo.id]
+      ))[0].total;
+      assertEqual(trasladoCanonicoDuplicado, 1, "CAJA03D replay no duplica traslado");
+
+      const replayDistinto = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03d-canonico",
+        conteo_detalle: { 20: 1 },
+        cuenta_origen_id: cajaCambio.id
+      });
+      assertEqual(replayDistinto.response.status, 409, "CAJA03D misma key con payload distinto devuelve conflicto");
+
+      const segundo = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03d-segundo",
+        conteo_detalle: { 1000: 1, 500: 2 },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        observaciones: "Segundo CAJA03D"
+      });
+      assertEqual(segundo.response.status, 201, "CAJA03D permite segundo arqueo en misma caja");
+      const eventosActivos = (await allSql(
+        dbPath,
+        "SELECT COUNT(*) AS total FROM caja_traslados_internos WHERE tipo = 'arqueo_extraccion' AND estado = 'activo'"
+      ))[0].total;
+      assertEqual(eventosActivos, 2, "CAJA03D dos arqueos crean dos eventos independientes");
+
+      const putModelo1 = await requestJson(baseUrl, "PUT", `/caja/arqueos/${canonico.data.arqueo.id}`, {
+        usuario: "test",
+        conteo: buildConteoMonto(10),
+        cuentas: [],
+        registrado_cierre: 1
+      }, token);
+      assertEqual(putModelo1.response.status, 409, "CAJA03D PUT modelo 1 se rechaza");
+
+      const pagos = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos"))[0].total;
+      const movimientosCaja = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM caja_movimientos"))[0].total;
+      const conciliacionesDestino = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM conciliaciones_cuentas_destino"))[0].total;
+      const conciliacionesCobro = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM conciliaciones_cuentas_cobro"))[0].total;
+      assertEqual(pagos, 0, "CAJA03D no crea pagos");
+      assertEqual(movimientosCaja, 0, "CAJA03D no crea caja_movimientos");
+      assertEqual(conciliacionesDestino + conciliacionesCobro, 0, "CAJA03D no crea conciliaciones como evento");
+
+      await runSql(
+        dbPath,
+        `CREATE TRIGGER caja03d_falla_traslado
+         BEFORE INSERT ON caja_traslados_internos
+         WHEN NEW.observaciones = 'ROLLBACK03D'
+         BEGIN
+           SELECT RAISE(ABORT, 'rollback traslado 03d');
+         END`
+      );
+      const rollback = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03d-rollback",
+        conteo_detalle: conteoCanonico,
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        observaciones: "ROLLBACK03D"
+      });
+      assertEqual(rollback.response.status, 500, "CAJA03D fallo de traslado responde error controlado");
+      const arqueoRollback = (await allSql(
+        dbPath,
+        "SELECT COUNT(*) AS total FROM caja_arqueos WHERE idempotency_key = 'caja03d-rollback'"
+      ))[0].total;
+      assertEqual(arqueoRollback, 0, "CAJA03D rollback no deja arqueo sin traslado");
+      const trasladoRollback = (await allSql(
+        dbPath,
+        "SELECT COUNT(*) AS total FROM caja_traslados_internos WHERE observaciones = 'ROLLBACK03D'"
+      ))[0].total;
+      assertEqual(trasladoRollback, 0, "CAJA03D rollback no deja traslado parcial");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testConciliacionManualPorCuentaDestino() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -13201,6 +13424,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCajaPagosEfectivoAsignanDestinoCaja02B);
   await _run(testCajaArqueoOperativoSchemaCaja03B);
   await _run(testCajaDenominacionesArqueoCaja03C);
+  await _run(testCajaArqueoOperativoTrasladoCaja03D);
   await _run(testConciliacionManualPorCuentaDestino);
   await _run(testCajaResumenPorCuentaCobro);
   await _run(testConciliacionManualPorCuentaCobro);

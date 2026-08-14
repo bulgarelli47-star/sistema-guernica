@@ -38,6 +38,7 @@ const {
   buildCajaResumenConSaldoMp,
   buildCajaSnapshot,
   buildConteoBilletes,
+  calcularDistribucionArqueo,
   ensureCajaArqueosTable,
   ensureCajaDenominacionesArqueoTable,
   ensureCajaMovimientosTable,
@@ -49,6 +50,7 @@ const {
   getConciliacionesCuentaCobro,
   getConciliacionesCuentaDestino,
   getPagosCaja,
+  getReglasDenominacionesArqueoActivas,
   getResumenPorCuentaCobro,
   getResumenPorCuentaDestino,
   getUltimaCajaRegistrada,
@@ -56,6 +58,7 @@ const {
   guardarConciliacionCuentaDestino,
   getUltimoSaldoArrastradoPorCuenta,
   mapCajaArqueo,
+  validarTrasladoInterno,
   parseJsonOrFallback
 } = require("./services/cajaService");
 const {
@@ -7477,12 +7480,211 @@ app.get("/caja/arqueos/:id", async (req, res) => {
   }
 });
 
+function sameJsonValue(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+async function getTrasladoActivoArqueoExtraccion(arqueoId) {
+  return getQuery(
+    `SELECT *
+     FROM caja_traslados_internos
+     WHERE arqueo_id = ? AND tipo = 'arqueo_extraccion' AND estado = 'activo'
+     ORDER BY id DESC
+     LIMIT 1`,
+    [arqueoId]
+  );
+}
+
+async function handlePostCajaArqueoModelo1(req, res, fecha, hora, registradoCierre) {
+  const idempotencyKey = String(req.body.idempotency_key || "").trim();
+  if (!idempotencyKey) {
+    return res.status(400).json({ message: "idempotency_key es obligatoria para arqueos operativos" });
+  }
+
+  const conteoDetalle = req.body.conteo_detalle;
+  if (!conteoDetalle || typeof conteoDetalle !== "object" || Array.isArray(conteoDetalle)) {
+    return res.status(400).json({ message: "conteo_detalle es obligatorio para arqueos operativos" });
+  }
+
+  try {
+    await ensureCajaArqueosTable();
+    await ensureCajaTrasladosInternosTable();
+    await ensureCajaDenominacionesArqueoTable();
+    await runQuery("BEGIN IMMEDIATE");
+
+    const apertura = await getCajaAbiertaActual();
+    if (!apertura || apertura.estado !== "abierta") {
+      await runQuery("ROLLBACK");
+      return res.status(400).json({ message: "No hay una caja abierta para registrar el arqueo" });
+    }
+
+    const reglas = await getReglasDenominacionesArqueoActivas();
+    const distribucion = calcularDistribucionArqueo(conteoDetalle, reglas);
+    const cuentaOrigenId = Number(req.body.cuenta_origen_id) || null;
+    const cuentaReservaId = req.body.cuenta_reserva_id == null || req.body.cuenta_reserva_id === ""
+      ? null
+      : Number(req.body.cuenta_reserva_id) || null;
+
+    if (!cuentaOrigenId) {
+      await runQuery("ROLLBACK");
+      return res.status(400).json({ message: "cuenta_origen_id es obligatoria para arqueos operativos" });
+    }
+    if (distribucion.monto_extraido > 0 && !cuentaReservaId) {
+      await runQuery("ROLLBACK");
+      return res.status(400).json({ message: "cuenta_reserva_id es obligatoria cuando existe extraccion" });
+    }
+
+    const cuentaOrigen = await getQuery("SELECT * FROM cuentas_destino WHERE id = ?", [cuentaOrigenId]);
+    const cuentaReserva = cuentaReservaId
+      ? await getQuery("SELECT * FROM cuentas_destino WHERE id = ?", [cuentaReservaId])
+      : null;
+
+    if (distribucion.monto_extraido > 0) {
+      const validacionTraslado = validarTrasladoInterno({
+        caja_id: apertura.id,
+        cuenta_origen_id: cuentaOrigenId,
+        cuenta_destino_id: cuentaReservaId,
+        monto: distribucion.monto_extraido,
+        tipo: "arqueo_extraccion",
+        estado: "activo",
+        fecha,
+        hora,
+        usuario: String(req.usuario?.nombre || req.usuario?.usuario || req.body.usuario || "admin").trim() || "admin"
+      }, { origen: cuentaOrigen, destino: cuentaReserva });
+      if (!validacionTraslado.ok) {
+        await runQuery("ROLLBACK");
+        return res.status(400).json({ message: validacionTraslado.message });
+      }
+    } else if (!cuentaOrigen || Number(cuentaOrigen.activo) !== 1 || String(cuentaOrigen.tipo_destino || "").toLowerCase() !== "efectivo") {
+      await runQuery("ROLLBACK");
+      return res.status(400).json({ message: "Cuenta origen inexistente, inactiva o no efectiva" });
+    }
+
+    const arqueoExistente = await getQuery(
+      "SELECT * FROM caja_arqueos WHERE caja_id = ? AND modelo_arqueo_version = 1 AND idempotency_key = ?",
+      [apertura.id, idempotencyKey]
+    );
+    if (arqueoExistente) {
+      const conteoExistente = parseJsonOrFallback(arqueoExistente.conteo_detalle, []);
+      const trasladoExistente = await getTrasladoActivoArqueoExtraccion(arqueoExistente.id);
+      const mismoPayload =
+        Number(arqueoExistente.caja_id) === Number(apertura.id) &&
+        Number(arqueoExistente.registrado_cierre || 0) === registradoCierre &&
+        Number(arqueoExistente.cuenta_origen_id || 0) === cuentaOrigenId &&
+        Number(arqueoExistente.cuenta_reserva_id || 0) === Number(cuentaReservaId || 0) &&
+        Number(arqueoExistente.efectivo_contado || 0) === Number(distribucion.efectivo_contado || 0) &&
+        Number(arqueoExistente.cambio_retenido || 0) === Number(distribucion.cambio_retenido || 0) &&
+        Number(arqueoExistente.monto_extraido || 0) === Number(distribucion.monto_extraido || 0) &&
+        sameJsonValue(conteoExistente, distribucion.detalle);
+      await runQuery("ROLLBACK");
+      if (!mismoPayload) {
+        return res.status(409).json({ message: "La idempotency_key ya fue usada con otro arqueo operativo" });
+      }
+      return res.status(200).json({
+        message: "Arqueo operativo ya registrado",
+        idempotent_replay: true,
+        arqueo: mapCajaArqueo(arqueoExistente),
+        traslado: trasladoExistente || null
+      });
+    }
+
+    const arqueoBase = await buildCajaArqueoData(apertura, {
+      ...req.body,
+      conteo: {},
+      usuario: req.body.usuario || req.usuario?.nombre || req.usuario?.usuario || "admin"
+    });
+    const efectivoContado = distribucion.efectivo_contado;
+    const diferenciaEfectivo = Number((efectivoContado - arqueoBase.efectivoEsperado).toFixed(2));
+    const resultadoFinal = Number((diferenciaEfectivo + arqueoBase.diferenciaDigital).toFixed(2));
+    const estado = resultadoFinal >= 0 ? "Sobra" : "Falta";
+    const resumenSnapshot = {
+      ...arqueoBase.resumen,
+      arqueo_operativo: {
+        modelo_arqueo_version: 1,
+        efectivo_contado: efectivoContado,
+        cambio_retenido: distribucion.cambio_retenido,
+        monto_extraido: distribucion.monto_extraido
+      }
+    };
+
+    const result = await runQuery(
+      `INSERT INTO caja_arqueos
+       (caja_id, fecha, hora, usuario, efectivo_esperado, efectivo_contado, diferencia_efectivo,
+        digital_esperado, digital_real, diferencia_digital, resultado_final, estado, observaciones,
+        conteo_detalle, cuentas_detalle, resumen_snapshot, registrado_cierre, modelo_arqueo_version,
+        cambio_retenido, monto_extraido, cuenta_origen_id, cuenta_reserva_id, idempotency_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+      [
+        apertura.id,
+        fecha,
+        hora,
+        arqueoBase.usuario,
+        arqueoBase.efectivoEsperado,
+        efectivoContado,
+        diferenciaEfectivo,
+        arqueoBase.digitalEsperado,
+        arqueoBase.digitalReal,
+        arqueoBase.diferenciaDigital,
+        resultadoFinal,
+        estado,
+        arqueoBase.observaciones,
+        JSON.stringify(distribucion.detalle),
+        JSON.stringify(arqueoBase.cuentasDetalle),
+        JSON.stringify(resumenSnapshot),
+        registradoCierre,
+        distribucion.cambio_retenido,
+        distribucion.monto_extraido,
+        cuentaOrigenId,
+        cuentaReservaId,
+        idempotencyKey
+      ]
+    );
+
+    let traslado = null;
+    if (distribucion.monto_extraido > 0) {
+      const trasladoResult = await runQuery(
+        `INSERT INTO caja_traslados_internos
+         (caja_id, arqueo_id, cuenta_origen_id, cuenta_destino_id, monto, tipo, estado, fecha, hora, usuario, observaciones, created_at)
+         VALUES (?, ?, ?, ?, ?, 'arqueo_extraccion', 'activo', ?, ?, ?, ?, datetime('now'))`,
+        [
+          apertura.id,
+          result.lastID,
+          cuentaOrigenId,
+          cuentaReservaId,
+          distribucion.monto_extraido,
+          fecha,
+          hora,
+          arqueoBase.usuario,
+          arqueoBase.observaciones
+        ]
+      );
+      traslado = await getQuery("SELECT * FROM caja_traslados_internos WHERE id = ?", [trasladoResult.lastID]);
+    }
+
+    const arqueo = await getQuery("SELECT * FROM caja_arqueos WHERE id = ?", [result.lastID]);
+    await runQuery("COMMIT");
+    return res.status(201).json({
+      message: registradoCierre ? "Arqueo operativo registrado" : "Arqueo operativo guardado",
+      idempotent_replay: false,
+      arqueo: mapCajaArqueo(arqueo),
+      traslado
+    });
+  } catch (error) {
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("Error al registrar arqueo operativo:", error);
+    return res.status(500).json({ message: "Error al registrar arqueo operativo" });
+  }
+}
+
 // Registrar arqueo de caja
 app.post("/caja/arqueos", async (req, res) => {
   if (!(await requirePermiso(req, res, "caja_registrar_arqueo", "No tenes permisos para registrar arqueos"))) return;
 
   const { fecha, hora } = getNowParts();
   const registradoCierre = Number(req.body.registrado_cierre) === 1 ? 1 : 0;
+  if (Number(req.body.modelo_arqueo_version) === 1) {
+    return handlePostCajaArqueoModelo1(req, res, fecha, hora, registradoCierre);
+  }
 
   try {
     await ensureCajaArqueosTable();
@@ -7545,6 +7747,9 @@ app.put("/caja/arqueos/:id", async (req, res) => {
 
     if (!arqueoActual) {
       return res.status(404).json({ message: "Arqueo no encontrado" });
+    }
+    if (Number(arqueoActual.modelo_arqueo_version) === 1) {
+      return res.status(409).json({ message: "Los arqueos operativos no se editan por el flujo legacy" });
     }
 
     const apertura = await getCajaAbiertaActual();

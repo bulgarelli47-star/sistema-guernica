@@ -659,7 +659,8 @@ async function initDatabase() {
         cambio_retenido REAL,
         monto_extraido REAL,
         cuenta_origen_id INTEGER,
-        cuenta_reserva_id INTEGER
+        cuenta_reserva_id INTEGER,
+        idempotency_key TEXT
       )
     `);
     await ensureColumn("caja_arqueos", "registrado_cierre", "INTEGER NOT NULL DEFAULT 1");
@@ -668,6 +669,7 @@ async function initDatabase() {
     await ensureColumn("caja_arqueos", "monto_extraido", "REAL");
     await ensureColumn("caja_arqueos", "cuenta_origen_id", "INTEGER");
     await ensureColumn("caja_arqueos", "cuenta_reserva_id", "INTEGER");
+    await ensureColumn("caja_arqueos", "idempotency_key", "TEXT");
 
     await runQuery(`
       CREATE TABLE IF NOT EXISTS caja_traslados_internos (
@@ -724,6 +726,15 @@ async function initDatabase() {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_caja_traslados_arqueo_extraccion_activa
       ON caja_traslados_internos(arqueo_id, tipo)
       WHERE arqueo_id IS NOT NULL AND tipo = 'arqueo_extraccion' AND estado = 'activo'
+    `);
+    const idempotencyIndex = await allQuery("PRAGMA index_info(idx_caja_arqueos_modelo1_idempotency)");
+    if (idempotencyIndex.length && idempotencyIndex.map((column) => column.name).join(",") !== "caja_id,idempotency_key") {
+      await runQuery("DROP INDEX IF EXISTS idx_caja_arqueos_modelo1_idempotency");
+    }
+    await runQuery(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_caja_arqueos_modelo1_idempotency
+      ON caja_arqueos(caja_id, idempotency_key)
+      WHERE modelo_arqueo_version = 1 AND idempotency_key IS NOT NULL
     `);
     await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_arqueo_denominaciones_orden ON caja_arqueo_denominaciones(orden)");
     await runQuery(`

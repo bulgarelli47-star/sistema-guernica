@@ -65,6 +65,16 @@ async function ensureCajaArqueosTable() {
   await ensureColumn("caja_arqueos", "monto_extraido", "REAL");
   await ensureColumn("caja_arqueos", "cuenta_origen_id", "INTEGER");
   await ensureColumn("caja_arqueos", "cuenta_reserva_id", "INTEGER");
+  await ensureColumn("caja_arqueos", "idempotency_key", "TEXT");
+  const idempotencyIndex = await allQuery("PRAGMA index_info(idx_caja_arqueos_modelo1_idempotency)");
+  if (idempotencyIndex.length && idempotencyIndex.map((column) => column.name).join(",") !== "caja_id,idempotency_key") {
+    await runQuery("DROP INDEX IF EXISTS idx_caja_arqueos_modelo1_idempotency");
+  }
+  await runQuery(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_caja_arqueos_modelo1_idempotency
+    ON caja_arqueos(caja_id, idempotency_key)
+    WHERE modelo_arqueo_version = 1 AND idempotency_key IS NOT NULL
+  `);
 }
 
 async function ensureCajaTrasladosInternosTable() {
@@ -137,6 +147,16 @@ async function ensureCajaDenominacionesArqueoTable() {
       );
     }
   }
+}
+
+async function getReglasDenominacionesArqueoActivas() {
+  await ensureCajaDenominacionesArqueoTable();
+  return allQuery(
+    `SELECT denominacion, modo, tamano_grupo, activo, orden
+     FROM caja_arqueo_denominaciones
+     WHERE activo = 1
+     ORDER BY orden ASC, denominacion ASC`
+  );
 }
 
 async function ensureConciliacionesCuentasCobroTable() {
@@ -1371,6 +1391,7 @@ module.exports = {
   getCajaParaArqueos,
   getOperacionesCaja,
   getPagosCaja,
+  getReglasDenominacionesArqueoActivas,
   getUltimaCajaRegistrada,
   getConciliacionesCuentaCobro,
   getConciliacionesCuentaDestino,
