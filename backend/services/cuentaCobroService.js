@@ -242,6 +242,12 @@ async function validarCuentaCobroParaTipo(cuentaCobroId, tipoPagoCodigo) {
   return { ok: true, cuenta_cobro_id: id, cuenta };
 }
 
+async function getCuentaCobroEfectivoActiva() {
+  return getQuery(
+    "SELECT * FROM cuentas_cobro WHERE tipo_pago_codigo = 'efectivo' AND activo = 1 ORDER BY orden ASC, id ASC LIMIT 1"
+  );
+}
+
 function requiereCuentaCobroDigital(tipoPagoCodigo, cobro = {}) {
   const tipo = normalizarCodigo(tipoPagoCodigo);
   if (!tipo || tipo === "efectivo" || tipo === "cuenta_corriente") return false;
@@ -272,11 +278,58 @@ async function validarCuentaCobroVenta(cuentaCobroId, cobro = {}) {
 async function validarCuentaCobroPago(cuentaCobroId, cobro = {}, { estado = "registrado" } = {}) {
   const tipo = normalizarCodigo(cobro.tipo_cobro || cobro.tipo_pago);
   const estaPendiente = normalizarCodigo(estado) === "pendiente";
+  const cuentaOmitida = cuentaCobroId === undefined || cuentaCobroId === null || cuentaCobroId === "";
+
+  if (!estaPendiente && tipo === "efectivo") {
+    let cuenta = null;
+    if (cuentaOmitida) {
+      cuenta = await getCuentaCobroEfectivoActiva();
+    } else {
+      const validacionExplicita = await validarCuentaCobroParaTipo(cuentaCobroId, "efectivo");
+      if (!validacionExplicita.ok) return validacionExplicita;
+      cuenta = validacionExplicita.cuenta;
+    }
+
+    if (!cuenta) {
+      return {
+        ok: false,
+        statusCode: 400,
+        message: "No hay una cuenta de cobro en efectivo configurada."
+      };
+    }
+
+    if (Number(cuenta.activo) !== 1) {
+      return {
+        ok: false,
+        statusCode: 400,
+        message: "Cuenta de cobro inexistente o inactiva"
+      };
+    }
+
+    if (normalizarCodigo(cuenta.tipo_pago_codigo) !== "efectivo") {
+      return {
+        ok: false,
+        statusCode: 400,
+        message: "La cuenta de cobro no corresponde al tipo de pago"
+      };
+    }
+
+    if (!cuenta.cuenta_destino_id) {
+      return {
+        ok: false,
+        statusCode: 400,
+        message: "La cuenta de cobro en efectivo no tiene cuenta destino configurada."
+      };
+    }
+
+    return { ok: true, cuenta_cobro_id: Number(cuenta.id), cuenta };
+  }
+
   const tieneParteDigital = tipo === "mixto"
     ? Number(cobro.monto_debito || 0) > 0
     : await tipoPagoImpactaDigital(tipo);
 
-  if (!estaPendiente && tieneParteDigital && (cuentaCobroId === undefined || cuentaCobroId === null || cuentaCobroId === "")) {
+  if (!estaPendiente && tieneParteDigital && cuentaOmitida) {
     return {
       ok: false,
       statusCode: 400,

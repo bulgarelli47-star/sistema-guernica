@@ -5620,6 +5620,20 @@ async function testCompraPagosRealesF3C() {
       assertApprox(pago1.data.resumen_pago.saldo_pendiente, 71000, "F3C primer pago deja saldo parcial");
       assertSame(pago1.data.resumen_pago.estado, "parcial", "F3C primer pago deja compra parcial");
       assertApprox(pago1.data.pago.iva_credito_fiscal, 0, "F3C pago vinculado no guarda IVA credito");
+      if (!pago1.data.pago.cuenta_cobro_id) {
+        throw new Error("F3C pago efectivo de compra debe resolver cuenta_cobro_id");
+      }
+      const cuentaPagoCompra = (await allSql(
+        dbPath,
+        `SELECT p.cuenta_cobro_id, cc.cuenta_destino_id
+         FROM pagos p
+         LEFT JOIN cuentas_cobro cc ON cc.id = p.cuenta_cobro_id
+         WHERE p.id = ?`,
+        [pago1.data.pago.id]
+      ))[0];
+      if (!cuentaPagoCompra?.cuenta_destino_id) {
+        throw new Error("F3C pago efectivo de compra debe quedar vinculado a una cuenta destino");
+      }
 
       const putLegacy = await requestJson(baseUrl, "PUT", `/pagos/${pago1.data.pago.id}`, {
         concepto: "No debe editarse",
@@ -8600,14 +8614,21 @@ async function testCuentasCobroEtapa2PagosYVentas() {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
 
+      const destinoEfectivo = await crearCuentaDestino(baseUrl, token, {
+        nombre: "Destino efectivo cuentas cobro TEST",
+        tipo_destino: "efectivo",
+        orden: 10
+      });
       const cuentaEfectivo1 = await crearCuentaCobro(baseUrl, token, {
         nombre: "Caja mostrador TEST",
         tipo_pago_codigo: "efectivo",
+        cuenta_destino_id: destinoEfectivo.id,
         orden: 10
       });
       const cuentaEfectivo2 = await crearCuentaCobro(baseUrl, token, {
         nombre: "Caja salon TEST",
         tipo_pago_codigo: "efectivo",
+        cuenta_destino_id: destinoEfectivo.id,
         orden: 20
       });
       const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
@@ -8683,7 +8704,20 @@ async function testCuentasCobroEtapa2PagosYVentas() {
         estado: "registrado",
         cuenta_cobro_id: null
       });
-      assertEqual(pagoLegacy.cuenta_cobro_id || 0, 0, "Pago con cuenta_cobro_id null debe seguir funcionando");
+      if (!pagoLegacy.cuenta_cobro_id) {
+        throw new Error("Pago efectivo registrado sin cuenta debe resolver cuenta_cobro_id");
+      }
+      const pagoLegacyCuenta = (await allSql(
+        dbPath,
+        `SELECT p.cuenta_cobro_id, cc.cuenta_destino_id
+         FROM pagos p
+         LEFT JOIN cuentas_cobro cc ON cc.id = p.cuenta_cobro_id
+         WHERE p.id = ?`,
+        [pagoLegacy.id]
+      ))[0];
+      if (!pagoLegacyCuenta?.cuenta_destino_id) {
+        throw new Error("Pago efectivo resuelto debe tener cuenta destino valida");
+      }
 
       const pagoDebitoSinCuenta = await requestJson(baseUrl, "POST", "/pagos", {
         proveedor_id: proveedor.id,
@@ -9196,6 +9230,18 @@ async function testCajaResumenPorCuentaDestino() {
         cuenta_destino_id: mercadoPago.id,
         orden: 20
       });
+      const destinoEfectivo = await crearCuentaDestino(baseUrl, token, {
+        nombre: "Caja efectivo resumen TEST",
+        tipo_destino: "efectivo",
+        orden: 5
+      });
+      await crearCuentaCobro(baseUrl, token, {
+        nombre: "Caja efectiva resumen TEST",
+        tipo_pago_codigo: "efectivo",
+        tipo_cuenta: "caja",
+        cuenta_destino_id: destinoEfectivo.id,
+        orden: -100
+      });
       const legacySinDestino = await crearCuentaCobro(baseUrl, token, {
         nombre: "Canal sin destino resumen TEST",
         tipo_pago_codigo: "efectivo",
@@ -9286,11 +9332,19 @@ async function testCajaResumenPorCuentaDestino() {
         throw new Error(`Cuenta destino debe listar canales usados. Actual=${JSON.stringify(mp.canales)}`);
       }
 
-      assertApprox(sinDestino.ingresos, 400, "Canal sin destino y movimiento sin cuenta deben agruparse en Sin cuenta destino");
-      assertApprox(sinDestino.egresos, 20, "Movimiento sin cuenta_cobro_id debe restar en Sin cuenta destino");
-      assertApprox(sinDestino.balance, 380, "Balance Sin cuenta destino debe ser ingresos - egresos");
-      assertEqual(sinDestino.ventas, 2, "Sin cuenta destino debe contar ventas de canal legacy y sin cuenta");
-      assertEqual(sinDestino.pagos, 1, "Sin cuenta destino debe contar pagos sin cuenta");
+      const efectivoDestino = resumenAbierta.cuentas.find((cuenta) =>
+        String(cuenta.tipo_destino || "").toLowerCase() === "efectivo" &&
+        Number(cuenta.egresos || 0) === 20
+      );
+      if (!efectivoDestino) {
+        throw new Error(`Pago efectivo sin cuenta explicita debe asignarse a cuenta destino efectiva. Actual=${JSON.stringify(resumenAbierta.cuentas)}`);
+      }
+
+      assertApprox(sinDestino.ingresos, 200, "Canal legacy sin destino debe agruparse en Sin cuenta destino");
+      assertApprox(sinDestino.egresos, 0, "Pago efectivo nuevo sin cuenta no debe restar en Sin cuenta destino");
+      assertApprox(sinDestino.balance, 200, "Balance Sin cuenta destino debe conservar solo historia/canal sin asignacion");
+      assertEqual(sinDestino.ventas, 1, "Sin cuenta destino debe contar solo venta de canal legacy");
+      assertEqual(sinDestino.pagos, 0, "Sin cuenta destino no debe contar pagos efectivos nuevos");
 
       const ultimo = resumenAbierta.cuentas[resumenAbierta.cuentas.length - 1];
       if (!ultimo.sin_cuenta_destino) {
@@ -9303,6 +9357,201 @@ async function testCajaResumenPorCuentaDestino() {
       const mpCerrada = resumenCerrada.cuentas.find((cuenta) => cuenta.cuenta_destino_id === mercadoPago.id);
       assertApprox(mpCerrada?.balance, 350, "Resumen por cuenta destino de ultima caja cerrada debe conservar balance");
     });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testCajaPagosEfectivoAsignanDestinoCaja02B() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM compra_recepcion_items"],
+        ["DELETE FROM compra_recepciones"],
+        ["DELETE FROM compra_items"],
+        ["DELETE FROM compra_comprobante_iva"],
+        ["DELETE FROM compra_comprobantes"],
+        ["DELETE FROM compras"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token);
+      const destinoEfectivo = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja efectivo CAJA02B ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -200
+      });
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, {
+        nombre: `Cuenta efectivo CAJA02B ${Date.now()}`,
+        tipo_pago_codigo: "efectivo",
+        tipo_cuenta: "caja",
+        cuenta_destino_id: destinoEfectivo.id,
+        orden: -200
+      });
+      const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
+        nombre: `Cuenta debito CAJA02B ${Date.now()}`,
+        tipo_pago_codigo: "debito",
+        orden: -190
+      });
+
+      await runSql(
+        dbPath,
+        `INSERT INTO pagos
+         (proveedor_id, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito, fecha, hora, estado,
+          categoria_pago, caja_id, cuenta_cobro_id, es_cuenta_corriente, iva_credito_fiscal)
+         VALUES (?, 'Legacy NULL CAJA02B', 11, 'efectivo', 11, 0, '2026-01-01', '08:00:00', 'registrado',
+          'otro_no_computable', NULL, NULL, 0, 0)`,
+        [proveedor.id]
+      );
+      const legacyAntes = (await allSql(dbPath, "SELECT cuenta_cobro_id FROM pagos WHERE concepto = 'Legacy NULL CAJA02B'"))[0];
+      assertEqual(legacyAntes.cuenta_cobro_id || 0, 0, "CAJA02B fixture legacy inicia con cuenta NULL");
+
+      await abrirCaja(baseUrl, token, 1000);
+      const pagoExplicito = await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: `CAJA02B efectivo explicito ${Date.now()}`,
+        monto_total: 31,
+        tipo_pago: "efectivo",
+        estado: "registrado",
+        cuenta_cobro_id: cuentaEfectivo.id
+      });
+      assertEqual(pagoExplicito.cuenta_cobro_id, cuentaEfectivo.id, "CAJA02B pago efectivo explicito conserva cuenta enviada");
+
+      const pagoAuto = await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: `CAJA02B efectivo automatico ${Date.now()}`,
+        monto_total: 41,
+        tipo_pago: "efectivo",
+        estado: "registrado"
+      });
+      assertEqual(pagoAuto.cuenta_cobro_id, cuentaEfectivo.id, "CAJA02B pago efectivo sin cuenta resuelve cuenta efectiva activa");
+      const pagoAutoDestino = (await allSql(
+        dbPath,
+        "SELECT cc.cuenta_destino_id FROM pagos p LEFT JOIN cuentas_cobro cc ON cc.id = p.cuenta_cobro_id WHERE p.id = ?",
+        [pagoAuto.id]
+      ))[0];
+      assertEqual(pagoAutoDestino.cuenta_destino_id, destinoEfectivo.id, "CAJA02B pago automatico queda asociado a destino efectivo");
+
+      const compra = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id,
+        fecha_compra: "2026-03-01",
+        concepto: "Compra CAJA02B",
+        tipo_impacto: "costo_variable_mercaderia",
+        total_compra: 100
+      }, token);
+      if (!compra.response.ok) throw new Error(`CAJA02B crear compra fallo: ${compra.data?.message || compra.response.status}`);
+      const pagoCompra = await requestJson(baseUrl, "POST", `/compras/${compra.data.compra.id}/pagos`, {
+        monto_total: 40,
+        tipo_pago: "efectivo",
+        concepto: "Pago compra CAJA02B"
+      }, token);
+      if (!pagoCompra.response.ok) throw new Error(`CAJA02B pago compra efectivo fallo: ${pagoCompra.data?.message || pagoCompra.response.status}`);
+      assertEqual(pagoCompra.data.pago.cuenta_cobro_id, cuentaEfectivo.id, "CAJA02B pago de compra resuelve misma cuenta efectiva");
+
+      const pagoDebito = await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: `CAJA02B debito intacto ${Date.now()}`,
+        monto_total: 25,
+        tipo_pago: "debito",
+        estado: "registrado",
+        cuenta_cobro_id: cuentaDebito.id
+      });
+      assertEqual(pagoDebito.cuenta_cobro_id, cuentaDebito.id, "CAJA02B pago no efectivo conserva contrato previo");
+
+      const resumenDestino = await getCajaResumenCuentasDestino(baseUrl, token);
+      const sinDestino = resumenDestino.cuentas.find((cuenta) => cuenta.sin_cuenta_destino);
+      if (sinDestino && Number(sinDestino.pagos || 0) > 0) {
+        throw new Error(`CAJA02B pago efectivo nuevo no debe aparecer como sin destino. Actual=${JSON.stringify(sinDestino)}`);
+      }
+      const destinoCaja = resumenDestino.cuentas.find((cuenta) => Number(cuenta.cuenta_destino_id) === Number(destinoEfectivo.id));
+      assertApprox(destinoCaja?.egresos, 112, "CAJA02B pagos efectivos nuevos deben restar en destino efectivo");
+
+      const legacyDespues = (await allSql(dbPath, "SELECT cuenta_cobro_id FROM pagos WHERE concepto = 'Legacy NULL CAJA02B'"))[0];
+      assertEqual(legacyDespues.cuenta_cobro_id || 0, 0, "CAJA02B pago legacy NULL permanece intacto");
+    });
+
+    const dbPathSinCuenta = tempDbPath();
+    fs.copyFileSync(SOURCE_DB, dbPathSinCuenta);
+    try {
+      await prepareDb(dbPathSinCuenta, resetOperationalDataStatements());
+      await prepareDb(dbPathSinCuenta, [["UPDATE cuentas_cobro SET activo = 0 WHERE tipo_pago_codigo = 'efectivo'"]]);
+      await withServer(dbPathSinCuenta, async (baseUrl) => {
+        const token = await login(baseUrl, "admin", "admin123");
+        const proveedor = await crearProveedor(baseUrl, token);
+        const compra = await requestJson(baseUrl, "POST", "/compras", {
+          proveedor_id: proveedor.id,
+          fecha_compra: "2026-03-02",
+          concepto: "Compra sin cuenta efectivo CAJA02B",
+          tipo_impacto: "costo_variable_mercaderia",
+          total_compra: 100
+        }, token);
+        if (!compra.response.ok) throw new Error(`CAJA02B compra sin cuenta fallo: ${compra.data?.message || compra.response.status}`);
+        await abrirCaja(baseUrl, token, 1000);
+        const pagoSinCuenta = await requestJson(baseUrl, "POST", "/pagos", {
+          proveedor_id: proveedor.id,
+          concepto: "CAJA02B sin cuenta efectiva",
+          monto_total: 10,
+          tipo_pago: "efectivo",
+          estado: "registrado"
+        }, token);
+        assertEqual(pagoSinCuenta.response.status, 400, "CAJA02B pago efectivo sin cuenta configurada debe fallar");
+        const pagoCompraSinCuenta = await requestJson(baseUrl, "POST", `/compras/${compra.data.compra.id}/pagos`, {
+          monto_total: 10,
+          tipo_pago: "efectivo"
+        }, token);
+        assertEqual(pagoCompraSinCuenta.response.status, 400, "CAJA02B pago compra sin cuenta configurada debe fallar");
+        const pagos = await allSql(dbPathSinCuenta, "SELECT COUNT(*) AS total FROM pagos WHERE concepto LIKE 'CAJA02B sin cuenta%' OR compra_id = ?", [compra.data.compra.id]);
+        assertEqual(pagos[0].total, 0, "CAJA02B fallo de configuracion no inserta pagos");
+        const compraDb = (await allSql(dbPathSinCuenta, "SELECT saldo_pendiente, estado FROM compras WHERE id = ?", [compra.data.compra.id]))[0];
+        assertApprox(compraDb.saldo_pendiente, 100, "CAJA02B fallo no altera saldo de compra");
+        assertSame(compraDb.estado, "pendiente", "CAJA02B fallo no cambia estado de compra");
+        const resumen = await getCajaResumen(baseUrl, token);
+        assertApprox(resumen.resumen.total_pagos_general, 0, "CAJA02B fallo no impacta Caja");
+      });
+    } finally {
+      fs.rmSync(dbPathSinCuenta, { force: true });
+    }
+
+    const dbPathSinDestino = tempDbPath();
+    fs.copyFileSync(SOURCE_DB, dbPathSinDestino);
+    try {
+      await prepareDb(dbPathSinDestino, resetOperationalDataStatements());
+      await prepareDb(dbPathSinDestino, [["UPDATE cuentas_cobro SET activo = 0 WHERE tipo_pago_codigo = 'efectivo'"]]);
+      await withServer(dbPathSinDestino, async (baseUrl) => {
+        const token = await login(baseUrl, "admin", "admin123");
+        const proveedor = await crearProveedor(baseUrl, token);
+        const cuentaSinDestino = await crearCuentaCobro(baseUrl, token, {
+          nombre: "CAJA02B efectivo sin destino",
+          tipo_pago_codigo: "efectivo",
+          cuenta_destino_id: null,
+          orden: -300
+        });
+        await abrirCaja(baseUrl, token, 1000);
+        const pagoSinDestino = await requestJson(baseUrl, "POST", "/pagos", {
+          proveedor_id: proveedor.id,
+          concepto: "CAJA02B cuenta efectiva sin destino",
+          monto_total: 10,
+          tipo_pago: "efectivo",
+          estado: "registrado"
+        }, token);
+        assertEqual(pagoSinDestino.response.status, 400, "CAJA02B cuenta efectiva sin destino debe fallar");
+        const pagoExplicitoSinDestino = await requestJson(baseUrl, "POST", "/pagos", {
+          proveedor_id: proveedor.id,
+          concepto: "CAJA02B cuenta efectiva explicita sin destino",
+          monto_total: 10,
+          tipo_pago: "efectivo",
+          estado: "registrado",
+          cuenta_cobro_id: cuentaSinDestino.id
+        }, token);
+        assertEqual(pagoExplicitoSinDestino.response.status, 400, "CAJA02B cuenta efectiva explicita sin destino debe fallar");
+        const pagos = await allSql(dbPathSinDestino, "SELECT COUNT(*) AS total FROM pagos WHERE concepto LIKE 'CAJA02B cuenta efectiva%'");
+        assertEqual(pagos[0].total, 0, "CAJA02B cuenta sin destino no inserta pagos");
+      });
+    } finally {
+      fs.rmSync(dbPathSinDestino, { force: true });
+    }
   } finally {
     fs.rmSync(dbPath, { force: true });
   }
@@ -9416,9 +9665,15 @@ async function testCajaResumenPorCuentaCobro() {
     await withServer(dbPath, async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       const apertura = await abrirCaja(baseUrl, token, 1000);
+      const destinoEfectivo = await crearCuentaDestino(baseUrl, token, {
+        nombre: "Destino efectivo resumen cuenta TEST",
+        tipo_destino: "efectivo",
+        orden: 10
+      });
       const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, {
         nombre: "Caja efectivo resumen TEST",
         tipo_pago_codigo: "efectivo",
+        cuenta_destino_id: destinoEfectivo.id,
         orden: 10
       });
       const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
@@ -9497,25 +9752,25 @@ async function testCajaResumenPorCuentaCobro() {
       const porNombre = Object.fromEntries(resumenAbierta.cuentas.map((cuenta) => [cuenta.cuenta_nombre, cuenta]));
       const efectivo = porNombre["Caja efectivo resumen TEST"];
       const debito = porNombre["Terminal debito resumen TEST"];
-      const sinCuenta = porNombre["Sin cuenta"];
 
-      if (!efectivo || !debito || !sinCuenta) {
-        throw new Error(`Resumen por cuenta debe incluir ambas cuentas y Sin cuenta. Actual=${JSON.stringify(resumenAbierta.cuentas)}`);
+      if (!efectivo || !debito) {
+        throw new Error(`Resumen por cuenta debe incluir ambas cuentas configuradas. Actual=${JSON.stringify(resumenAbierta.cuentas)}`);
       }
 
       assertApprox(efectivo.ingresos, 400, "Venta con cuenta_cobro y efectivo sin cuenta explicita deben sumar ingreso correcto");
-      assertApprox(efectivo.egresos, 50, "Pago registrado con cuenta_cobro debe sumar egreso correcto");
-      assertApprox(efectivo.balance, 350, "Balance cuenta efectivo debe ser ingresos - egresos");
+      assertApprox(efectivo.egresos, 70, "Pago registrado con cuenta_cobro y efectivo sin cuenta explicita deben sumar egreso correcto");
+      assertApprox(efectivo.balance, 330, "Balance cuenta efectivo debe ser ingresos - egresos");
       assertEqual(efectivo.ventas, 2, "Venta anulada no debe contar como venta por cuenta");
-      assertEqual(efectivo.pagos, 1, "Pago pendiente no debe contar como pago por cuenta");
+      assertEqual(efectivo.pagos, 2, "Pago pendiente no debe contar como pago por cuenta");
 
       assertApprox(debito.ingresos, 200, "Varias cuentas deben separar ingresos");
       assertApprox(debito.egresos, 30, "Varias cuentas deben separar egresos");
       assertApprox(debito.balance, 170, "Balance cuenta debito debe ser ingresos - egresos");
 
-      assertApprox(sinCuenta.ingresos, 0, "Ventas efectivo sin cuenta explicita deben asignarse al canal efectivo activo");
-      assertApprox(sinCuenta.egresos, 20, "Movimientos sin cuenta deben sumar egresos en Sin cuenta");
-      assertApprox(sinCuenta.balance, -20, "Balance Sin cuenta debe ser ingresos - egresos");
+      const sinCuenta = porNombre["Sin cuenta"];
+      if (sinCuenta && Number(sinCuenta.pagos || 0) > 0) {
+        throw new Error(`Pago efectivo nuevo sin cuenta explicita no debe quedar en Sin cuenta. Actual=${JSON.stringify(sinCuenta)}`);
+      }
 
       if (resumenAbierta.cuentas[0].cuenta_nombre !== "Caja efectivo resumen TEST") {
         throw new Error(`Resumen debe ordenarse por mayor balance DESC. Primero=${resumenAbierta.cuentas[0].cuenta_nombre}`);
@@ -9525,7 +9780,7 @@ async function testCajaResumenPorCuentaCobro() {
       const resumenCerrada = await getCajaResumenCuentas(baseUrl, token);
       assertEqual(resumenCerrada.caja.id, cajaCerrada.id, "Resumen por cuenta sin caja abierta debe usar ultima caja cerrada");
       const efectivoCerrada = resumenCerrada.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Caja efectivo resumen TEST");
-      assertApprox(efectivoCerrada?.balance, 350, "Resumen por cuenta de ultima caja cerrada debe conservar balance");
+      assertApprox(efectivoCerrada?.balance, 330, "Resumen por cuenta de ultima caja cerrada debe conservar balance");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -9663,9 +9918,15 @@ async function testReporteCuentasCobro() {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
 
+      const destinoEfectivo = await crearCuentaDestino(baseUrl, token, {
+        nombre: "Destino efectivo reporte cuentas TEST",
+        tipo_destino: "efectivo",
+        orden: 10
+      });
       const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, {
         nombre: "Reporte cuenta efectivo TEST",
         tipo_pago_codigo: "efectivo",
+        cuenta_destino_id: destinoEfectivo.id,
         orden: 10
       });
       const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
@@ -9743,7 +10004,10 @@ async function testReporteCuentasCobro() {
       const efectivo = resumenCaja.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Reporte cuenta efectivo TEST");
       const debito = resumenCaja.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Reporte terminal debito TEST");
       const sinCuenta = resumenCaja.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Sin cuenta");
-      if (!efectivo || !debito || !sinCuenta) throw new Error(`Resumen caja previo incompleto: ${JSON.stringify(resumenCaja.cuentas)}`);
+      if (!efectivo || !debito) throw new Error(`Resumen caja previo incompleto: ${JSON.stringify(resumenCaja.cuentas)}`);
+      if (sinCuenta && Number(sinCuenta.pagos || 0) > 0) {
+        throw new Error(`Pago efectivo nuevo sin cuenta explicita no debe quedar en Sin cuenta. Actual=${JSON.stringify(sinCuenta)}`);
+      }
 
       await guardarConciliacionCuenta(baseUrl, token, {
         cuenta_cobro_id: cuentaEfectivo.id,
@@ -9768,15 +10032,15 @@ async function testReporteCuentasCobro() {
       const repEfectivo = porNombre["Reporte cuenta efectivo TEST"];
       const repDebito = porNombre["Reporte terminal debito TEST"];
       const repSinCuenta = porNombre["Sin cuenta"];
-      if (!repEfectivo || !repDebito || !repSinCuenta) {
-        throw new Error(`Reporte debe incluir cuentas y Sin cuenta. Actual=${JSON.stringify(data)}`);
+      if (!repEfectivo || !repDebito) {
+        throw new Error(`Reporte debe incluir cuentas configuradas. Actual=${JSON.stringify(data)}`);
       }
 
       assertApprox(repEfectivo.ingresos, 400, "Reporte debe devolver ingresos por cuenta");
-      assertApprox(repEfectivo.egresos, 50, "Reporte debe devolver egresos por cuenta");
-      assertApprox(repEfectivo.balance, 350, "Reporte debe calcular balance ingresos - egresos");
+      assertApprox(repEfectivo.egresos, 70, "Reporte debe devolver egresos por cuenta");
+      assertApprox(repEfectivo.balance, 330, "Reporte debe calcular balance ingresos - egresos");
       assertEqual(repEfectivo.ventas, 2, "Reporte debe excluir ventas anuladas");
-      assertEqual(repEfectivo.pagos, 1, "Reporte debe excluir pagos pendientes");
+      assertEqual(repEfectivo.pagos, 2, "Reporte debe excluir pagos pendientes");
       assertApprox(repEfectivo.diferencias, 10, "Reporte debe sumar diferencias conciliadas en valor absoluto");
       if (repEfectivo.estado_conciliacion !== "diferencia") {
         throw new Error(`Cuenta con diferencia debe quedar diferencia. Actual=${repEfectivo.estado_conciliacion}`);
@@ -9789,11 +10053,8 @@ async function testReporteCuentasCobro() {
         throw new Error(`Cuenta conciliada debe quedar conciliado. Actual=${repDebito.estado_conciliacion}`);
       }
 
-      assertApprox(repSinCuenta.ingresos, 0, "Reporte debe asignar efectivo sin cuenta explicita al canal efectivo activo");
-      assertApprox(repSinCuenta.egresos, 20, "Reporte debe incluir egresos Sin cuenta");
-      assertApprox(repSinCuenta.balance, -20, "Reporte debe calcular balance Sin cuenta");
-      if (repSinCuenta.estado_conciliacion !== "pendiente") {
-        throw new Error(`Sin conciliacion debe quedar pendiente. Actual=${repSinCuenta.estado_conciliacion}`);
+      if (repSinCuenta && Number(repSinCuenta.pagos || 0) > 0) {
+        throw new Error(`Reporte no debe asignar pagos efectivos nuevos a Sin cuenta. Actual=${JSON.stringify(repSinCuenta)}`);
       }
 
       if (data[0].cuenta_nombre !== "Reporte cuenta efectivo TEST") {
@@ -12583,6 +12844,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMercadoPagoPointIntentosInfraestructura);
   await _run(testCuentasDestinoEtapa3AInfraestructura);
   await _run(testCajaResumenPorCuentaDestino);
+  await _run(testCajaPagosEfectivoAsignanDestinoCaja02B);
   await _run(testConciliacionManualPorCuentaDestino);
   await _run(testCajaResumenPorCuentaCobro);
   await _run(testConciliacionManualPorCuentaCobro);
