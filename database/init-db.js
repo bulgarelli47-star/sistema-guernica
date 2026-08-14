@@ -5,6 +5,19 @@ const bcrypt = require("bcrypt");
 const dbPath = path.join(__dirname, "guernica.db");
 const db = new sqlite3.Database(dbPath);
 
+const CAJA_DENOMINACIONES_ARQUEO_DEFAULTS = [
+  { denominacion: 10, modo: "conservar_todo", tamano_grupo: null, orden: 10 },
+  { denominacion: 20, modo: "conservar_todo", tamano_grupo: null, orden: 20 },
+  { denominacion: 50, modo: "conservar_todo", tamano_grupo: null, orden: 30 },
+  { denominacion: 100, modo: "conservar_todo", tamano_grupo: null, orden: 40 },
+  { denominacion: 200, modo: "conservar_todo", tamano_grupo: null, orden: 50 },
+  { denominacion: 500, modo: "agrupar", tamano_grupo: 2, orden: 60 },
+  { denominacion: 1000, modo: "extraer_todo", tamano_grupo: null, orden: 70 },
+  { denominacion: 2000, modo: "extraer_todo", tamano_grupo: null, orden: 80 },
+  { denominacion: 10000, modo: "extraer_todo", tamano_grupo: null, orden: 90 },
+  { denominacion: 20000, modo: "extraer_todo", tamano_grupo: null, orden: 100 }
+];
+
 async function initDatabase() {
   try {
     console.log("Creando base de datos...");
@@ -681,6 +694,19 @@ async function initDatabase() {
       )
     `);
 
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS caja_arqueo_denominaciones (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        denominacion INTEGER NOT NULL,
+        modo TEXT NOT NULL,
+        tamano_grupo INTEGER,
+        activo INTEGER NOT NULL DEFAULT 1,
+        orden INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT
+      )
+    `);
+
     await runQuery("CREATE INDEX IF NOT EXISTS idx_usuarios_usuario ON usuarios(usuario)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_productos_codigo ON productos(codigo)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_productos_activo ON productos(activo)");
@@ -699,6 +725,12 @@ async function initDatabase() {
       ON caja_traslados_internos(arqueo_id, tipo)
       WHERE arqueo_id IS NOT NULL AND tipo = 'arqueo_extraccion' AND estado = 'activo'
     `);
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_arqueo_denominaciones_orden ON caja_arqueo_denominaciones(orden)");
+    await runQuery(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_caja_arqueo_denominaciones_activa
+      ON caja_arqueo_denominaciones(denominacion)
+      WHERE activo = 1
+    `);
     await runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_dni_cuit_unique ON clientes(dni_cuit) WHERE dni_cuit IS NOT NULL AND TRIM(dni_cuit) != ''");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_compras_proveedor_estado ON compras(proveedor_id, estado)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobantes_compra ON compra_comprobantes(compra_id)");
@@ -711,6 +743,21 @@ async function initDatabase() {
     await runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_compra_recepciones_idempotency ON compra_recepciones(compra_id, idempotency_key)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_recepcion_items_recepcion ON compra_recepcion_items(recepcion_id)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_recepcion_items_item ON compra_recepcion_items(compra_item_id)");
+
+    for (const regla of CAJA_DENOMINACIONES_ARQUEO_DEFAULTS) {
+      const existente = await getQuery(
+        "SELECT id FROM caja_arqueo_denominaciones WHERE denominacion = ?",
+        [regla.denominacion]
+      );
+      if (!existente) {
+        await runQuery(
+          `INSERT INTO caja_arqueo_denominaciones
+           (denominacion, modo, tamano_grupo, activo, orden, created_at, updated_at)
+           VALUES (?, ?, ?, 1, ?, datetime('now'), datetime('now'))`,
+          [regla.denominacion, regla.modo, regla.tamano_grupo, regla.orden]
+        );
+      }
+    }
 
     const existingUser = await getQuery(
       "SELECT * FROM usuarios WHERE usuario = ?",

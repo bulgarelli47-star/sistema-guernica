@@ -16,6 +16,9 @@ const {
   validarCantidadRecepcion
 } = require("../backend/services/compraService");
 const {
+  CAJA_DENOMINACIONES_ARQUEO_DEFAULTS,
+  buildConteoBilletes,
+  calcularDistribucionArqueo,
   validarTrasladoInterno
 } = require("../backend/services/cajaService");
 
@@ -540,6 +543,18 @@ function assertSame(actual, expected, message) {
 function assertApprox(actual, expected, message, tolerance = 0.01) {
   if (Math.abs(Number(actual) - Number(expected)) > tolerance) {
     throw new Error(`${message}. Esperado=${expected}, actual=${actual}`);
+  }
+}
+
+function assertThrows(fn, message) {
+  let thrown = false;
+  try {
+    fn();
+  } catch (error) {
+    thrown = true;
+  }
+  if (!thrown) {
+    throw new Error(message);
   }
 }
 
@@ -9726,6 +9741,176 @@ async function testCajaArqueoOperativoSchemaCaja03B() {
   }
 }
 
+async function testCajaDenominacionesArqueoCaja03C() {
+  const reglas = CAJA_DENOMINACIONES_ARQUEO_DEFAULTS;
+  const detallePorDenominacion = (resultado, denominacion) =>
+    resultado.detalle.find((item) => Number(item.denominacion) === Number(denominacion));
+
+  const conservar = calcularDistribucionArqueo({ 20: 2 }, reglas);
+  assertApprox(conservar.efectivo_contado, 40, "CAJA03C conservar_todo cuenta efectivo contado");
+  assertApprox(conservar.cambio_retenido, 40, "CAJA03C conservar_todo retiene todo");
+  assertApprox(conservar.monto_extraido, 0, "CAJA03C conservar_todo no extrae");
+
+  const extraer = calcularDistribucionArqueo({ 1000: 2 }, reglas);
+  assertApprox(extraer.efectivo_contado, 2000, "CAJA03C extraer_todo cuenta efectivo contado");
+  assertApprox(extraer.cambio_retenido, 0, "CAJA03C extraer_todo no retiene");
+  assertApprox(extraer.monto_extraido, 2000, "CAJA03C extraer_todo extrae todo");
+
+  [
+    [0, 0, 0],
+    [1, 500, 0],
+    [2, 0, 1000],
+    [3, 500, 1000],
+    [4, 0, 2000],
+    [5, 500, 2000]
+  ].forEach(([cantidad, esperadoRetenido, esperadoExtraido]) => {
+    const resultado = calcularDistribucionArqueo({ 500: cantidad }, reglas);
+    const detalle500 = detallePorDenominacion(resultado, 500);
+    assertApprox(detalle500.cambio_retenido, esperadoRetenido, `CAJA03C $500 x ${cantidad} retiene esperado`);
+    assertApprox(detalle500.monto_extraido, esperadoExtraido, `CAJA03C $500 x ${cantidad} extrae esperado`);
+    assertApprox(resultado.efectivo_contado, esperadoRetenido + esperadoExtraido, `CAJA03C $500 x ${cantidad} cierra contado`);
+  });
+
+  const vacio = calcularDistribucionArqueo({}, reglas);
+  assertApprox(vacio.efectivo_contado, 0, "CAJA03C conteo vacio contado cero");
+  assertApprox(vacio.cambio_retenido, 0, "CAJA03C conteo vacio cambio cero");
+  assertApprox(vacio.monto_extraido, 0, "CAJA03C conteo vacio extraccion cero");
+
+  assertThrows(() => calcularDistribucionArqueo({ 20: -1 }, reglas), "CAJA03C rechaza cantidades negativas");
+  assertThrows(() => calcularDistribucionArqueo({ 20: 1.5 }, reglas), "CAJA03C rechaza cantidades decimales");
+  assertThrows(() => calcularDistribucionArqueo({ 0: 1 }, reglas), "CAJA03C rechaza denominacion cero");
+  assertThrows(() => calcularDistribucionArqueo({ 5: 1 }, reglas), "CAJA03C rechaza denominacion sin regla");
+  assertThrows(
+    () => calcularDistribucionArqueo({ 20: 1 }, [{ denominacion: 20, modo: "modo_invalido", activo: 1 }]),
+    "CAJA03C rechaza modo invalido"
+  );
+  assertThrows(
+    () => calcularDistribucionArqueo({ 500: 2 }, [{ denominacion: 500, modo: "agrupar", activo: 1 }]),
+    "CAJA03C rechaza agrupar sin tamano_grupo"
+  );
+  assertThrows(
+    () => calcularDistribucionArqueo({ 500: 2 }, [
+      { denominacion: 500, modo: "agrupar", tamano_grupo: 2, activo: 1 },
+      { denominacion: 500, modo: "conservar_todo", tamano_grupo: null, activo: 1 }
+    ]),
+    "CAJA03C rechaza denominacion activa duplicada"
+  );
+
+  const canonico = calcularDistribucionArqueo({
+    20: 50,
+    50: 3,
+    100: 200,
+    200: 5,
+    500: 5,
+    1000: 2,
+    2000: 5,
+    10000: 1
+  }, reglas);
+  assertApprox(canonico.efectivo_contado, 46650, "CAJA03C caso canonico contado");
+  assertApprox(canonico.cambio_retenido, 22650, "CAJA03C caso canonico cambio retenido");
+  assertApprox(canonico.monto_extraido, 24000, "CAJA03C caso canonico monto extraido");
+  assertApprox(canonico.cambio_retenido + canonico.monto_extraido, canonico.efectivo_contado, "CAJA03C contado = cambio + extraido");
+
+  const legacy = buildConteoBilletes({ 500: 5 });
+  assertApprox(legacy.total, 2500, "CAJA03C no cambia motor legacy de conteo");
+
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+
+      const reglasPersistidas = await allSql(
+        dbPath,
+        "SELECT denominacion, modo, tamano_grupo, activo FROM caja_arqueo_denominaciones WHERE activo = 1 ORDER BY orden"
+      );
+      assertEqual(reglasPersistidas.length, 10, "CAJA03C persiste diez reglas activas de referencia");
+      if (reglasPersistidas.some((regla) => Number(regla.denominacion) === 5)) {
+        throw new Error("CAJA03C no debe crear denominacion 5");
+      }
+      const regla500 = reglasPersistidas.find((regla) => Number(regla.denominacion) === 500);
+      assertSame(regla500?.modo, "agrupar", "CAJA03C persiste $500 como agrupar");
+      assertEqual(regla500?.tamano_grupo, 2, "CAJA03C persiste $500 con grupo 2");
+
+      let duplicadoActivoRechazado = false;
+      try {
+        await runSql(
+          dbPath,
+          `INSERT INTO caja_arqueo_denominaciones
+           (denominacion, modo, tamano_grupo, activo, orden)
+           VALUES (500, 'extraer_todo', NULL, 1, 999)`
+        );
+      } catch (error) {
+        duplicadoActivoRechazado = true;
+      }
+      assertEqual(duplicadoActivoRechazado, true, "CAJA03C schema rechaza duplicados activos");
+
+      await runSql(
+        dbPath,
+        `INSERT INTO caja_arqueo_denominaciones
+         (denominacion, modo, tamano_grupo, activo, orden)
+         VALUES (500, 'extraer_todo', NULL, 0, 1000)`
+      );
+      const duplicadosInactivos = await allSql(
+        dbPath,
+        "SELECT COUNT(*) AS total FROM caja_arqueo_denominaciones WHERE denominacion = 500"
+      );
+      assertEqual(duplicadosInactivos[0].total, 2, "CAJA03C schema permite historia/configuracion inactiva de misma denominacion");
+
+      await registrarArqueoCierre(baseUrl, token, 1000);
+      const arqueoLegacy = (await allSql(
+        dbPath,
+        `SELECT modelo_arqueo_version, cambio_retenido, monto_extraido, cuenta_origen_id, cuenta_reserva_id
+         FROM caja_arqueos
+         ORDER BY id DESC
+         LIMIT 1`
+      ))[0];
+      assertEqual(arqueoLegacy.modelo_arqueo_version, null, "CAJA03C POST arqueo actual sigue legacy version NULL");
+      assertEqual(arqueoLegacy.cambio_retenido, null, "CAJA03C POST arqueo actual no escribe cambio_retenido");
+      assertEqual(arqueoLegacy.monto_extraido, null, "CAJA03C POST arqueo actual no escribe monto_extraido");
+      assertEqual(arqueoLegacy.cuenta_origen_id, null, "CAJA03C POST arqueo actual no escribe cuenta origen");
+      assertEqual(arqueoLegacy.cuenta_reserva_id, null, "CAJA03C POST arqueo actual no escribe cuenta reserva");
+
+      const traslados = await allSql(dbPath, "SELECT COUNT(*) AS total FROM caja_traslados_internos");
+      assertEqual(traslados[0].total, 0, "CAJA03C no crea traslados internos");
+    });
+
+    await runSql(
+      dbPath,
+      "UPDATE caja_arqueo_denominaciones SET activo = 0, updated_at = datetime('now') WHERE denominacion = 20"
+    );
+    await runSql(
+      dbPath,
+      `UPDATE caja_arqueo_denominaciones
+       SET modo = 'extraer_todo', tamano_grupo = NULL, orden = 777, updated_at = datetime('now')
+       WHERE denominacion = 500 AND activo = 1`
+    );
+
+    await withServer(dbPath, async () => {
+      const regla20 = await allSql(
+        dbPath,
+        "SELECT activo, modo, tamano_grupo, orden FROM caja_arqueo_denominaciones WHERE denominacion = 20"
+      );
+      assertEqual(regla20.length, 1, "CAJA03C reinicio no duplica denominacion desactivada");
+      assertEqual(regla20[0].activo, 0, "CAJA03C reinicio no reactiva denominacion desactivada");
+
+      const reglas500 = await allSql(
+        dbPath,
+        "SELECT modo, tamano_grupo, activo, orden FROM caja_arqueo_denominaciones WHERE denominacion = 500 ORDER BY id"
+      );
+      assertEqual(reglas500.length, 2, "CAJA03C reinicio no duplica denominacion existente");
+      const regla500Activa = reglas500.find((regla) => Number(regla.activo) === 1);
+      assertSame(regla500Activa?.modo, "extraer_todo", "CAJA03C reinicio no resetea modo existente");
+      assertEqual(regla500Activa?.tamano_grupo || 0, 0, "CAJA03C reinicio no resetea tamano_grupo existente");
+      assertEqual(regla500Activa?.orden, 777, "CAJA03C reinicio no resetea orden existente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testConciliacionManualPorCuentaDestino() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -13015,6 +13200,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCajaResumenPorCuentaDestino);
   await _run(testCajaPagosEfectivoAsignanDestinoCaja02B);
   await _run(testCajaArqueoOperativoSchemaCaja03B);
+  await _run(testCajaDenominacionesArqueoCaja03C);
   await _run(testConciliacionManualPorCuentaDestino);
   await _run(testCajaResumenPorCuentaCobro);
   await _run(testConciliacionManualPorCuentaCobro);

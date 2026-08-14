@@ -1,5 +1,18 @@
 const { allQuery, getQuery, runQuery } = require("../db");
 
+const CAJA_DENOMINACIONES_ARQUEO_DEFAULTS = [
+  { denominacion: 10, modo: "conservar_todo", tamano_grupo: null, orden: 10 },
+  { denominacion: 20, modo: "conservar_todo", tamano_grupo: null, orden: 20 },
+  { denominacion: 50, modo: "conservar_todo", tamano_grupo: null, orden: 30 },
+  { denominacion: 100, modo: "conservar_todo", tamano_grupo: null, orden: 40 },
+  { denominacion: 200, modo: "conservar_todo", tamano_grupo: null, orden: 50 },
+  { denominacion: 500, modo: "agrupar", tamano_grupo: 2, orden: 60 },
+  { denominacion: 1000, modo: "extraer_todo", tamano_grupo: null, orden: 70 },
+  { denominacion: 2000, modo: "extraer_todo", tamano_grupo: null, orden: 80 },
+  { denominacion: 10000, modo: "extraer_todo", tamano_grupo: null, orden: 90 },
+  { denominacion: 20000, modo: "extraer_todo", tamano_grupo: null, orden: 100 }
+];
+
 async function ensureColumn(tableName, columnName, definition) {
   const columns = await allQuery(`PRAGMA table_info(${tableName})`);
   const exists = columns.some((column) => column.name === columnName);
@@ -88,6 +101,42 @@ async function ensureCajaTrasladosInternosTable() {
     ON caja_traslados_internos(arqueo_id, tipo)
     WHERE arqueo_id IS NOT NULL AND tipo = 'arqueo_extraccion' AND estado = 'activo'
   `);
+}
+
+async function ensureCajaDenominacionesArqueoTable() {
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS caja_arqueo_denominaciones (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      denominacion INTEGER NOT NULL,
+      modo TEXT NOT NULL,
+      tamano_grupo INTEGER,
+      activo INTEGER NOT NULL DEFAULT 1,
+      orden INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT,
+      updated_at TEXT
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_arqueo_denominaciones_orden ON caja_arqueo_denominaciones(orden)");
+  await runQuery(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_caja_arqueo_denominaciones_activa
+    ON caja_arqueo_denominaciones(denominacion)
+    WHERE activo = 1
+  `);
+
+  for (const regla of CAJA_DENOMINACIONES_ARQUEO_DEFAULTS) {
+    const existente = await getQuery(
+      "SELECT id FROM caja_arqueo_denominaciones WHERE denominacion = ?",
+      [regla.denominacion]
+    );
+    if (!existente) {
+      await runQuery(
+        `INSERT INTO caja_arqueo_denominaciones
+         (denominacion, modo, tamano_grupo, activo, orden, created_at, updated_at)
+         VALUES (?, ?, ?, 1, ?, datetime('now'), datetime('now'))`,
+        [regla.denominacion, regla.modo, regla.tamano_grupo, regla.orden]
+      );
+    }
+  }
 }
 
 async function ensureConciliacionesCuentasCobroTable() {
@@ -209,6 +258,114 @@ function buildConteoBilletes(conteo = {}) {
   return {
     detalle,
     total: Number(total.toFixed(2))
+  };
+}
+
+function normalizarReglaDenominacionArqueo(regla = {}) {
+  return {
+    denominacion: Number(regla.denominacion),
+    modo: String(regla.modo || "").trim().toLowerCase(),
+    tamano_grupo: regla.tamano_grupo === undefined || regla.tamano_grupo === null || regla.tamano_grupo === ""
+      ? null
+      : Number(regla.tamano_grupo),
+    orden: Number(regla.orden) || 0,
+    activo: regla.activo === undefined ? 1 : Number(regla.activo)
+  };
+}
+
+function validarReglaDenominacionArqueo(regla) {
+  if (!Number.isInteger(regla.denominacion) || regla.denominacion <= 0) {
+    throw new Error("Denominacion invalida");
+  }
+  if (!["conservar_todo", "extraer_todo", "agrupar"].includes(regla.modo)) {
+    throw new Error(`Modo invalido para denominacion ${regla.denominacion}`);
+  }
+  if ((regla.modo === "conservar_todo" || regla.modo === "extraer_todo") && regla.tamano_grupo !== null) {
+    throw new Error(`La denominacion ${regla.denominacion} no debe tener tamano_grupo`);
+  }
+  if (regla.modo === "agrupar" && (!Number.isInteger(regla.tamano_grupo) || regla.tamano_grupo <= 0)) {
+    throw new Error(`La denominacion ${regla.denominacion} requiere tamano_grupo valido`);
+  }
+}
+
+function calcularDistribucionArqueo(conteo = {}, reglas = []) {
+  const reglasActivas = [];
+  const reglasPorDenominacion = new Map();
+
+  reglas.forEach((item) => {
+    const regla = normalizarReglaDenominacionArqueo(item);
+    if (regla.activo !== 1) return;
+    validarReglaDenominacionArqueo(regla);
+    if (reglasPorDenominacion.has(regla.denominacion)) {
+      throw new Error(`Denominacion activa duplicada: ${regla.denominacion}`);
+    }
+    reglasPorDenominacion.set(regla.denominacion, regla);
+    reglasActivas.push(regla);
+  });
+
+  const detalle = [];
+  let efectivoContado = 0;
+  let cambioRetenido = 0;
+  let montoExtraido = 0;
+
+  Object.entries(conteo || {}).forEach(([denominacionKey, cantidadRaw]) => {
+    const denominacion = Number(denominacionKey);
+    const cantidad = Number(cantidadRaw);
+    if (!Number.isInteger(denominacion) || denominacion <= 0) {
+      throw new Error(`Denominacion invalida: ${denominacionKey}`);
+    }
+    if (!Number.isInteger(cantidad) || cantidad < 0) {
+      throw new Error(`Cantidad invalida para denominacion ${denominacion}`);
+    }
+    if (!reglasPorDenominacion.has(denominacion)) {
+      throw new Error(`Denominacion sin configuracion activa: ${denominacion}`);
+    }
+  });
+
+  reglasActivas
+    .sort((a, b) => a.orden - b.orden || a.denominacion - b.denominacion)
+    .forEach((regla) => {
+      const cantidad = Number(conteo[String(regla.denominacion)] ?? conteo[regla.denominacion] ?? 0);
+      if (!Number.isInteger(cantidad) || cantidad < 0) {
+        throw new Error(`Cantidad invalida para denominacion ${regla.denominacion}`);
+      }
+
+      const montoTotal = regla.denominacion * cantidad;
+      let retenido = 0;
+      let extraido = 0;
+      let gruposExtraidos = 0;
+
+      if (regla.modo === "conservar_todo") {
+        retenido = montoTotal;
+      } else if (regla.modo === "extraer_todo") {
+        extraido = montoTotal;
+      } else {
+        gruposExtraidos = Math.floor(cantidad / regla.tamano_grupo);
+        const cantidadExtraida = gruposExtraidos * regla.tamano_grupo;
+        extraido = cantidadExtraida * regla.denominacion;
+        retenido = (cantidad - cantidadExtraida) * regla.denominacion;
+      }
+
+      efectivoContado += montoTotal;
+      cambioRetenido += retenido;
+      montoExtraido += extraido;
+      detalle.push({
+        denominacion: regla.denominacion,
+        cantidad,
+        modo: regla.modo,
+        tamano_grupo: regla.tamano_grupo,
+        grupos_extraidos: gruposExtraidos,
+        monto_total: Number(montoTotal.toFixed(2)),
+        cambio_retenido: Number(retenido.toFixed(2)),
+        monto_extraido: Number(extraido.toFixed(2))
+      });
+    });
+
+  return {
+    efectivo_contado: Number(efectivoContado.toFixed(2)),
+    cambio_retenido: Number(cambioRetenido.toFixed(2)),
+    monto_extraido: Number(montoExtraido.toFixed(2)),
+    detalle
   };
 }
 
@@ -1199,9 +1356,12 @@ module.exports = {
   buildCajaResumen,
   buildCajaResumenConSaldoMp,
   buildCajaSnapshot,
+  calcularDistribucionArqueo,
+  CAJA_DENOMINACIONES_ARQUEO_DEFAULTS,
   getResumenPorCuentaCobro,
   buildConteoBilletes,
   ensureCajaArqueosTable,
+  ensureCajaDenominacionesArqueoTable,
   ensureCajaTrasladosInternosTable,
   ensureCajaMovimientosTable,
   ensureConciliacionesCuentasCobroTable,
