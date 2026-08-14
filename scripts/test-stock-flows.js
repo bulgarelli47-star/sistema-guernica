@@ -15,6 +15,9 @@ const {
   normalizarComprobanteCompra,
   validarCantidadRecepcion
 } = require("../backend/services/compraService");
+const {
+  validarTrasladoInterno
+} = require("../backend/services/cajaService");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -9557,6 +9560,172 @@ async function testCajaPagosEfectivoAsignanDestinoCaja02B() {
   }
 }
 
+async function testCajaArqueoOperativoSchemaCaja03B() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const apertura = await abrirCaja(baseUrl, token, 6550);
+      const cajaAtencion = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja atencion CAJA03B ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -500
+      });
+      const reserva = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Reserva CAJA03B ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -490
+      });
+      const banco = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Banco CAJA03B ${Date.now()}`,
+        tipo_destino: "banco",
+        orden: -480
+      });
+
+      const columnasArqueo = await allSql(dbPath, "PRAGMA table_info(caja_arqueos)");
+      ["modelo_arqueo_version", "cambio_retenido", "monto_extraido", "cuenta_origen_id", "cuenta_reserva_id"].forEach((columna) => {
+        if (!columnasArqueo.some((item) => item.name === columna)) {
+          throw new Error(`CAJA03B falta columna caja_arqueos.${columna}`);
+        }
+      });
+      const tablasTraslado = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'caja_traslados_internos'");
+      assertEqual(tablasTraslado.length, 1, "CAJA03B schema crea caja_traslados_internos");
+
+      await runSql(
+        dbPath,
+        `INSERT INTO caja_arqueos
+         (caja_id, fecha, hora, usuario, efectivo_esperado, efectivo_contado, diferencia_efectivo,
+          digital_esperado, digital_real, diferencia_digital, resultado_final, estado, observaciones)
+         VALUES (?, '2026-06-01', '09:00:00', 'admin', 100, 100, 0, 0, 0, 0, 0, 'OK', 'Legacy CAJA03B')`,
+        [apertura.id]
+      );
+      const legacy = (await allSql(
+        dbPath,
+        `SELECT modelo_arqueo_version, cambio_retenido, monto_extraido, cuenta_origen_id, cuenta_reserva_id
+         FROM caja_arqueos WHERE observaciones = 'Legacy CAJA03B'`
+      ))[0];
+      assertEqual(legacy.modelo_arqueo_version, null, "CAJA03B arqueo legacy conserva version NULL");
+      assertEqual(legacy.cambio_retenido, null, "CAJA03B arqueo legacy conserva cambio_retenido NULL");
+      assertEqual(legacy.monto_extraido, null, "CAJA03B arqueo legacy conserva monto_extraido NULL");
+      assertEqual(legacy.cuenta_origen_id, null, "CAJA03B arqueo legacy conserva origen NULL");
+      assertEqual(legacy.cuenta_reserva_id, null, "CAJA03B arqueo legacy conserva reserva NULL");
+
+      const arqueo1Result = await runSql(
+        dbPath,
+        `INSERT INTO caja_arqueos
+         (caja_id, fecha, hora, usuario, efectivo_esperado, efectivo_contado, diferencia_efectivo,
+          digital_esperado, digital_real, diferencia_digital, resultado_final, estado, observaciones,
+          modelo_arqueo_version, cambio_retenido, monto_extraido, cuenta_origen_id, cuenta_reserva_id)
+         VALUES (?, '2026-06-01', '12:00:00', 'admin', 46650, 46650, 0, 0, 0, 0, 0, 'OK',
+          'Operativo 1 CAJA03B', 1, 31650, 15000, ?, ?)`,
+        [apertura.id, cajaAtencion.id, reserva.id]
+      );
+      const arqueo1 = (await allSql(dbPath, "SELECT * FROM caja_arqueos WHERE id = ?", [arqueo1Result.lastID]))[0];
+      assertEqual(arqueo1.modelo_arqueo_version, 1, "CAJA03B arqueo operativo usa version 1");
+      assertApprox(arqueo1.efectivo_contado, 46650, "CAJA03B arqueo persiste efectivo contado");
+      assertApprox(arqueo1.cambio_retenido, 31650, "CAJA03B arqueo persiste cambio retenido");
+      assertApprox(arqueo1.monto_extraido, 15000, "CAJA03B arqueo persiste monto extraido");
+
+      const cuentas = await allSql(
+        dbPath,
+        "SELECT id, tipo_destino, activo FROM cuentas_destino WHERE id IN (?, ?, ?)",
+        [cajaAtencion.id, reserva.id, banco.id]
+      );
+      const cuentaOrigen = cuentas.find((item) => Number(item.id) === Number(cajaAtencion.id));
+      const cuentaReserva = cuentas.find((item) => Number(item.id) === Number(reserva.id));
+      const cuentaBanco = cuentas.find((item) => Number(item.id) === Number(banco.id));
+      const trasladoValido = validarTrasladoInterno({
+        caja_id: apertura.id,
+        arqueo_id: arqueo1.id,
+        cuenta_origen_id: cajaAtencion.id,
+        cuenta_destino_id: reserva.id,
+        monto: 15000,
+        tipo: "arqueo_extraccion",
+        estado: "activo"
+      }, { origen: cuentaOrigen, destino: cuentaReserva, arqueo: arqueo1 });
+      assertEqual(trasladoValido.ok, true, "CAJA03B traslado entre cuentas efectivo es valido");
+
+      const mismoDestino = validarTrasladoInterno({
+        caja_id: apertura.id,
+        arqueo_id: arqueo1.id,
+        cuenta_origen_id: cajaAtencion.id,
+        cuenta_destino_id: cajaAtencion.id,
+        monto: 15000,
+        tipo: "arqueo_extraccion"
+      }, { origen: cuentaOrigen, destino: cuentaOrigen, arqueo: arqueo1 });
+      assertEqual(mismoDestino.ok, false, "CAJA03B origen y destino iguales son invalidos");
+
+      const destinoNoEfectivo = validarTrasladoInterno({
+        caja_id: apertura.id,
+        arqueo_id: arqueo1.id,
+        cuenta_origen_id: cajaAtencion.id,
+        cuenta_destino_id: banco.id,
+        monto: 15000,
+        tipo: "arqueo_extraccion"
+      }, { origen: cuentaOrigen, destino: cuentaBanco, arqueo: arqueo1 });
+      assertEqual(destinoNoEfectivo.ok, false, "CAJA03B destino no efectivo es invalido");
+
+      await runSql(
+        dbPath,
+        `INSERT INTO caja_traslados_internos
+         (caja_id, arqueo_id, cuenta_origen_id, cuenta_destino_id, monto, tipo, estado, fecha, hora, usuario, observaciones, created_at)
+         VALUES (?, ?, ?, ?, 15000, 'arqueo_extraccion', 'activo', '2026-06-01', '12:01:00', 'admin',
+          'Extraccion arqueo 1 CAJA03B', datetime('now'))`,
+        [apertura.id, arqueo1.id, cajaAtencion.id, reserva.id]
+      );
+      let duplicadoRechazado = false;
+      try {
+        await runSql(
+          dbPath,
+          `INSERT INTO caja_traslados_internos
+           (caja_id, arqueo_id, cuenta_origen_id, cuenta_destino_id, monto, tipo, estado, fecha, hora, usuario)
+           VALUES (?, ?, ?, ?, 1, 'arqueo_extraccion', 'activo', '2026-06-01', '12:02:00', 'admin')`,
+          [apertura.id, arqueo1.id, cajaAtencion.id, reserva.id]
+        );
+      } catch (error) {
+        duplicadoRechazado = true;
+      }
+      assertEqual(duplicadoRechazado, true, "CAJA03B no permite dos extracciones activas del mismo arqueo");
+
+      const arqueo2Result = await runSql(
+        dbPath,
+        `INSERT INTO caja_arqueos
+         (caja_id, fecha, hora, usuario, efectivo_esperado, efectivo_contado, diferencia_efectivo,
+          digital_esperado, digital_real, diferencia_digital, resultado_final, estado, observaciones,
+          modelo_arqueo_version, cambio_retenido, monto_extraido, cuenta_origen_id, cuenta_reserva_id)
+         VALUES (?, '2026-06-01', '18:00:00', 'admin', 67000, 67000, 0, 0, 0, 0, 0, 'OK',
+          'Operativo 2 CAJA03B', 1, 11000, 56000, ?, ?)`,
+        [apertura.id, cajaAtencion.id, reserva.id]
+      );
+      await runSql(
+        dbPath,
+        `INSERT INTO caja_traslados_internos
+         (caja_id, arqueo_id, cuenta_origen_id, cuenta_destino_id, monto, tipo, estado, fecha, hora, usuario, observaciones, created_at)
+         VALUES (?, ?, ?, ?, 56000, 'arqueo_extraccion', 'activo', '2026-06-01', '18:01:00', 'admin',
+          'Extraccion arqueo 2 CAJA03B', datetime('now'))`,
+        [apertura.id, arqueo2Result.lastID, cajaAtencion.id, reserva.id]
+      );
+      const trasladosCanonicos = await allSql(
+        dbPath,
+        "SELECT monto FROM caja_traslados_internos WHERE caja_id = ? AND tipo = 'arqueo_extraccion' AND estado = 'activo' ORDER BY id",
+        [apertura.id]
+      );
+      assertEqual(trasladosCanonicos.length, 2, "CAJA03B caso canonico persiste dos extracciones trazables");
+      assertApprox(trasladosCanonicos[0].monto, 15000, "CAJA03B caso canonico persiste extraccion 1");
+      assertApprox(trasladosCanonicos[1].monto, 56000, "CAJA03B caso canonico persiste extraccion 2");
+
+      const pagos = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos"))[0].total;
+      const movimientosCaja = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM caja_movimientos"))[0].total;
+      assertEqual(pagos, 0, "CAJA03B no usa pagos para extracciones");
+      assertEqual(movimientosCaja, 0, "CAJA03B no usa caja_movimientos para extracciones");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testConciliacionManualPorCuentaDestino() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -12845,6 +13014,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCuentasDestinoEtapa3AInfraestructura);
   await _run(testCajaResumenPorCuentaDestino);
   await _run(testCajaPagosEfectivoAsignanDestinoCaja02B);
+  await _run(testCajaArqueoOperativoSchemaCaja03B);
   await _run(testConciliacionManualPorCuentaDestino);
   await _run(testCajaResumenPorCuentaCobro);
   await _run(testConciliacionManualPorCuentaCobro);

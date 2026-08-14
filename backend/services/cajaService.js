@@ -47,6 +47,47 @@ async function ensureCajaArqueosTable() {
     )
   `);
   await ensureColumn("caja_arqueos", "registrado_cierre", "INTEGER NOT NULL DEFAULT 1");
+  await ensureColumn("caja_arqueos", "modelo_arqueo_version", "INTEGER");
+  await ensureColumn("caja_arqueos", "cambio_retenido", "REAL");
+  await ensureColumn("caja_arqueos", "monto_extraido", "REAL");
+  await ensureColumn("caja_arqueos", "cuenta_origen_id", "INTEGER");
+  await ensureColumn("caja_arqueos", "cuenta_reserva_id", "INTEGER");
+}
+
+async function ensureCajaTrasladosInternosTable() {
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS caja_traslados_internos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      caja_id INTEGER NOT NULL,
+      arqueo_id INTEGER,
+      cuenta_origen_id INTEGER NOT NULL,
+      cuenta_destino_id INTEGER NOT NULL,
+      monto REAL NOT NULL,
+      tipo TEXT NOT NULL,
+      estado TEXT NOT NULL DEFAULT 'activo',
+      fecha TEXT NOT NULL,
+      hora TEXT NOT NULL,
+      usuario TEXT NOT NULL DEFAULT 'admin',
+      observaciones TEXT,
+      created_at TEXT,
+      anulada_at TEXT,
+      anulada_por TEXT,
+      motivo_anulacion TEXT,
+      FOREIGN KEY (caja_id) REFERENCES caja_aperturas(id),
+      FOREIGN KEY (arqueo_id) REFERENCES caja_arqueos(id),
+      FOREIGN KEY (cuenta_origen_id) REFERENCES cuentas_destino(id),
+      FOREIGN KEY (cuenta_destino_id) REFERENCES cuentas_destino(id)
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_traslados_caja ON caja_traslados_internos(caja_id)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_traslados_arqueo ON caja_traslados_internos(arqueo_id)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_traslados_origen ON caja_traslados_internos(cuenta_origen_id)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_traslados_destino ON caja_traslados_internos(cuenta_destino_id)");
+  await runQuery(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_caja_traslados_arqueo_extraccion_activa
+    ON caja_traslados_internos(arqueo_id, tipo)
+    WHERE arqueo_id IS NOT NULL AND tipo = 'arqueo_extraccion' AND estado = 'activo'
+  `);
 }
 
 async function ensureConciliacionesCuentasCobroTable() {
@@ -169,6 +210,65 @@ function buildConteoBilletes(conteo = {}) {
     detalle,
     total: Number(total.toFixed(2))
   };
+}
+
+function normalizarTrasladoInterno(payload = {}) {
+  return {
+    caja_id: Number(payload.caja_id) || null,
+    arqueo_id: payload.arqueo_id === undefined || payload.arqueo_id === null || payload.arqueo_id === ""
+      ? null
+      : Number(payload.arqueo_id) || null,
+    cuenta_origen_id: Number(payload.cuenta_origen_id) || null,
+    cuenta_destino_id: Number(payload.cuenta_destino_id) || null,
+    monto: Number(Number(payload.monto || 0).toFixed(2)),
+    tipo: String(payload.tipo || "").trim().toLowerCase(),
+    estado: String(payload.estado || "activo").trim().toLowerCase(),
+    fecha: String(payload.fecha || "").trim(),
+    hora: String(payload.hora || "").trim(),
+    usuario: String(payload.usuario || "admin").trim() || "admin",
+    observaciones: String(payload.observaciones || "").trim()
+  };
+}
+
+function validarTrasladoInterno(data = {}, contexto = {}) {
+  const traslado = normalizarTrasladoInterno(data);
+  const origen = contexto.origen || null;
+  const destino = contexto.destino || null;
+  const arqueo = contexto.arqueo || null;
+
+  if (!traslado.caja_id) return { ok: false, message: "Caja invalida" };
+  if (!traslado.cuenta_origen_id) return { ok: false, message: "Cuenta origen invalida" };
+  if (!traslado.cuenta_destino_id) return { ok: false, message: "Cuenta destino invalida" };
+  if (traslado.cuenta_origen_id === traslado.cuenta_destino_id) {
+    return { ok: false, message: "La cuenta origen y destino deben ser distintas" };
+  }
+  if (!Number.isFinite(traslado.monto) || traslado.monto <= 0) {
+    return { ok: false, message: "El monto del traslado debe ser mayor a cero" };
+  }
+  if (!traslado.tipo) return { ok: false, message: "Tipo de traslado obligatorio" };
+  if (!["activo", "anulado"].includes(traslado.estado)) {
+    return { ok: false, message: "Estado de traslado invalido" };
+  }
+  if (!origen || Number(origen.id) !== traslado.cuenta_origen_id || Number(origen.activo) !== 1) {
+    return { ok: false, message: "Cuenta origen inexistente o inactiva" };
+  }
+  if (!destino || Number(destino.id) !== traslado.cuenta_destino_id || Number(destino.activo) !== 1) {
+    return { ok: false, message: "Cuenta destino inexistente o inactiva" };
+  }
+  if (String(origen.tipo_destino || "").toLowerCase() !== "efectivo" ||
+      String(destino.tipo_destino || "").toLowerCase() !== "efectivo") {
+    return { ok: false, message: "Los traslados internos de efectivo requieren cuentas destino tipo efectivo" };
+  }
+  if (traslado.arqueo_id !== null) {
+    if (!arqueo || Number(arqueo.id) !== traslado.arqueo_id) {
+      return { ok: false, message: "Arqueo inexistente" };
+    }
+    if (Number(arqueo.caja_id) !== traslado.caja_id) {
+      return { ok: false, message: "El traslado no pertenece a la misma caja del arqueo" };
+    }
+  }
+
+  return { ok: true, traslado };
 }
 
 async function getPagosCaja(cajaId) {
@@ -1102,6 +1202,7 @@ module.exports = {
   getResumenPorCuentaCobro,
   buildConteoBilletes,
   ensureCajaArqueosTable,
+  ensureCajaTrasladosInternosTable,
   ensureCajaMovimientosTable,
   ensureConciliacionesCuentasCobroTable,
   ensureConciliacionesCuentasDestinoTable,
@@ -1118,5 +1219,7 @@ module.exports = {
   guardarConciliacionCuentaDestino,
   getUltimoSaldoArrastradoPorCuenta,
   mapCajaArqueo,
+  normalizarTrasladoInterno,
+  validarTrasladoInterno,
   parseJsonOrFallback
 };

@@ -40,6 +40,7 @@ const {
   buildConteoBilletes,
   ensureCajaArqueosTable,
   ensureCajaMovimientosTable,
+  ensureCajaTrasladosInternosTable,
   ensureConciliacionesCuentasCobroTable,
   ensureConciliacionesCuentasDestinoTable,
   getCajaAbiertaActual,
@@ -10342,6 +10343,8 @@ app.use((err, req, res, _next) => {
 Promise.all([
   ensureUsuariosSchema(),
   ensureCajaMovimientosTable(),
+  ensureCajaArqueosTable(),
+  ensureCajaTrasladosInternosTable(),
   ensureProveedoresSchema(),
   ensureComprasSchema(),
   ensureTiposPagoSchema(),

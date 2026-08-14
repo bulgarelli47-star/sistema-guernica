@@ -641,7 +641,43 @@ async function initDatabase() {
         observaciones TEXT,
         conteo_detalle TEXT,
         cuentas_detalle TEXT,
-        resumen_snapshot TEXT
+        resumen_snapshot TEXT,
+        modelo_arqueo_version INTEGER,
+        cambio_retenido REAL,
+        monto_extraido REAL,
+        cuenta_origen_id INTEGER,
+        cuenta_reserva_id INTEGER
+      )
+    `);
+    await ensureColumn("caja_arqueos", "registrado_cierre", "INTEGER NOT NULL DEFAULT 1");
+    await ensureColumn("caja_arqueos", "modelo_arqueo_version", "INTEGER");
+    await ensureColumn("caja_arqueos", "cambio_retenido", "REAL");
+    await ensureColumn("caja_arqueos", "monto_extraido", "REAL");
+    await ensureColumn("caja_arqueos", "cuenta_origen_id", "INTEGER");
+    await ensureColumn("caja_arqueos", "cuenta_reserva_id", "INTEGER");
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS caja_traslados_internos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        caja_id INTEGER NOT NULL,
+        arqueo_id INTEGER,
+        cuenta_origen_id INTEGER NOT NULL,
+        cuenta_destino_id INTEGER NOT NULL,
+        monto REAL NOT NULL,
+        tipo TEXT NOT NULL,
+        estado TEXT NOT NULL DEFAULT 'activo',
+        fecha TEXT NOT NULL,
+        hora TEXT NOT NULL,
+        usuario TEXT NOT NULL DEFAULT 'admin',
+        observaciones TEXT,
+        created_at TEXT,
+        anulada_at TEXT,
+        anulada_por TEXT,
+        motivo_anulacion TEXT,
+        FOREIGN KEY (caja_id) REFERENCES caja_aperturas(id),
+        FOREIGN KEY (arqueo_id) REFERENCES caja_arqueos(id),
+        FOREIGN KEY (cuenta_origen_id) REFERENCES cuentas_destino(id),
+        FOREIGN KEY (cuenta_destino_id) REFERENCES cuentas_destino(id)
       )
     `);
 
@@ -654,6 +690,15 @@ async function initDatabase() {
     await runQuery("CREATE INDEX IF NOT EXISTS idx_detalle_ventas_venta ON detalle_ventas(venta_id)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_producto ON movimientos_stock(producto_id)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_movimientos_caja ON caja_movimientos(caja_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_traslados_caja ON caja_traslados_internos(caja_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_traslados_arqueo ON caja_traslados_internos(arqueo_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_traslados_origen ON caja_traslados_internos(cuenta_origen_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_traslados_destino ON caja_traslados_internos(cuenta_destino_id)");
+    await runQuery(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_caja_traslados_arqueo_extraccion_activa
+      ON caja_traslados_internos(arqueo_id, tipo)
+      WHERE arqueo_id IS NOT NULL AND tipo = 'arqueo_extraccion' AND estado = 'activo'
+    `);
     await runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_dni_cuit_unique ON clientes(dni_cuit) WHERE dni_cuit IS NOT NULL AND TRIM(dni_cuit) != ''");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_compras_proveedor_estado ON compras(proveedor_id, estado)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobantes_compra ON compra_comprobantes(compra_id)");
