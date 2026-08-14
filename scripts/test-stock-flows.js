@@ -11343,6 +11343,158 @@ async function testCajaUiArqueoModeloOperativoCaja03I() {
   }
 }
 
+async function testCajaSaldoInicialCuentaFisicaCaja03J() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM caja_aperturas"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      const cajaCambio = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja cambio CAJA03J ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -960
+      });
+      const cajaDos = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja N2 CAJA03J ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -950
+      });
+      const cajaPagos = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja pagos CAJA03J ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -940
+      });
+      const banco = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Banco no fisico CAJA03J ${Date.now()}`,
+        tipo_destino: "banco",
+        orden: -930
+      });
+
+      const primeraCaja = await abrirCaja(baseUrl, token, 0);
+      const manualPrimeraVez = await guardarConciliacionCuentaDestino(baseUrl, token, {
+        caja_id: primeraCaja.id,
+        cuenta_destino_id: cajaDos.id,
+        saldo_inicial: 80000,
+        monto_sistema: 0,
+        monto_real: 80000,
+        observaciones: "Saldo inicial cargado en apertura",
+        es_saldo_inicial_apertura: true
+      });
+      assertApprox(manualPrimeraVez.conciliacion.saldo_inicial, 80000, "CAJA03J cuenta sin historia acepta saldo manual");
+      assertApprox(manualPrimeraVez.conciliacion.monto_real, 80000, "CAJA03J manual primera vez es punto de partida");
+
+      await runSql(dbPath, "UPDATE caja_aperturas SET estado = 'cerrada', hora_cierre = '18:00:00' WHERE id = ?", [primeraCaja.id]);
+      await runSql(
+        dbPath,
+        `UPDATE conciliaciones_cuentas_destino
+         SET decision_cierre = 'retirar', monto_retiro = 6000, saldo_arrastrado = 74000, monto_real = 80000
+         WHERE caja_id = ? AND cuenta_destino_id = ?`,
+        [primeraCaja.id, cajaDos.id]
+      );
+      await runSql(
+        dbPath,
+        `INSERT INTO conciliaciones_cuentas_destino
+         (caja_id, cuenta_destino_id, monto_sistema, monto_real, saldo_inicial, diferencia, estado,
+          decision_cierre, monto_retiro, saldo_arrastrado, observaciones, fecha, hora, usuario)
+         VALUES (?, ?, 0, 15000, 15000, 0, 'conciliado', 'arrastrar', 0, 15000,
+          'Caja pagos cierre CAJA03J', '2026-07-01', '18:00:00', 'admin')`,
+        [primeraCaja.id, cajaPagos.id]
+      );
+      await runSql(
+        dbPath,
+        `INSERT INTO conciliaciones_cuentas_destino
+         (caja_id, cuenta_destino_id, monto_sistema, monto_real, saldo_inicial, diferencia, estado,
+          decision_cierre, monto_retiro, saldo_arrastrado, observaciones, fecha, hora, usuario)
+         VALUES (?, ?, 0, 11000, 11000, 0, 'conciliado', 'arrastrar', 0, 11000,
+          'Caja cambio cierre CAJA03J', '2026-07-01', '18:00:00', 'admin')`,
+        [primeraCaja.id, cajaCambio.id]
+      );
+
+      const segundaCaja = await abrirCaja(baseUrl, token, 0);
+      const cajaDosConArrastre = await requestJson(baseUrl, "POST", "/caja/conciliaciones/cuentas-destino", {
+        caja_id: segundaCaja.id,
+        cuenta_destino_id: cajaDos.id,
+        saldo_inicial: 80000,
+        monto_sistema: 0,
+        monto_real: 80000,
+        observaciones: "Saldo inicial cargado en apertura",
+        es_saldo_inicial_apertura: true
+      }, token);
+      if (!cajaDosConArrastre.response.ok) throw new Error(`CAJA03J apertura con arrastre fallo: ${cajaDosConArrastre.data?.message || cajaDosConArrastre.response.status}`);
+      assertApprox(cajaDosConArrastre.data.conciliacion.saldo_inicial, 74000, "CAJA03J cuenta con arrastre usa arrastre");
+      assertApprox(cajaDosConArrastre.data.conciliacion.monto_real, 74000, "CAJA03J manual no pisa arrastre");
+      assertApprox(cajaDosConArrastre.data.conciliacion.diferencia, 0, "CAJA03J no suma manual mas arrastre");
+
+      const retryMismaCaja = await requestJson(baseUrl, "POST", "/caja/conciliaciones/cuentas-destino", {
+        caja_id: segundaCaja.id,
+        cuenta_destino_id: cajaDos.id,
+        saldo_inicial: 80000,
+        monto_sistema: 0,
+        monto_real: 80000,
+        observaciones: "Retry saldo inicial CAJA03J",
+        es_saldo_inicial_apertura: true
+      }, token);
+      if (!retryMismaCaja.response.ok) throw new Error(`CAJA03J retry misma caja fallo: ${retryMismaCaja.data?.message || retryMismaCaja.response.status}`);
+      assertEqual(retryMismaCaja.data.conciliacion.id, cajaDosConArrastre.data.conciliacion.id, "CAJA03J retry actualiza la conciliacion de la caja actual");
+      assertApprox(retryMismaCaja.data.conciliacion.saldo_inicial, 74000, "CAJA03J retry no toma conciliacion de caja actual como arrastre previo");
+      const conciliacionesCajaDosActual = (await allSql(
+        dbPath,
+        "SELECT COUNT(*) AS total FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [segundaCaja.id, cajaDos.id]
+      ))[0].total;
+      assertEqual(conciliacionesCajaDosActual, 1, "CAJA03J retry no duplica saldo inicial en misma caja");
+
+      const cajaPagosConArrastre = await requestJson(baseUrl, "POST", "/caja/conciliaciones/cuentas-destino", {
+        caja_id: segundaCaja.id,
+        cuenta_destino_id: cajaPagos.id,
+        saldo_inicial: 999999,
+        monto_sistema: 0,
+        monto_real: 999999,
+        observaciones: "Saldo inicial cargado en apertura",
+        es_saldo_inicial_apertura: true
+      }, token);
+      if (!cajaPagosConArrastre.response.ok) throw new Error(`CAJA03J caja pagos con arrastre fallo: ${cajaPagosConArrastre.data?.message || cajaPagosConArrastre.response.status}`);
+      assertApprox(cajaPagosConArrastre.data.conciliacion.saldo_inicial, 15000, "CAJA03J continuidad por cuenta destino exacta caja pagos");
+
+      const cajaCambioConArrastre = await requestJson(baseUrl, "POST", "/caja/conciliaciones/cuentas-destino", {
+        caja_id: segundaCaja.id,
+        cuenta_destino_id: cajaCambio.id,
+        saldo_inicial: 999999,
+        monto_sistema: 0,
+        monto_real: 999999,
+        observaciones: "Saldo inicial cargado en apertura",
+        es_saldo_inicial_apertura: true
+      }, token);
+      if (!cajaCambioConArrastre.response.ok) throw new Error(`CAJA03J caja cambio con arrastre fallo: ${cajaCambioConArrastre.data?.message || cajaCambioConArrastre.response.status}`);
+      assertApprox(cajaCambioConArrastre.data.conciliacion.saldo_inicial, 11000, "CAJA03J varias cajas efectivas independientes");
+
+      const legacySinFlag = await guardarConciliacionCuentaDestino(baseUrl, token, {
+        caja_id: segundaCaja.id,
+        cuenta_destino_id: banco.id,
+        saldo_inicial: 1234,
+        monto_sistema: 0,
+        monto_real: 1234,
+        observaciones: "Legacy conciliacion CAJA03J"
+      });
+      assertApprox(legacySinFlag.conciliacion.saldo_inicial, 1234, "CAJA03J conciliacion legacy sin flag sigue funcionando");
+
+      const conciliaciones = await getCajaConciliacionesCuentasDestino(baseUrl, token, segundaCaja.id);
+      assertApprox(
+        conciliaciones.conciliaciones.find((item) => Number(item.cuenta_destino_id) === Number(cajaDos.id))?.saldo_inicial,
+        74000,
+        "CAJA03J 80000 cierre 74000 apertura 74000 persistido"
+      );
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testConciliacionManualPorCuentaDestino() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -14639,6 +14791,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCajaEstadoEfectivoPorCuentaFisicaCaja03G);
   await _run(testCajaCierreOperativoEfectivoCaja03H);
   await _run(testCajaUiArqueoModeloOperativoCaja03I);
+  await _run(testCajaSaldoInicialCuentaFisicaCaja03J);
   await _run(testConciliacionManualPorCuentaDestino);
   await _run(testCajaResumenPorCuentaCobro);
   await _run(testConciliacionManualPorCuentaCobro);

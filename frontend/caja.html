@@ -8394,27 +8394,29 @@
       try {
         const res = await fetch("/cuentas_destino");
         if (!res.ok) throw new Error("No se pudo cargar cuentas destino");
-        const cuentas = await res.json();
+        const cuentas = (await res.json()).filter((cuenta) => String(cuenta.tipo_destino || "").toLowerCase() === "efectivo");
         if (!Array.isArray(cuentas) || !cuentas.length) { section.hidden = true; return; }
 
         const listasConSaldo = await Promise.all(cuentas.map(async (c) => {
           try {
             const r = await fetch(`/caja/ultimo-saldo-arrastrado?cuenta_destino_id=${c.id}`);
             const d = r.ok ? await r.json() : null;
-            return { ...c, saldo_sugerido: Number(d?.saldo?.saldo_arrastrado || 0), decision_sugerida: d?.saldo?.decision_cierre || null };
-          } catch { return { ...c, saldo_sugerido: 0, decision_sugerida: null }; }
+            return { ...c, saldo_sugerido: Number(d?.saldo?.saldo_arrastrado || 0), tiene_arrastre: Boolean(d?.saldo), decision_sugerida: d?.saldo?.decision_cierre || null };
+          } catch { return { ...c, saldo_sugerido: 0, tiene_arrastre: false, decision_sugerida: null }; }
         }));
 
         grid.innerHTML = listasConSaldo.map((c) => `
           <label class="saldo-inicial-row">
             <div class="saldo-inicial-nombre">
               <strong>${c.nombre}</strong>
-              <span class="muted">${c.tipo_destino || ""}</span>
-              ${c.saldo_sugerido > 0 ? `<small class="concil-saldo-hint">Del turno anterior${c.decision_sugerida ? ` (${c.decision_sugerida})` : ""}</small>` : ""}
+              <span class="muted">${c.tiene_arrastre ? "Saldo anterior" : "Sin saldo anterior"}</span>
+              ${c.tiene_arrastre ? `<small class="concil-saldo-hint">Continua del cierre anterior${c.decision_sugerida ? ` (${c.decision_sugerida})` : ""}</small>` : ""}
             </div>
             <input type="number" class="field" step="0.01" min="0" placeholder="0.00"
-              value="${c.saldo_sugerido > 0 ? Number(c.saldo_sugerido).toFixed(2) : ""}"
-              data-saldo-inicial-cuenta="${c.id}" />
+              value="${c.tiene_arrastre ? Number(c.saldo_sugerido).toFixed(2) : ""}"
+              data-saldo-inicial-cuenta="${c.id}"
+              data-saldo-inicial-arrastre="${c.tiene_arrastre ? "1" : "0"}"
+              ${c.tiene_arrastre ? "readonly" : ""} />
           </label>`).join("");
 
         section.hidden = false;
@@ -8431,7 +8433,8 @@
       await Promise.all(inputs.map(async (input) => {
         const cuentaId = Number(input.dataset.saldoInicialCuenta);
         const saldo = Number(input.value || 0);
-        if (!cuentaId || saldo <= 0) return;
+        const tieneArrastre = input.dataset.saldoInicialArrastre === "1";
+        if (!cuentaId || (!tieneArrastre && saldo <= 0)) return;
         return fetch("/caja/conciliaciones/cuentas-destino", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -8441,7 +8444,8 @@
             saldo_inicial: saldo,
             monto_sistema: 0,
             monto_real: saldo,
-            observaciones: "Saldo inicial cargado en apertura"
+            observaciones: "Saldo inicial cargado en apertura",
+            es_saldo_inicial_apertura: true
           })
         }).catch((e) => console.warn("No se pudo guardar saldo inicial para cuenta", cuentaId, e));
       }));

@@ -7193,12 +7193,30 @@ app.post("/caja/conciliaciones/cuentas-destino", async (req, res) => {
     }
 
     const { fecha, hora } = getNowParts();
+    let saldoInicialDestino = req.body.saldo_inicial;
+    let montoSistemaDestino = req.body.monto_sistema;
+    let montoRealDestino = req.body.monto_real;
+    if (req.body.es_saldo_inicial_apertura === true || Number(req.body.es_saldo_inicial_apertura) === 1) {
+      const cuentaDestinoId = req.body.cuenta_destino_id == null || req.body.cuenta_destino_id === ""
+        ? null
+        : Number(req.body.cuenta_destino_id);
+      const arrastre = await getUltimoSaldoArrastradoPorCuenta(cuentaDestinoId);
+      const saldoInicialResuelto = arrastre
+        ? Number(arrastre.saldo_arrastrado || 0)
+        : Number(req.body.saldo_inicial || 0);
+      if (!Number.isFinite(saldoInicialResuelto) || saldoInicialResuelto < 0) {
+        return res.status(400).json({ message: "El saldo inicial es invalido" });
+      }
+      saldoInicialDestino = saldoInicialResuelto;
+      montoSistemaDestino = 0;
+      montoRealDestino = saldoInicialResuelto;
+    }
     const conciliacion = await guardarConciliacionCuentaDestino({
       cajaId: caja.id,
       cuentaDestinoId: req.body.cuenta_destino_id,
-      montoSistema: req.body.monto_sistema,
-      montoReal: req.body.monto_real,
-      saldoInicial: req.body.saldo_inicial,
+      montoSistema: montoSistemaDestino,
+      montoReal: montoRealDestino,
+      saldoInicial: saldoInicialDestino,
       decisionCierre: req.body.decision_cierre,
       montoRetiro: req.body.monto_retiro,
       saldoArrastrado: req.body.saldo_arrastrado,
