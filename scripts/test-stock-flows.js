@@ -10134,6 +10134,148 @@ async function testCajaArqueoOperativoTrasladoCaja03D() {
   }
 }
 
+async function testCajaEstadoEfectivoOperativoCaja03E() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM caja_traslados_internos"],
+        ["DELETE FROM caja_arqueos"],
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM conciliaciones_cuentas_cobro"],
+        ["DELETE FROM caja_movimientos"],
+        ["DELETE FROM pagos"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      const apertura = await abrirCaja(baseUrl, token, 6550);
+      const cajaCambio = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja cambio CAJA03E ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -800
+      });
+      const reserva = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Reserva CAJA03E ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -790
+      });
+      const cajaPagos = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja pagos CAJA03E ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -780
+      });
+
+      const sinModelo = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertEqual(sinModelo.response.status, 200, "CAJA03E estado sin modelo responde 200");
+      assertEqual(sinModelo.data.estado.determinable, false, "CAJA03E sin arqueo modelo 1 no inventa estado");
+      assertSame(sinModelo.data.estado.motivo, "sin_arqueo_modelo_1", "CAJA03E sin arqueo informa motivo");
+
+      await runSql(
+        dbPath,
+        `INSERT INTO conciliaciones_cuentas_destino
+         (caja_id, cuenta_destino_id, monto_sistema, monto_real, saldo_inicial, diferencia, estado,
+          decision_cierre, monto_retiro, saldo_arrastrado, observaciones, fecha, hora, usuario)
+         VALUES (?, ?, 0, 30000, 30000, 0, 'conciliado', NULL, 0, 30000, 'Saldo inicial reserva CAJA03E',
+          '2026-07-01', '08:00:00', 'admin')`,
+        [apertura.id, reserva.id]
+      );
+
+      const arqueo1 = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03e-arqueo-1",
+        conteo_detalle: {
+          20: 50,
+          50: 3,
+          100: 200,
+          200: 5,
+          500: 5,
+          1000: 2,
+          2000: 5,
+          10000: 1
+        },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        observaciones: "Arqueo 1 CAJA03E"
+      });
+      assertEqual(arqueo1.response.status, 201, "CAJA03E crea primer arqueo modelo 1");
+      const estado1 = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertEqual(estado1.data.estado.determinable, true, "CAJA03E un arqueo vuelve estado determinable");
+      assertApprox(estado1.data.estado.caja_cambio, 22650, "CAJA03E un arqueo usa cambio retenido");
+      assertApprox(estado1.data.estado.reserva, 54000, "CAJA03E un arqueo suma traslado a reserva inicial");
+      assertApprox(estado1.data.estado.total_disponible, 76650, "CAJA03E un arqueo calcula total disponible");
+
+      const trasladoArqueo1 = await allSql(
+        dbPath,
+        "SELECT id FROM caja_traslados_internos WHERE arqueo_id = ?",
+        [arqueo1.data.arqueo.id]
+      );
+      await runSql(
+        dbPath,
+        `INSERT INTO caja_traslados_internos
+         (caja_id, arqueo_id, cuenta_origen_id, cuenta_destino_id, monto, tipo, estado, fecha, hora, usuario, observaciones, created_at)
+         VALUES (?, NULL, ?, ?, 9999, 'redistribucion_test', 'anulado', '2026-07-01', '12:00:00', 'admin',
+          'Anulado CAJA03E', datetime('now'))`,
+        [apertura.id, cajaCambio.id, reserva.id]
+      );
+      await runSql(
+        dbPath,
+        "UPDATE caja_arqueos SET monto_extraido = 999999 WHERE id = ?",
+        [arqueo1.data.arqueo.id]
+      );
+      const estadoNoDuplica = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertApprox(estadoNoDuplica.data.estado.reserva, 54000, "CAJA03E no duplica ni usa monto_extraido como movimiento");
+      assertEqual(trasladoArqueo1.length, 1, "CAJA03E fixture conserva traslado activo real");
+
+      const arqueo2 = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03e-arqueo-2",
+        conteo_detalle: {
+          100: 110,
+          20000: 2,
+          10000: 1,
+          2000: 3
+        },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        observaciones: "Arqueo 2 CAJA03E"
+      });
+      assertEqual(arqueo2.response.status, 201, "CAJA03E permite segundo arqueo");
+      assertApprox(arqueo2.data.arqueo.efectivo_contado, 67000, "CAJA03E segundo arqueo cuenta 67000");
+      assertApprox(arqueo2.data.arqueo.cambio_retenido, 11000, "CAJA03E segundo arqueo retiene 11000");
+      assertApprox(arqueo2.data.arqueo.monto_extraido, 56000, "CAJA03E segundo arqueo extrae 56000");
+      const estadoCanonico = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertApprox(estadoCanonico.data.estado.caja_cambio, 11000, "CAJA03E ultimo cambio reemplaza al anterior");
+      assertApprox(estadoCanonico.data.estado.reserva, 110000, "CAJA03E extracciones activas se acumulan en reserva");
+      assertApprox(estadoCanonico.data.estado.total_disponible, 121000, "CAJA03E caso canonico total disponible");
+      assertApprox(
+        estadoCanonico.data.estado.reserva + estadoCanonico.data.estado.caja_cambio,
+        121000,
+        "CAJA03E 110000 + 11000 = 121000"
+      );
+
+      await runSql(
+        dbPath,
+        `INSERT INTO caja_traslados_internos
+         (caja_id, arqueo_id, cuenta_origen_id, cuenta_destino_id, monto, tipo, estado, fecha, hora, usuario, observaciones, created_at)
+         VALUES (?, NULL, ?, ?, 10000, 'redistribucion_test', 'activo', '2026-07-01', '19:00:00', 'admin',
+          'Reserva a caja pagos CAJA03E', datetime('now'))`,
+        [apertura.id, reserva.id, cajaPagos.id]
+      );
+      const estadoSaliente = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertApprox(estadoSaliente.data.estado.reserva, 100000, "CAJA03E traslado saliente de reserva resta saldo");
+      assertApprox(estadoSaliente.data.estado.total_disponible, 111000, "CAJA03E total descuenta traslado saliente de reserva");
+
+      const pagos = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos"))[0].total;
+      const movimientosCaja = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM caja_movimientos"))[0].total;
+      const conciliaciones = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM conciliaciones_cuentas_destino"))[0].total;
+      assertEqual(pagos, 0, "CAJA03E read model no crea pagos");
+      assertEqual(movimientosCaja, 0, "CAJA03E read model no crea caja_movimientos");
+      assertEqual(conciliaciones, 1, "CAJA03E no crea conciliaciones nuevas al leer");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testConciliacionManualPorCuentaDestino() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -13425,6 +13567,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCajaArqueoOperativoSchemaCaja03B);
   await _run(testCajaDenominacionesArqueoCaja03C);
   await _run(testCajaArqueoOperativoTrasladoCaja03D);
+  await _run(testCajaEstadoEfectivoOperativoCaja03E);
   await _run(testConciliacionManualPorCuentaDestino);
   await _run(testCajaResumenPorCuentaCobro);
   await _run(testConciliacionManualPorCuentaCobro);

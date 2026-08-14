@@ -1168,6 +1168,137 @@ async function getUltimoSaldoArrastradoPorCuenta(cuentaDestinoId) {
   };
 }
 
+async function getSaldoInicialCuentaDestinoEnCaja(cajaId, cuentaDestinoId) {
+  await ensureConciliacionesCuentasDestinoTable();
+  const conciliacion = await getQuery(
+    `SELECT saldo_inicial
+     FROM conciliaciones_cuentas_destino
+     WHERE caja_id = ? AND cuenta_destino_id = ?
+     ORDER BY id DESC
+     LIMIT 1`,
+    [cajaId, cuentaDestinoId]
+  );
+  if (conciliacion) {
+    return Number(Number(conciliacion.saldo_inicial || 0).toFixed(2));
+  }
+
+  const arrastre = await getUltimoSaldoArrastradoPorCuenta(cuentaDestinoId);
+  return Number(Number(arrastre?.saldo_arrastrado || 0).toFixed(2));
+}
+
+async function getEstadoEfectivoOperativo({ cajaId } = {}) {
+  await ensureCajaArqueosTable();
+  await ensureCajaTrasladosInternosTable();
+  const caja = cajaId
+    ? await getQuery("SELECT * FROM caja_aperturas WHERE id = ?", [Number(cajaId)])
+    : await getCajaAbiertaActual();
+
+  if (!caja) {
+    return {
+      determinable: false,
+      motivo: "sin_caja",
+      caja_cambio: null,
+      reserva: null,
+      total_disponible: null,
+      ultimo_arqueo_id: null,
+      cuenta_cambio_id: null,
+      cuenta_reserva_id: null
+    };
+  }
+
+  const arqueos = await allQuery(
+    `SELECT *
+     FROM caja_arqueos
+     WHERE caja_id = ? AND modelo_arqueo_version = 1
+     ORDER BY fecha ASC, hora ASC, id ASC`,
+    [caja.id]
+  );
+  if (!arqueos.length) {
+    return {
+      determinable: false,
+      motivo: "sin_arqueo_modelo_1",
+      caja_id: Number(caja.id),
+      caja_cambio: null,
+      reserva: null,
+      total_disponible: null,
+      ultimo_arqueo_id: null,
+      cuenta_cambio_id: null,
+      cuenta_reserva_id: null
+    };
+  }
+
+  const ultimoArqueo = arqueos[arqueos.length - 1];
+  const reservaIds = new Set(
+    arqueos
+      .map((arqueo) => Number(arqueo.cuenta_reserva_id || 0))
+      .filter((id) => id > 0)
+  );
+  const traslados = await allQuery(
+    `SELECT *
+     FROM caja_traslados_internos
+     WHERE caja_id = ? AND estado = 'activo'`,
+    [caja.id]
+  );
+  traslados.forEach((traslado) => {
+    const destinoId = Number(traslado.cuenta_destino_id || 0);
+    const origenId = Number(traslado.cuenta_origen_id || 0);
+    if (reservaIds.has(origenId) || reservaIds.has(destinoId)) return;
+    if (String(traslado.tipo || "") === "arqueo_extraccion" && destinoId > 0) {
+      reservaIds.add(destinoId);
+    }
+  });
+
+  if (reservaIds.size > 1) {
+    return {
+      determinable: false,
+      motivo: "reservas_multiples",
+      caja_id: Number(caja.id),
+      caja_cambio: Number(Number(ultimoArqueo.cambio_retenido || 0).toFixed(2)),
+      reserva: null,
+      total_disponible: null,
+      ultimo_arqueo_id: Number(ultimoArqueo.id),
+      cuenta_cambio_id: Number(ultimoArqueo.cuenta_origen_id || 0) || null,
+      cuenta_reserva_id: null
+    };
+  }
+
+  const cuentaReservaId = [...reservaIds][0] || null;
+  const cajaCambio = Number(Number(ultimoArqueo.cambio_retenido || 0).toFixed(2));
+  let saldoReserva = 0;
+  let saldoInicialReserva = 0;
+  let trasladosRecibidos = 0;
+  let trasladosEnviados = 0;
+
+  if (cuentaReservaId) {
+    saldoInicialReserva = await getSaldoInicialCuentaDestinoEnCaja(caja.id, cuentaReservaId);
+    traslados.forEach((traslado) => {
+      const monto = Number(traslado.monto || 0);
+      if (Number(traslado.cuenta_destino_id) === Number(cuentaReservaId)) {
+        trasladosRecibidos += monto;
+      }
+      if (Number(traslado.cuenta_origen_id) === Number(cuentaReservaId)) {
+        trasladosEnviados += monto;
+      }
+    });
+    saldoReserva = Number((saldoInicialReserva + trasladosRecibidos - trasladosEnviados).toFixed(2));
+  }
+
+  return {
+    determinable: true,
+    motivo: null,
+    caja_id: Number(caja.id),
+    caja_cambio: cajaCambio,
+    reserva: saldoReserva,
+    total_disponible: Number((cajaCambio + saldoReserva).toFixed(2)),
+    ultimo_arqueo_id: Number(ultimoArqueo.id),
+    cuenta_cambio_id: Number(ultimoArqueo.cuenta_origen_id || 0) || null,
+    cuenta_reserva_id: cuentaReservaId,
+    saldo_inicial_reserva: saldoInicialReserva,
+    traslados_recibidos: Number(trasladosRecibidos.toFixed(2)),
+    traslados_enviados: Number(trasladosEnviados.toFixed(2))
+  };
+}
+
 function buildCajaResumen(ventas) {
   const resumen = ventas.reduce(
     (acc, movimiento) => {
@@ -1388,6 +1519,7 @@ module.exports = {
   ensureConciliacionesCuentasDestinoTable,
   getCajaAbiertaActual,
   getCajaAperturaHoy,
+  getEstadoEfectivoOperativo,
   getCajaParaArqueos,
   getOperacionesCaja,
   getPagosCaja,

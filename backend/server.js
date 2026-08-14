@@ -46,6 +46,7 @@ const {
   ensureConciliacionesCuentasCobroTable,
   ensureConciliacionesCuentasDestinoTable,
   getCajaAbiertaActual,
+  getEstadoEfectivoOperativo,
   getCajaParaArqueos,
   getConciliacionesCuentaCobro,
   getConciliacionesCuentaDestino,
@@ -7014,6 +7015,17 @@ app.get("/caja/resumen/cuentas-destino", async (req, res) => {
   } catch (error) {
     logError("Error al obtener resumen por cuenta destino:", error);
     return res.status(500).json({ message: "Error al obtener resumen por cuenta destino" });
+  }
+});
+
+app.get("/caja/estado-efectivo-operativo", async (req, res) => {
+  try {
+    const cajaId = Number(req.query.caja_id) || null;
+    const estado = await getEstadoEfectivoOperativo({ cajaId });
+    return res.json({ estado });
+  } catch (error) {
+    logError("Error al obtener estado operativo de efectivo:", error);
+    return res.status(500).json({ message: "Error al obtener estado operativo de efectivo" });
   }
 });
 
