@@ -1318,6 +1318,16 @@
       min-height: 220px;
     }
 
+    .summary-refresh-action {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 12px;
+    }
+
+    .summary-refresh-action #actualizarCaja {
+      width: auto;
+    }
+
     .closure-overview-grid {
       display: grid;
       grid-template-columns: minmax(240px, 0.48fr) minmax(0, 1.52fr);
@@ -4652,6 +4662,9 @@
                 <tbody id="ultimosArqueosBody"></tbody>
               </table>
             </div>
+            <div class="summary-refresh-action">
+              <button type="button" class="button secondary compact" id="actualizarCaja" hidden>Actualizar caja</button>
+            </div>
           </div>
 
           <div class="card daily-card">
@@ -5528,7 +5541,6 @@
       <span id="resultadoEstimadoDia" hidden>0.00</span>
       <span id="operacionesMixtas" hidden>0</span>
       <span id="totalGeneral" hidden>0.00</span>
-      <button type="button" id="actualizarCaja" hidden>Actualizar caja</button>
       <input type="hidden" id="montoCajaAperturaCierre" value="0" />
       <input type="hidden" id="montoCajaFondoCierre" value="0" />
       <span id="saldoMpEstimado" hidden>0.00</span>
