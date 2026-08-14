@@ -460,6 +460,7 @@ async function initDatabase() {
     await ensureColumn("pagos", "es_cuenta_corriente", "INTEGER NOT NULL DEFAULT 0");
     await ensureColumn("pagos", "iva_credito_fiscal", "REAL NOT NULL DEFAULT 0");
     await ensureColumn("pagos", "compra_id", "INTEGER");
+    await ensureColumn("pagos", "cuenta_destino_id_snapshot", "INTEGER");
 
     await runQuery(`
       CREATE TABLE IF NOT EXISTS compras (

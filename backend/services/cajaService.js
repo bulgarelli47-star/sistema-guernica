@@ -1264,10 +1264,22 @@ async function getEstadoEfectivoOperativo({ cajaId } = {}) {
 
   const cuentaReservaId = [...reservaIds][0] || null;
   const cajaCambio = Number(Number(ultimoArqueo.cambio_retenido || 0).toFixed(2));
+  const cuentaCambioId = Number(ultimoArqueo.cuenta_origen_id || 0) || null;
   let saldoReserva = 0;
   let saldoInicialReserva = 0;
   let trasladosRecibidos = 0;
   let trasladosEnviados = 0;
+  let pagosReserva = 0;
+  let pagosCajaCambio = 0;
+  const pagosEfectivos = await allQuery(
+    `SELECT monto_total, cuenta_destino_id_snapshot, fecha, hora, id
+     FROM pagos
+     WHERE caja_id = ?
+       AND estado = 'registrado'
+       AND LOWER(COALESCE(tipo_pago, '')) = 'efectivo'
+       AND cuenta_destino_id_snapshot IS NOT NULL`,
+    [caja.id]
+  );
 
   if (cuentaReservaId) {
     saldoInicialReserva = await getSaldoInicialCuentaDestinoEnCaja(caja.id, cuentaReservaId);
@@ -1280,22 +1292,35 @@ async function getEstadoEfectivoOperativo({ cajaId } = {}) {
         trasladosEnviados += monto;
       }
     });
-    saldoReserva = Number((saldoInicialReserva + trasladosRecibidos - trasladosEnviados).toFixed(2));
+    pagosReserva = pagosEfectivos
+      .filter((pago) => Number(pago.cuenta_destino_id_snapshot) === Number(cuentaReservaId))
+      .reduce((acc, pago) => acc + Number(pago.monto_total || 0), 0);
+    saldoReserva = Number((saldoInicialReserva + trasladosRecibidos - trasladosEnviados - pagosReserva).toFixed(2));
   }
+  if (cuentaCambioId) {
+    pagosCajaCambio = pagosEfectivos
+      .filter((pago) => Number(pago.cuenta_destino_id_snapshot) === Number(cuentaCambioId))
+      .filter((pago) => String(pago.fecha || "") > String(ultimoArqueo.fecha || "") ||
+        (String(pago.fecha || "") === String(ultimoArqueo.fecha || "") && String(pago.hora || "") > String(ultimoArqueo.hora || "")))
+      .reduce((acc, pago) => acc + Number(pago.monto_total || 0), 0);
+  }
+  const cajaCambioActual = Number((cajaCambio - pagosCajaCambio).toFixed(2));
 
   return {
     determinable: true,
     motivo: null,
     caja_id: Number(caja.id),
-    caja_cambio: cajaCambio,
+    caja_cambio: cajaCambioActual,
     reserva: saldoReserva,
-    total_disponible: Number((cajaCambio + saldoReserva).toFixed(2)),
+    total_disponible: Number((cajaCambioActual + saldoReserva).toFixed(2)),
     ultimo_arqueo_id: Number(ultimoArqueo.id),
-    cuenta_cambio_id: Number(ultimoArqueo.cuenta_origen_id || 0) || null,
+    cuenta_cambio_id: cuentaCambioId,
     cuenta_reserva_id: cuentaReservaId,
     saldo_inicial_reserva: saldoInicialReserva,
     traslados_recibidos: Number(trasladosRecibidos.toFixed(2)),
-    traslados_enviados: Number(trasladosEnviados.toFixed(2))
+    traslados_enviados: Number(trasladosEnviados.toFixed(2)),
+    pagos_efectivos_reserva: Number(pagosReserva.toFixed(2)),
+    pagos_efectivos_caja_cambio: Number(pagosCajaCambio.toFixed(2))
   };
 }
 

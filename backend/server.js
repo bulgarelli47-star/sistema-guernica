@@ -462,6 +462,7 @@ async function ensureProveedoresSchema() {
   await ensureColumn("proveedores", "iva_alicuota", "REAL NOT NULL DEFAULT 21");
   await ensureColumn("pagos", "iva_credito_fiscal", "REAL NOT NULL DEFAULT 0");
   await ensureColumn("pagos", "compra_id", "INTEGER");
+  await ensureColumn("pagos", "cuenta_destino_id_snapshot", "INTEGER");
 }
 
 async function ensureComprasSchema() {
@@ -4797,6 +4798,15 @@ app.post("/compras/:id/pagos", async (req, res) => {
     if (!cuentaCobro.ok) {
       return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
     }
+    const cuentaFisicaPago = await resolveCuentaDestinoFisicaPago({
+      cuentaDestinoId: req.body.cuenta_destino_id,
+      cuentaCobro,
+      cobro,
+      estado: "registrado"
+    });
+    if (!cuentaFisicaPago.ok) {
+      return res.status(cuentaFisicaPago.statusCode || 400).json({ message: cuentaFisicaPago.message });
+    }
 
     const cajaActiva = await getCajaAbiertaActual();
     if (!cajaActiva) {
@@ -4816,8 +4826,8 @@ app.post("/compras/:id/pagos", async (req, res) => {
       `INSERT INTO pagos
        (proveedor_id, compra_id, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito, fecha, hora,
         estado, caja_id, categoria_pago, comprobante, numero_comprobante, cuenta_destino, referencia,
-        observaciones, es_cuenta_corriente, iva_credito_fiscal, cuenta_cobro_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'registrado', ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+        observaciones, es_cuenta_corriente, iva_credito_fiscal, cuenta_cobro_id, cuenta_destino_id_snapshot)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'registrado', ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
       [
         compra.proveedor_id,
         compraId,
@@ -4835,7 +4845,8 @@ app.post("/compras/:id/pagos", async (req, res) => {
         String(req.body.cuenta_destino || "").trim(),
         String(req.body.referencia || "").trim(),
         String(req.body.observaciones || "").trim(),
-        cuentaCobro.cuenta_cobro_id
+        cuentaCobro.cuenta_cobro_id,
+        cuentaFisicaPago.cuenta_destino_id_snapshot
       ]
     );
     await refreshCompraSaldo(compraId, { getQuery, runQuery });
@@ -5232,6 +5243,42 @@ app.delete("/tipos_pago/:id", async (req, res) => {
   }
 });
 
+async function resolveCuentaDestinoFisicaPago({ cuentaDestinoId, cuentaCobro, cobro, estado = "registrado" } = {}) {
+  const tipoPago = String(cobro?.tipo_cobro || cobro?.tipo_pago || "").trim().toLowerCase();
+  if (String(estado || "").trim().toLowerCase() === "pendiente" || tipoPago !== "efectivo") {
+    return { ok: true, cuenta_destino_id_snapshot: null, cuenta_destino: null };
+  }
+
+  const id = cuentaDestinoId === undefined || cuentaDestinoId === null || cuentaDestinoId === ""
+    ? Number(cuentaCobro?.cuenta?.cuenta_destino_id || 0)
+    : Number(cuentaDestinoId) || 0;
+  if (!id) {
+    return {
+      ok: false,
+      statusCode: 400,
+      message: "El pago efectivo requiere una cuenta destino fisica de origen."
+    };
+  }
+
+  const cuentaDestino = await getQuery("SELECT * FROM cuentas_destino WHERE id = ?", [id]);
+  if (!cuentaDestino || Number(cuentaDestino.activo) !== 1) {
+    return {
+      ok: false,
+      statusCode: 400,
+      message: "La cuenta fisica origen del pago no existe o esta inactiva."
+    };
+  }
+  if (String(cuentaDestino.tipo_destino || "").trim().toLowerCase() !== "efectivo") {
+    return {
+      ok: false,
+      statusCode: 400,
+      message: "La cuenta fisica origen del pago debe ser de tipo efectivo."
+    };
+  }
+
+  return { ok: true, cuenta_destino_id_snapshot: Number(cuentaDestino.id), cuenta_destino: cuentaDestino };
+}
+
 // Registrar pago
 app.post("/pagos", async (req, res) => {
   if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para registrar pagos"))) return;
@@ -5311,6 +5358,15 @@ app.post("/pagos", async (req, res) => {
     if (!cuentaCobro.ok) {
       return res.status(cuentaCobro.statusCode || 400).json({ message: cuentaCobro.message });
     }
+    const cuentaFisicaPago = await resolveCuentaDestinoFisicaPago({
+      cuentaDestinoId: req.body.cuenta_destino_id,
+      cuentaCobro,
+      cobro,
+      estado: estadoPago
+    });
+    if (!cuentaFisicaPago.ok) {
+      return res.status(cuentaFisicaPago.statusCode || 400).json({ message: cuentaFisicaPago.message });
+    }
 
     if (requiereCaja && !cajaActiva) {
       return res.status(400).json({ message: "No hay una caja abierta para registrar el pago" });
@@ -5341,8 +5397,9 @@ app.post("/pagos", async (req, res) => {
     const result = await runQuery(
       `INSERT INTO pagos
       (proveedor_id, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito, fecha, hora, estado, caja_id,
-       categoria_pago, comprobante, numero_comprobante, cuenta_destino, referencia, observaciones, es_cuenta_corriente, iva_credito_fiscal, cuenta_cobro_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       categoria_pago, comprobante, numero_comprobante, cuenta_destino, referencia, observaciones, es_cuenta_corriente,
+       iva_credito_fiscal, cuenta_cobro_id, cuenta_destino_id_snapshot)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         proveedorId,
         concepto,
@@ -5362,7 +5419,8 @@ app.post("/pagos", async (req, res) => {
         observaciones,
         esCuentaCorriente,
         ivaCreditoFiscal,
-        cuentaCobro.cuenta_cobro_id
+        cuentaCobro.cuenta_cobro_id,
+        cuentaFisicaPago.cuenta_destino_id_snapshot
       ]
     );
 
