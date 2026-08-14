@@ -1247,7 +1247,6 @@
     body.vista-reducida #manualPanel,
     body.vista-reducida #nuevoTicket,
     body.vista-reducida .ticket-edit-extras,
-    body.vista-reducida #modalPendientes .support-card:nth-child(2),
     body.vista-reducida #modalAnularClave {
       display: none !important;
     }
@@ -1359,6 +1358,30 @@
       grid-template-columns: 1fr auto auto;
       gap: 8px;
       align-items: center;
+    }
+
+    #modalPendientes {
+      overflow: hidden;
+    }
+
+    #modalPendientes .atlas-modal-card {
+      width: min(980px, 100%);
+      max-height: calc(100vh - 56px);
+      max-height: calc(100dvh - 56px);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      overflow: hidden;
+    }
+
+    #modalPendientes .modal-body {
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      overscroll-behavior: contain;
+    }
+
+    #modalPendientes .modal-body-grid {
+      min-height: 0;
     }
 
     .empty-state {
@@ -1550,6 +1573,11 @@
 
       .modal-body-grid {
         grid-template-columns: 1fr;
+      }
+
+      #modalPendientes .atlas-modal-card {
+        max-height: calc(100vh - 24px);
+        max-height: calc(100dvh - 24px);
       }
     }
 
@@ -2357,8 +2385,8 @@
     <div class="modal-card cobro-modal-card atlas-modal-card">
       <div class="modal-header">
         <div>
-          <h3>Configurar cobro</h3>
-          <p>Selecciona el método y completa los datos necesarios para cobrar.</p>
+          <h3 id="modalCobroVentaTitulo">Configurar cobro</h3>
+          <p id="modalCobroVentaSubtitulo">Selecciona el método y completa los datos necesarios para cobrar.</p>
         </div>
         <button type="button" class="atlas-modal-close" id="cerrarConfigCobro" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
@@ -2665,6 +2693,8 @@
     const cuotasVentaWrap = document.getElementById("cuotasVentaWrap");
     const paymentButtons = document.getElementById("paymentButtons");
     const modalCobroVenta = document.getElementById("modalCobroVenta");
+    const modalCobroVentaTitulo = document.getElementById("modalCobroVentaTitulo");
+    const modalCobroVentaSubtitulo = document.getElementById("modalCobroVentaSubtitulo");
     const abrirConfigCobro = document.getElementById("abrirConfigCobro");
     const cerrarConfigCobro = document.getElementById("cerrarConfigCobro");
     const confirmarConfigCobro = document.getElementById("confirmarConfigCobro");
@@ -3579,12 +3609,48 @@
 
     function abrirModalCobroVenta() {
       limpiarMensajeCobroVenta();
+      configurarModalCobroNormal();
       actualizarCobroNormalUI();
       try { if (!esCuentaCorriente.checked) inicializarCobrosMultiples(getTicketTotal()); } catch(_e) {}
       abrirModal(modalCobroVenta);
       window.setTimeout(() => {
         modalCobroVenta?.querySelector(".payment-button.active:not(:disabled), .payment-button:not(:disabled), .field:not(:disabled), button:not(:disabled)")?.focus();
       }, 20);
+    }
+
+    function configurarModalCobroNormal() {
+      if (modalCobroVentaTitulo) modalCobroVentaTitulo.textContent = "Configurar cobro";
+      if (modalCobroVentaSubtitulo) modalCobroVentaSubtitulo.textContent = "Selecciona el método y completa los datos necesarios para cobrar.";
+      if (confirmarConfigCobro) confirmarConfigCobro.textContent = "Confirmar cobro";
+    }
+
+    function configurarModalCobroEdicion(venta) {
+      const identificador = venta?.identificador_pendiente ? ` - ${venta.identificador_pendiente}` : "";
+      const fechaHora = [venta?.fecha, venta?.hora].filter(Boolean).join(" ");
+      const detalleFecha = fechaHora ? ` · ${fechaHora}` : "";
+      if (modalCobroVentaTitulo) modalCobroVentaTitulo.textContent = "Editar cobro";
+      if (modalCobroVentaSubtitulo) modalCobroVentaSubtitulo.textContent = `Ticket #${venta?.id || "-"}${identificador}${detalleFecha}`;
+      if (confirmarConfigCobro) confirmarConfigCobro.textContent = "Guardar cambios";
+    }
+
+    function restaurarContextoCobroHistorico() {
+      cobroHistoricoEditando = null;
+      if (cobroHistoricoEstadoPrevio) {
+        selectedPaymentMode = cobroHistoricoEstadoPrevio.selectedPaymentMode;
+        esCuentaCorriente.checked = cobroHistoricoEstadoPrevio.esCuentaCorriente;
+        tipoCobroNormal.value = cobroHistoricoEstadoPrevio.tipoCobro;
+        cuentaCobroVenta.value = cobroHistoricoEstadoPrevio.cuentaCobro || "";
+        cobroHistoricoEstadoPrevio = null;
+      }
+      configurarModalCobroNormal();
+      actualizarCobroNormalUI();
+      actualizarResumenCobroTicket();
+    }
+
+    async function reabrirHistorialPendientes() {
+      await cargarPendientes();
+      await cargarHistorialAnulados();
+      abrirModal(modalPendientes);
     }
 
     async function abrirEditorCobroHistorico(venta) {
@@ -3606,25 +3672,23 @@
       tipoCobroNormal.value = selectedPaymentMode;
       montoEfectivoNormal.value = Number(venta.monto_efectivo || 0) || "";
       montoDebitoNormal.value = Number(venta.monto_debito || 0) || "";
+      montoRecibido.value = venta.tipo_cobro === "efectivo" ? (Number(venta.monto_efectivo || 0) || "") : "";
       cuentaCobroVenta.value = "";
+      configurarModalCobroEdicion(venta);
       await cargarCuentasCobroVenta(tipoCobroNormal.value, venta.cuenta_cobro_id || "");
       actualizarCobroNormalUI();
+      cerrarModal(modalPendientes);
       abrirModal(modalCobroVenta);
-      mostrarMensajeCobroVenta(`Editando cobro del ticket #${venta.id}.`, false);
+      mostrarMensajeCobroVenta(`${getCobroHistorialTexto(venta)}. Guardá los cambios para actualizar el cobro.`, false);
     }
 
-    function cerrarModalCobroVenta() {
+    async function cerrarModalCobroVenta() {
+      const estabaEditando = Boolean(cobroHistoricoEditando);
       cerrarModal(modalCobroVenta);
-      cobroHistoricoEditando = null;
-      if (cobroHistoricoEstadoPrevio) {
-        selectedPaymentMode = cobroHistoricoEstadoPrevio.selectedPaymentMode;
-        esCuentaCorriente.checked = cobroHistoricoEstadoPrevio.esCuentaCorriente;
-        tipoCobroNormal.value = cobroHistoricoEstadoPrevio.tipoCobro;
-        cuentaCobroVenta.value = cobroHistoricoEstadoPrevio.cuentaCobro || "";
-        cobroHistoricoEstadoPrevio = null;
+      restaurarContextoCobroHistorico();
+      if (estabaEditando) {
+        await reabrirHistorialPendientes();
       }
-      actualizarCobroNormalUI();
-      actualizarResumenCobroTicket();
     }
 
     async function guardarCobroHistoricoEditado() {
@@ -3661,9 +3725,10 @@
           mostrarMensajeCobroVenta(obtenerMensajeBackend(data, "No se pudo actualizar el cobro."), true);
           return true;
         }
-        cerrarModalCobroVenta();
+        cerrarModal(modalCobroVenta);
+        restaurarContextoCobroHistorico();
+        await reabrirHistorialPendientes();
         mostrarMensaje(data.message || "Cobro actualizado");
-        await cargarHistorialAnulados();
         localStorage.setItem('atlas_caja_refresh', Date.now().toString());
       } catch (error) {
         console.error("Error al editar cobro historico:", error);
@@ -4017,11 +4082,12 @@
 
       try {
         const _esCCActiva = esCuentaCorriente.checked;
-        if (cobrosMultiplesSection) cobrosMultiplesSection.classList.toggle("hidden", _esCCActiva);
+        const _esEdicionHistorica = Boolean(cobroHistoricoEditando);
+        if (cobrosMultiplesSection) cobrosMultiplesSection.classList.toggle("hidden", _esCCActiva || _esEdicionHistorica);
         const _legacyDetail = document.querySelector(".payment-detail-section");
-        if (_legacyDetail) _legacyDetail.classList.toggle("hidden", !_esCCActiva);
+        if (_legacyDetail) _legacyDetail.classList.toggle("hidden", !_esCCActiva && !_esEdicionHistorica);
         const _paymentSect = document.querySelector(".payment-section");
-        if (_paymentSect) _paymentSect.classList.toggle("cobros-v2-mode", !_esCCActiva);
+        if (_paymentSect) _paymentSect.classList.toggle("cobros-v2-mode", !_esCCActiva && !_esEdicionHistorica);
       } catch(_e) { /* cobros-v2 ui — non-fatal */ }
     }
 
