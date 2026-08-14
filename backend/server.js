@@ -7087,6 +7087,24 @@ app.get("/caja/estado-efectivo-operativo", async (req, res) => {
   }
 });
 
+app.get("/caja/arqueo-denominaciones", async (req, res) => {
+  try {
+    await ensureCajaDenominacionesArqueoTable();
+    const reglas = await getReglasDenominacionesArqueoActivas();
+    return res.json({
+      reglas: reglas.map((regla) => ({
+        denominacion: Number(regla.denominacion),
+        modo: regla.modo,
+        tamano_grupo: regla.tamano_grupo == null ? null : Number(regla.tamano_grupo),
+        orden: Number(regla.orden || 0)
+      }))
+    });
+  } catch (error) {
+    logError("Error al obtener denominaciones de arqueo:", error);
+    return res.status(500).json({ message: "Error al obtener denominaciones de arqueo" });
+  }
+});
+
 app.get("/caja/conciliaciones/cuentas", async (req, res) => {
   try {
     const cajaId = Number(req.query.caja_id) || null;

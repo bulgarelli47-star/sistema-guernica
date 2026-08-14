@@ -66,6 +66,7 @@ async function prepareDb(dbPath, statements) {
 
 function resetOperationalDataStatements() {
   return [
+    ["DELETE FROM caja_traslados_internos"],
     ["DELETE FROM caja_arqueos"],
     ["DELETE FROM conciliaciones_cuentas_cobro"],
     ["DELETE FROM caja_movimientos"],
@@ -11208,6 +11209,140 @@ async function testCajaCierreOperativoEfectivoCaja03H() {
   }
 }
 
+async function testCajaUiArqueoModeloOperativoCaja03I() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  const cajaHtml = fs.readFileSync(path.join(ROOT, "frontend", "caja.html"), "utf8");
+  if (cajaHtml.includes("Saldo aportado al cierre") || cajaHtml.includes("Resultado backend")) {
+    throw new Error("CAJA03I UI de arqueo no debe mostrar conceptos de cierre ni resultado tecnico");
+  }
+  if (!cajaHtml.includes("Queda en caja") || !cajaHtml.includes("Se guarda")) {
+    throw new Error("CAJA03I UI de arqueo debe mostrar distribucion operativa simple");
+  }
+  if (cajaHtml.includes("let denominaciones = [10")) {
+    throw new Error("CAJA03I UI no debe usar fallback hardcodeado de denominaciones");
+  }
+  if (/^\s*cajaInicioCambio\.innerText/m.test(cajaHtml)) {
+    throw new Error("CAJA03I UI no debe depender de cajaInicioCambio retirado del modal");
+  }
+  const conteoCanonico = {
+    20: 50,
+    50: 3,
+    100: 200,
+    200: 5,
+    500: 5,
+    1000: 2,
+    2000: 5,
+    10000: 1
+  };
+
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM caja_traslados_internos"],
+        ["DELETE FROM caja_arqueos"],
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM conciliaciones_cuentas_cobro"],
+        ["DELETE FROM caja_movimientos"],
+        ["DELETE FROM pagos"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      const apertura = await abrirCaja(baseUrl, token, 1000);
+      const cajaCambio = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja cambio CAJA03I ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -470
+      });
+      const reserva = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Reserva CAJA03I ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -460
+      });
+
+      const reglas = await requestJson(baseUrl, "GET", "/caja/arqueo-denominaciones", null, token);
+      if (!reglas.response.ok) throw new Error(`CAJA03I GET denominaciones fallo: ${reglas.data?.message || reglas.response.status}`);
+      const regla500 = reglas.data.reglas.find((regla) => Number(regla.denominacion) === 500);
+      assertSame(regla500?.modo, "agrupar", "CAJA03I expone modo activo de 500");
+      assertEqual(regla500?.tamano_grupo, 2, "CAJA03I expone grupo activo de 500");
+      const denominacionesActivas = reglas.data.reglas.map((regla) => Number(regla.denominacion));
+      if (![10, 20, 50, 100, 200, 500, 1000, 2000, 10000, 20000].every((denominacion) => denominacionesActivas.includes(denominacion))) {
+        throw new Error("CAJA03I GET denominaciones debe devolver configuracion activa completa");
+      }
+
+      const canonico = await requestJson(baseUrl, "POST", "/caja/arqueos", {
+        modelo_arqueo_version: 1,
+        conteo_detalle: conteoCanonico,
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 1,
+        observaciones: "CAJA03I payload UI",
+        idempotency_key: "caja03i-canonico-ui",
+        efectivo_contado: 1,
+        cambio_retenido: 2,
+        monto_extraido: 3
+      }, token);
+      assertEqual(canonico.response.status, 201, "CAJA03I UI crea arqueo modelo 1");
+      assertApprox(canonico.data.arqueo.efectivo_contado, 46650, "CAJA03I backend calcula total contado");
+      assertApprox(canonico.data.arqueo.cambio_retenido, 22650, "CAJA03I backend calcula cambio retenido");
+      assertApprox(canonico.data.arqueo.monto_extraido, 24000, "CAJA03I backend calcula extraccion");
+      assertApprox(canonico.data.traslado.monto, 24000, "CAJA03I crea traslado con monto backend");
+      assertEqual(canonico.data.arqueo.registrado_cierre, 1, "CAJA03I conserva opcion usar para cierre");
+
+      const replay = await requestJson(baseUrl, "POST", "/caja/arqueos", {
+        modelo_arqueo_version: 1,
+        conteo_detalle: conteoCanonico,
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 1,
+        observaciones: "CAJA03I payload UI",
+        idempotency_key: "caja03i-canonico-ui"
+      }, token);
+      assertEqual(replay.response.status, 200, "CAJA03I replay UI devuelve arqueo existente");
+      assertEqual(replay.data.idempotent_replay, true, "CAJA03I replay marca idempotente");
+      const duplicadosReplay = (await allSql(
+        dbPath,
+        "SELECT COUNT(*) AS total FROM caja_arqueos WHERE idempotency_key = 'caja03i-canonico-ui'"
+      ))[0].total;
+      assertEqual(duplicadosReplay, 1, "CAJA03I replay no duplica arqueo");
+      const trasladosReplay = (await allSql(
+        dbPath,
+        "SELECT COUNT(*) AS total FROM caja_traslados_internos WHERE arqueo_id = ?",
+        [canonico.data.arqueo.id]
+      ))[0].total;
+      assertEqual(trasladosReplay, 1, "CAJA03I replay no duplica traslado");
+
+      const segundo = await requestJson(baseUrl, "POST", "/caja/arqueos", {
+        modelo_arqueo_version: 1,
+        conteo_detalle: { 20: 10 },
+        cuenta_origen_id: cajaCambio.id,
+        registrado_cierre: 0,
+        observaciones: "CAJA03I segundo arqueo",
+        idempotency_key: "caja03i-segundo-ui"
+      }, token);
+      assertEqual(segundo.response.status, 201, "CAJA03I permite multiples arqueos sin cerrar caja");
+      const aperturaLuego = (await allSql(dbPath, "SELECT estado FROM caja_aperturas WHERE id = ?", [apertura.id]))[0];
+      assertSame(aperturaLuego.estado, "abierta", "CAJA03I registrar arqueo no cierra caja");
+      const totalArqueos = (await allSql(
+        dbPath,
+        "SELECT COUNT(*) AS total FROM caja_arqueos WHERE caja_id = ? AND modelo_arqueo_version = 1",
+        [apertura.id]
+      ))[0].total;
+      assertEqual(totalArqueos, 2, "CAJA03I conserva historial de multiples arqueos modelo 1");
+
+      const sinOrigen = await requestJson(baseUrl, "POST", "/caja/arqueos", {
+        modelo_arqueo_version: 1,
+        conteo_detalle: { 20: 1 },
+        registrado_cierre: 0,
+        idempotency_key: "caja03i-sin-origen"
+      }, token);
+      assertEqual(sinOrigen.response.status, 400, "CAJA03I exige cuenta origen fisica");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testConciliacionManualPorCuentaDestino() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -14503,6 +14638,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCajaOrigenFisicoPagosEfectivoCaja03F);
   await _run(testCajaEstadoEfectivoPorCuentaFisicaCaja03G);
   await _run(testCajaCierreOperativoEfectivoCaja03H);
+  await _run(testCajaUiArqueoModeloOperativoCaja03I);
   await _run(testConciliacionManualPorCuentaDestino);
   await _run(testCajaResumenPorCuentaCobro);
   await _run(testConciliacionManualPorCuentaCobro);

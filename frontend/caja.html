@@ -5389,12 +5389,11 @@
                     <h4>Cambio disponible y resguardo</h4>
                   </div>
                 </div>
-                <p class="audit-distribution-note">El total contado se distribuye entre cambio disponible y dinero resguardado.</p>
                 <div class="denomination-summary">
-                  <div class="mini-card"><span>Caja cambio</span><strong>$<span id="totalCambioRomaneo">0.00</span></strong></div>
-                  <div class="mini-card"><span>Caja grande / resguardado</span><strong>$<span id="totalRetiroRomaneo">0.00</span></strong></div>
-                  <label class="mini-card"><span>Saldo aportado al cierre</span><input class="field" id="saldoFisicoRealManual" type="number" step="0.01" min="0" placeholder="Manual"></label>
-                  <div class="mini-card reduced-sensitive-saldo"><span>Saldo inicial próximo turno</span><strong>$<span id="cajaInicioCambio">0.00</span></strong></div>
+                  <label class="mini-card"><span>Caja arqueada</span><select class="field" id="cuentaOrigenArqueo"></select></label>
+                  <label class="mini-card"><span>Destino extraccion</span><select class="field" id="cuentaReservaArqueo"></select></label>
+                  <div class="mini-card"><span>Queda en caja</span><strong>$<span id="totalCambioRomaneo">0.00</span></strong></div>
+                  <div class="mini-card"><span>Se guarda</span><strong>$<span id="totalRetiroRomaneo">0.00</span></strong></div>
                 </div>
               </section>
             </div>
@@ -5711,7 +5710,8 @@
     const diferenciaCajaCopia = document.getElementById("diferenciaCajaCopia");
     const totalCambioRomaneo = document.getElementById("totalCambioRomaneo");
     const totalRetiroRomaneo = document.getElementById("totalRetiroRomaneo");
-    const saldoFisicoRealManual = document.getElementById("saldoFisicoRealManual");
+    const cuentaOrigenArqueo = document.getElementById("cuentaOrigenArqueo");
+    const cuentaReservaArqueo = document.getElementById("cuentaReservaArqueo");
     const cajaInicioCambio = document.getElementById("cajaInicioCambio");
     const arqueoEstadoDot = document.getElementById("arqueoEstadoDot");
     const arqueoEstadoHeader = document.getElementById("arqueoEstadoHeader");
@@ -5790,7 +5790,10 @@
     const tabButtons = document.querySelectorAll(".tab-button");
     const sections = document.querySelectorAll(".section");
 
-    const denominaciones = [10, 20, 50, 100, 200, 500, 1000, 2000, 10000, 20000];
+    let denominaciones = [];
+    let reglasDenominacionesArqueo = [];
+    let cuentasEfectivoArqueo = [];
+    let arqueoIdempotencyKey = null;
     let cuentasDigitales = [
       { nombre: "MP", saldo_inicial: 0, saldo_actual: 0 },
       { nombre: "Banco", saldo_inicial: 0, saldo_actual: 0 }
@@ -5872,6 +5875,89 @@
 
     function money(valor) {
       return `$${formatearNumero(valor)}`;
+    }
+
+    function generarIdempotencyKeyArqueo() {
+      if (window.crypto?.randomUUID) {
+        return window.crypto.randomUUID();
+      }
+      return `arqueo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+
+    function getArqueoIdempotencyKey() {
+      if (!arqueoIdempotencyKey) {
+        arqueoIdempotencyKey = generarIdempotencyKeyArqueo();
+      }
+      return arqueoIdempotencyKey;
+    }
+
+    function resetArqueoIdempotencyKey() {
+      arqueoIdempotencyKey = generarIdempotencyKeyArqueo();
+    }
+
+    function renderizarCuentasEfectivoArqueo() {
+      const opcionesOrigen = cuentasEfectivoArqueo.map((cuenta) => (
+        `<option value="${cuenta.id}">${cuenta.nombre}</option>`
+      )).join("");
+      const origenActual = cuentaOrigenArqueo?.value || "";
+      const reservaActual = cuentaReservaArqueo?.value || "";
+      if (cuentaOrigenArqueo) {
+        cuentaOrigenArqueo.innerHTML = opcionesOrigen || '<option value="">Sin cuentas efectivas activas</option>';
+        if (origenActual && cuentasEfectivoArqueo.some((cuenta) => String(cuenta.id) === String(origenActual))) {
+          cuentaOrigenArqueo.value = origenActual;
+        }
+      }
+      renderizarDestinoReservaArqueo(reservaActual);
+    }
+
+    function renderizarDestinoReservaArqueo(valorPreferido = "") {
+      if (!cuentaReservaArqueo) return;
+      const origenId = Number(cuentaOrigenArqueo?.value || 0);
+      const destinos = cuentasEfectivoArqueo.filter((cuenta) => Number(cuenta.id) !== origenId);
+      cuentaReservaArqueo.innerHTML = '<option value="">Sin extraccion</option>' + destinos.map((cuenta) => (
+        `<option value="${cuenta.id}">${cuenta.nombre}</option>`
+      )).join("");
+      if (valorPreferido && destinos.some((cuenta) => String(cuenta.id) === String(valorPreferido))) {
+        cuentaReservaArqueo.value = valorPreferido;
+      }
+    }
+
+    async function cargarConfiguracionArqueoOperativo() {
+      try {
+        const reglasRes = await fetch("/caja/arqueo-denominaciones");
+        if (!reglasRes.ok) throw new Error(`Denominaciones HTTP ${reglasRes.status}`);
+        const reglasData = await reglasRes.json();
+        reglasDenominacionesArqueo = Array.isArray(reglasData.reglas) ? reglasData.reglas : [];
+        if (!reglasDenominacionesArqueo.length) throw new Error("Sin reglas activas de arqueo");
+        if (reglasDenominacionesArqueo.length) {
+          denominaciones = reglasDenominacionesArqueo.map((regla) => Number(regla.denominacion));
+          renderizarConteoBilletes();
+        }
+      } catch (error) {
+        console.error("Error al cargar denominaciones de arqueo:", error);
+        mostrarToast("No se pudo cargar la configuracion de arqueo.", true);
+        return;
+      }
+
+      try {
+        const cuentasRes = await fetch("/cuentas_destino");
+        if (!cuentasRes.ok) throw new Error(`Cuentas destino HTTP ${cuentasRes.status}`);
+        const cuentasData = cuentasRes.ok ? await cuentasRes.json() : [];
+        cuentasEfectivoArqueo = Array.isArray(cuentasData)
+          ? cuentasData.filter((cuenta) => Number(cuenta.activo) === 1 && String(cuenta.tipo_destino || "").toLowerCase() === "efectivo")
+          : [];
+        renderizarCuentasEfectivoArqueo();
+      } catch (error) {
+        console.error("Error al cargar cuentas efectivas de arqueo:", error);
+        mostrarToast("No se pudieron cargar las cuentas de efectivo para arqueo.", true);
+        return;
+      }
+
+      try {
+        actualizarResumenCierre();
+      } catch (error) {
+        console.error("Error al actualizar la vista de arqueo operativo:", error);
+      }
     }
 
     function numeroCaja(...valores) {
@@ -6014,22 +6100,29 @@
     }
 
     function calcularConteoDesglose() {
-      return denominaciones.reduce((acc, denominacion) => {
+      return reglasDenominacionesArqueo.reduce((acc, regla) => {
+        const denominacion = Number(regla.denominacion);
         const cantidad = Number(conteoInputs[denominacion]?.value || 0);
-        if (denominacion < 500) {
-          acc.totalCambio += denominacion * cantidad;
+        const monto = denominacion * cantidad;
+        if (regla.modo === "conservar_todo") {
+          acc.totalCambio += monto;
           return acc;
         }
 
-        if (denominacion === 500) {
-          const cantidadCambio = cantidad % 2;
-          const cantidadRetiro = cantidad - cantidadCambio;
-          acc.totalCambio += denominacion * cantidadCambio;
-          acc.totalRetiro += denominacion * cantidadRetiro;
+        if (regla.modo === "agrupar") {
+          const tamanoGrupo = Number(regla.tamano_grupo || 0);
+          if (tamanoGrupo > 0) {
+            const cantidadRetiro = Math.floor(cantidad / tamanoGrupo) * tamanoGrupo;
+            const cantidadCambio = cantidad - cantidadRetiro;
+            acc.totalCambio += denominacion * cantidadCambio;
+            acc.totalRetiro += denominacion * cantidadRetiro;
+          } else {
+            acc.totalCambio += monto;
+          }
           return acc;
         }
 
-        acc.totalRetiro += denominacion * cantidad;
+        acc.totalRetiro += monto;
         return acc;
       }, { totalCambio: 0, totalRetiro: 0 });
     }
@@ -6505,8 +6598,6 @@
         });
         cuentasDigitalesBody.appendChild(row);
       });
-      saldoFisicoRealManual?.addEventListener("input", actualizarResumenCierre);
-      saldoFisicoRealManual?.addEventListener("input", marcarArqueoPendienteRegistro);
       aplicarMascaraCajaANuevosMontos();
       renderizarCuentasDigitalesCierre();
     }
@@ -6642,21 +6733,20 @@
       actualizarSubtotalesConteo();
       const desgloseConteo = calcularConteoDesglose();
       const esperado = calcularEfectivoEsperado();
-      const manualReal = Number(saldoFisicoRealManual?.value || 0);
-      const contado = Number((manualReal > 0 ? manualReal : calcularConteoTotal()).toFixed(2));
+      const contado = Number(calcularConteoTotal().toFixed(2));
       const diferencia = Number((contado - esperado).toFixed(2));
       const digitalEsperado = calcularDigitalEsperado();
       const digitalReal = calcularDigitalReal();
       const diferenciaDigital = Number((digitalReal - digitalEsperado).toFixed(2));
       totalCambioRomaneo.innerText = formatearNumero(desgloseConteo.totalCambio);
       totalRetiroRomaneo.innerText = formatearNumero(desgloseConteo.totalRetiro);
-      cajaInicioCambio.innerText = formatearNumero(desgloseConteo.totalCambio);
+      if (cajaInicioCambio) cajaInicioCambio.innerText = formatearNumero(desgloseConteo.totalCambio);
       if (cierreCajaCambioOperativo) cierreCajaCambioOperativo.textContent = money(desgloseConteo.totalCambio);
       if (cierreCajaGrandeOperativo) cierreCajaGrandeOperativo.textContent = money(desgloseConteo.totalRetiro);
       if (cierreSaldoFisicoOperativo) cierreSaldoFisicoOperativo.textContent = money(contado);
       if (cierreDiferenciaEfectivoOperativo) setSignedValue(cierreDiferenciaEfectivoOperativo, diferencia);
       actualizarCuentasDigitalesUI();
-      setMontoVisual(totalEfectivo, manualReal > 0 || tieneRomaneoCargado() ? contado : esperado);
+      setMontoVisual(totalEfectivo, tieneRomaneoCargado() ? contado : esperado);
       setMontoVisual(efectivoEsperado, esperado);
       efectivoEsperadoCopia.innerText = formatearNumero(esperado);
       efectivoContado.innerText = formatearNumero(contado);
@@ -6665,7 +6755,7 @@
       cierreDiferenciaVisual.innerText = money(diferencia);
       resultadoEfectivoEsperado.innerText = formatearNumero(esperado);
       resultadoEfectivoContado.innerText = formatearNumero(contado);
-      const arqueoCargado = manualReal > 0 || tieneRomaneoCargado();
+      const arqueoCargado = tieneRomaneoCargado();
       if (resultadoEfectivoPendienteEstado) {
         resultadoEfectivoPendienteEstado.hidden = arqueoCargado;
       }
@@ -6761,6 +6851,8 @@
 
     function renderizarConteoBilletes() {
       conteoBilletes.innerHTML = "";
+      Object.keys(conteoInputs).forEach((key) => delete conteoInputs[key]);
+      Object.keys(conteoSubtotalDisplays).forEach((key) => delete conteoSubtotalDisplays[key]);
       denominaciones.forEach((denominacion) => {
         const fila = document.createElement("div");
         fila.className = "mini-card denomination-row";
@@ -8446,11 +8538,14 @@
 
     function buildArqueoPayload(registradoCierre) {
       return {
+        modelo_arqueo_version: 1,
         usuario: aperturaActual?.usuario || usuarioApertura.value.trim() || "admin",
         observaciones: observacionesArqueo.value.trim(),
-        conteo: buildConteoPayload(),
-        cuentas: getCuentasDigitales(),
-        registrado_cierre: registradoCierre ? 1 : 0
+        conteo_detalle: buildConteoPayload(),
+        cuenta_origen_id: Number(cuentaOrigenArqueo?.value || 0) || null,
+        cuenta_reserva_id: Number(cuentaReservaArqueo?.value || 0) || null,
+        registrado_cierre: registradoCierre ? 1 : 0,
+        idempotency_key: getArqueoIdempotencyKey()
       };
     }
 
@@ -8480,7 +8575,14 @@
       });
 
       observacionesArqueo.value = arqueo.observaciones || "";
-      arqueoGuardadoId = arqueo.id;
+      if (cuentaOrigenArqueo && arqueo.cuenta_origen_id) {
+        cuentaOrigenArqueo.value = String(arqueo.cuenta_origen_id);
+        renderizarDestinoReservaArqueo(arqueo.cuenta_reserva_id ? String(arqueo.cuenta_reserva_id) : "");
+      }
+      if (cuentaReservaArqueo && arqueo.cuenta_reserva_id) {
+        cuentaReservaArqueo.value = String(arqueo.cuenta_reserva_id);
+      }
+      arqueoGuardadoId = Number(arqueo.modelo_arqueo_version) === 1 ? null : arqueo.id;
       arqueoPreparadoParaCierre = Number(arqueo.registrado_cierre) === 1;
       actualizarResumenCierre();
       actualizarEstadoCierre();
@@ -8497,16 +8599,13 @@
         cuenta.saldoActual.value = cuenta.saldoInicial.value || "0";
       });
 
-      if (saldoFisicoRealManual) {
-        saldoFisicoRealManual.value = "";
-      }
-
       if (observacionesArqueo) {
         observacionesArqueo.value = "";
       }
 
       arqueoGuardadoId = null;
       arqueoPreparadoParaCierre = false;
+      resetArqueoIdempotencyKey();
       actualizarResumenCierre();
       actualizarEstadoCierre();
     }
@@ -8547,14 +8646,30 @@
         return;
       }
 
+      const desglose = calcularConteoDesglose();
+      if (!Number(cuentaOrigenArqueo?.value || 0)) {
+        mostrarMensaje("Selecciona la caja fisica arqueada", true);
+        mostrarToast("Selecciona la caja fisica arqueada.", true);
+        return;
+      }
+      if (desglose.totalRetiro > 0 && !Number(cuentaReservaArqueo?.value || 0)) {
+        mostrarMensaje("Selecciona el destino de la extraccion", true);
+        mostrarToast("Selecciona el destino de la extraccion.", true);
+        return;
+      }
+      if (Number(cuentaReservaArqueo?.value || 0) && Number(cuentaOrigenArqueo?.value || 0) === Number(cuentaReservaArqueo?.value || 0)) {
+        mostrarMensaje("La caja arqueada y el destino deben ser distintos", true);
+        mostrarToast("La caja arqueada y el destino deben ser distintos.", true);
+        return;
+      }
+
       const boton = registradoCierre ? botonRegistrarArqueo : botonGuardarArqueo;
       boton.disabled = true;
       mostrarMensaje(registradoCierre ? "Registrando arqueo..." : "Guardando arqueo...");
 
       try {
-        const url = arqueoGuardadoId ? `/caja/arqueos/${arqueoGuardadoId}` : "/caja/arqueos";
-        const res = await fetch(url, {
-          method: arqueoGuardadoId ? "PUT" : "POST",
+        const res = await fetch("/caja/arqueos", {
+          method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(buildArqueoPayload(registradoCierre))
         });
@@ -8568,6 +8683,7 @@
 
         arqueoGuardadoId = data.arqueo?.id || arqueoGuardadoId;
         arqueoPreparadoParaCierre = registradoCierre;
+        resetArqueoIdempotencyKey();
         mostrarMensaje(data.message || (registradoCierre ? "Arqueo registrado" : "Arqueo guardado"));
         mostrarToast(data.message || (registradoCierre ? "Arqueo registrado correctamente." : "Arqueo guardado. Registralo para poder cerrar caja."));
         await cargarHistorialArqueos();
@@ -8688,6 +8804,11 @@
     botonEditarArqueo.addEventListener("click", editarArqueo);
     botonRegistrarArqueo.addEventListener("click", registrarArqueo);
     observacionesArqueo.addEventListener("input", marcarArqueoPendienteRegistro);
+    cuentaOrigenArqueo?.addEventListener("change", () => {
+      renderizarDestinoReservaArqueo(cuentaReservaArqueo?.value || "");
+      marcarArqueoPendienteRegistro();
+    });
+    cuentaReservaArqueo?.addEventListener("change", marcarArqueoPendienteRegistro);
 
     toggleNotificaciones.addEventListener("click", function (event) {
       event.stopPropagation();
@@ -8832,7 +8953,9 @@
     }
 
     async function inicializarCaja() {
+      const configuracionArqueoPromise = cargarConfiguracionArqueoOperativo();
       await cargarCaja();
+      await configuracionArqueoPromise;
       window.initKpiVisibility?.({
         gridSelector: "#tab-resumen .metrics-grid",
         targetSelectors: ["main"],
