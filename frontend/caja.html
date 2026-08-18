@@ -2062,6 +2062,11 @@
       grid-template-columns: repeat(4, minmax(0, 1fr));
     }
 
+    #tab-apertura-cierre .closure-control-card {
+      border-color: rgba(37, 99, 235, 0.18);
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    }
+
     #tab-apertura-cierre .operational-metric {
       border: 1px solid var(--border);
       border-radius: 10px;
@@ -2191,6 +2196,63 @@
       overflow-wrap: anywhere;
     }
 
+    #tab-apertura-cierre .closure-audit-panel {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #ffffff;
+      padding: 8px;
+      display: grid;
+      gap: 8px;
+    }
+
+    #tab-apertura-cierre .closure-audit-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    #tab-apertura-cierre .closure-audit-title strong {
+      font-size: 12px;
+      line-height: 1.2;
+    }
+
+    #tab-apertura-cierre .closure-audit-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    #tab-apertura-cierre .closure-audit-grid div {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    #tab-apertura-cierre .closure-audit-grid span {
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.15;
+    }
+
+    #tab-apertura-cierre .closure-audit-grid strong {
+      font-size: 12px;
+      line-height: 1.15;
+      overflow-wrap: anywhere;
+    }
+
+    #tab-apertura-cierre .operational-account-value input {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 7px;
+      font: inherit;
+      font-size: 12px;
+      background: #fff;
+      color: var(--text);
+    }
+
     #tab-apertura-cierre .operational-account-status {
       border-radius: 999px;
       padding: 6px 8px;
@@ -2318,35 +2380,15 @@
       font-weight: 800;
     }
 
-    #tab-apertura-cierre .apertura-open-badge {
-      display: none;
-      width: fit-content;
-      border-radius: 999px;
-      padding: 7px 10px;
-      background: rgba(34, 163, 90, .12);
-      color: #166534;
-      font-size: 11px;
-      font-weight: 900;
-    }
-
     #tab-apertura-cierre #abrirCaja:disabled {
-      display: none;
-    }
-
-    #tab-apertura-cierre #abrirCaja:disabled + .apertura-open-badge {
-      display: inline-flex;
+      background: #d1d5db;
+      border-color: #d1d5db;
+      color: #667085;
+      cursor: not-allowed;
     }
 
     #tab-apertura-cierre #saldosInicialesSection {
       margin-top: 0;
-    }
-
-    #tab-apertura-cierre #saldosInicialesSection summary {
-      cursor: pointer;
-      color: var(--muted);
-      font-size: 11px;
-      font-weight: 800;
-      list-style-position: inside;
     }
 
     #tab-apertura-cierre .closure-prep-grid {
@@ -2468,11 +2510,17 @@
       margin-bottom: 14px;
     }
 
+    .history-toolbar > div:first-child {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+
     .history-actions {
       display: flex;
       align-items: center;
       gap: 8px;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+      flex: 0 0 auto;
     }
 
     .history-actions .field-inline {
@@ -2890,13 +2938,20 @@
     }
 
     #modalArqueoEfectivo .denomination-summary label.mini-card {
-      grid-template-columns: minmax(0, 1fr) minmax(108px, 128px);
+      grid-template-columns: 1fr;
+      min-height: auto;
+      align-items: stretch;
+      gap: 4px;
     }
 
     #modalArqueoEfectivo .denomination-summary .mini-card span {
       margin-bottom: 0;
       min-width: 0;
       line-height: 1.2;
+    }
+
+    #modalArqueoEfectivo .denomination-summary label.mini-card span {
+      margin-bottom: 2px;
     }
 
     #modalArqueoEfectivo .denomination-summary .mini-card strong {
@@ -2929,6 +2984,51 @@
       min-height: 38px;
       padding: 6px 8px;
       text-align: right;
+    }
+
+    #modalArqueoEfectivo .denomination-summary .arqueo-select {
+      min-height: 40px;
+      padding: 9px 32px 9px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background-color: #ffffff;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Cpath d='M6 8l4 4 4-4' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      background-size: 14px;
+      color: var(--text);
+      font-weight: 700;
+      font-size: 13px;
+      text-align: left;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      overflow: hidden;
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      cursor: pointer;
+      transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
+    }
+
+    #modalArqueoEfectivo .denomination-summary .arqueo-select:hover:not(:disabled) {
+      border-color: var(--primary);
+      background-color: var(--primary-soft);
+    }
+
+    #modalArqueoEfectivo .denomination-summary .arqueo-select:focus-visible {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px var(--primary-soft);
+    }
+
+    #modalArqueoEfectivo .denomination-summary .arqueo-select:disabled {
+      background-color: #fafafe;
+      background-image: none;
+      padding-right: 12px;
+      color: var(--text);
+      opacity: 1;
+      -webkit-text-fill-color: var(--text);
+      cursor: default;
+      border-color: var(--border);
     }
 
     #modalArqueoEfectivo #conteoBilletes .denomination-row {
@@ -3384,6 +3484,198 @@
       color: var(--muted);
     }
 
+    /* ── Detalle de cierre: header Atlas fijo + cuerpo scrollable, sin footer ───── */
+    #modalDetalleCierre .modal-card.modal-card-wide {
+      padding: 0;
+      overflow: hidden;
+      background: #f8fafc;
+      max-height: calc(100vh - 40px);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    #modalDetalleCierre .modal-header {
+      align-items: flex-start;
+      gap: 12px;
+      margin: 0;
+      padding: 16px 18px;
+      background: linear-gradient(135deg, #16052e 0%, #2a1450 100%);
+      color: #fff;
+      border: 0;
+      border-radius: 0;
+      box-shadow: none;
+    }
+
+    #modalDetalleCierre .modal-header h3 {
+      margin: 0;
+      line-height: 1.15;
+    }
+
+    #modalDetalleCierre .modal-header .muted {
+      color: rgba(255, 255, 255, .72);
+    }
+
+    #modalDetalleCierre #cerrarModalDetalleCierreHeader {
+      width: 38px;
+      height: 38px;
+      min-width: 38px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 10px;
+      border-color: rgba(255, 255, 255, .22);
+      background: rgba(255, 255, 255, .1);
+      color: #fff;
+      box-shadow: none;
+    }
+
+    #modalDetalleCierre .modal-body {
+      padding: 14px 18px 20px;
+      background: #f8fafc;
+      min-height: 0;
+      overflow: auto;
+      overscroll-behavior: contain;
+    }
+
+    /* ── Detalle de cierre: ficha con jerarquia por secciones ────── */
+    .detalle-cierre { display: grid; gap: 12px; }
+
+    .detalle-cierre-resumen.meta-grid { margin-top: 0; }
+
+    .detalle-cierre-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .detalle-cierre-section {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px 14px;
+      background: #fafafe;
+      display: grid;
+      gap: 8px;
+    }
+
+    .detalle-cierre-section-title {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--text);
+      text-transform: uppercase;
+      letter-spacing: .03em;
+    }
+
+    .detalle-cierre-section-meta {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: -4px;
+    }
+
+    .detalle-cierre-section-highlight {
+      border-color: var(--primary);
+      background: var(--primary-soft);
+    }
+
+    .detalle-cierre-section-highlight .detalle-cierre-section-title {
+      color: var(--primary);
+    }
+
+    .detalle-cierre-section-highlight .cierre-cuenta-metric strong {
+      font-size: 15px;
+    }
+
+    .saldo-total-cierre-hero {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      padding-top: 8px;
+      margin-top: 2px;
+      border-top: 1px solid rgba(109, 40, 217, .18);
+    }
+
+    .saldo-total-cierre-hero span {
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--primary);
+      text-transform: uppercase;
+      letter-spacing: .03em;
+    }
+
+    .saldo-total-cierre-hero strong {
+      font-size: 24px;
+      font-weight: 900;
+      color: var(--primary);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .cierre-cuentas-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px;
+    }
+
+    .cierre-cuenta-card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 9px 12px;
+      background: #ffffff;
+      display: grid;
+      gap: 8px;
+    }
+
+    .cierre-cuenta-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .cierre-cuenta-card-head strong {
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .cierre-cuenta-card-head .account-diff-pill {
+      min-height: auto;
+      padding: 4px 9px;
+      font-size: 10px;
+    }
+
+    .cierre-cuenta-metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(78px, 1fr));
+      gap: 8px;
+    }
+
+    .cierre-cuenta-metric {
+      min-width: 0;
+    }
+
+    .cierre-cuenta-metric span {
+      display: block;
+      font-size: 10px;
+      color: var(--muted);
+      margin-bottom: 3px;
+    }
+
+    .cierre-cuenta-metric strong {
+      font-size: 13px;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+      overflow-wrap: anywhere;
+    }
+
+    .detalle-cierre-legacy-nota {
+      font-size: 12px;
+      color: var(--muted);
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      padding: 9px 12px;
+      background: transparent;
+    }
+
     .denomination-grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -3447,10 +3739,48 @@
     /* ── Saldos iniciales en apertura ─────────────────────────── */
     .saldos-apertura-section { display: grid; gap: 8px; }
     .saldos-apertura-section > .section-note { font-size: 12px; color: var(--muted); }
-    .saldo-inicial-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: start; border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: #fafafe; }
-    .saldo-inicial-nombre strong { display: block; font-size: 13px; }
-    .saldo-inicial-nombre span { font-size: 11px; }
-    .saldo-inicial-row input { width: 130px; min-width: 0; }
+    .saldo-inicial-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 9px 10px 9px 12px;
+      background: #ffffff;
+    }
+    .saldo-inicial-nombre { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+    .saldo-inicial-nombre strong { font-size: 13px; font-weight: 700; color: var(--text); }
+    .saldo-inicial-nombre span { font-size: 11px; color: var(--muted); line-height: 1.3; }
+    .saldo-inicial-amount {
+      display: flex;
+      align-items: center;
+      flex: 0 0 auto;
+      gap: 2px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #ffffff;
+      padding-left: 10px;
+      transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
+    }
+    .saldo-inicial-amount:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+    .saldo-inicial-currency { color: var(--muted); font-size: 13px; font-weight: 700; }
+    .saldo-inicial-row input {
+      width: 120px;
+      min-width: 0;
+      border: none;
+      background: transparent;
+      padding: 9px 10px 9px 2px;
+      border-radius: 0;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text);
+      text-align: right;
+      outline: none;
+    }
+    .saldo-inicial-amount.is-readonly { background: var(--primary-soft); border-color: rgba(109, 40, 217, .2); }
+    .saldo-inicial-amount.is-readonly input { color: var(--text); cursor: default; }
     /* ── Toggle arrastre + contexto ───────────────────────────── */
     .concil-movimiento-context { font-size: 12px; color: var(--muted); padding: 6px 10px; background: #f8fafc; border-radius: 10px; border: 1px solid var(--border); }
     #modalConciliacionCuenta .modal-card.concil-modal-card { padding: 0; overflow: hidden; background: #f8fafc; max-height: calc(100vh - 40px); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
@@ -3507,12 +3837,55 @@
     body.vista-reducida .audit-sensitive-system {
       display: none !important;
     }
-    body.vista-reducida #tab-arqueos,
-    body.vista-reducida .reduced-caja-note {
+    body.vista-reducida #tab-arqueos {
       display: block !important;
     }
+
+    /* Nucleo visual de la vista reducida: mismo ancho comodo que ya usan los modales
+       principales de Atlas (min(960px,100%)), centrado en vez de pegado a la izquierda. */
+    body.vista-reducida #tab-arqueos > .reduced-caja-note,
     body.vista-reducida #tab-arqueos .audit-flow {
-      grid-template-columns: minmax(280px, 620px);
+      width: min(960px, 100%);
+      margin-inline: auto;
+    }
+    body.vista-reducida #tab-arqueos .audit-flow {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    /* Aviso de vista reducida: de texto suelto a bloque informativo Atlas (fondo violeta
+       suave institucional + acento a la izquierda, mismos tokens que el resto del sistema). */
+    body.vista-reducida .reduced-caja-note {
+      display: block;
+      margin: 2px auto 4px;
+      padding: 12px 16px;
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--primary);
+      border-radius: 12px;
+      background: var(--primary-soft);
+      color: var(--text);
+      font-size: 12.5px;
+      font-weight: 600;
+      line-height: 1.45;
+    }
+
+    /* Arqueo efectivo en vista reducida: metricas y acciones integradas en un mismo bloque
+       (no acciones flotando abajo), aprovechando el ancho disponible; colapsa naturalmente. */
+    body.vista-reducida #tab-arqueos .audit-flow .audit-card {
+      padding: 20px 22px;
+    }
+    body.vista-reducida #tab-arqueos .cash-audit-summary {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 14px;
+    }
+    body.vista-reducida #tab-arqueos .cash-audit-flow {
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      flex: 1 1 260px;
+    }
+    body.vista-reducida #tab-arqueos .modal-header-actions {
+      flex: 0 0 auto;
+      margin-left: auto;
     }
     /* ─────────────────────────────────────────────────────────── */
 
@@ -3595,6 +3968,7 @@
       .pie-layout {
         grid-template-columns: 1fr;
       }
+
     }
 
     @media (max-width: 860px) {
@@ -3817,6 +4191,10 @@
     }
 
     @media (max-width: 720px) {
+      .cierre-cuenta-metrics {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
       .main {
         padding: 14px;
       }
@@ -3824,6 +4202,20 @@
       .card {
         padding: 18px;
         border-radius: 16px;
+      }
+
+      .history-toolbar > div:first-child {
+        flex-basis: 100%;
+      }
+
+      .history-actions {
+        flex-wrap: wrap;
+        flex-basis: 100%;
+      }
+
+      .history-actions .field-inline {
+        flex: 1 1 100%;
+        width: 100%;
       }
 
       .cuentas-cobro-grid,
@@ -3852,6 +4244,10 @@
 
       #tab-apertura-cierre .operational-account-row {
         grid-template-columns: 1fr;
+      }
+
+      #tab-apertura-cierre .closure-audit-grid {
+        grid-template-columns: 1fr 1fr;
       }
 
       #tab-apertura-cierre .operational-card-head {
@@ -4796,7 +5192,7 @@
           <article class="card closure-quick-card">
             <h3 style="margin: 0;">Estado y acciones rápidas</h3>
             <div class="closure-quick-grid">
-              <section class="operational-card">
+              <section class="operational-card closure-control-card">
                 <div class="closure-state-actions">
                   <div>
                 <div class="cash-state-head">
@@ -4829,13 +5225,14 @@
                     <div class="closure-action-note">Usá estas acciones para movimientos manuales que no provienen de ventas ni pagos.</div>
                   </div>
                 </div>
-                <details id="saldosInicialesSection" class="saldos-apertura-section" hidden>
-                  <summary>Saldos iniciales por cuenta</summary>
+                <div class="closure-close-action" id="aperturaPreparacion">
+                <div id="saldosInicialesSection" class="saldos-apertura-section" hidden>
                   <p class="section-note">Si hubo turno anterior, los saldos arrastrados se pre-cargaron. Podés corregirlos o dejar en 0.</p>
                   <div id="saldosInicialesGrid"></div>
-                </details>
+                </div>
                 <button type="button" class="button success" id="abrirCaja">Abrir caja</button>
-                <span class="apertura-open-badge">Caja ya abierta</span>
+                <span class="romaneo-status apertura-requirement-note" id="aperturaRequisitoNota" hidden><span class="info-icon" aria-hidden="true">i</span><span id="aperturaRequisitoNotaTexto">Completar saldos iniciales</span></span>
+                </div>
               </section>
             </div>
           </article>
@@ -4843,13 +5240,13 @@
           <article class="card close-cash-card">
             <h3 style="margin: 0;">Preparación de cierre</h3>
             <div class="closure-prep-grid">
-              <section class="operational-card">
+              <section class="operational-card closure-control-card">
                 <div class="operational-card-head">
                   <div>
                     <h4>Efectivo</h4>
                     <div class="muted">Arqueo físico para cierre.</div>
                   </div>
-                  <button type="button" class="button secondary compact" id="editarArqueoEfectivoCierre">Editar arqueo efectivo</button>
+                  <button type="button" class="button secondary compact" id="editarArqueoEfectivoCierre">Ver arqueo efectivo</button>
                 </div>
                 <div class="operational-metrics cash-close-metrics">
                   <div class="operational-metric"><span>Estado</span><strong id="cierreArqueoEfectivoEstado">Pendiente</strong></div>
@@ -4857,14 +5254,27 @@
                   <div class="operational-metric"><span>Caja cambio</span><strong id="cierreCajaCambioOperativo">$0.00</strong></div>
                   <div class="operational-metric"><span>Caja grande / resguardado</span><strong id="cierreCajaGrandeOperativo">$0.00</strong></div>
                 </div>
+                <div class="operational-accounts" id="cierreCuentasEfectivoOperativas">
+                  <div class="muted">Cargando cuentas efectivas...</div>
+                </div>
+                <div class="closure-audit-panel" id="cierreArqueoAuditPanel">
+                  <div class="muted">Sin arqueo operativo asociado todavia.</div>
+                </div>
               </section>
 
-              <section class="operational-card">
+              <section class="operational-card closure-control-card">
                 <div class="operational-card-head">
                   <div>
                     <h4>Cuentas digitales</h4>
-                    <div class="muted" id="cierreCuentasDigitalesEstado">Pendiente de conciliación</div>
+                    <div class="muted">Control por cuenta destino digital.</div>
                   </div>
+                  <span class="operational-account-status pendiente" id="cierreCuentasDigitalesEstado">Pendiente</span>
+                </div>
+                <div class="operational-metrics cash-close-metrics">
+                  <div class="operational-metric"><span>Esperado digital</span><strong id="cierreDigitalEsperadoOperativo">$0.00</strong></div>
+                  <div class="operational-metric"><span>Real digital</span><strong id="cierreDigitalRealOperativo">$0.00</strong></div>
+                  <div class="operational-metric"><span>Diferencia digital</span><strong id="cierreDiferenciaDigitalOperativo">$0.00</strong></div>
+                  <div class="operational-metric"><span>Estado</span><strong id="cierreDigitalEstadoOperativo">Pendiente</strong></div>
                 </div>
                 <div class="operational-accounts" id="cierreCuentasDigitalesOperativas">
                   <div class="muted">Cargando cuentas digitales...</div>
@@ -4887,7 +5297,6 @@
                     <strong>Hay diferencias operativas pendientes.</strong>
                     <span id="avisoAjustesPendientesTexto"></span>
                     <div class="stock-pending-actions">
-                      <a href="/productos.html" class="button secondary compact" style="width:fit-content;">Ir a Stock</a>
                       <span class="stock-pending-note">Se resuelve en Stock.</span>
                     </div>
                   </div>
@@ -4916,10 +5325,12 @@
           <article class="card close-cash-card">
             <h3 style="margin: 0;">Resumen para cerrar</h3>
             <div class="closure-summary-grid">
-              <div class="closure-summary-item"><span>Efectivo final</span><strong id="cierreSaldoFisicoOperativo">$0.00</strong></div>
-              <div class="closure-summary-item"><span>Digital final</span><strong id="cierreDigitalRealContado">$0.00</strong></div>
+              <div class="closure-summary-item"><span>Efectivo contado</span><strong id="cierreSaldoFisicoOperativo">$0.00</strong></div>
+              <div class="closure-summary-item"><span>Digital contado</span><strong id="cierreDigitalRealContado">$0.00</strong></div>
               <div class="closure-summary-item"><span>Pagos registrados</span><strong class="danger-text">$<span id="cierreEgresos">0.00</span></strong></div>
               <div class="closure-summary-item"><span>Resultado operativo</span><strong id="cierreDiferenciaFinalReal">$0.00</strong></div>
+              <div class="closure-summary-item"><span>Retiro efectivo</span><strong id="cierreRetiroEfectivoOperativo">$0.00</strong></div>
+              <div class="closure-summary-item"><span>Saldo que continua</span><strong id="cierreSaldoArrastradoOperativo">$0.00</strong></div>
               <div class="closure-summary-item"><span>Estado general</span><strong id="cierreEstadoFinalReal">Pendiente de romaneo / conciliacion</strong></div>
             </div>
             <details class="closure-technical-detail">
@@ -4956,9 +5367,9 @@
                   <span>Esperado es sistema; real es conteo o conciliacion manual. No modifica ventas ni pagos.</span>
                 </div>
                 <div class="closure-real-grid">
-                  <div class="closure-real-card"><span>Efectivo fisico esperado</span><strong id="cierreEfectivoEsperadoReal">$0.00</strong></div>
+                  <div class="closure-real-card"><span>Efectivo esperado</span><strong id="cierreEfectivoEsperadoReal">$0.00</strong></div>
                   <div class="closure-real-card"><span>Efectivo fisico contado</span><strong id="cierreEfectivoRealContado">$0.00</strong></div>
-                  <div class="closure-real-card"><span>Diferencia efectivo</span><strong id="cierreDiferenciaEfectivoReal">$0.00</strong></div>
+                  <div class="closure-real-card"><span>Diferencia operativa</span><strong id="cierreDiferenciaEfectivoReal">$0.00</strong></div>
                   <div class="closure-real-card"><span>Digital segun sistema</span><strong id="cierreDigitalEsperadoReal">$0.00</strong></div>
                   <div class="closure-real-card"><span>Diferencia cuentas</span><strong id="cierreDiferenciaDigitalReal">$0.00</strong></div>
                   <div class="closure-real-card total"><span>Total esperado</span><strong id="cierreTotalEsperadoReal">$0.00</strong></div>
@@ -4979,6 +5390,7 @@
               <button type="button" class="button danger" id="cerrarCaja">Cerrar caja</button>
               <div class="close-help">Genera el cierre con los importes actuales; no corrige movimientos.</div>
               <span class="romaneo-status" id="romaneoEstado"><span class="info-icon" aria-hidden="true">i</span><span>Pendiente de romaneo</span></span>
+              <div class="modal-actions closure-arqueo-action" id="cierreArqueoAccion" hidden></div>
             </div>
           </article>
         </div>
@@ -5114,7 +5526,10 @@
                 <div class="cash-audit-line reduced-sensitive-difference"><small>Diferencia</small><strong id="arqueoEfectivoPanelDiferencia">$0.00</strong></div>
                 <div class="cash-audit-line"><small>Estado</small><span class="account-diff-pill pendiente" id="arqueoEfectivoPanelEstado">Pendiente de arqueo</span></div>
               </div>
-              <button type="button" class="button secondary" id="abrirArqueoEfectivo">Abrir arqueo efectivo</button>
+              <div class="modal-header-actions">
+                <button type="button" class="button secondary" id="abrirArqueoEfectivo">Ver arqueo efectivo</button>
+                <button type="button" class="button secondary" id="nuevoArqueoEfectivo">Nuevo arqueo</button>
+              </div>
               <details class="audit-technical-detail">
                 <summary>Ver detalle técnico</summary>
                 <div class="audit-formula-row audit-formula-secondary" aria-label="Detalle del calculo de efectivo esperado">
@@ -5294,15 +5709,19 @@
       </div>
 
       <div class="modal" id="modalDetalleCierre">
-        <div class="modal-card">
+        <div class="modal-card modal-card-wide">
           <div class="modal-header">
-            <h3>Detalle del cierre</h3>
+            <div>
+              <h3>Detalle del cierre</h3>
+              <div class="muted" id="detalleCierreSubtitulo">-</div>
+            </div>
+            <div class="detalle-cierre-header-actions">
+              <span class="account-diff-pill" id="detalleCierreEstadoBadge">-</span>
+              <button type="button" class="button secondary compact" id="cerrarModalDetalleCierreHeader" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+            </div>
           </div>
           <div class="modal-body">
           <div id="detalleCierreModalBody"></div>
-          </div>
-          <div class="modal-footer modal-actions">
-            <button type="button" class="button secondary compact" id="cerrarModalDetalleCierre">Cerrar</button>
           </div>
         </div>
       </div>
@@ -5390,8 +5809,8 @@
                   </div>
                 </div>
                 <div class="denomination-summary">
-                  <label class="mini-card"><span>Caja arqueada</span><select class="field" id="cuentaOrigenArqueo"></select></label>
-                  <label class="mini-card"><span>Destino extraccion</span><select class="field" id="cuentaReservaArqueo"></select></label>
+                  <label class="mini-card"><span>Caja arqueada</span><select class="field arqueo-select" id="cuentaOrigenArqueo"></select></label>
+                  <label class="mini-card"><span>Destino extraccion</span><select class="field arqueo-select" id="cuentaReservaArqueo"></select></label>
                   <div class="mini-card"><span>Queda en caja</span><strong>$<span id="totalCambioRomaneo">0.00</span></strong></div>
                   <div class="mini-card"><span>Se guarda</span><strong>$<span id="totalRetiroRomaneo">0.00</span></strong></div>
                 </div>
@@ -5413,10 +5832,11 @@
             </details>
           </div>
           <div class="modal-footer modal-actions audit-modal-actions">
-            <div class="muted">Guardá el control o registralo para dejarlo preparado para cierre.</div>
+            <div class="muted" id="modalArqueoAyuda">Guardá el control o registralo para dejarlo preparado para cierre.</div>
             <div class="modal-header-actions">
               <button type="button" class="button secondary" id="editarArqueoVisual">Editar arqueo</button>
               <button type="button" class="button secondary" id="guardarArqueoVisual">Guardar arqueo</button>
+              <button type="button" class="button warning" id="usarArqueoParaCierre" hidden>Usar este arqueo para cierre</button>
               <button type="button" class="button warning" id="registrarArqueoVisual">Registrar arqueo</button>
             </div>
           </div>
@@ -5459,7 +5879,7 @@
             <div class="field-grid two">
               <label>
                 <span>Saldo inicial <small>(al abrir este turno)</small></span>
-                <input type="number" id="conciliacionSaldoInicial" class="field" step="0.01" min="0" placeholder="0.00" />
+                <input type="number" id="conciliacionSaldoInicial" class="field" step="0.01" min="0" placeholder="0.00" readonly />
                 <small class="concil-saldo-hint" id="conciliacionSaldoInicialHint"></small>
               </label>
               <div></div>
@@ -5559,6 +5979,9 @@
     const estadoApertura = document.getElementById("estadoApertura");
     const usuarioApertura = document.getElementById("usuarioApertura");
     const botonAbrirCaja = document.getElementById("abrirCaja");
+    const aperturaPreparacion = document.getElementById("aperturaPreparacion");
+    const aperturaRequisitoNota = document.getElementById("aperturaRequisitoNota");
+    const aperturaRequisitoNotaTexto = document.getElementById("aperturaRequisitoNotaTexto");
     const totalEfectivo = document.getElementById("totalEfectivo");
     const totalDebito = document.getElementById("totalDebito");
     const totalPagosEfectivo = document.getElementById("totalPagosEfectivo");
@@ -5625,16 +6048,23 @@
     const cierreResumenPagos = document.getElementById("cierreResumenPagos");
     const cierreDiferenciaVisual = document.getElementById("cierreDiferenciaVisual");
     const romaneoEstado = document.getElementById("romaneoEstado");
+    const cierreArqueoAccion = document.getElementById("cierreArqueoAccion");
     const cierreEfectivoEsperadoReal = document.getElementById("cierreEfectivoEsperadoReal");
     const cierreEfectivoRealContado = document.getElementById("cierreEfectivoRealContado");
     const cierreDiferenciaEfectivoReal = document.getElementById("cierreDiferenciaEfectivoReal");
     const cierreDigitalEsperadoReal = document.getElementById("cierreDigitalEsperadoReal");
     const cierreDigitalRealContado = document.getElementById("cierreDigitalRealContado");
     const cierreDiferenciaDigitalReal = document.getElementById("cierreDiferenciaDigitalReal");
+    const cierreDigitalEsperadoOperativo = document.getElementById("cierreDigitalEsperadoOperativo");
+    const cierreDigitalRealOperativo = document.getElementById("cierreDigitalRealOperativo");
+    const cierreDiferenciaDigitalOperativo = document.getElementById("cierreDiferenciaDigitalOperativo");
+    const cierreDigitalEstadoOperativo = document.getElementById("cierreDigitalEstadoOperativo");
     const cierreTotalEsperadoReal = document.getElementById("cierreTotalEsperadoReal");
     const cierreTotalRealContado = document.getElementById("cierreTotalRealContado");
     const cierreDiferenciaFinalReal = document.getElementById("cierreDiferenciaFinalReal");
     const cierreEstadoFinalReal = document.getElementById("cierreEstadoFinalReal");
+    const cierreRetiroEfectivoOperativo = document.getElementById("cierreRetiroEfectivoOperativo");
+    const cierreSaldoArrastradoOperativo = document.getElementById("cierreSaldoArrastradoOperativo");
     const recaudacionRealTotal = document.getElementById("recaudacionRealTotal");
     const recaudacionRealEfectivo = document.getElementById("recaudacionRealEfectivo");
     const recaudacionRealDigital = document.getElementById("recaudacionRealDigital");
@@ -5649,6 +6079,8 @@
     const cierreCajaGrandeOperativo = document.getElementById("cierreCajaGrandeOperativo");
     const cierreSaldoFisicoOperativo = document.getElementById("cierreSaldoFisicoOperativo");
     const cierreDiferenciaEfectivoOperativo = document.getElementById("cierreDiferenciaEfectivoOperativo");
+    const cierreCuentasEfectivoOperativas = document.getElementById("cierreCuentasEfectivoOperativas");
+    const cierreArqueoAuditPanel = document.getElementById("cierreArqueoAuditPanel");
     const cierreCuentasDigitalesOperativas = document.getElementById("cierreCuentasDigitalesOperativas");
     const botonIngresarDineroVisual = document.getElementById("ingresarDineroVisual");
     const botonRetirarDineroVisual = document.getElementById("retirarDineroVisual");
@@ -5660,8 +6092,9 @@
     const botonFiltrarCierresHistoricos = document.getElementById("filtrarCierresHistoricos");
     const botonExportarCierresHistoricos = document.getElementById("exportarCierresHistoricos");
     const modalDetalleCierre = document.getElementById("modalDetalleCierre");
-    const cerrarModalDetalleCierre = document.getElementById("cerrarModalDetalleCierre");
     const detalleCierreModalBody = document.getElementById("detalleCierreModalBody");
+    const detalleCierreSubtitulo = document.getElementById("detalleCierreSubtitulo");
+    const detalleCierreEstadoBadge = document.getElementById("detalleCierreEstadoBadge");
     const modalMovimientoCaja = document.getElementById("modalMovimientoCaja");
     const cerrarModalMovimientoCaja = document.getElementById("cerrarModalMovimientoCaja");
     const movimientoCajaTitulo = document.getElementById("movimientoCajaTitulo");
@@ -5727,6 +6160,7 @@
     const arqueoSistemaMixtas = document.getElementById("arqueoSistemaMixtas");
     const arqueoSistemaLegacyWrap = document.getElementById("arqueoSistemaLegacyWrap");
     const botonAbrirArqueoEfectivo = document.getElementById("abrirArqueoEfectivo");
+    const botonNuevoArqueoEfectivo = document.getElementById("nuevoArqueoEfectivo");
     const arqueoEfectivoPanelInicial = document.getElementById("arqueoEfectivoPanelInicial");
     const arqueoEfectivoPanelEsperado = document.getElementById("arqueoEfectivoPanelEsperado");
     const arqueoEfectivoPanelContado = document.getElementById("arqueoEfectivoPanelContado");
@@ -5760,6 +6194,8 @@
     const botonGuardarArqueo = document.getElementById("guardarArqueoVisual");
     const botonEditarArqueo = document.getElementById("editarArqueoVisual");
     const botonRegistrarArqueo = document.getElementById("registrarArqueoVisual");
+    const botonUsarArqueoParaCierre = document.getElementById("usarArqueoParaCierre");
+    const modalArqueoAyuda = document.getElementById("modalArqueoAyuda");
     const arqueosHistoricosBody = document.getElementById("arqueosHistoricosBody");
     const arqueosPageInfo = document.getElementById("arqueosPageInfo");
     const arqueosPagination = document.getElementById("arqueosPagination");
@@ -5815,7 +6251,11 @@
     let arqueosFiltroTexto = "";
     let arqueoGuardadoId = null;
     let arqueoPreparadoParaCierre = false;
+    let arqueoModalModoLectura = false;
+    let arqueoFormularioActual = null;
     let cajaResumenCuentasActual = null;
+    let estadoEfectivoOperativoActual = null;
+    let estadoDigitalOperativoActual = null;
     let resumenCuentasCobroActual = [];
     let resumenCuentasDestinoActual = [];
     let conciliacionesCuentasActuales = [];
@@ -5947,6 +6387,7 @@
           ? cuentasData.filter((cuenta) => Number(cuenta.activo) === 1 && String(cuenta.tipo_destino || "").toLowerCase() === "efectivo")
           : [];
         renderizarCuentasEfectivoArqueo();
+        renderizarAuditoriaArqueoCierre();
       } catch (error) {
         console.error("Error al cargar cuentas efectivas de arqueo:", error);
         mostrarToast("No se pudieron cargar las cuentas de efectivo para arqueo.", true);
@@ -6136,18 +6577,47 @@
       return denominaciones.some((denominacion) => Number(conteoInputs[denominacion]?.value || 0) > 0);
     }
 
+    function getUltimoArqueoModelo1() {
+      return arqueosActuales.find((item) => Number(item.modelo_arqueo_version || 0) === 1) || null;
+    }
+
+    function decisionesCierreEfectivoValidas() {
+      const estado = estadoEfectivoOperativoActual;
+      if (!estado?.determinable || !Array.isArray(estado.cuentas) || !estado.cuentas.length) {
+        return false;
+      }
+      return estado.cuentas.every((cuenta) => {
+        const cuentaId = Number(cuenta.cuenta_destino_id);
+        const contadoInput = getCuentaEfectivoCierreInput(cuentaId, "contado");
+        const retiroInput = getCuentaEfectivoCierreInput(cuentaId, "retiro");
+        if (!contadoInput || String(contadoInput.value || "").trim() === "") return false;
+        const contado = Number(contadoInput.value);
+        const retiro = Number(retiroInput?.value || 0);
+        return Number.isFinite(contado) && contado >= 0 && Number.isFinite(retiro) && retiro >= 0 && retiro <= contado + 0.01;
+      });
+    }
+
     function actualizarEstadoCierre() {
       const cajaAbierta = aperturaActual?.estado === "abierta";
       const romaneoHecho = tieneRomaneoCargado();
-      const puedeCerrar = cajaAbierta && romaneoHecho && arqueoPreparadoParaCierre;
+      const ultimoModelo1 = getUltimoArqueoModelo1();
+      const arqueoModelo1Preparado = Boolean(ultimoModelo1 && Number(ultimoModelo1.registrado_cierre || 0) === 1);
+      const puedeCerrarModelo1 = cajaAbierta && arqueoModelo1Preparado && decisionesCierreEfectivoValidas();
+      const puedeCerrarLegacy = cajaAbierta && romaneoHecho && arqueoPreparadoParaCierre && !ultimoModelo1;
+      const puedeCerrar = puedeCerrarModelo1 || puedeCerrarLegacy;
       botonCerrarCaja.disabled = !puedeCerrar;
       botonCerrarCaja.classList.toggle("danger", puedeCerrar);
       romaneoEstado.classList.toggle("done", puedeCerrar);
       romaneoEstado.innerHTML = puedeCerrar
         ? '<span aria-hidden="true">&#10003;</span><span>Arqueo registrado</span>'
-        : romaneoHecho
+        : arqueoModelo1Preparado && !decisionesCierreEfectivoValidas()
+          ? '<span class="info-icon" aria-hidden="true">i</span><span>Completar conteo fisico</span>'
+          : ultimoModelo1
+          ? '<span class="info-icon" aria-hidden="true">i</span><span>Arqueo cargado</span>'
+          : romaneoHecho
           ? '<span class="info-icon" aria-hidden="true">i</span><span>Registrar arqueo para cerrar</span>'
           : '<span class="info-icon" aria-hidden="true">i</span><span>Pendiente de romaneo</span>';
+      renderizarAccionArqueoParaCierre(ultimoModelo1, puedeCerrar);
     }
 
     function marcarArqueoPendienteRegistro() {
@@ -6185,7 +6655,142 @@
       modal.classList.remove("open");
     }
 
-    function abrirModalArqueoEfectivo() {
+    function getUltimoArqueoAplicadoCierre() {
+      return arqueosActuales.find((item) => Number(item.modelo_arqueo_version || 0) === 1 && Number(item.registrado_cierre || 0) === 1)
+        || arqueosActuales.find((item) => Number(item.modelo_arqueo_version || 0) === 1)
+        || arqueosActuales[0]
+        || null;
+    }
+
+    function arqueoPuedeUsarseParaCierre(arqueo) {
+      return aperturaActual?.estado === "abierta"
+        && Number(arqueo?.modelo_arqueo_version || 0) === 1
+        && Number(arqueo?.registrado_cierre || 0) !== 1
+        && String(arqueo?.estado || "").toLowerCase() !== "anulada";
+    }
+
+    function actualizarBotonUsarArqueoParaCierre() {
+      if (!botonUsarArqueoParaCierre) return;
+      botonUsarArqueoParaCierre.hidden = !(arqueoModalModoLectura && arqueoPuedeUsarseParaCierre(arqueoFormularioActual));
+    }
+
+    function renderizarAccionArqueoParaCierre(arqueo, cierreHabilitado = false) {
+      if (!cierreArqueoAccion) return;
+      if (!arqueoPuedeUsarseParaCierre(arqueo) || cierreHabilitado) {
+        cierreArqueoAccion.hidden = true;
+        cierreArqueoAccion.innerHTML = "";
+        return;
+      }
+
+      cierreArqueoAccion.hidden = false;
+      cierreArqueoAccion.innerHTML = `<button type="button" class="button warning compact" data-usar-ultimo-arqueo-cierre="${arqueo.id}">Usar este arqueo para cierre</button>`;
+      cierreArqueoAccion.querySelector("[data-usar-ultimo-arqueo-cierre]")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        try {
+          button.disabled = true;
+          await usarArqueoParaCierrePorId(button.dataset.usarUltimoArqueoCierre);
+        } catch (error) {
+          console.error("Error al usar arqueo para cierre:", error);
+          mostrarToast(error.message || "No se pudo usar el arqueo para cierre.", true);
+        } finally {
+          button.disabled = false;
+        }
+      });
+    }
+
+    function setModoLecturaArqueo(lectura) {
+      arqueoModalModoLectura = Boolean(lectura);
+      Object.values(conteoInputs).forEach((input) => {
+        input.readOnly = arqueoModalModoLectura;
+      });
+      if (cuentaOrigenArqueo) cuentaOrigenArqueo.disabled = arqueoModalModoLectura;
+      if (cuentaReservaArqueo) cuentaReservaArqueo.disabled = arqueoModalModoLectura;
+      if (observacionesArqueo) observacionesArqueo.readOnly = arqueoModalModoLectura;
+      if (botonGuardarArqueo) botonGuardarArqueo.hidden = arqueoModalModoLectura;
+      if (botonRegistrarArqueo) botonRegistrarArqueo.hidden = arqueoModalModoLectura;
+      if (botonEditarArqueo) botonEditarArqueo.hidden = arqueoModalModoLectura;
+      actualizarBotonUsarArqueoParaCierre();
+      if (modalArqueoAyuda) {
+        modalArqueoAyuda.textContent = arqueoModalModoLectura
+          ? "Modo consulta: este arqueo ya fue registrado y no se modifica desde aca."
+          : "Guarda el control o registralo para dejarlo preparado para cierre.";
+      }
+    }
+
+    async function usarArqueoParaCierrePorId(arqueoId) {
+      const id = Number(arqueoId || 0);
+      if (!id) {
+        mostrarToast("No hay un arqueo operativo para usar en el cierre.", true);
+        return null;
+      }
+
+      const res = await fetch(`/caja/arqueos/${id}/usar-para-cierre`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.message || "No se pudo usar el arqueo para cierre");
+      }
+
+      if (data.arqueo?.id) {
+        arqueoFormularioActual = data.arqueo;
+        const index = arqueosActuales.findIndex((item) => Number(item.id) === Number(data.arqueo.id));
+        if (index >= 0) {
+          arqueosActuales[index] = data.arqueo;
+        }
+      }
+      await cargarHistorialArqueos();
+      await cargarEstadoEfectivoOperativoCierre(aperturaActual?.id);
+      actualizarResumenCierre();
+      actualizarEstadoCierre();
+      mostrarMensaje(`Arqueo #${id} listo para cierre.`);
+      mostrarToast("Arqueo listo para cierre.");
+      return data.arqueo || null;
+    }
+
+    async function usarArqueoActualParaCierre() {
+      try {
+        if (botonUsarArqueoParaCierre) botonUsarArqueoParaCierre.disabled = true;
+        const arqueo = await usarArqueoParaCierrePorId(arqueoFormularioActual?.id);
+        if (arqueo) {
+          cargarArqueoEnFormulario(arqueo);
+          setModoLecturaArqueo(true);
+        }
+      } catch (error) {
+        console.error("Error al usar arqueo para cierre:", error);
+        mostrarToast(error.message || "No se pudo usar el arqueo para cierre.", true);
+      } finally {
+        if (botonUsarArqueoParaCierre) botonUsarArqueoParaCierre.disabled = false;
+      }
+    }
+
+    async function abrirArqueoPersistidoEnConsulta(arqueoId) {
+      try {
+        const res = await fetch(`/caja/arqueos/${arqueoId}`);
+        if (!res.ok) {
+          throw new Error("No se pudo cargar el arqueo");
+        }
+        const arqueo = await res.json();
+        cargarArqueoEnFormulario(arqueo);
+        setModoLecturaArqueo(true);
+        mostrarMensaje(`Arqueo #${arqueo.id || arqueoId} cargado en modo consulta.`);
+        abrirModal(modalArqueoEfectivo);
+      } catch (error) {
+        console.error("Error al abrir arqueo aplicado:", error);
+        mostrarToast("No se pudo cargar el arqueo aplicado.", true);
+      }
+    }
+
+    async function abrirModalArqueoEfectivo() {
+      const arqueo = getUltimoArqueoAplicadoCierre();
+      if (!arqueo?.id) {
+        abrirNuevoArqueoEfectivo();
+        return;
+      }
+      await abrirArqueoPersistidoEnConsulta(arqueo.id);
+    }
+
+    function abrirNuevoArqueoEfectivo() {
+      limpiarRomaneoVisual();
+      setModoLecturaArqueo(false);
       actualizarResumenCierre();
       abrirModal(modalArqueoEfectivo);
     }
@@ -6363,6 +6968,7 @@
         return getResumenCuentasDestinoDigital().map((cuenta) => {
           const sistema = Number(cuenta.balance || 0);
           const conciliacion = getConciliacionPorCuentaDestino(cuenta);
+          const saldoInicial = getSaldoInicialDigitalCuenta(cuenta);
           return {
             cuenta_destino_id: cuenta.cuenta_destino_id == null ? null : Number(cuenta.cuenta_destino_id),
             cuenta_cobro_id: null,
@@ -6370,8 +6976,8 @@
             tipo_destino: cuenta.tipo_destino || "otro",
             canales: Array.isArray(cuenta.canales) ? cuenta.canales : [],
             sin_cuenta_destino: Boolean(cuenta.sin_cuenta_destino),
-            saldo_inicial: conciliacion ? Number(conciliacion.saldo_inicial || 0) : 0,
-            saldo_actual: conciliacion ? Number(conciliacion.monto_real || 0) : sistema,
+            saldo_inicial: saldoInicial,
+            saldo_actual: conciliacion ? Number(conciliacion.monto_real || 0) : Number((saldoInicial + sistema).toFixed(2)),
             monto_sistema: sistema,
             ingresos: Number(cuenta.ingresos || 0),
             egresos: Number(cuenta.egresos || 0),
@@ -6422,8 +7028,7 @@
       if (tieneResumenPorCuentaDestino()) {
         return Number(getResumenCuentasDestinoDigital()
           .reduce((acc, cuenta) => {
-            const conciliacion = getConciliacionPorCuentaDestino(cuenta);
-            const saldoInicial = conciliacion ? Number(conciliacion.saldo_inicial || 0) : 0;
+            const saldoInicial = getSaldoInicialDigitalCuenta(cuenta);
             return acc + saldoInicial + Number(cuenta.balance || 0);
           }, 0)
           .toFixed(2));
@@ -6500,6 +7105,9 @@
       setSignedValue(cierreDigitalEsperadoReal, esperadoCuentas);
       setSignedValue(cierreDigitalRealContado, realCuentas);
       setSignedValue(cierreDiferenciaDigitalReal, diferenciaCuentas);
+      setSignedValue(cierreDigitalEsperadoOperativo, esperadoCuentas);
+      setSignedValue(cierreDigitalRealOperativo, realCuentas);
+      setSignedValue(cierreDiferenciaDigitalOperativo, diferenciaCuentas);
       setSignedValue(cierreTotalEsperadoReal, totalEsperado);
       setSignedValue(cierreTotalRealContado, totalReal);
       setSignedValue(cierreDiferenciaFinalReal, diferenciaFinal);
@@ -6642,7 +7250,11 @@
       const cuentasDestino = cuentaInputs.filter((cuenta) => cuenta.ejeDestino);
       if (!cuentasDestino.length) {
         cierreCuentasDigitalesOperativas.innerHTML = '<div class="muted">Sin cuentas digitales para conciliar en este turno.</div>';
-        if (cierreCuentasDigitalesEstado) cierreCuentasDigitalesEstado.textContent = "Sin cuentas digitales";
+        if (cierreCuentasDigitalesEstado) {
+          cierreCuentasDigitalesEstado.textContent = "Sin cuentas digitales";
+          cierreCuentasDigitalesEstado.className = "operational-account-status conciliado";
+        }
+      if (cierreDigitalEstadoOperativo) cierreDigitalEstadoOperativo.textContent = "Sin cuentas";
         if (cierreWarningDigital) {
           cierreWarningDigital.className = "closure-warning ok";
           cierreWarningDigital.innerHTML = "<span>Conciliación digital</span><strong>Sin cuentas para conciliar</strong>";
@@ -6702,7 +7314,15 @@
         : conDiferencias
           ? `${conDiferencias} con diferencia${conDiferencias !== 1 ? "s" : ""}`
           : "Conciliadas";
-      if (cierreCuentasDigitalesEstado) cierreCuentasDigitalesEstado.textContent = estadoDigital;
+      if (cierreCuentasDigitalesEstado) {
+        cierreCuentasDigitalesEstado.textContent = estadoDigital;
+        cierreCuentasDigitalesEstado.className = `operational-account-status ${pendientes ? "pendiente" : (conDiferencias ? "diferencia" : "conciliado")}`;
+      }
+      if (cierreDigitalEstadoOperativo) {
+        cierreDigitalEstadoOperativo.textContent = estadoDigital;
+        cierreDigitalEstadoOperativo.classList.toggle("negative-text", conDiferencias > 0);
+        cierreDigitalEstadoOperativo.classList.toggle("positive-text", pendientes === 0 && conDiferencias === 0);
+      }
       if (cierreWarningDigital) {
         const ok = pendientes === 0;
         cierreWarningDigital.className = `closure-warning ${ok ? "ok" : "warn"}`;
@@ -6714,6 +7334,195 @@
       });
     }
 
+    function getCuentaEfectivoCierreInput(cuentaId, tipo) {
+      return document.querySelector(`[data-cierre-efectivo-${tipo}="${cuentaId}"]`);
+    }
+
+    function actualizarTotalesCierreEfectivo() {
+      const cuentas = Array.isArray(estadoEfectivoOperativoActual?.cuentas) ? estadoEfectivoOperativoActual.cuentas : [];
+      let totalEsperadoPorCuenta = 0;
+      let totalContado = 0;
+      let totalRetiro = 0;
+
+      cuentas.forEach((cuenta) => {
+        const cuentaId = Number(cuenta.cuenta_destino_id);
+        const esperado = Number(cuenta.saldo_actual || 0);
+        const contadoInput = getCuentaEfectivoCierreInput(cuentaId, "contado");
+        const retiroInput = getCuentaEfectivoCierreInput(cuentaId, "retiro");
+        const contado = Number(contadoInput?.value || 0);
+        const retiro = Number(retiroInput?.value || 0);
+        const diferencia = Number((contado - esperado).toFixed(2));
+        const arrastre = Number((contado - retiro).toFixed(2));
+        const diferenciaEl = document.querySelector(`[data-cierre-efectivo-diferencia="${cuentaId}"]`);
+        const arrastreEl = document.querySelector(`[data-cierre-efectivo-arrastre="${cuentaId}"]`);
+        if (diferenciaEl) setSignedValue(diferenciaEl, diferencia);
+        if (arrastreEl) {
+          arrastreEl.textContent = money(arrastre);
+          arrastreEl.classList.toggle("negative-text", arrastre < -0.01);
+        }
+        totalEsperadoPorCuenta = Number((totalEsperadoPorCuenta + esperado).toFixed(2));
+        totalContado = Number((totalContado + contado).toFixed(2));
+        totalRetiro = Number((totalRetiro + retiro).toFixed(2));
+      });
+
+      const esperadoGlobal = Number(Number(estadoEfectivoOperativoActual?.efectivo_esperado_global ?? totalEsperadoPorCuenta).toFixed(2));
+      const diferenciaTotal = Number((totalContado - esperadoGlobal).toFixed(2));
+      if (cierreSaldoFisicoOperativo) cierreSaldoFisicoOperativo.textContent = money(totalContado);
+      if (cierreDiferenciaEfectivoOperativo) setSignedValue(cierreDiferenciaEfectivoOperativo, diferenciaTotal);
+      const cuentaCambio = cuentas.find((cuenta) => Number(cuenta.cuenta_destino_id) === Number(estadoEfectivoOperativoActual?.cuenta_cambio_id));
+      if (cierreCajaCambioOperativo) cierreCajaCambioOperativo.textContent = money(cuentaCambio ? Number(cuentaCambio.saldo_actual || 0) : 0);
+      if (cierreCajaGrandeOperativo) cierreCajaGrandeOperativo.textContent = money(Number((totalContado - totalRetiro).toFixed(2)));
+      if (cierreRetiroEfectivoOperativo) cierreRetiroEfectivoOperativo.textContent = money(totalRetiro);
+      if (cierreSaldoArrastradoOperativo) cierreSaldoArrastradoOperativo.textContent = money(Number((totalContado - totalRetiro).toFixed(2)));
+      if (cierreEfectivoEsperadoReal) cierreEfectivoEsperadoReal.textContent = money(esperadoGlobal);
+      if (cierreEfectivoRealContado) cierreEfectivoRealContado.textContent = money(totalContado);
+      if (cierreDiferenciaEfectivoReal) setSignedValue(cierreDiferenciaEfectivoReal, diferenciaTotal);
+      const digitalEsperado = calcularDigitalEsperado();
+      const digitalReal = calcularDigitalReal();
+      const diferenciaDigital = Number((digitalReal - digitalEsperado).toFixed(2));
+      const diferenciaGeneral = Number((diferenciaTotal + diferenciaDigital).toFixed(2));
+      if (resultadoEfectivoEsperado) resultadoEfectivoEsperado.innerText = formatearNumero(esperadoGlobal);
+      if (resultadoEfectivoContado) resultadoEfectivoContado.innerText = formatearNumero(totalContado);
+      if (resultadoDiferenciaEfectivo) setSignedValue(resultadoDiferenciaEfectivo, diferenciaTotal);
+      if (resultadoEfectivoEstado) {
+        resultadoEfectivoEstado.className = `account-diff-pill ${Math.abs(diferenciaTotal) < 0.01 ? "conciliado" : "diferencia"}`;
+        resultadoEfectivoEstado.textContent = Math.abs(diferenciaTotal) < 0.01
+          ? "Cuadra"
+          : (diferenciaTotal < 0 ? "Falta" : "Sobra");
+      }
+      if (resultadoOperativoEstado) {
+        resultadoOperativoEstado.className = `account-diff-pill ${Math.abs(diferenciaGeneral) < 0.01 ? "conciliado" : "diferencia"}`;
+        resultadoOperativoEstado.textContent = Math.abs(diferenciaGeneral) < 0.01
+          ? "Cuadra"
+          : (diferenciaGeneral < 0 ? `Falta ${money(Math.abs(diferenciaGeneral))}` : `Sobra ${money(diferenciaGeneral)}`);
+      }
+      if (cierreTotalEsperadoReal) cierreTotalEsperadoReal.textContent = money(Number((esperadoGlobal + digitalEsperado).toFixed(2)));
+      if (cierreTotalRealContado) cierreTotalRealContado.textContent = money(Number((totalContado + digitalReal).toFixed(2)));
+      if (cierreDiferenciaFinalReal) setSignedValue(cierreDiferenciaFinalReal, diferenciaGeneral);
+      setEstadoFinalCierre(diferenciaGeneral);
+    }
+
+    function renderizarCuentasEfectivoCierre() {
+      if (!cierreCuentasEfectivoOperativas) return;
+      const estado = estadoEfectivoOperativoActual;
+      if (!estado) {
+        cierreCuentasEfectivoOperativas.innerHTML = '<div class="muted">Sin estado operativo de efectivo cargado.</div>';
+        return;
+      }
+      if (!estado.determinable) {
+        cierreCuentasEfectivoOperativas.innerHTML = `<div class="muted">No se pudo determinar el efectivo operativo: ${estado.motivo || "pendiente"}.</div>`;
+        return;
+      }
+
+      const cuentas = Array.isArray(estado.cuentas) ? estado.cuentas : [];
+      if (!cuentas.length) {
+        cierreCuentasEfectivoOperativas.innerHTML = '<div class="muted">Sin cuentas efectivas para cierre.</div>';
+        return;
+      }
+
+      cierreCuentasEfectivoOperativas.innerHTML = cuentas.map((cuenta) => {
+        const cuentaId = Number(cuenta.cuenta_destino_id);
+        const esperado = Number(cuenta.saldo_actual || 0);
+        const contadoInicial = cuenta.es_caja_arqueada ? esperado.toFixed(2) : "";
+        const ayuda = cuenta.es_caja_arqueada ? "Ultimo arqueo" : "Conteo fisico";
+        return `
+          <div class="operational-account-row">
+            <div class="operational-account-name">
+              <strong>${cuenta.nombre || "Cuenta efectiva"}</strong>
+              <small>${ayuda}</small>
+            </div>
+            <div class="operational-account-value"><span>Esperado por Atlas</span><strong>${money(esperado)}</strong></div>
+            <label class="operational-account-value"><span>Contado fisicamente</span><input type="number" min="0" step="0.01" value="${contadoInicial}" data-cierre-efectivo-contado="${cuentaId}"></label>
+            <div class="operational-account-value"><span>Diferencia</span><strong data-cierre-efectivo-diferencia="${cuentaId}">$0.00</strong></div>
+            <label class="operational-account-value"><span>Retirar</span><input type="number" min="0" step="0.01" value="0" data-cierre-efectivo-retiro="${cuentaId}"></label>
+            <div class="operational-account-value"><span>Queda mañana</span><strong data-cierre-efectivo-arrastre="${cuentaId}">$0.00</strong></div>
+          </div>
+        `;
+      }).join("");
+
+      cierreCuentasEfectivoOperativas.querySelectorAll("input").forEach((input) => {
+        input.addEventListener("input", () => {
+          actualizarTotalesCierreEfectivo();
+          actualizarEstadoCierre();
+        });
+      });
+      actualizarTotalesCierreEfectivo();
+      actualizarEstadoCierre();
+    }
+
+    function nombreCuentaEfectivoPorId(cuentaId) {
+      const cuenta = cuentasEfectivoArqueo.find((item) => Number(item.id) === Number(cuentaId));
+      return cuenta?.nombre || (cuentaId ? `Cuenta #${cuentaId}` : "-");
+    }
+
+    function renderizarAuditoriaArqueoCierre() {
+      if (!cierreArqueoAuditPanel) return;
+      const arqueo = arqueosActuales.find((item) => Number(item.modelo_arqueo_version || 0) === 1 && Number(item.registrado_cierre || 0) === 1)
+        || arqueosActuales.find((item) => Number(item.modelo_arqueo_version || 0) === 1)
+        || arqueosActuales[0];
+
+      if (!arqueo) {
+        cierreArqueoAuditPanel.innerHTML = '<div class="muted">Sin arqueo operativo asociado todavia.</div>';
+        return;
+      }
+
+      const registrado = Number(arqueo.registrado_cierre || 0) === 1;
+      const cuentaOrigen = nombreCuentaEfectivoPorId(arqueo.cuenta_origen_id);
+      const cuentaReserva = nombreCuentaEfectivoPorId(arqueo.cuenta_reserva_id);
+      const accionCierre = arqueoPuedeUsarseParaCierre(arqueo)
+        ? `<button type="button" class="button warning compact" data-usar-arqueo-cierre="${arqueo.id}">Usar este arqueo para cierre</button>`
+        : "";
+      cierreArqueoAuditPanel.innerHTML = `
+        <div class="closure-audit-title">
+          <strong>Ultimo arqueo aplicado</strong>
+          <span class="operational-account-status ${registrado ? "conciliado" : "pendiente"}">${registrado ? "Listo para cierre" : "Guardado"}</span>
+        </div>
+        <div class="closure-audit-grid">
+          <div><span>Arqueo</span><strong>#${arqueo.id || "-"}</strong></div>
+          <div><span>Usuario</span><strong>${usuarioVisibleCaja(arqueo.usuario)}</strong></div>
+          <div><span>Fecha / hora</span><strong>${arqueo.fecha || "-"} ${arqueo.hora || ""}</strong></div>
+          <div><span>Estado</span><strong>${arqueo.estado || "-"}</strong></div>
+          <div><span>Caja arqueada</span><strong>${cuentaOrigen}</strong></div>
+          <div><span>Destino extraccion</span><strong>${cuentaReserva}</strong></div>
+          <div><span>Quedo en caja</span><strong>${money(arqueo.cambio_retenido || 0)}</strong></div>
+          <div><span>Se guardo</span><strong>${money(arqueo.monto_extraido || 0)}</strong></div>
+        </div>
+        ${accionCierre ? `<div class="modal-actions closure-audit-actions">${accionCierre}</div>` : ""}
+      `;
+      cierreArqueoAuditPanel.querySelector("[data-usar-arqueo-cierre]")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        try {
+          button.disabled = true;
+          await usarArqueoParaCierrePorId(button.dataset.usarArqueoCierre);
+        } catch (error) {
+          console.error("Error al usar arqueo desde cierre:", error);
+          mostrarToast(error.message || "No se pudo usar el arqueo para cierre.", true);
+        } finally {
+          button.disabled = false;
+        }
+      });
+    }
+
+    async function cargarEstadoEfectivoOperativoCierre(cajaId) {
+      estadoEfectivoOperativoActual = null;
+      if (!cajaId) {
+        renderizarCuentasEfectivoCierre();
+        return;
+      }
+      try {
+        const res = await fetch("/caja/estado-efectivo-operativo");
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.message || "No se pudo cargar estado operativo");
+        }
+        estadoEfectivoOperativoActual = data.estado || null;
+      } catch (error) {
+        console.error("Error al cargar estado operativo de efectivo:", error);
+        estadoEfectivoOperativoActual = { determinable: false, motivo: "error_carga" };
+      }
+      renderizarCuentasEfectivoCierre();
+    }
+
     function renderizarArqueosVisuales() {
       const ultimos = arqueosActuales.slice(0, 5);
       const filas = ultimos.length ? ultimos.map((arqueo) => `
@@ -6721,7 +7530,7 @@
           <td>${arqueo.hora || "-"}</td>
           <td>${usuarioVisibleCaja(arqueo.usuario)}</td>
           <td>${money(arqueo.efectivo_contado)}</td>
-          <td>${money(arqueo.diferencia_efectivo)}</td>
+          <td>${arqueo.diferencia_efectivo === undefined ? "—" : money(arqueo.diferencia_efectivo)}</td>
         </tr>
       `).join("") : '<tr><td colspan="4">Sin arqueos registrados.</td></tr>';
 
@@ -6755,21 +7564,26 @@
       cierreDiferenciaVisual.innerText = money(diferencia);
       resultadoEfectivoEsperado.innerText = formatearNumero(esperado);
       resultadoEfectivoContado.innerText = formatearNumero(contado);
-      const arqueoCargado = tieneRomaneoCargado();
+      const ultimoModelo1 = getUltimoArqueoModelo1();
+      const arqueoModelo1Preparado = Boolean(ultimoModelo1 && Number(ultimoModelo1.registrado_cierre || 0) === 1);
+      const arqueoCargado = arqueoModelo1Preparado || tieneRomaneoCargado();
+      const diferenciaArqueoEstado = ultimoModelo1 ? Number(ultimoModelo1.diferencia_efectivo || 0) : diferencia;
       if (resultadoEfectivoPendienteEstado) {
         resultadoEfectivoPendienteEstado.hidden = arqueoCargado;
       }
       if (resultadoEfectivoRealCard) resultadoEfectivoRealCard.classList.toggle("is-pending", !arqueoCargado);
       if (cierreArqueoEfectivoEstado) {
         cierreArqueoEfectivoEstado.textContent = arqueoCargado
-          ? (Math.abs(diferencia) < 0.01 ? "Cargado" : "Cargado con diferencia")
+          ? (Math.abs(diferenciaArqueoEstado) < 0.01
+            ? "Conciliado"
+            : (diferenciaArqueoEstado < 0 ? `Falta ${money(Math.abs(diferenciaArqueoEstado))}` : `Sobra ${money(diferenciaArqueoEstado)}`))
           : "Pendiente";
-        cierreArqueoEfectivoEstado.classList.toggle("positive-text", arqueoCargado && Math.abs(diferencia) < 0.01);
-        cierreArqueoEfectivoEstado.classList.toggle("negative-text", arqueoCargado && Math.abs(diferencia) >= 0.01);
+        cierreArqueoEfectivoEstado.classList.toggle("positive-text", arqueoCargado && diferenciaArqueoEstado >= -0.01);
+        cierreArqueoEfectivoEstado.classList.toggle("negative-text", arqueoCargado && diferenciaArqueoEstado < -0.01);
       }
       if (cierreWarningArqueo) {
         cierreWarningArqueo.className = `closure-warning ${arqueoCargado ? "ok" : "warn"}`;
-        cierreWarningArqueo.innerHTML = `<span>Arqueo efectivo</span><strong>${arqueoCargado ? "Cargado" : "Pendiente de romaneo"}</strong>`;
+        cierreWarningArqueo.innerHTML = `<span>Arqueo efectivo</span><strong>${arqueoModelo1Preparado ? "Registrado para cierre" : (arqueoCargado ? "Cargado" : "Pendiente de romaneo")}</strong>`;
       }
       if (arqueoEfectivoPanelEstado) {
         arqueoEfectivoPanelEstado.className = `account-diff-pill ${arqueoCargado ? "conciliado" : "pendiente"}`;
@@ -6804,19 +7618,37 @@
       const iniEfectivo = calcularEfectivoSaldoInicial();
       const ingresosEfectivo = Number(resumenActual?.total_efectivo || 0);
       const egresosEfectivo = Number(resumenActual?.total_pagos_efectivo || 0);
-      if (arqueoEfectivoInicialDisplay) arqueoEfectivoInicialDisplay.textContent = money(iniEfectivo);
-      if (arqueoEfectivoIngresosDisplay) arqueoEfectivoIngresosDisplay.textContent = money(ingresosEfectivo);
-      if (arqueoEfectivoEgresosDisplay) arqueoEfectivoEgresosDisplay.textContent = money(egresosEfectivo);
-      if (arqueoEfectivoPanelInicial) arqueoEfectivoPanelInicial.textContent = money(iniEfectivo);
-      if (arqueoEfectivoPanelEsperado) arqueoEfectivoPanelEsperado.textContent = money(esperado);
+      // El colaborador cuenta, Atlas compara: nunca se le escribe el esperado/saldo inicial/
+      // diferencia en el DOM (ni texto ni el color que revela sobra/falta), solo lo contado por el.
+      const puedeVerEsperadoArqueo = rolActual() !== "colaborador";
+      const ocultoArqueo = "—";
+      if (arqueoEfectivoInicialDisplay) arqueoEfectivoInicialDisplay.textContent = puedeVerEsperadoArqueo ? money(iniEfectivo) : ocultoArqueo;
+      if (arqueoEfectivoIngresosDisplay) arqueoEfectivoIngresosDisplay.textContent = puedeVerEsperadoArqueo ? money(ingresosEfectivo) : ocultoArqueo;
+      if (arqueoEfectivoEgresosDisplay) arqueoEfectivoEgresosDisplay.textContent = puedeVerEsperadoArqueo ? money(egresosEfectivo) : ocultoArqueo;
+      if (arqueoEfectivoPanelInicial) arqueoEfectivoPanelInicial.textContent = puedeVerEsperadoArqueo ? money(iniEfectivo) : ocultoArqueo;
+      if (arqueoEfectivoPanelEsperado) arqueoEfectivoPanelEsperado.textContent = puedeVerEsperadoArqueo ? money(esperado) : ocultoArqueo;
       if (arqueoEfectivoPanelContado) arqueoEfectivoPanelContado.textContent = money(contado);
-      if (arqueoEfectivoPanelDiferencia) setSignedValue(arqueoEfectivoPanelDiferencia, diferencia);
-      if (modalArqueoSaldoInicial) modalArqueoSaldoInicial.textContent = money(iniEfectivo);
-      if (modalArqueoVentasEfectivo) modalArqueoVentasEfectivo.textContent = money(ingresosEfectivo);
-      if (modalArqueoPagosEfectivo) modalArqueoPagosEfectivo.textContent = money(egresosEfectivo);
-      if (modalArqueoEsperado) modalArqueoEsperado.textContent = money(esperado);
+      if (arqueoEfectivoPanelDiferencia) {
+        if (puedeVerEsperadoArqueo) {
+          setSignedValue(arqueoEfectivoPanelDiferencia, diferencia);
+        } else {
+          arqueoEfectivoPanelDiferencia.textContent = ocultoArqueo;
+          arqueoEfectivoPanelDiferencia.classList.remove("positive-text", "negative-text");
+        }
+      }
+      if (modalArqueoSaldoInicial) modalArqueoSaldoInicial.textContent = puedeVerEsperadoArqueo ? money(iniEfectivo) : ocultoArqueo;
+      if (modalArqueoVentasEfectivo) modalArqueoVentasEfectivo.textContent = puedeVerEsperadoArqueo ? money(ingresosEfectivo) : ocultoArqueo;
+      if (modalArqueoPagosEfectivo) modalArqueoPagosEfectivo.textContent = puedeVerEsperadoArqueo ? money(egresosEfectivo) : ocultoArqueo;
+      if (modalArqueoEsperado) modalArqueoEsperado.textContent = puedeVerEsperadoArqueo ? money(esperado) : ocultoArqueo;
       if (modalArqueoContado) modalArqueoContado.textContent = money(contado);
-      if (modalArqueoDiferencia) setSignedValue(modalArqueoDiferencia, diferencia);
+      if (modalArqueoDiferencia) {
+        if (puedeVerEsperadoArqueo) {
+          setSignedValue(modalArqueoDiferencia, diferencia);
+        } else {
+          modalArqueoDiferencia.textContent = ocultoArqueo;
+          modalArqueoDiferencia.classList.remove("positive-text", "negative-text");
+        }
+      }
 
       // Ocultar mini-grid legacy cuando hay datos por cuenta destino
       if (arqueoSistemaLegacyWrap) arqueoSistemaLegacyWrap.hidden = tieneResumenPorCuentaDestino();
@@ -6846,6 +7678,9 @@
         ? '<span aria-hidden="true">&#10003;</span><span>Sobra</span>'
         : '<span aria-hidden="true">&#10005;</span><span>Falta</span>';
       actualizarCierreRealOperativo({ efectivoEsperado: esperado, efectivoReal: contado });
+      if (estadoEfectivoOperativoActual?.determinable) {
+        actualizarTotalesCierreEfectivo();
+      }
       actualizarEstadoCierre();
     }
 
@@ -6937,7 +7772,7 @@
         aperturaEstadoTexto.innerText = "Sin caja activa";
         arqueoGuardadoId = null;
         arqueoPreparadoParaCierre = false;
-        botonAbrirCaja.disabled = false;
+        botonAbrirCaja.disabled = true;
         botonVerDetalleApertura.disabled = true;
         botonIngresarDineroVisual.disabled = true;
         botonRetirarDineroVisual.disabled = true;
@@ -6967,7 +7802,7 @@
         arqueoUsuario.innerText = aperturaUsuario.innerText;
         aperturaEstadoTexto.innerText = "Cerrada";
         arqueoPreparadoParaCierre = false;
-        botonAbrirCaja.disabled = false;
+        botonAbrirCaja.disabled = true;
         botonVerDetalleApertura.disabled = false;
         botonIngresarDineroVisual.disabled = true;
         botonRetirarDineroVisual.disabled = true;
@@ -6997,6 +7832,7 @@
       actualizarEstadoCierre();
       const saldosSection = document.getElementById("saldosInicialesSection");
       if (saldosSection) saldosSection.hidden = true;
+      actualizarEstadoAperturaPreparacion();
     }
 
     function renderizarResumen(resumen) {
@@ -7416,23 +8252,236 @@
       crearBotonPagina(">", Math.min(totalPaginas, movimientosPaginaActual + 1), movimientosPaginaActual === totalPaginas);
     }
 
-    function renderizarDetalleCierre(cierre) {
+    async function obtenerArqueoAsociadoCierre(cierre) {
+      const estado = cierre?.resumen_snapshot?.estado_efectivo_operativo || {};
+      const arqueoId = Number(estado.ultimo_arqueo_id || 0);
+      if (!arqueoId) return null;
+      try {
+        const res = await fetch(`/caja/arqueos/${arqueoId}`);
+        if (!res.ok) return null;
+        return res.json();
+      } catch {
+        return null;
+      }
+    }
+
+    function nombreCuentaDesdeEstadoCierre(estado, cuentaId) {
+      const cuenta = Array.isArray(estado?.cuentas)
+        ? estado.cuentas.find((item) => Number(item.cuenta_destino_id) === Number(cuentaId))
+        : null;
+      return cuenta?.nombre || nombreCuentaEfectivoPorId(cuentaId);
+    }
+
+    async function obtenerConciliacionesCuentaDestinoCierre(cierreId) {
+      try {
+        const res = await fetch(`/caja/conciliaciones/cuentas-destino?caja_id=${encodeURIComponent(cierreId)}`);
+        if (!res.ok) return [];
+        const data = await res.json();
+        return Array.isArray(data.conciliaciones) ? data.conciliaciones : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function buildCierreCuentaCard(cuenta) {
+      const saldoInicial = Number(cuenta.saldo_inicial || 0);
+      const esperado = Number((saldoInicial + Number(cuenta.monto_sistema || 0)).toFixed(2));
+      const contado = Number(cuenta.monto_real || 0);
+      const retirado = Number(cuenta.monto_retiro || 0);
+      const continua = Number(cuenta.saldo_arrastrado || 0);
+      const diferencia = Number(cuenta.diferencia ?? (contado - esperado));
+      const conciliado = Math.abs(diferencia) < 0.01;
+      // Semantica visual: sobra y conciliado en verde, falta en rojo (misma diferencia ya calculada).
+      const estadoClase = diferencia < 0 ? "alerta" : "conciliado";
+      const estadoTexto = conciliado
+        ? "Conciliado"
+        : (diferencia > 0 ? `Sobra ${money(diferencia)}` : `Falta ${money(Math.abs(diferencia))}`);
+      const diferenciaClase = diferencia < 0 ? "negative-text" : "positive-text";
+      return `
+        <div class="cierre-cuenta-card">
+          <div class="cierre-cuenta-card-head">
+            <strong>${cuenta.cuenta_destino_nombre || "Cuenta"}</strong>
+            <span class="account-diff-pill ${estadoClase}">${estadoTexto}</span>
+          </div>
+          <div class="cierre-cuenta-metrics">
+            <div class="cierre-cuenta-metric"><span>Inicial</span><strong>${money(saldoInicial)}</strong></div>
+            <div class="cierre-cuenta-metric"><span>Esperado</span><strong>${money(esperado)}</strong></div>
+            <div class="cierre-cuenta-metric"><span>Contado</span><strong>${money(contado)}</strong></div>
+            <div class="cierre-cuenta-metric"><span>Retirado</span><strong>${money(retirado)}</strong></div>
+            <div class="cierre-cuenta-metric"><span>Continúa</span><strong>${money(continua)}</strong></div>
+            <div class="cierre-cuenta-metric"><span>Diferencia</span><strong class="${diferenciaClase}">${money(diferencia)}</strong></div>
+          </div>
+        </div>
+      `;
+    }
+
+    function buildCierreCuentasSection(titulo, cuentas) {
+      if (!cuentas.length) return "";
+      return `
+        <section class="detalle-cierre-section">
+          <h4 class="detalle-cierre-section-title">${titulo}</h4>
+          <div class="cierre-cuentas-grid">
+            ${cuentas.map(buildCierreCuentaCard).join("")}
+          </div>
+        </section>
+      `;
+    }
+
+    function buildDetalleCierreMetricas(titulo, metricas, meta = "", variante = "") {
+      const claseVariante = variante ? ` detalle-cierre-section-${variante}` : "";
+      return `
+        <section class="detalle-cierre-section${claseVariante}">
+          <h4 class="detalle-cierre-section-title">${titulo}</h4>
+          ${meta ? `<div class="detalle-cierre-section-meta">${meta}</div>` : ""}
+          <div class="cierre-cuenta-metrics">
+            ${metricas.map(([label, value]) => `<div class="cierre-cuenta-metric"><span>${label}</span><strong>${value}</strong></div>`).join("")}
+          </div>
+        </section>
+      `;
+    }
+
+    // Posicion final de dinero al cierre: efectivo fisico + digital, ambos sumados
+    // exclusivamente desde saldo_arrastrado ya persistido por cuenta (nunca recalculado).
+    function buildSaldoTotalCierre(cuentasEfectivo, cuentasDigitales) {
+      const totalEfectivo = Number(cuentasEfectivo.reduce((acc, c) => acc + Number(c.saldo_arrastrado || 0), 0).toFixed(2));
+      const totalDigital = Number(cuentasDigitales.reduce((acc, c) => acc + Number(c.saldo_arrastrado || 0), 0).toFixed(2));
+      const totalGeneral = Number((totalEfectivo + totalDigital).toFixed(2));
+      return `
+        <section class="detalle-cierre-section detalle-cierre-section-highlight saldo-total-cierre">
+          <h4 class="detalle-cierre-section-title">Saldo total al cierre</h4>
+          <div class="cierre-cuenta-metrics">
+            <div class="cierre-cuenta-metric"><span>Efectivo físico</span><strong>${money(totalEfectivo)}</strong></div>
+            <div class="cierre-cuenta-metric"><span>Saldo digital</span><strong>${money(totalDigital)}</strong></div>
+          </div>
+          <div class="saldo-total-cierre-hero">
+            <span>Total al cierre</span>
+            <strong>${money(totalGeneral)}</strong>
+          </div>
+        </section>
+      `;
+    }
+
+    async function renderizarDetalleCierre(cierre) {
       if (!cierre) {
         if (detalleCierre) {
           detalleCierre.textContent = "Selecciona un cierre para ver el detalle.";
         }
         detalleCierreModalBody.innerHTML = "";
+        if (detalleCierreSubtitulo) detalleCierreSubtitulo.textContent = "-";
+        if (detalleCierreEstadoBadge) {
+          detalleCierreEstadoBadge.className = "account-diff-pill";
+          detalleCierreEstadoBadge.textContent = "-";
+        }
         return;
       }
 
       const resumen = cierre.resumen_snapshot || {};
-      const html = `/*  */
-        <div class="list">
-          <div class="item"><strong>Fecha</strong><small>${cierre.fecha} | Apertura: ${cierre.hora} | Cierre: ${cierre.hora_cierre || "-"}</small></div>
-          <div class="item"><strong>Usuario</strong><small>${usuarioVisibleCaja(cierre.usuario)}</small></div>
-          <div class="item"><strong>Montos</strong><small>Apertura: ${money(cierre.monto_apertura)} | Esperado: ${money(cierre.efectivo_esperado)} | Contado: ${money(cierre.efectivo_contado)} | Diferencia: ${money(cierre.diferencia)}</small></div>
-          <div class="item"><strong>Resumen</strong><small>Efectivo: ${money(resumen.total_efectivo)} | Debito/credito: ${money(resumen.total_debito_tarjeta ?? resumen.total_debito)} | Mixtas: ${resumen.operaciones_mixtas || 0} | Pagos: ${money(resumen.total_pagos_general)}</small></div>
-          <div class="item"><strong>Distribucion</strong><small>Caja apertura: ${money(cierre.monto_caja_apertura)} | Caja fondo: ${money(cierre.monto_caja_fondo)}</small></div>
+      const estadoEfectivo = resumen.estado_efectivo_operativo || {};
+      const [arqueoAsociado, conciliacionesCuentaDestino] = await Promise.all([
+        obtenerArqueoAsociadoCierre(cierre),
+        obtenerConciliacionesCuentaDestinoCierre(cierre.id)
+      ]);
+      const diferenciaEfectivo = Number(resumen.diferencia_efectivo_total ?? cierre.diferencia ?? 0);
+      const estadoCierre = String(cierre.estado || "cerrada");
+      const estadoCierreVisible = estadoCierre.charAt(0).toUpperCase() + estadoCierre.slice(1);
+
+      // Header: subtitulo breve + badge de estado. El badge combina la diferencia de
+      // efectivo con las diferencias por cuenta ya persistidas (sin recalcular nada).
+      if (detalleCierreSubtitulo) {
+        detalleCierreSubtitulo.textContent = `Cerrada el ${cierre.fecha || "-"} ${cierre.hora_cierre || ""} · ${usuarioVisibleCaja(cierre.usuario)}`;
+      }
+      if (detalleCierreEstadoBadge) {
+        const diferenciasPorCuenta = conciliacionesCuentaDestino.map((c) => Number(c.diferencia || 0));
+        const hayDiferencias = Math.abs(diferenciaEfectivo) >= 0.01 || diferenciasPorCuenta.some((d) => Math.abs(d) >= 0.01);
+        detalleCierreEstadoBadge.className = `account-diff-pill ${hayDiferencias ? "diferencia" : "conciliado"}`;
+        detalleCierreEstadoBadge.textContent = hayDiferencias ? "Con diferencia" : "Conciliado";
+      }
+
+      // 1) Resumen ejecutivo: los datos clave del cierre, escaneables de un vistazo.
+      // El arqueo asociado se muestra completo en su propia seccion (CIERRE != ARQUEO),
+      // no como una quinta tarjeta mezclada aca.
+      const arqueoResumenTexto = arqueoAsociado
+        ? `#${arqueoAsociado.id} · ${Number(arqueoAsociado.registrado_cierre) === 1 ? "Registrado" : "Guardado"}`
+        : (estadoEfectivo.ultimo_arqueo_id ? `#${estadoEfectivo.ultimo_arqueo_id}` : "No informado");
+      const resumenEjecutivoHtml = `
+        <div class="meta-grid detalle-cierre-resumen">
+          <div class="mini-card"><span>Estado</span><strong>${estadoCierreVisible}</strong></div>
+          <div class="mini-card"><span>Cerrada por</span><strong>${usuarioVisibleCaja(cierre.usuario)}</strong></div>
+          <div class="mini-card"><span>Fecha/hora de cierre</span><strong>${cierre.fecha || "-"} ${cierre.hora_cierre || ""}</strong></div>
+          <div class="mini-card"><span>Apertura</span><strong>${cierre.fecha || "-"} ${cierre.hora || ""}</strong></div>
+        </div>
+      `;
+
+      // 2) Arqueo asociado: seccion propia, siempre visible (con fallback si no hay arqueo),
+      // separada conceptualmente del cierre en si.
+      const distribucionArqueoHtml = arqueoAsociado
+        ? buildDetalleCierreMetricas(
+            "Arqueo asociado",
+            [
+              ["Caja arqueada", nombreCuentaDesdeEstadoCierre(estadoEfectivo, arqueoAsociado.cuenta_origen_id)],
+              ["Destino", nombreCuentaDesdeEstadoCierre(estadoEfectivo, arqueoAsociado.cuenta_reserva_id)],
+              ["Quedó en caja", money(arqueoAsociado.cambio_retenido || 0)],
+              ["Se guardó", money(arqueoAsociado.monto_extraido || 0)]
+            ],
+            `Arqueo #${arqueoAsociado.id} · ${arqueoAsociado.fecha || "-"} ${arqueoAsociado.hora || ""} · ${usuarioVisibleCaja(arqueoAsociado.usuario)}`
+          )
+        : `
+          <section class="detalle-cierre-section">
+            <h4 class="detalle-cierre-section-title">Arqueo asociado</h4>
+            <div class="detalle-cierre-legacy-nota">${arqueoResumenTexto}</div>
+          </section>
+        `;
+
+      // 3) y 4) Trazabilidad por cuenta_destino real: efectivo fisico separado de cuentas
+      // digitales. No se recalcula nada aca: son los mismos valores ya persistidos en
+      // conciliaciones_cuentas_destino.
+      const cuentasEfectivoFisico = conciliacionesCuentaDestino.filter(
+        (c) => String(c.tipo_destino || "").toLowerCase() === "efectivo"
+      );
+      const cuentasDigitales = conciliacionesCuentaDestino.filter(
+        (c) => String(c.tipo_destino || "").toLowerCase() !== "efectivo"
+      );
+      const efectivoPorCuentaHtml = buildCierreCuentasSection("Efectivo por cuenta", cuentasEfectivoFisico);
+      const cuentasDigitalesHtml = buildCierreCuentasSection("Cuentas digitales", cuentasDigitales);
+
+      // Legacy: si no hay ningun detalle por cuenta persistido para este cierre, no se inventa
+      // nada; se conserva la distribucion generica que ya existia y se avisa explicitamente.
+      const distribucionLegacyHtml = cuentasEfectivoFisico.length
+        ? ""
+        : buildDetalleCierreMetricas("Distribución", [
+            ["Caja apertura", money(cierre.monto_caja_apertura)],
+            ["Caja fondo", money(cierre.monto_caja_fondo)]
+          ]) + `<div class="detalle-cierre-legacy-nota">Este cierre no dispone de detalle histórico por cuenta.</div>`;
+
+      // 5) Movimientos del turno: flujos ocurridos durante la jornada (no saldos). Fuente:
+      // resumen_snapshot, tal cual quedo persistido al cerrar.
+      const movimientosTurnoHtml = buildDetalleCierreMetricas("Movimientos del turno", [
+        ["Cobros en efectivo", money(resumen.total_efectivo)],
+        ["Cobros débito/crédito", money(resumen.total_debito_tarjeta ?? resumen.total_debito)],
+        ["Transferencias", money(resumen.total_transferencia)],
+        ["Operaciones mixtas", resumen.operaciones_mixtas || 0],
+        ["Pagos / egresos realizados", money(resumen.total_pagos_general)]
+      ]);
+
+      // 6) Saldo total al cierre: posicion final de dinero (no flujo). Autoridad exclusiva:
+      // saldo_arrastrado ya persistido por cuenta en conciliaciones_cuentas_destino — nunca se
+      // recalcula desde movimientos ni se mezcla con "Movimientos del turno" (evita doble conteo,
+      // en particular las operaciones mixtas ya estan repartidas en sus cuentas de destino).
+      // Sin detalle historico por cuenta (legacy), no se fabrica un total: se omite el bloque y
+      // queda unicamente la nota de distribucionLegacyHtml.
+      const saldoTotalCierreHtml = cuentasEfectivoFisico.length
+        ? buildSaldoTotalCierre(cuentasEfectivoFisico, cuentasDigitales)
+        : "";
+
+      const html = `
+        <div class="detalle-cierre">
+          ${resumenEjecutivoHtml}
+          ${distribucionArqueoHtml}
+          ${efectivoPorCuentaHtml}
+          ${cuentasDigitalesHtml}
+          ${distribucionLegacyHtml}
+          ${movimientosTurnoHtml}
+          ${saldoTotalCierreHtml}
         </div>
       `;
 
@@ -7639,7 +8688,7 @@
         if (!res.ok) {
           throw new Error("No se pudo obtener detalle del cierre");
         }
-        renderizarDetalleCierre(await res.json());
+        await renderizarDetalleCierre(await res.json());
         if (mostrarModal) {
           abrirModal(modalDetalleCierre);
         }
@@ -7702,7 +8751,7 @@
       arqueosHistoricosBody.innerHTML = pagina.map(buildArqueoHistoricoRow).join("");
       arqueosHistoricosBody.querySelectorAll("[data-arqueo-id]").forEach((button) => {
         button.addEventListener("click", async function () {
-          await cargarDetalleArqueo(button.dataset.arqueoId);
+          await abrirArqueoPersistidoEnConsulta(button.dataset.arqueoId);
         });
       });
 
@@ -7754,11 +8803,12 @@
       if (filtroArqueosHistoricos) {
         filtroArqueosHistoricos.value = "";
       }
-      const ultimo = arqueosActuales[0];
+      const ultimo = getUltimoArqueoModelo1() || arqueosActuales[0];
       arqueoGuardadoId = ultimo?.id || null;
       arqueoPreparadoParaCierre = Number(ultimo?.registrado_cierre) === 1;
       renderizarArqueosVisuales();
       renderizarTablaArqueosHistoricos();
+      renderizarAuditoriaArqueoCierre();
       actualizarEstadoCierre();
     }
 
@@ -7848,6 +8898,20 @@
     function getConciliacionPorCuentaDestino(cuenta) {
       const key = getCuentaDestinoKey(cuenta);
       return conciliacionesCuentasDestinoActuales.find((item) => getCuentaDestinoKey(item) === key) || null;
+    }
+
+    // Saldo inicial de una cuenta digital para esta caja: conciliacion ya guardada en esta
+    // caja (valor manual explicito) si existe; si no, el arrastre del ultimo cierre resuelto
+    // por el backend (/caja/estado-digital-operativo); si no hay ninguno, 0. Nunca suma ambas.
+    function getSaldoInicialDigitalCuenta(cuenta) {
+      const conciliacion = getConciliacionPorCuentaDestino(cuenta);
+      if (conciliacion) return Number(conciliacion.saldo_inicial || 0);
+      const cuentaId = cuenta?.cuenta_destino_id;
+      if (cuentaId == null) return 0;
+      const estadoCuenta = estadoDigitalOperativoActual?.cuentas?.find(
+        (item) => Number(item.cuenta_destino_id) === Number(cuentaId)
+      );
+      return estadoCuenta ? Number(estadoCuenta.saldo_inicial || 0) : 0;
     }
 
     function getConciliacionEstado(conciliacion) {
@@ -7987,34 +9051,15 @@
       if (conciliacionMontoRetiro) conciliacionMontoRetiro.value = Number(conciliacion?.monto_retiro || 0).toFixed(2);
       if (conciliacionMontoRetiroWrap) conciliacionMontoRetiroWrap.hidden = (conciliacion?.decision_cierre || "") !== "retirar";
 
-      // Saldo inicial: usar el de la conciliacion existente, o último saldo arrastrado, o 0
-      const saldoInicialGuardado = conciliacion ? Number(conciliacion.saldo_inicial || 0) : null;
-      if (conciliacionSaldoInicial) conciliacionSaldoInicial.value = saldoInicialGuardado !== null ? saldoInicialGuardado.toFixed(2) : "0.00";
+      // Saldo inicial: misma fuente autoritativa que "Esperado" en la fila de la tabla
+      // (getSaldoInicialDigitalCuenta), para que nunca puedan divergir entre ambas vistas.
+      const saldoInicialResuelto = getSaldoInicialDigitalCuenta(cuenta);
+      if (conciliacionSaldoInicial) conciliacionSaldoInicial.value = saldoInicialResuelto.toFixed(2);
       if (conciliacionSaldoInicialHint) conciliacionSaldoInicialHint.textContent = "";
-      if (conciliacionSinSaldoInicialNota) conciliacionSinSaldoInicialNota.hidden = (saldoInicialGuardado !== null && saldoInicialGuardado > 0);
+      if (conciliacionSinSaldoInicialNota) conciliacionSinSaldoInicialNota.hidden = saldoInicialResuelto > 0;
 
       actualizarDiferenciaConciliacion();
       abrirModal(modalConciliacionCuenta);
-
-      // Cargar último saldo arrastrado como sugerencia si no hay conciliacion previa
-      if (saldoInicialGuardado === null || saldoInicialGuardado === 0) {
-        const cuentaDestinoId = cuenta.cuenta_destino_id;
-        if (cuentaDestinoId != null) {
-          fetch(`/caja/ultimo-saldo-arrastrado?cuenta_destino_id=${encodeURIComponent(cuentaDestinoId)}`)
-            .then((r) => r.ok ? r.json() : null)
-            .catch(() => null)
-            .then((data) => {
-              const saldo = data?.saldo;
-              if (saldo && Number(saldo.saldo_arrastrado) > 0) {
-                if (conciliacionSaldoInicial && !Number(conciliacionSaldoInicial.value)) {
-                  conciliacionSaldoInicial.value = Number(saldo.saldo_arrastrado).toFixed(2);
-                  if (conciliacionSaldoInicialHint) conciliacionSaldoInicialHint.textContent = `Sugerido del turno anterior (${saldo.decision_cierre || "arrastrado"})`;
-                  actualizarDiferenciaConciliacion();
-                }
-              }
-            });
-        }
-      }
     }
 
     function renderLegacyAnomalyNote(tipo) {
@@ -8236,11 +9281,23 @@
           console.error("Error al cargar conciliaciones por cuenta destino:", error);
           conciliacionesCuentasDestinoActuales = [];
         }
+        try {
+          const digitalUrl = cajaId
+            ? `/caja/estado-digital-operativo?caja_id=${encodeURIComponent(cajaId)}`
+            : "/caja/estado-digital-operativo";
+          const digitalRes = await fetch(digitalUrl);
+          const digitalData = digitalRes.ok ? await digitalRes.json() : null;
+          estadoDigitalOperativoActual = digitalData?.estado || null;
+        } catch (error) {
+          console.error("Error al cargar estado operativo digital:", error);
+          estadoDigitalOperativoActual = null;
+        }
         renderizarResumenCuentasDestino(resumenCuentasDestinoActual);
       } catch (error) {
         console.error("Error al cargar resumen por cuenta destino:", error);
         resumenCuentasDestinoActual = [];
         conciliacionesCuentasDestinoActuales = [];
+        estadoDigitalOperativoActual = null;
         card?.classList.remove("visible");
       }
     }
@@ -8377,6 +9434,7 @@
         renderizarResumen(data.resumen);
         renderizarVentas(data.ventas);
         await cargarResumenCuentasCobro(data.apertura?.id || null);
+        await cargarEstadoEfectivoOperativoCierre(data.apertura?.id || null);
         await cargarMovimientosNoMonetariosCaja();
       } catch (error) {
         console.error("Error al cargar caja:", error);
@@ -8395,7 +9453,12 @@
         const res = await fetch("/cuentas_destino");
         if (!res.ok) throw new Error("No se pudo cargar cuentas destino");
         const cuentas = (await res.json()).filter((cuenta) => String(cuenta.tipo_destino || "").toLowerCase() === "efectivo");
-        if (!Array.isArray(cuentas) || !cuentas.length) { section.hidden = true; return; }
+        if (!Array.isArray(cuentas) || !cuentas.length) {
+          grid.innerHTML = "";
+          actualizarEstadoAperturaPreparacion();
+          section.hidden = true;
+          return;
+        }
 
         const listasConSaldo = await Promise.all(cuentas.map(async (c) => {
           try {
@@ -8409,22 +9472,62 @@
           <label class="saldo-inicial-row">
             <div class="saldo-inicial-nombre">
               <strong>${c.nombre}</strong>
-              <span class="muted">${c.tiene_arrastre ? "Saldo anterior" : "Sin saldo anterior"}</span>
-              ${c.tiene_arrastre ? `<small class="concil-saldo-hint">Continua del cierre anterior${c.decision_sugerida ? ` (${c.decision_sugerida})` : ""}</small>` : ""}
+              <span class="muted">${c.tiene_arrastre ? "Saldo anterior · Continua del cierre anterior" : "Sin saldo anterior"}</span>
             </div>
-            <input type="number" class="field" step="0.01" min="0" placeholder="0.00"
-              value="${c.tiene_arrastre ? Number(c.saldo_sugerido).toFixed(2) : ""}"
-              data-saldo-inicial-cuenta="${c.id}"
-              data-saldo-inicial-arrastre="${c.tiene_arrastre ? "1" : "0"}"
-              ${c.tiene_arrastre ? "readonly" : ""} />
+            <span class="saldo-inicial-amount${c.tiene_arrastre ? " is-readonly" : ""}">
+              <span class="saldo-inicial-currency" aria-hidden="true">$</span>
+              <input type="number" class="field" step="0.01" min="0" placeholder="0.00"
+                value="${c.tiene_arrastre ? Number(c.saldo_sugerido).toFixed(2) : ""}"
+                data-saldo-inicial-cuenta="${c.id}"
+                data-saldo-inicial-arrastre="${c.tiene_arrastre ? "1" : "0"}"
+                ${c.tiene_arrastre ? "readonly" : ""} />
+            </span>
           </label>`).join("");
 
         section.hidden = false;
+        grid.querySelectorAll("[data-saldo-inicial-cuenta]").forEach((input) => {
+          input.addEventListener("input", actualizarEstadoAperturaPreparacion);
+        });
+        actualizarEstadoAperturaPreparacion();
       } catch (err) {
         console.error("Error al cargar saldos iniciales:", err);
-        if (section) section.hidden = true;
+        if (grid) grid.innerHTML = '<div class="muted">No se pudieron cargar los saldos iniciales.</div>';
+        if (section) section.hidden = aperturaActual?.estado === "abierta";
+        actualizarEstadoAperturaPreparacion();
       } finally {
         saldosInicialesCargando = false;
+      }
+    }
+
+    function actualizarEstadoAperturaPreparacion() {
+      const cajaAbierta = aperturaActual?.estado === "abierta";
+      const section = document.getElementById("saldosInicialesSection");
+      const inputs = [...document.querySelectorAll("[data-saldo-inicial-cuenta]")];
+      const tieneCuentas = inputs.length > 0;
+      const saldosListos = tieneCuentas && inputs.every((input) => {
+        const valor = String(input.value ?? "").trim();
+        if (valor === "") return false;
+        const numero = Number(valor);
+        return Number.isFinite(numero) && numero >= 0;
+      });
+
+      if (aperturaPreparacion) aperturaPreparacion.hidden = cajaAbierta;
+      if (section) section.hidden = cajaAbierta;
+
+      if (cajaAbierta) {
+        botonAbrirCaja.disabled = true;
+        if (aperturaRequisitoNota) aperturaRequisitoNota.hidden = true;
+        return;
+      }
+
+      botonAbrirCaja.disabled = !saldosListos;
+      if (aperturaRequisitoNota) {
+        aperturaRequisitoNota.hidden = saldosListos;
+        if (aperturaRequisitoNotaTexto) {
+          aperturaRequisitoNotaTexto.textContent = tieneCuentas
+            ? "Completar saldos iniciales"
+            : "No hay cuentas de efectivo configuradas";
+        }
       }
     }
 
@@ -8432,9 +9535,10 @@
       const inputs = [...document.querySelectorAll("[data-saldo-inicial-cuenta]")];
       await Promise.all(inputs.map(async (input) => {
         const cuentaId = Number(input.dataset.saldoInicialCuenta);
-        const saldo = Number(input.value || 0);
+        const valor = String(input.value ?? "").trim();
+        const saldo = Number(valor || 0);
         const tieneArrastre = input.dataset.saldoInicialArrastre === "1";
-        if (!cuentaId || (!tieneArrastre && saldo <= 0)) return;
+        if (!cuentaId || (!tieneArrastre && valor === "")) return;
         return fetch("/caja/conciliaciones/cuentas-destino", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -8481,8 +9585,45 @@
         console.error("Error al abrir caja:", error);
         mostrarMensaje("Error al abrir caja", true);
       } finally {
-        botonAbrirCaja.disabled = aperturaActual?.estado === "abierta";
+        actualizarEstadoAperturaPreparacion();
       }
+    }
+
+    function buildDecisionesCierreEfectivoPayload() {
+      const estado = estadoEfectivoOperativoActual;
+      if (!estado?.determinable) {
+        throw new Error("El efectivo operativo no esta determinado para cerrar.");
+      }
+      const cuentas = Array.isArray(estado.cuentas) ? estado.cuentas : [];
+      if (!cuentas.length) {
+        throw new Error("No hay cuentas efectivas determinadas para cerrar.");
+      }
+
+      return cuentas.map((cuenta) => {
+        const cuentaId = Number(cuenta.cuenta_destino_id);
+        const contadoInput = getCuentaEfectivoCierreInput(cuentaId, "contado");
+        const retiroInput = getCuentaEfectivoCierreInput(cuentaId, "retiro");
+        const contadoRaw = contadoInput?.value;
+        if (contadoRaw === undefined || contadoRaw === null || String(contadoRaw).trim() === "") {
+          throw new Error(`Falta contar fisicamente ${cuenta.nombre || `cuenta ${cuentaId}`}.`);
+        }
+        const contado = Number(contadoRaw);
+        const retiro = Number(retiroInput?.value || 0);
+        if (!Number.isFinite(contado) || contado < 0) {
+          throw new Error(`El contado fisico de ${cuenta.nombre || `cuenta ${cuentaId}`} es invalido.`);
+        }
+        if (!Number.isFinite(retiro) || retiro < 0) {
+          throw new Error(`El retiro de ${cuenta.nombre || `cuenta ${cuentaId}`} es invalido.`);
+        }
+        if (retiro > contado + 0.01) {
+          throw new Error(`El retiro supera lo contado en ${cuenta.nombre || `cuenta ${cuentaId}`}.`);
+        }
+        return {
+          cuenta_destino_id: cuentaId,
+          saldo_fisico_contado: Number(contado.toFixed(2)),
+          monto_retiro: Number(retiro.toFixed(2))
+        };
+      });
     }
 
     async function cerrarCaja() {
@@ -8491,15 +9632,17 @@
         return;
       }
 
-      const conteo = {};
-      denominaciones.forEach((denominacion) => {
-        conteo[String(denominacion)] = Number(conteoInputs[denominacion]?.value || 0);
-      });
+      let decisionesCierre;
+      try {
+        decisionesCierre = buildDecisionesCierreEfectivoPayload();
+      } catch (error) {
+        mostrarToast(error.message || "Revisa el conteo fisico del cierre.", true);
+        return;
+      }
 
       const payload = {
-        conteo,
-        monto_caja_apertura: Number(montoCajaAperturaCierre?.value) || 0,
-        monto_caja_fondo: Number(montoCajaFondoCierre?.value) || 0
+        modelo_cierre_version: 1,
+        decisiones_cierre: decisionesCierre
       };
 
       botonCerrarCaja.disabled = true;
@@ -8553,11 +9696,27 @@
       };
     }
 
+    function getCantidadConteoPersistido(conteo, denominacion) {
+      if (Array.isArray(conteo)) {
+        const item = conteo.find((fila) => Number(fila?.denominacion) === Number(denominacion));
+        return Number(item?.cantidad || 0);
+      }
+      if (conteo && typeof conteo === "object") {
+        const valor = conteo[String(denominacion)] ?? conteo[denominacion];
+        if (valor && typeof valor === "object") {
+          return Number(valor.cantidad || 0);
+        }
+        return Number(valor || 0);
+      }
+      return 0;
+    }
+
     function cargarArqueoEnFormulario(arqueo) {
+      arqueoFormularioActual = arqueo || null;
       const conteo = arqueo.conteo_detalle || {};
       denominaciones.forEach((denominacion) => {
         if (conteoInputs[denominacion]) {
-          conteoInputs[denominacion].value = Number(conteo[String(denominacion)] || 0);
+          conteoInputs[denominacion].value = getCantidadConteoPersistido(conteo, denominacion);
         }
       });
 
@@ -8588,11 +9747,14 @@
       }
       arqueoGuardadoId = Number(arqueo.modelo_arqueo_version) === 1 ? null : arqueo.id;
       arqueoPreparadoParaCierre = Number(arqueo.registrado_cierre) === 1;
+      actualizarSubtotalesConteo();
       actualizarResumenCierre();
       actualizarEstadoCierre();
+      actualizarBotonUsarArqueoParaCierre();
     }
 
     function limpiarRomaneoVisual() {
+      arqueoFormularioActual = null;
       denominaciones.forEach((denominacion) => {
         if (conteoInputs[denominacion]) {
           conteoInputs[denominacion].value = "0";
@@ -8612,6 +9774,7 @@
       resetArqueoIdempotencyKey();
       actualizarResumenCierre();
       actualizarEstadoCierre();
+      actualizarBotonUsarArqueoParaCierre();
     }
 
     async function editarArqueo() {
@@ -8638,6 +9801,10 @@
     }
 
     async function enviarArqueo(registradoCierre) {
+      if (arqueoModalModoLectura) {
+        mostrarToast("El arqueo esta abierto en modo consulta.", true);
+        return;
+      }
       if (!aperturaActual || aperturaActual.estado !== "abierta") {
         mostrarMensaje("No hay una caja abierta para guardar el arqueo", true);
         mostrarToast("No hay una caja abierta para guardar el arqueo.", true);
@@ -8778,6 +9945,7 @@
 
     botonAbrirArqueoEfectivo.addEventListener("click", abrirModalArqueoEfectivo);
     botonEditarArqueoEfectivoCierre.addEventListener("click", abrirModalArqueoEfectivo);
+    botonNuevoArqueoEfectivo?.addEventListener("click", abrirNuevoArqueoEfectivo);
 
     cerrarModalArqueoEfectivo.addEventListener("click", function () {
       cerrarModal(modalArqueoEfectivo);
@@ -8807,6 +9975,7 @@
     botonGuardarArqueo.addEventListener("click", guardarArqueo);
     botonEditarArqueo.addEventListener("click", editarArqueo);
     botonRegistrarArqueo.addEventListener("click", registrarArqueo);
+    botonUsarArqueoParaCierre?.addEventListener("click", usarArqueoActualParaCierre);
     observacionesArqueo.addEventListener("input", marcarArqueoPendienteRegistro);
     cuentaOrigenArqueo?.addEventListener("change", () => {
       renderizarDestinoReservaArqueo(cuentaReservaArqueo?.value || "");
@@ -8834,7 +10003,7 @@
       cerrarModal(modalDetalleApertura);
     });
 
-    cerrarModalDetalleCierre.addEventListener("click", function () {
+    document.getElementById("cerrarModalDetalleCierreHeader")?.addEventListener("click", function () {
       cerrarModal(modalDetalleCierre);
     });
 

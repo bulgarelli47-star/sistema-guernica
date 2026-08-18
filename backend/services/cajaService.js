@@ -209,6 +209,7 @@ async function ensureConciliacionesCuentasDestinoTable() {
   await ensureColumn("conciliaciones_cuentas_destino", "decision_cierre", "TEXT");
   await ensureColumn("conciliaciones_cuentas_destino", "monto_retiro", "REAL NOT NULL DEFAULT 0");
   await ensureColumn("conciliaciones_cuentas_destino", "saldo_arrastrado", "REAL NOT NULL DEFAULT 0");
+  await ensureColumn("conciliaciones_cuentas_destino", "confirmado_usuario", "INTEGER NOT NULL DEFAULT 0");
 }
 
 async function getCajaAperturaHoy(fecha) {
@@ -1051,6 +1052,7 @@ async function guardarConciliacionCuentaDestino({
   montoRetiro = 0,
   saldoArrastrado: saldoArrastradoParam = 0,
   observaciones = "",
+  confirmadoUsuario = false,
   usuario = "admin",
   fecha,
   hora
@@ -1102,6 +1104,7 @@ async function guardarConciliacionCuentaDestino({
   }
 
   const obs = String(observaciones || "").trim();
+  const confirmado = confirmadoUsuario ? 1 : 0;
   const user = String(usuario || "admin").trim() || "admin";
   const fechaFinal = fecha || new Date().toISOString().slice(0, 10);
   const horaFinal = hora || new Date().toTimeString().slice(0, 8);
@@ -1121,9 +1124,9 @@ async function guardarConciliacionCuentaDestino({
       `UPDATE conciliaciones_cuentas_destino
        SET monto_sistema = ?, monto_real = ?, saldo_inicial = ?, diferencia = ?, estado = ?,
            decision_cierre = ?, monto_retiro = ?, saldo_arrastrado = ?,
-           observaciones = ?, fecha = ?, hora = ?, usuario = ?
+           observaciones = ?, confirmado_usuario = ?, fecha = ?, hora = ?, usuario = ?
        WHERE id = ?`,
-      [sistema, real, inicio, diferencia, estado, decision, retiro, arrastrado, obs, fechaFinal, horaFinal, user, existente.id]
+      [sistema, real, inicio, diferencia, estado, decision, retiro, arrastrado, obs, confirmado, fechaFinal, horaFinal, user, existente.id]
     );
     return getQuery("SELECT * FROM conciliaciones_cuentas_destino WHERE id = ?", [existente.id]);
   }
@@ -1131,9 +1134,9 @@ async function guardarConciliacionCuentaDestino({
   const result = await runQuery(
     `INSERT INTO conciliaciones_cuentas_destino
      (caja_id, cuenta_destino_id, monto_sistema, monto_real, saldo_inicial, diferencia, estado,
-      decision_cierre, monto_retiro, saldo_arrastrado, observaciones, fecha, hora, usuario)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [caja, cuenta, sistema, real, inicio, diferencia, estado, decision, retiro, arrastrado, obs, fechaFinal, horaFinal, user]
+      decision_cierre, monto_retiro, saldo_arrastrado, observaciones, confirmado_usuario, fecha, hora, usuario)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [caja, cuenta, sistema, real, inicio, diferencia, estado, decision, retiro, arrastrado, obs, confirmado, fechaFinal, horaFinal, user]
   );
   return getQuery("SELECT * FROM conciliaciones_cuentas_destino WHERE id = ?", [result.lastID]);
 }
@@ -1186,6 +1189,55 @@ async function getSaldoInicialCuentaDestinoEnCaja(cajaId, cuentaDestinoId) {
   return Number(Number(arrastre?.saldo_arrastrado || 0).toFixed(2));
 }
 
+async function getSaldoInicialEfectivoGlobalEnCaja(caja, cuentasEfectivo, cuentaCambioId) {
+  let total = 0;
+  const detalle = [];
+
+  for (const cuenta of cuentasEfectivo) {
+    const cuentaId = Number(cuenta.id);
+    const conciliacion = await getQuery(
+      `SELECT saldo_inicial
+       FROM conciliaciones_cuentas_destino
+       WHERE caja_id = ? AND cuenta_destino_id = ?
+       ORDER BY id DESC
+       LIMIT 1`,
+      [caja.id, cuentaId]
+    );
+    let saldo = null;
+    let fuente = "sin_saldo";
+
+    if (conciliacion) {
+      saldo = Number(conciliacion.saldo_inicial || 0);
+      fuente = "saldo_inicial_caja";
+    } else {
+      const arrastre = await getUltimoSaldoArrastradoPorCuenta(cuentaId);
+      if (arrastre) {
+        saldo = Number(arrastre.saldo_arrastrado || 0);
+        fuente = "saldo_arrastrado";
+      }
+    }
+
+    if (saldo === null && Number(cuentaId) === Number(cuentaCambioId)) {
+      saldo = Number(caja.monto_apertura || 0);
+      fuente = "monto_apertura";
+    }
+    if (saldo === null) {
+      saldo = 0;
+    }
+
+    const saldoRedondeado = Number(Number(saldo || 0).toFixed(2));
+    total = Number((total + saldoRedondeado).toFixed(2));
+    detalle.push({
+      cuenta_destino_id: cuentaId,
+      nombre: cuenta.nombre,
+      saldo_inicial: saldoRedondeado,
+      fuente
+    });
+  }
+
+  return { total, detalle };
+}
+
 function esEventoPosteriorAArqueo(evento, arqueo) {
   const fechaEvento = String(evento?.fecha || "");
   const horaEvento = String(evento?.hora || "");
@@ -1198,6 +1250,7 @@ function esEventoPosteriorAArqueo(evento, arqueo) {
 async function getEstadoEfectivoOperativo({ cajaId } = {}) {
   await ensureCajaArqueosTable();
   await ensureCajaTrasladosInternosTable();
+  await ensureConciliacionesCuentasDestinoTable();
   const caja = cajaId
     ? await getQuery("SELECT * FROM caja_aperturas WHERE id = ?", [Number(cajaId)])
     : await getCajaAbiertaActual();
@@ -1337,6 +1390,26 @@ async function getEstadoEfectivoOperativo({ cajaId } = {}) {
     ? cuentas.find((cuenta) => Number(cuenta.cuenta_destino_id) === Number(cuentaReservaId))
     : null;
   const totalDisponible = Number(cuentas.reduce((acc, cuenta) => acc + Number(cuenta.saldo_actual || 0), 0).toFixed(2));
+  const saldoInicialGlobal = await getSaldoInicialEfectivoGlobalEnCaja(caja, cuentasEfectivoDb, cuentaCambioId);
+  const movimientosDestino = await getResumenPorCuentaDestino({ cajaId: caja.id });
+  const movimientosEfectivo = movimientosDestino.filter((cuenta) =>
+    !cuenta.sin_cuenta_destino && String(cuenta.tipo_destino || "").toLowerCase() === "efectivo"
+  );
+  const entradasExternasEfectivo = Number(movimientosEfectivo
+    .reduce((acc, cuenta) => acc + Number(cuenta.ingresos || 0), 0)
+    .toFixed(2));
+  const salidasExternasEfectivo = Number(movimientosEfectivo
+    .reduce((acc, cuenta) => acc + Number(cuenta.egresos || 0), 0)
+    .toFixed(2));
+  const efectivoEsperadoGlobal = Number((saldoInicialGlobal.total + entradasExternasEfectivo - salidasExternasEfectivo).toFixed(2));
+  const detalleGlobal = {
+    saldo_inicial_efectivo: saldoInicialGlobal.total,
+    saldos_iniciales: saldoInicialGlobal.detalle,
+    entradas_externas_efectivo: entradasExternasEfectivo,
+    salidas_externas_efectivo: salidasExternasEfectivo,
+    efectivo_esperado_global: efectivoEsperadoGlobal,
+    excluye_traslados_internos: true
+  };
   if (cuentasNoDeterminables.length > 0) {
     return {
       determinable: false,
@@ -1345,6 +1418,8 @@ async function getEstadoEfectivoOperativo({ cajaId } = {}) {
       cuentas,
       cuentas_no_determinables: cuentasNoDeterminables,
       total_parcial: totalDisponible,
+      efectivo_esperado_global: null,
+      detalle_efectivo_global: detalleGlobal,
       caja_cambio: cajaCambioCuenta ? cajaCambioCuenta.saldo_actual : null,
       reserva: reservaCuenta ? reservaCuenta.saldo_actual : null,
       total_disponible: null,
@@ -1367,6 +1442,8 @@ async function getEstadoEfectivoOperativo({ cajaId } = {}) {
     caja_cambio: cajaCambioCuenta ? cajaCambioCuenta.saldo_actual : null,
     reserva: reservaCuenta ? reservaCuenta.saldo_actual : null,
     total_disponible: totalDisponible,
+    efectivo_esperado_global: efectivoEsperadoGlobal,
+    detalle_efectivo_global: detalleGlobal,
     ultimo_arqueo_id: Number(ultimoArqueo.id),
     cuenta_cambio_id: cuentaCambioId,
     cuenta_reserva_id: cuentaReservaId,
@@ -1375,6 +1452,78 @@ async function getEstadoEfectivoOperativo({ cajaId } = {}) {
     traslados_enviados: reservaCuenta ? reservaCuenta.traslados_enviados : 0,
     pagos_efectivos_reserva: reservaCuenta ? reservaCuenta.pagos_efectivos : 0,
     pagos_efectivos_caja_cambio: cajaCambioCuenta ? cajaCambioCuenta.pagos_efectivos : 0
+  };
+}
+
+async function getEstadoDigitalOperativo({ cajaId } = {}) {
+  await ensureConciliacionesCuentasDestinoTable();
+  const caja = cajaId
+    ? await getQuery("SELECT * FROM caja_aperturas WHERE id = ?", [Number(cajaId)])
+    : await getCajaAbiertaActual();
+
+  if (!caja) {
+    return {
+      determinable: false,
+      motivo: "sin_caja",
+      caja_id: null,
+      cuentas: [],
+      total_saldo_inicial: 0,
+      total_ingresos: 0,
+      total_egresos: 0,
+      total_esperado: 0
+    };
+  }
+
+  // Digital = cualquier cuenta_destino activa que no sea efectivo (mismo criterio que el frontend).
+  const cuentasDigitalesDb = await allQuery(
+    `SELECT id, nombre, tipo_destino
+     FROM cuentas_destino
+     WHERE activo = 1 AND LOWER(COALESCE(tipo_destino, '')) != 'efectivo'
+     ORDER BY orden ASC, id ASC`
+  );
+
+  const movimientosDestino = await getResumenPorCuentaDestino({ cajaId: caja.id });
+  const movimientosPorCuenta = new Map(
+    movimientosDestino
+      .filter((cuenta) => !cuenta.sin_cuenta_destino && cuenta.cuenta_destino_id != null)
+      .map((cuenta) => [Number(cuenta.cuenta_destino_id), cuenta])
+  );
+
+  const cuentas = [];
+  for (const cuentaDb of cuentasDigitalesDb) {
+    const cuentaId = Number(cuentaDb.id);
+    const movimiento = movimientosPorCuenta.get(cuentaId);
+    const ingresos = Number(movimiento?.ingresos || 0);
+    const egresos = Number(movimiento?.egresos || 0);
+    // Misma resolucion que efectivo: conciliacion ya guardada en esta caja, sino ultimo arrastre cerrado, sino 0.
+    // Nunca suma ambas fuentes (evita duplicar saldo).
+    const saldoInicial = await getSaldoInicialCuentaDestinoEnCaja(caja.id, cuentaId);
+    const esperado = Number((Number(saldoInicial || 0) + ingresos - egresos).toFixed(2));
+    cuentas.push({
+      cuenta_destino_id: cuentaId,
+      nombre: cuentaDb.nombre,
+      tipo_destino: cuentaDb.tipo_destino,
+      saldo_inicial: Number(Number(saldoInicial || 0).toFixed(2)),
+      ingresos: Number(ingresos.toFixed(2)),
+      egresos: Number(egresos.toFixed(2)),
+      esperado
+    });
+  }
+
+  const totalSaldoInicial = Number(cuentas.reduce((acc, cuenta) => acc + cuenta.saldo_inicial, 0).toFixed(2));
+  const totalIngresos = Number(cuentas.reduce((acc, cuenta) => acc + cuenta.ingresos, 0).toFixed(2));
+  const totalEgresos = Number(cuentas.reduce((acc, cuenta) => acc + cuenta.egresos, 0).toFixed(2));
+  const totalEsperado = Number(cuentas.reduce((acc, cuenta) => acc + cuenta.esperado, 0).toFixed(2));
+
+  return {
+    determinable: true,
+    motivo: null,
+    caja_id: Number(caja.id),
+    cuentas,
+    total_saldo_inicial: totalSaldoInicial,
+    total_ingresos: totalIngresos,
+    total_egresos: totalEgresos,
+    total_esperado: totalEsperado
   };
 }
 
@@ -1599,6 +1748,8 @@ module.exports = {
   getCajaAbiertaActual,
   getCajaAperturaHoy,
   getEstadoEfectivoOperativo,
+  getEstadoDigitalOperativo,
+  getSaldoInicialCuentaDestinoEnCaja,
   getCajaParaArqueos,
   getOperacionesCaja,
   getPagosCaja,

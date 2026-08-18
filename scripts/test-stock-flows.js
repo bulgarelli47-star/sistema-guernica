@@ -253,6 +253,13 @@ async function getCajaConciliacionesCuentasDestino(baseUrl, token, cajaId = null
   return data;
 }
 
+async function getEstadoDigitalOperativo(baseUrl, token, cajaId = null) {
+  const url = cajaId ? `/caja/estado-digital-operativo?caja_id=${cajaId}` : "/caja/estado-digital-operativo";
+  const { response, data } = await requestJson(baseUrl, "GET", url, null, token);
+  if (!response.ok) throw new Error(`No se pudo obtener caja/estado-digital-operativo: ${data?.message || response.status}`);
+  return data.estado;
+}
+
 async function guardarConciliacionCuenta(baseUrl, token, payload) {
   const { response, data } = await requestJson(baseUrl, "POST", "/caja/conciliaciones/cuentas", payload, token);
   if (!response.ok) throw new Error(`No se pudo guardar conciliacion cuenta: ${data?.message || response.status}`);
@@ -9957,6 +9964,9 @@ async function testCajaArqueoOperativoTrasladoCaja03D() {
       ]);
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      // La apertura genera continuidad digital automatica para cuentas digitales activas
+      // preexistentes (no relacionadas con este test); se toma como base y no como regresion.
+      const conciliacionesDestinoBaseline = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM conciliaciones_cuentas_destino"))[0].total;
 
       const cajaCambio = await crearCuentaDestino(baseUrl, token, {
         nombre: `Caja cambio CAJA03D ${Date.now()}`,
@@ -10109,7 +10119,11 @@ async function testCajaArqueoOperativoTrasladoCaja03D() {
       const conciliacionesCobro = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM conciliaciones_cuentas_cobro"))[0].total;
       assertEqual(pagos, 0, "CAJA03D no crea pagos");
       assertEqual(movimientosCaja, 0, "CAJA03D no crea caja_movimientos");
-      assertEqual(conciliacionesDestino + conciliacionesCobro, 0, "CAJA03D no crea conciliaciones como evento");
+      assertEqual(
+        (conciliacionesDestino - conciliacionesDestinoBaseline) + conciliacionesCobro,
+        0,
+        "CAJA03D no crea conciliaciones como evento (mas alla de la continuidad digital automatica ya contabilizada en la apertura)"
+      );
 
       await runSql(
         dbPath,
@@ -10160,6 +10174,9 @@ async function testCajaEstadoEfectivoOperativoCaja03E() {
       ]);
       const token = await login(baseUrl, "admin", "admin123");
       const apertura = await abrirCaja(baseUrl, token, 6550);
+      // La apertura genera continuidad digital automatica para cuentas digitales activas
+      // preexistentes (no relacionadas con este test); se toma como base y no como regresion.
+      const conciliacionesBaseline = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM conciliaciones_cuentas_destino"))[0].total;
       const cajaCambio = await crearCuentaDestino(baseUrl, token, {
         nombre: `Caja cambio CAJA03E ${Date.now()}`,
         tipo_destino: "efectivo",
@@ -10279,7 +10296,7 @@ async function testCajaEstadoEfectivoOperativoCaja03E() {
       const conciliaciones = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM conciliaciones_cuentas_destino"))[0].total;
       assertEqual(pagos, 0, "CAJA03E read model no crea pagos");
       assertEqual(movimientosCaja, 0, "CAJA03E read model no crea caja_movimientos");
-      assertEqual(conciliaciones, 1, "CAJA03E no crea conciliaciones nuevas al leer");
+      assertEqual(conciliaciones - conciliacionesBaseline, 1, "CAJA03E no crea conciliaciones nuevas al leer (mas alla del insert manual del test)");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -10533,6 +10550,7 @@ function findEstadoCuentaEfectivo(estado, cuentaId, contexto) {
 function buildDecisionesCierreDesdeEstado(estado, retirosPorCuenta = {}) {
   return (estado?.cuentas || []).map((cuenta) => ({
     cuenta_destino_id: cuenta.cuenta_destino_id,
+    saldo_fisico_contado: Number(cuenta.saldo_actual || 0),
     monto_retiro: Number(retirosPorCuenta[cuenta.cuenta_destino_id] || 0)
   }));
 }
@@ -11329,6 +11347,58 @@ async function testCajaUiArqueoModeloOperativoCaja03I() {
         [apertura.id]
       ))[0].total;
       assertEqual(totalArqueos, 2, "CAJA03I conserva historial de multiples arqueos modelo 1");
+      const trasladosAntesUsarCierre = (await allSql(
+        dbPath,
+        "SELECT COUNT(*) AS total FROM caja_traslados_internos"
+      ))[0].total;
+      const conteoSegundoAntes = (await allSql(
+        dbPath,
+        "SELECT conteo_detalle FROM caja_arqueos WHERE id = ?",
+        [segundo.data.arqueo.id]
+      ))[0].conteo_detalle;
+
+      const usarSegundoParaCierre = await requestJson(
+        baseUrl,
+        "POST",
+        `/caja/arqueos/${segundo.data.arqueo.id}/usar-para-cierre`,
+        null,
+        token
+      );
+      assertEqual(usarSegundoParaCierre.response.status, 200, "CAJA03I permite usar arqueo existente para cierre");
+      assertEqual(usarSegundoParaCierre.data.arqueo.id, segundo.data.arqueo.id, "CAJA03I usa el mismo arqueo existente");
+      assertEqual(usarSegundoParaCierre.data.arqueo.registrado_cierre, 1, "CAJA03I marca el arqueo existente para cierre");
+      const totalArqueosDespuesUsarCierre = (await allSql(
+        dbPath,
+        "SELECT COUNT(*) AS total FROM caja_arqueos WHERE caja_id = ? AND modelo_arqueo_version = 1",
+        [apertura.id]
+      ))[0].total;
+      assertEqual(totalArqueosDespuesUsarCierre, totalArqueos, "CAJA03I usar para cierre no crea otro arqueo");
+      const trasladosDespuesUsarCierre = (await allSql(
+        dbPath,
+        "SELECT COUNT(*) AS total FROM caja_traslados_internos"
+      ))[0].total;
+      assertEqual(trasladosDespuesUsarCierre, trasladosAntesUsarCierre, "CAJA03I usar para cierre no crea traslado");
+      const segundoPersistido = (await allSql(
+        dbPath,
+        "SELECT conteo_detalle, registrado_cierre FROM caja_arqueos WHERE id = ?",
+        [segundo.data.arqueo.id]
+      ))[0];
+      assertSame(segundoPersistido.conteo_detalle, conteoSegundoAntes, "CAJA03I usar para cierre no modifica conteo");
+      assertEqual(segundoPersistido.registrado_cierre, 1, "CAJA03I persistio registrado_cierre en el mismo arqueo");
+      const replayUsarSegundo = await requestJson(
+        baseUrl,
+        "POST",
+        `/caja/arqueos/${segundo.data.arqueo.id}/usar-para-cierre`,
+        null,
+        token
+      );
+      assertEqual(replayUsarSegundo.response.status, 200, "CAJA03I usar para cierre es idempotente");
+      assertEqual(replayUsarSegundo.data.idempotent_replay, true, "CAJA03I usar para cierre repetido informa replay");
+      assertEqual(
+        (await allSql(dbPath, "SELECT COUNT(*) AS total FROM caja_traslados_internos"))[0].total,
+        trasladosAntesUsarCierre,
+        "CAJA03I replay usar para cierre no duplica traslado"
+      );
 
       const sinOrigen = await requestJson(baseUrl, "POST", "/caja/arqueos", {
         modelo_arqueo_version: 1,
@@ -11337,6 +11407,367 @@ async function testCajaUiArqueoModeloOperativoCaja03I() {
         idempotency_key: "caja03i-sin-origen"
       }, token);
       assertEqual(sinOrigen.response.status, 400, "CAJA03I exige cuenta origen fisica");
+
+      const detallePersistido = await requestJson(baseUrl, "GET", `/caja/arqueos/${canonico.data.arqueo.id}`, null, token);
+      assertEqual(detallePersistido.response.status, 200, "CAJA03I consulta arqueo persistido");
+      assertEqual(Array.isArray(detallePersistido.data.conteo_detalle), true, "CAJA03I modelo 1 devuelve conteo_detalle como array de distribucion");
+      assertEqual(
+        detallePersistido.data.conteo_detalle.find((item) => Number(item.denominacion) === 100)?.cantidad,
+        200,
+        "CAJA03I conteo persistido conserva cantidad por denominacion"
+      );
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+
+  const frontendCaja = fs.readFileSync(path.join(__dirname, "..", "frontend", "caja.html"), "utf8");
+  assertEqual(frontendCaja.includes("function getCantidadConteoPersistido"), true, "CAJA03I frontend normaliza conteo persistido");
+  assertEqual(frontendCaja.includes("Array.isArray(conteo)"), true, "CAJA03I frontend soporta conteo_detalle array");
+  assertEqual(frontendCaja.includes("function setModoLecturaArqueo"), true, "CAJA03I frontend tiene modo consulta readonly");
+  assertEqual(frontendCaja.includes("abrirArqueoPersistidoEnConsulta(button.dataset.arqueoId)"), true, "CAJA03I historial abre arqueo exacto en consulta");
+  assertEqual(frontendCaja.includes("if (arqueoModalModoLectura)"), true, "CAJA03I modo consulta no envia arqueo");
+  assertEqual(frontendCaja.includes("usarArqueoParaCierrePorId"), true, "CAJA03I frontend permite marcar arqueo existente para cierre");
+  assertEqual(frontendCaja.includes("/usar-para-cierre"), true, "CAJA03I frontend usa endpoint especifico sin PUT legacy");
+  assertEqual(frontendCaja.includes("cierreArqueoAccion"), true, "CAJA03I cierre muestra accion para usar arqueo cargado");
+  assertEqual(frontendCaja.includes("data-usar-ultimo-arqueo-cierre"), true, "CAJA03I accion de cierre marca el ultimo arqueo sin crear otro");
+  assertEqual(frontendCaja.includes("<span>Arqueo cargado</span>"), true, "CAJA03I cierre no pide registrar otro arqueo si existe modelo 1");
+}
+
+async function testCajaCierreVisualFisicoCaja03K() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM caja_traslados_internos"],
+        ["DELETE FROM caja_arqueos"],
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM conciliaciones_cuentas_cobro"],
+        ["DELETE FROM caja_movimientos"],
+        ["DELETE FROM pagos"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      const apertura = await abrirCaja(baseUrl, token, 6550);
+      const cajaCambio = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja cambio CAJA03K ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -970
+      });
+      const reserva = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja N2 CAJA03K ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -960
+      });
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, {
+        nombre: `Cuenta efectivo CAJA03K ${Date.now()}`,
+        tipo_pago_codigo: "efectivo",
+        tipo_cuenta: "caja",
+        cuenta_destino_id: cajaCambio.id
+      });
+
+      await runSql(
+        dbPath,
+        `INSERT INTO conciliaciones_cuentas_destino
+         (caja_id, cuenta_destino_id, monto_sistema, monto_real, saldo_inicial, diferencia, estado,
+          decision_cierre, monto_retiro, saldo_arrastrado, observaciones, fecha, hora, usuario)
+         VALUES (?, ?, 0, 30000, 30000, 0, 'conciliado', NULL, 0, 30000, 'Saldo inicial reserva CAJA03K',
+          '2026-07-01', '08:00:00', 'admin')`,
+        [apertura.id, reserva.id]
+      );
+      const ventaEfectivo = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "efectivo",
+        cuenta_cobro_id: cuentaEfectivo.id,
+        items: [{ producto_id: 11, nombre_producto: "Coca Cola 1250", cantidad: 1, precio_unitario: 84450 }]
+      }), token);
+      if (!ventaEfectivo.response.ok) throw new Error(`CAJA03K venta efectiva para esperado global fallo: ${ventaEfectivo.data?.message || ventaEfectivo.response.status}`);
+
+      const arqueo1 = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03k-arqueo-1",
+        conteo_detalle: {
+          20: 50,
+          50: 3,
+          100: 200,
+          200: 5,
+          500: 5,
+          1000: 2,
+          2000: 5,
+          10000: 1
+        },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 0,
+        observaciones: "Arqueo 1 CAJA03K"
+      });
+      assertEqual(arqueo1.response.status, 201, "CAJA03K crea primer arqueo operativo");
+      const arqueo2 = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03k-arqueo-2",
+        conteo_detalle: {
+          100: 110,
+          20000: 2,
+          10000: 1,
+          2000: 3
+        },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 1,
+        observaciones: "Arqueo 2 CAJA03K"
+      });
+      assertEqual(arqueo2.response.status, 201, "CAJA03K crea arqueo de cierre");
+
+      const estadoAntes = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertEqual(estadoAntes.data.estado.determinable, true, "CAJA03K estado operativo determinable");
+      assertApprox(findEstadoCuentaEfectivo(estadoAntes.data.estado, cajaCambio.id, "CAJA03K antes").saldo_actual, 11000, "CAJA03K Caja cambio esperada 11000");
+      assertApprox(findEstadoCuentaEfectivo(estadoAntes.data.estado, reserva.id, "CAJA03K antes").saldo_actual, 110000, "CAJA03K Reserva esperada 110000");
+      assertApprox(estadoAntes.data.estado.total_disponible, 121000, "CAJA03K total esperado 121000");
+
+      const pagosAntes = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos"))[0].total;
+      const movimientosAntes = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM caja_movimientos"))[0].total;
+      const trasladosAntes = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM caja_traslados_internos"))[0].total;
+
+      const retiroExcesivo = await cerrarCajaOperativo(
+        baseUrl,
+        token,
+        buildDecisionesCierreDesdeEstado(estadoAntes.data.estado).map((decision) => (
+          Number(decision.cuenta_destino_id) === Number(reserva.id)
+            ? { ...decision, saldo_fisico_contado: 105000, monto_retiro: 105000.01 }
+            : decision
+        ))
+      );
+      assertEqual(retiroExcesivo.response.status, 400, "CAJA03K retiro no puede superar contado fisico");
+      assertSame((await allSql(dbPath, "SELECT estado FROM caja_aperturas WHERE id = ?", [apertura.id]))[0].estado, "abierta", "CAJA03K error deja caja abierta");
+
+      const decisionesFisicas = buildDecisionesCierreDesdeEstado(estadoAntes.data.estado).map((decision) => {
+        if (Number(decision.cuenta_destino_id) === Number(reserva.id)) {
+          return {
+            ...decision,
+            saldo_fisico_contado: 105000,
+            monto_retiro: 50000,
+            saldo_actual: 999999,
+            saldo_arrastrado: 999999
+          };
+        }
+        return decision;
+      });
+      const cierre = await cerrarCajaOperativo(baseUrl, token, decisionesFisicas);
+      if (!cierre.response.ok) throw new Error(`CAJA03K cierre con contado fisico fallo: ${cierre.data?.message || cierre.response.status}`);
+      assertApprox(cierre.data.total_esperado_efectivo, 121000, "CAJA03K total esperado backend");
+      assertApprox(cierre.data.total_contado_efectivo, 116000, "CAJA03K total contado fisico");
+      assertApprox(cierre.data.diferencia_efectivo_total, -5000, "CAJA03K diferencia global faltante");
+      assertApprox(cierre.data.total_retiro_efectivo, 50000, "CAJA03K retiro total");
+      assertApprox(cierre.data.total_arrastrado_efectivo, 66000, "CAJA03K arrastre total desde contado fisico");
+      assertApprox(cierre.data.caja.efectivo_esperado, 121000, "CAJA03K caja persiste esperado backend");
+      assertApprox(cierre.data.caja.efectivo_contado, 116000, "CAJA03K caja persiste contado fisico");
+      assertApprox(cierre.data.caja.diferencia, -5000, "CAJA03K caja persiste diferencia");
+
+      const conciliaciones = await allSql(
+        dbPath,
+        "SELECT cuenta_destino_id, monto_sistema, monto_real, diferencia, monto_retiro, saldo_arrastrado FROM conciliaciones_cuentas_destino WHERE caja_id = ?",
+        [apertura.id]
+      );
+      const byCuenta = new Map(conciliaciones.map((row) => [Number(row.cuenta_destino_id), row]));
+      assertApprox(byCuenta.get(cajaCambio.id).monto_sistema, 11000, "CAJA03K Caja cambio esperado");
+      assertApprox(byCuenta.get(cajaCambio.id).monto_real, 11000, "CAJA03K Caja cambio contado precargado");
+      assertApprox(byCuenta.get(cajaCambio.id).saldo_arrastrado, 11000, "CAJA03K Caja cambio arrastra contado");
+      assertApprox(byCuenta.get(reserva.id).monto_sistema, 110000, "CAJA03K Reserva esperado backend");
+      assertApprox(byCuenta.get(reserva.id).monto_real, 105000, "CAJA03K Reserva contado fisico");
+      assertApprox(byCuenta.get(reserva.id).diferencia, -5000, "CAJA03K Reserva diferencia");
+      assertApprox(byCuenta.get(reserva.id).monto_retiro, 50000, "CAJA03K Reserva retiro");
+      assertApprox(byCuenta.get(reserva.id).saldo_arrastrado, 55000, "CAJA03K Reserva arrastre contado menos retiro");
+      assertEqual((await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos"))[0].total, pagosAntes, "CAJA03K cierre no crea pagos");
+      assertEqual((await allSql(dbPath, "SELECT COUNT(*) AS total FROM caja_movimientos"))[0].total, movimientosAntes, "CAJA03K cierre no crea caja_movimientos");
+      assertEqual((await allSql(dbPath, "SELECT COUNT(*) AS total FROM caja_traslados_internos"))[0].total, trasladosAntes, "CAJA03K cierre no crea traslados");
+
+      const segundaApertura = await abrirCaja(baseUrl, token, 0);
+      const saldoCambio = await requestJson(baseUrl, "POST", "/caja/conciliaciones/cuentas-destino", {
+        caja_id: segundaApertura.id,
+        cuenta_destino_id: cajaCambio.id,
+        saldo_inicial: 999999,
+        monto_sistema: 0,
+        monto_real: 999999,
+        observaciones: "Saldo inicial CAJA03K caja cambio",
+        es_saldo_inicial_apertura: true
+      }, token);
+      const saldoReserva = await requestJson(baseUrl, "POST", "/caja/conciliaciones/cuentas-destino", {
+        caja_id: segundaApertura.id,
+        cuenta_destino_id: reserva.id,
+        saldo_inicial: 999999,
+        monto_sistema: 0,
+        monto_real: 999999,
+        observaciones: "Saldo inicial CAJA03K reserva",
+        es_saldo_inicial_apertura: true
+      }, token);
+      assertApprox(saldoCambio.data.conciliacion.saldo_inicial, 11000, "CAJA03K continuidad usa arrastre Caja cambio");
+      assertApprox(saldoReserva.data.conciliacion.saldo_inicial, 55000, "CAJA03K continuidad usa arrastre Reserva");
+      const arqueoSiguiente = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja03k-continuidad",
+        conteo_detalle: { 100: 110 },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 1,
+        observaciones: "Continuidad CAJA03K"
+      });
+      assertEqual(arqueoSiguiente.response.status, 201, "CAJA03K crea arqueo siguiente jornada");
+      const estadoSiguiente = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertApprox(findEstadoCuentaEfectivo(estadoSiguiente.data.estado, cajaCambio.id, "CAJA03K siguiente").saldo_actual, 11000, "CAJA03K siguiente Caja cambio");
+      assertApprox(findEstadoCuentaEfectivo(estadoSiguiente.data.estado, reserva.id, "CAJA03K siguiente").saldo_actual, 55000, "CAJA03K siguiente Reserva");
+      assertApprox(estadoSiguiente.data.estado.total_disponible, 66000, "CAJA03K siguiente jornada total desde contado fisico arrastrado");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testCajaControlOperativoGlobalEfectivo() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM caja_traslados_internos"],
+        ["DELETE FROM caja_arqueos"],
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM conciliaciones_cuentas_cobro"],
+        ["DELETE FROM caja_movimientos"],
+        ["DELETE FROM pagos"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      const apertura = await abrirCaja(baseUrl, token, 0);
+      const cajaCambio = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja cambio global efectivo ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -990
+      });
+      const cajaPagos = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja PAGOS global efectivo ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -980
+      });
+      const reserva = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Reserva global efectivo ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -970
+      });
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, {
+        nombre: `Cuenta efectivo global ${Date.now()}`,
+        tipo_pago_codigo: "efectivo",
+        tipo_cuenta: "caja",
+        cuenta_destino_id: cajaCambio.id
+      });
+
+      await runSql(
+        dbPath,
+        `INSERT INTO conciliaciones_cuentas_destino
+         (caja_id, cuenta_destino_id, monto_sistema, monto_real, saldo_inicial, diferencia, estado,
+          decision_cierre, monto_retiro, saldo_arrastrado, observaciones, fecha, hora, usuario)
+         VALUES (?, ?, 0, 11000, 11000, 0, 'conciliado', NULL, 0, 11000, 'Saldo inicial Caja cambio global',
+          '2026-07-01', '08:00:00', 'admin')`,
+        [apertura.id, cajaCambio.id]
+      );
+      await runSql(
+        dbPath,
+        `INSERT INTO conciliaciones_cuentas_destino
+         (caja_id, cuenta_destino_id, monto_sistema, monto_real, saldo_inicial, diferencia, estado,
+          decision_cierre, monto_retiro, saldo_arrastrado, observaciones, fecha, hora, usuario)
+         VALUES (?, ?, 0, 139000, 139000, 0, 'conciliado', NULL, 0, 139000, 'Saldo inicial Caja PAGOS global',
+          '2026-07-01', '08:00:00', 'admin')`,
+        [apertura.id, cajaPagos.id]
+      );
+      await runSql(
+        dbPath,
+        `INSERT INTO conciliaciones_cuentas_destino
+         (caja_id, cuenta_destino_id, monto_sistema, monto_real, saldo_inicial, diferencia, estado,
+          decision_cierre, monto_retiro, saldo_arrastrado, observaciones, fecha, hora, usuario)
+         VALUES (?, ?, 0, 5000, 5000, 0, 'conciliado', NULL, 0, 5000, 'Saldo inicial Reserva global',
+          '2026-07-01', '08:00:00', 'admin')`,
+        [apertura.id, reserva.id]
+      );
+
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "efectivo",
+        cuenta_cobro_id: cuentaEfectivo.id,
+        items: [{ producto_id: 11, nombre_producto: "Coca Cola 1250", cantidad: 1, precio_unitario: 50000 }]
+      }), token);
+      if (!venta.response.ok) throw new Error(`Control global venta efectivo fallo: ${venta.data?.message || venta.response.status}`);
+
+      const arqueo = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: "caja-control-global-arqueo",
+        conteo_detalle: {
+          100: 220,
+          10000: 5,
+          1000: 5
+        },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: cajaPagos.id,
+        registrado_cierre: 1,
+        observaciones: "Control global efectivo"
+      });
+      assertEqual(arqueo.response.status, 201, "Control global crea arqueo operativo");
+      assertApprox(arqueo.data.arqueo.cambio_retenido, 22000, "Control global queda en caja 22000");
+      assertApprox(arqueo.data.arqueo.monto_extraido, 55000, "Control global traslado de arqueo 55000");
+
+      const estado = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertEqual(estado.data.estado.determinable, true, "Control global estado determinable");
+      assertApprox(estado.data.estado.detalle_efectivo_global.saldo_inicial_efectivo, 155000, "Control global saldos iniciales 155000");
+      assertApprox(estado.data.estado.detalle_efectivo_global.entradas_externas_efectivo, 50000, "Control global entradas externas 50000");
+      assertApprox(estado.data.estado.efectivo_esperado_global, 205000, "Control global esperado no incluye traslado interno");
+      assertApprox(findEstadoCuentaEfectivo(estado.data.estado, cajaCambio.id, "Control global cambio").saldo_actual, 22000, "Control global caja cambio por ubicacion");
+      assertApprox(findEstadoCuentaEfectivo(estado.data.estado, cajaPagos.id, "Control global pagos").saldo_actual, 194000, "Control global Caja PAGOS incluye traslado interno por ubicacion");
+      assertApprox(estado.data.estado.total_disponible, 221000, "Control global suma por ubicaciones 221000");
+
+      await runSql(
+        dbPath,
+        `INSERT INTO caja_traslados_internos
+         (caja_id, arqueo_id, cuenta_origen_id, cuenta_destino_id, monto, tipo, estado, fecha, hora, usuario, observaciones, created_at)
+         VALUES (?, NULL, ?, ?, 5000, 'redistribucion_test', 'activo', '2026-07-01', '22:00:00', 'admin',
+          'Reserva a caja cambio global', datetime('now'))`,
+        [apertura.id, reserva.id, cajaCambio.id]
+      );
+      const estadoTrasladoReserva = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertApprox(estadoTrasladoReserva.data.estado.efectivo_esperado_global, 205000, "Control global traslado Reserva a Caja cambio no cambia esperado global");
+
+      const proveedor = await crearProveedor(baseUrl, token);
+      await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "Pago efectivo global desde PAGOS",
+        monto_total: 5000,
+        tipo_pago: "efectivo",
+        estado: "registrado",
+        cuenta_cobro_id: cuentaEfectivo.id,
+        cuenta_destino_id: cajaPagos.id
+      });
+      const estadoConPago = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      assertApprox(estadoConPago.data.estado.efectivo_esperado_global, 200000, "Control global pago efectivo real disminuye esperado global");
+      assertApprox(findEstadoCuentaEfectivo(estadoConPago.data.estado, cajaPagos.id, "Control global pagos post pago").saldo_actual, 189000, "Control global pago disminuye Caja PAGOS por ubicacion");
+
+      const decisiones = buildDecisionesCierreDesdeEstado(estadoConPago.data.estado).map((decision) => {
+        if (Number(decision.cuenta_destino_id) === Number(cajaCambio.id)) {
+          return { ...decision, saldo_fisico_contado: 21000, monto_retiro: 0 };
+        }
+        if (Number(decision.cuenta_destino_id) === Number(cajaPagos.id)) {
+          return { ...decision, saldo_fisico_contado: 190000, monto_retiro: 0 };
+        }
+        return { ...decision, saldo_fisico_contado: Math.max(0, Number(decision.saldo_fisico_contado || 0)), monto_retiro: 0 };
+      });
+      const cierre = await cerrarCajaOperativo(baseUrl, token, decisiones);
+      if (!cierre.response.ok) throw new Error(`Control global cierre fallo: ${cierre.data?.message || cierre.response.status}`);
+      assertApprox(cierre.data.total_esperado_efectivo, 200000, "Control global cierre usa esperado operativo");
+      assertApprox(cierre.data.total_esperado_efectivo_por_cuenta, estadoConPago.data.estado.total_disponible, "Control global conserva esperado por ubicacion");
+      assertApprox(cierre.data.total_contado_efectivo, 211000, "Control global contado fisico total");
+      assertApprox(cierre.data.diferencia_efectivo_total, 11000, "Control global diferencia operativa +11000");
+
+      const conciliaciones = await allSql(
+        dbPath,
+        "SELECT cuenta_destino_id, monto_sistema, monto_real, diferencia, saldo_arrastrado FROM conciliaciones_cuentas_destino WHERE caja_id = ?",
+        [apertura.id]
+      );
+      const byCuenta = new Map(conciliaciones.map((row) => [Number(row.cuenta_destino_id), row]));
+      assertApprox(byCuenta.get(cajaPagos.id).monto_sistema, 189000, "Control global PAGOS conserva esperado por ubicacion");
+      assertApprox(byCuenta.get(cajaPagos.id).monto_real, 190000, "Control global PAGOS contado fisico");
+      assertApprox(byCuenta.get(cajaPagos.id).diferencia, 1000, "Control global PAGOS diferencia individual +1000");
+      assertApprox(byCuenta.get(cajaPagos.id).saldo_arrastrado, 190000, "Control global arrastre sale del fisico real");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -11495,6 +11926,579 @@ async function testCajaSaldoInicialCuentaFisicaCaja03J() {
   }
 }
 
+async function testCajaContinuidadSaldosDigitales() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM caja_aperturas"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+
+      const mercadoPago = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Mercado Pago CONTDIGITAL ${Date.now()}`,
+        tipo_destino: "billetera",
+        orden: -900
+      });
+      const otraDigital = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Bancor CONTDIGITAL ${Date.now()}`,
+        tipo_destino: "banco",
+        orden: -890
+      });
+      const efectivoCuenta = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja efectivo CONTDIGITAL ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -880
+      });
+
+      // A) cuenta digital sin historia -> comportamiento actual valido (saldo inicial 0).
+      const primeraCaja = await abrirCaja(baseUrl, token, 0);
+      const estadoSinHistoria = await getEstadoDigitalOperativo(baseUrl, token, primeraCaja.id);
+      const mpSinHistoria = estadoSinHistoria.cuentas.find((c) => Number(c.cuenta_destino_id) === Number(mercadoPago.id));
+      assertApprox(mpSinHistoria?.saldo_inicial, 0, "CONTDIGITAL cuenta sin historia arranca en 0");
+      assertApprox(mpSinHistoria?.esperado, 0, "CONTDIGITAL esperado sin historia ni movimientos es 0");
+
+      // Cierre dia 1: Mercado Pago real conciliado = 100000, decision arrastrar.
+      await guardarConciliacionCuentaDestino(baseUrl, token, {
+        caja_id: primeraCaja.id,
+        cuenta_destino_id: mercadoPago.id,
+        saldo_inicial: 0,
+        monto_sistema: 0,
+        monto_real: 100000,
+        decision_cierre: "arrastrar",
+        observaciones: "CONTDIGITAL cierre dia 1 Mercado Pago"
+      });
+      await runSql(dbPath, "UPDATE caja_aperturas SET estado = 'cerrada', hora_cierre = '18:00:00' WHERE id = ?", [primeraCaja.id]);
+
+      // B) nueva jornada: saldo inicial Mercado Pago debe tomar el arrastre (100000), sin apertura manual.
+      const segundaCaja = await abrirCaja(baseUrl, token, 0);
+      const estadoNuevaJornada = await getEstadoDigitalOperativo(baseUrl, token, segundaCaja.id);
+      const mpNuevaJornada = estadoNuevaJornada.cuentas.find((c) => Number(c.cuenta_destino_id) === Number(mercadoPago.id));
+      assertApprox(mpNuevaJornada?.saldo_inicial, 100000, "CONTDIGITAL nueva jornada toma saldo real del cierre anterior");
+      assertApprox(mpNuevaJornada?.esperado, 100000, "CONTDIGITAL esperado inicial de la nueva jornada es el arrastre sin movimientos");
+
+      // C) +25000 entradas, -10000 salidas -> esperado 115000.
+      const cuentaCobroMp = await crearCuentaCobro(baseUrl, token, {
+        nombre: `Point MP CONTDIGITAL ${Date.now()}`,
+        tipo_pago_codigo: "debito",
+        cuenta_destino_id: mercadoPago.id
+      });
+      const ventaMp = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "debito",
+        cuenta_cobro_id: cuentaCobroMp.id,
+        items: [{ producto_id: 11, nombre_producto: "TEST CONTDIGITAL", cantidad: 1, precio_unitario: 25000 }]
+      }), token);
+      if (!ventaMp.response.ok) throw new Error(`CONTDIGITAL venta MP fallo: ${ventaMp.data?.message || ventaMp.response.status}`);
+
+      const proveedor = await crearProveedor(baseUrl, token);
+      const pagoMp = await registrarPago(baseUrl, token, {
+        proveedor_id: proveedor.id,
+        concepto: "CONTDIGITAL salida MP",
+        monto_total: 10000,
+        tipo_pago: "debito",
+        estado: "registrado",
+        cuenta_cobro_id: cuentaCobroMp.id
+      });
+      assertEqual(pagoMp.estado === "registrado" ? 1 : 0, 1, "CONTDIGITAL pago digital debe quedar registrado");
+
+      const estadoConMovimientos = await getEstadoDigitalOperativo(baseUrl, token, segundaCaja.id);
+      const mpConMovimientos = estadoConMovimientos.cuentas.find((c) => Number(c.cuenta_destino_id) === Number(mercadoPago.id));
+      assertApprox(mpConMovimientos?.saldo_inicial, 100000, "CONTDIGITAL saldo inicial se mantiene tras movimientos del dia");
+      assertApprox(mpConMovimientos?.ingresos, 25000, "CONTDIGITAL ingresos digitales del dia");
+      assertApprox(mpConMovimientos?.egresos, 10000, "CONTDIGITAL egresos digitales del dia");
+      assertApprox(mpConMovimientos?.esperado, 115000, "CONTDIGITAL esperado = saldo inicial + entradas - salidas");
+
+      // D) otra cuenta digital no mezcla arrastre de Mercado Pago.
+      const otraDigitalEstado = estadoConMovimientos.cuentas.find((c) => Number(c.cuenta_destino_id) === Number(otraDigital.id));
+      assertApprox(otraDigitalEstado?.saldo_inicial, 0, "CONTDIGITAL otra cuenta digital no hereda el arrastre de Mercado Pago");
+      assertApprox(otraDigitalEstado?.esperado, 0, "CONTDIGITAL otra cuenta digital sin movimientos propios esperado 0");
+
+      // E) cuenta efectiva no aparece en el estado digital (continuidad de 03J no se mezcla con digital).
+      const efectivaEnDigital = estadoConMovimientos.cuentas.find((c) => Number(c.cuenta_destino_id) === Number(efectivoCuenta.id));
+      if (efectivaEnDigital) {
+        throw new Error("CONTDIGITAL una cuenta efectiva no debe aparecer en estado-digital-operativo");
+      }
+
+      // F) no sumar dos veces saldo anterior: repetir la consulta y conciliar manualmente no debe duplicar el arrastre.
+      const estadoRepetido = await getEstadoDigitalOperativo(baseUrl, token, segundaCaja.id);
+      const mpRepetido = estadoRepetido.cuentas.find((c) => Number(c.cuenta_destino_id) === Number(mercadoPago.id));
+      assertApprox(mpRepetido?.esperado, 115000, "CONTDIGITAL consultar de nuevo no acumula el arrastre otra vez");
+
+      const conciliacionManual = await guardarConciliacionCuentaDestino(baseUrl, token, {
+        caja_id: segundaCaja.id,
+        cuenta_destino_id: mercadoPago.id,
+        saldo_inicial: 100000,
+        monto_sistema: 15000,
+        monto_real: 115000,
+        observaciones: "CONTDIGITAL conciliacion manual segunda jornada"
+      });
+      // G) real = esperado -> diferencia 0.
+      assertApprox(conciliacionManual.conciliacion.diferencia, 0, "CONTDIGITAL real igual a esperado da diferencia 0");
+
+      const estadoTrasConciliar = await getEstadoDigitalOperativo(baseUrl, token, segundaCaja.id);
+      const mpTrasConciliar = estadoTrasConciliar.cuentas.find((c) => Number(c.cuenta_destino_id) === Number(mercadoPago.id));
+      assertApprox(mpTrasConciliar?.saldo_inicial, 100000, "CONTDIGITAL conciliacion manual no suma el arrastre encima del valor guardado");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// Circuito REAL: abrir -> operar -> POST /caja/cierre (modelo 1, el boton real) -> abrir dia 2 ->
+// GET /caja/estado-digital-operativo. No se inserta saldo_arrastrado a mano: tiene que
+// generarlo el propio cierre, y la propia apertura tiene que recuperarlo.
+async function testCajaContinuidadSaldosDigitalesE2E() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM caja_traslados_internos"],
+        ["DELETE FROM caja_arqueos"],
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM caja_aperturas"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+
+      // Cuentas efectivo minimas: solo para poder cerrar por el circuito real modelo 1.
+      const cajaCambio = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja cambio E2EDIGITAL ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -970
+      });
+      const reserva = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Reserva E2EDIGITAL ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -960
+      });
+
+      // Cuenta digital real bajo prueba.
+      const mercadoPago = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Mercado Pago E2EDIGITAL ${Date.now()}`,
+        tipo_destino: "billetera",
+        orden: -950
+      });
+      const cuentaCobroMp = await crearCuentaCobro(baseUrl, token, {
+        nombre: `Point MP E2EDIGITAL ${Date.now()}`,
+        tipo_pago_codigo: "debito",
+        cuenta_destino_id: mercadoPago.id
+      });
+
+      // ---------- DIA 1 ----------
+      const diaUno = await abrirCaja(baseUrl, token, 0);
+
+      const ventaDia1 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "debito",
+        cuenta_cobro_id: cuentaCobroMp.id,
+        items: [{ producto_id: 11, nombre_producto: "TEST E2EDIGITAL dia1", cantidad: 1, precio_unitario: 100000 }]
+      }), token);
+      if (!ventaDia1.response.ok) throw new Error(`E2EDIGITAL venta dia1 fallo: ${ventaDia1.data?.message || ventaDia1.response.status}`);
+
+      const estadoDigitalDia1 = await getEstadoDigitalOperativo(baseUrl, token, diaUno.id);
+      const mpDia1 = estadoDigitalDia1.cuentas.find((c) => Number(c.cuenta_destino_id) === Number(mercadoPago.id));
+      assertApprox(mpDia1?.esperado, 100000, "E2EDIGITAL esperado dia1 antes de cerrar (sin conciliar a mano)");
+
+      // Cerrar por el circuito real: arqueo operativo (efectivo) + POST /caja/cierre modelo 1.
+      const arqueoDia1 = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: `e2edigital-arqueo-dia1-${Date.now()}`,
+        conteo_detalle: { 100: 1 },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 1,
+        observaciones: "E2EDIGITAL arqueo dia 1"
+      });
+      if (arqueoDia1.response.status !== 201) throw new Error(`E2EDIGITAL arqueo dia1 fallo: ${JSON.stringify(arqueoDia1.data)}`);
+
+      const estadoEfectivoDia1 = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      const cierreDia1 = await cerrarCajaOperativo(baseUrl, token, buildDecisionesCierreDesdeEstado(estadoEfectivoDia1.data.estado));
+      if (!cierreDia1.response.ok) throw new Error(`E2EDIGITAL cierre real dia1 fallo: ${cierreDia1.data?.message || cierreDia1.response.status}`);
+
+      // Verificar DB: el cierre real (no un insert manual) debe haber dejado saldo_arrastrado digital.
+      const conciliacionDia1Db = (await allSql(
+        dbPath,
+        "SELECT decision_cierre, monto_real, saldo_arrastrado FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [diaUno.id, mercadoPago.id]
+      ))[0];
+      if (!conciliacionDia1Db) throw new Error("E2EDIGITAL el cierre real no genero conciliacion digital para Mercado Pago");
+      assertEqual(conciliacionDia1Db.decision_cierre === "arrastrar" ? 1 : 0, 1, "E2EDIGITAL cierre real deja decision_cierre=arrastrar en digital");
+      assertApprox(conciliacionDia1Db.saldo_arrastrado, 100000, "E2EDIGITAL cierre real persiste saldo_arrastrado digital generado por el propio cierre");
+
+      // ---------- DIA 2 ----------
+      const diaDos = await abrirCaja(baseUrl, token, 0);
+
+      // La apertura real (sin insertar nada a mano) debe tomar el saldo del cierre anterior.
+      const conciliacionDia2Db = (await allSql(
+        dbPath,
+        "SELECT saldo_inicial FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [diaDos.id, mercadoPago.id]
+      ))[0];
+      if (!conciliacionDia2Db) throw new Error("E2EDIGITAL la apertura real no genero conciliacion digital de continuidad");
+      assertApprox(conciliacionDia2Db.saldo_inicial, 100000, "E2EDIGITAL apertura real toma el saldo del cierre anterior sin insertar nada a mano");
+
+      const estadoDigitalDia2SinMovimientos = await getEstadoDigitalOperativo(baseUrl, token, diaDos.id);
+      const mpDia2SinMovimientos = estadoDigitalDia2SinMovimientos.cuentas.find((c) => Number(c.cuenta_destino_id) === Number(mercadoPago.id));
+      assertApprox(mpDia2SinMovimientos?.saldo_inicial, 100000, "E2EDIGITAL dia2 sin movimientos: saldo inicial 100000");
+      assertApprox(mpDia2SinMovimientos?.esperado, 100000, "E2EDIGITAL dia2 sin movimientos: esperado = saldo inicial");
+
+      // +25000 entrada real en dia 2.
+      const ventaDia2 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "debito",
+        cuenta_cobro_id: cuentaCobroMp.id,
+        items: [{ producto_id: 11, nombre_producto: "TEST E2EDIGITAL dia2", cantidad: 1, precio_unitario: 25000 }]
+      }), token);
+      if (!ventaDia2.response.ok) throw new Error(`E2EDIGITAL venta dia2 fallo: ${ventaDia2.data?.message || ventaDia2.response.status}`);
+
+      const estadoDigitalDia2ConMovimiento = await getEstadoDigitalOperativo(baseUrl, token, diaDos.id);
+      const mpDia2ConMovimiento = estadoDigitalDia2ConMovimiento.cuentas.find((c) => Number(c.cuenta_destino_id) === Number(mercadoPago.id));
+      assertApprox(mpDia2ConMovimiento?.saldo_inicial, 100000, "E2EDIGITAL dia2 con movimiento: saldo inicial se mantiene en 100000");
+      assertApprox(mpDia2ConMovimiento?.esperado, 125000, "E2EDIGITAL dia2 con movimiento: esperado = saldo inicial + entrada real (100000 + 25000)");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// Reproduce el caso real reportado: dos cuentas digitales conciliadas a mano (sin movimientos
+// de sistema) ANTES de cerrar. El real conciliado no debe convertirse en 0 ni en el cierre real
+// (POST /caja/cierre modelo 1) ni en la apertura siguiente. No se inserta nada a mano en la DB.
+async function testCajaContinuidadDigitalRealConciliadoNoSePierde() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM caja_traslados_internos"],
+        ["DELETE FROM caja_arqueos"],
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM caja_aperturas"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+
+      const cajaCambio = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja cambio REALDIGITAL ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -980
+      });
+      const reserva = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Reserva REALDIGITAL ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -970
+      });
+      const bancor = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Bancor REALDIGITAL ${Date.now()}`,
+        tipo_destino: "banco",
+        orden: -960
+      });
+      const mercadoPago = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Mercado Pago REALDIGITAL ${Date.now()}`,
+        tipo_destino: "billetera",
+        orden: -950
+      });
+
+      const diaUno = await abrirCaja(baseUrl, token, 0);
+
+      // Bancor: esperado 0 (sin movimientos), real conciliado a mano = 2000.
+      const concBancor = await guardarConciliacionCuentaDestino(baseUrl, token, {
+        caja_id: diaUno.id,
+        cuenta_destino_id: bancor.id,
+        monto_sistema: 0,
+        monto_real: 2000,
+        observaciones: "REALDIGITAL Bancor conciliado a mano"
+      });
+      assertApprox(concBancor.conciliacion.monto_real, 2000, "REALDIGITAL Bancor real guardado tal cual");
+
+      // Mercado Pago: esperado 0 (sin movimientos), real conciliado a mano = 3000.
+      const concMp = await guardarConciliacionCuentaDestino(baseUrl, token, {
+        caja_id: diaUno.id,
+        cuenta_destino_id: mercadoPago.id,
+        monto_sistema: 0,
+        monto_real: 3000,
+        observaciones: "REALDIGITAL Mercado Pago conciliado a mano"
+      });
+      assertApprox(concMp.conciliacion.monto_real, 3000, "REALDIGITAL Mercado Pago real guardado tal cual");
+
+      // ANTES DE CERRAR: el resumen de cierre (conciliaciones de esta caja) debe conservar el
+      // real conciliado -> Bancor 2000 + Mercado Pago 3000 = 5000. No se recalcula desde
+      // movimientos (que son 0).
+      const conciliacionesAntesDeCerrar = await getCajaConciliacionesCuentasDestino(baseUrl, token, diaUno.id);
+      const bancorAntes = conciliacionesAntesDeCerrar.conciliaciones.find((c) => Number(c.cuenta_destino_id) === Number(bancor.id));
+      const mpAntes = conciliacionesAntesDeCerrar.conciliaciones.find((c) => Number(c.cuenta_destino_id) === Number(mercadoPago.id));
+      assertApprox(bancorAntes?.monto_real, 2000, "REALDIGITAL antes de cerrar Bancor real sigue 2000");
+      assertApprox(mpAntes?.monto_real, 3000, "REALDIGITAL antes de cerrar Mercado Pago real sigue 3000");
+      const digitalContadoAntesDeCerrar = Number((Number(bancorAntes?.monto_real || 0) + Number(mpAntes?.monto_real || 0)).toFixed(2));
+      assertApprox(digitalContadoAntesDeCerrar, 5000, "REALDIGITAL digital contado antes de cerrar es 5000, no 0");
+
+      // Cerrar por el circuito real (modelo 1).
+      const arqueoDia1 = await registrarArqueoOperativo(baseUrl, token, {
+        idempotency_key: `realdigital-arqueo-dia1-${Date.now()}`,
+        conteo_detalle: { 100: 1 },
+        cuenta_origen_id: cajaCambio.id,
+        cuenta_reserva_id: reserva.id,
+        registrado_cierre: 1,
+        observaciones: "REALDIGITAL arqueo dia 1"
+      });
+      if (arqueoDia1.response.status !== 201) throw new Error(`REALDIGITAL arqueo dia1 fallo: ${JSON.stringify(arqueoDia1.data)}`);
+
+      const estadoEfectivoDia1 = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+      const cierreDia1 = await cerrarCajaOperativo(baseUrl, token, buildDecisionesCierreDesdeEstado(estadoEfectivoDia1.data.estado));
+      if (!cierreDia1.response.ok) throw new Error(`REALDIGITAL cierre real dia1 fallo: ${cierreDia1.data?.message || cierreDia1.response.status}`);
+
+      // El cierre real NO debe recalcular el real desde movimientos (0): debe persistir
+      // exactamente el real que el usuario conciliό.
+      const bancorTrasCierre = (await allSql(
+        dbPath,
+        "SELECT monto_real, decision_cierre, saldo_arrastrado FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [diaUno.id, bancor.id]
+      ))[0];
+      const mpTrasCierre = (await allSql(
+        dbPath,
+        "SELECT monto_real, decision_cierre, saldo_arrastrado FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [diaUno.id, mercadoPago.id]
+      ))[0];
+      assertApprox(bancorTrasCierre?.monto_real, 2000, "REALDIGITAL cierre real conserva el real conciliado de Bancor (no lo pisa con esperado 0)");
+      assertApprox(bancorTrasCierre?.saldo_arrastrado, 2000, "REALDIGITAL cierre real persiste saldo_arrastrado Bancor = 2000");
+      assertApprox(mpTrasCierre?.monto_real, 3000, "REALDIGITAL cierre real conserva el real conciliado de Mercado Pago (no lo pisa con esperado 0)");
+      assertApprox(mpTrasCierre?.saldo_arrastrado, 3000, "REALDIGITAL cierre real persiste saldo_arrastrado Mercado Pago = 3000");
+
+      // Nueva jornada: los esperados iniciales deben ser 2000 y 3000.
+      const diaDos = await abrirCaja(baseUrl, token, 0);
+      const estadoDigitalDia2 = await getEstadoDigitalOperativo(baseUrl, token, diaDos.id);
+      const bancorDia2 = estadoDigitalDia2.cuentas.find((c) => Number(c.cuenta_destino_id) === Number(bancor.id));
+      const mpDia2 = estadoDigitalDia2.cuentas.find((c) => Number(c.cuenta_destino_id) === Number(mercadoPago.id));
+      assertApprox(bancorDia2?.saldo_inicial, 2000, "REALDIGITAL dia2 Bancor saldo inicial 2000");
+      assertApprox(bancorDia2?.esperado, 2000, "REALDIGITAL dia2 Bancor esperado 2000 sin movimientos");
+      assertApprox(mpDia2?.saldo_inicial, 3000, "REALDIGITAL dia2 Mercado Pago saldo inicial 3000");
+      assertApprox(mpDia2?.esperado, 3000, "REALDIGITAL dia2 Mercado Pago esperado 3000 sin movimientos");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// FIX DIGITAL - causa raiz confirmada: la decision de cierre digital (usar el real confirmado
+// por el usuario vs. el esperado calculado) tiene que basarse en la columna confirmado_usuario,
+// nunca en el texto de observaciones. El modal "Conciliar cuenta" precarga observaciones con el
+// valor ya existente, asi que un guardado real del usuario puede dejar el mismo texto que la
+// apertura automatica escribio como placeholder — eso fue exactamente lo que perdio saldos reales
+// en produccion (caja #27, Mercado Pago y Bancor). Casos A-D reproducen ese escenario y las
+// variantes que la correccion tiene que distinguir correctamente.
+async function testCajaCierreDigitalConfirmadoUsuario() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM caja_traslados_internos"],
+        ["DELETE FROM caja_arqueos"],
+        ["DELETE FROM conciliaciones_cuentas_destino"],
+        ["DELETE FROM caja_aperturas"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+
+      const OBS_PLACEHOLDER = "Saldo inicial digital (continuidad automatica)";
+
+      const cajaCambio = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Caja cambio CONFUSR ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -999
+      });
+      const reserva = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Reserva CONFUSR ${Date.now()}`,
+        tipo_destino: "efectivo",
+        orden: -998
+      });
+
+      async function cerrarPorCircuitoReal() {
+        const arqueo = await registrarArqueoOperativo(baseUrl, token, {
+          idempotency_key: `confusr-arqueo-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          conteo_detalle: { 100: 1 },
+          cuenta_origen_id: cajaCambio.id,
+          cuenta_reserva_id: reserva.id,
+          registrado_cierre: 1,
+          observaciones: "CONFUSR arqueo"
+        });
+        if (arqueo.response.status !== 201) throw new Error(`CONFUSR arqueo fallo: ${JSON.stringify(arqueo.data)}`);
+        const estadoEfectivo = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
+        const cierre = await cerrarCajaOperativo(baseUrl, token, buildDecisionesCierreDesdeEstado(estadoEfectivo.data.estado));
+        if (!cierre.response.ok) throw new Error(`CONFUSR cierre fallo: ${cierre.data?.message || cierre.response.status}`);
+        return cierre;
+      }
+
+      // ===== CASO A: escenario exacto reproducido con el usuario (bug real confirmado) =====
+      // Apertura -> el usuario conciliza a mano SIN tocar observaciones (el modal la precarga con
+      // el mismo texto placeholder) -> cierre real -> jornada siguiente.
+      const cuentaA = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Mercado Pago CASOA ${Date.now()}`,
+        tipo_destino: "billetera",
+        orden: -900
+      });
+      const cajaA = await abrirCaja(baseUrl, token, 0);
+
+      const filaAperturaA = (await allSql(
+        dbPath,
+        "SELECT monto_real, confirmado_usuario, observaciones FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [cajaA.id, cuentaA.id]
+      ))[0];
+      assertEqual(Number(filaAperturaA?.confirmado_usuario || 0), 0, "CASOA apertura automatica deja confirmado_usuario=0");
+      assertSame(filaAperturaA?.observaciones, OBS_PLACEHOLDER, "CASOA apertura automatica deja observaciones placeholder");
+
+      await guardarConciliacionCuentaDestino(baseUrl, token, {
+        caja_id: cajaA.id,
+        cuenta_destino_id: cuentaA.id,
+        monto_sistema: 0,
+        monto_real: 5000,
+        observaciones: OBS_PLACEHOLDER
+      });
+
+      const filaTrasGuardarA = (await allSql(
+        dbPath,
+        "SELECT monto_real, confirmado_usuario FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [cajaA.id, cuentaA.id]
+      ))[0];
+      assertApprox(filaTrasGuardarA?.monto_real, 5000, "CASOA guardado manual persiste monto_real=5000");
+      assertEqual(Number(filaTrasGuardarA?.confirmado_usuario || 0), 1, "CASOA guardado manual marca confirmado_usuario=1 aunque observaciones no cambio");
+
+      await cerrarPorCircuitoReal();
+      const filaTrasCierreA = (await allSql(
+        dbPath,
+        "SELECT monto_real, saldo_arrastrado FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [cajaA.id, cuentaA.id]
+      ))[0];
+      assertApprox(filaTrasCierreA?.monto_real, 5000, "CASOA cierre real conserva el real confirmado por el usuario (5000), no lo pisa con esperado 0");
+      assertApprox(filaTrasCierreA?.saldo_arrastrado, 5000, "CASOA cierre real arrastra 5000");
+
+      const cajaA2 = await abrirCaja(baseUrl, token, 0);
+      const estadoDigitalA2 = await getEstadoDigitalOperativo(baseUrl, token, cajaA2.id);
+      const cuentaAEnA2 = estadoDigitalA2.cuentas.find((c) => Number(c.cuenta_destino_id) === Number(cuentaA.id));
+      assertApprox(cuentaAEnA2?.saldo_inicial, 5000, "CASOA la jornada siguiente hereda el saldo real confirmado (5000)");
+      assertApprox(cuentaAEnA2?.esperado, 5000, "CASOA esperado de la jornada siguiente es 5000");
+      const filaAperturaA2 = (await allSql(
+        dbPath,
+        "SELECT confirmado_usuario FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [cajaA2.id, cuentaA.id]
+      ))[0];
+      assertEqual(Number(filaAperturaA2?.confirmado_usuario || 0), 0, "CASOA la apertura de la jornada siguiente vuelve a arrancar confirmado_usuario=0");
+
+      // Cerrar cajaA2 (sin asserts adicionales) para liberar el turno y poder abrir la caja del CASO B.
+      await cerrarPorCircuitoReal();
+
+      // ===== CASO B: real confirmado por el usuario coincide con el esperado =====
+      // El numero final (5000) es identico al que daria el fallback al esperado: lo que este caso
+      // prueba es que confirmado_usuario=1 se marca igual, y que el cierre no depende de que el
+      // valor "se vea distinto" del esperado para reconocer una confirmacion real.
+      const cuentaB = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Bancor CASOB ${Date.now()}`,
+        tipo_destino: "banco",
+        orden: -890
+      });
+      const cajaB = await abrirCaja(baseUrl, token, 0);
+      await guardarConciliacionCuentaDestino(baseUrl, token, {
+        caja_id: cajaB.id,
+        cuenta_destino_id: cuentaB.id,
+        saldo_inicial: 5000,
+        monto_sistema: 0,
+        monto_real: 5000,
+        observaciones: "CASOB usuario confirma real = esperado"
+      });
+      const filaTrasGuardarB = (await allSql(
+        dbPath,
+        "SELECT confirmado_usuario FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [cajaB.id, cuentaB.id]
+      ))[0];
+      assertEqual(Number(filaTrasGuardarB?.confirmado_usuario || 0), 1, "CASOB confirmado_usuario=1 aunque el real coincida con el esperado");
+
+      await cerrarPorCircuitoReal();
+      const filaTrasCierreB = (await allSql(
+        dbPath,
+        "SELECT monto_real, saldo_arrastrado FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [cajaB.id, cuentaB.id]
+      ))[0];
+      assertApprox(filaTrasCierreB?.monto_real, 5000, "CASOB cierre real conserva 5000 (real confirmado = esperado)");
+      assertApprox(filaTrasCierreB?.saldo_arrastrado, 5000, "CASOB cierre real arrastra 5000");
+
+      // ===== CASO C: real confirmado por el usuario es cero =====
+      // Esperado = 5000 (saldo_inicial=5000, sin movimientos). El usuario confirma a mano que el
+      // real es 0. El cierre tiene que respetar el 0 explicito, NO caer al esperado 5000: eso es
+      // exactamente lo que hacia el bug (un monto_real "vacio" se confundia con "no confirmado").
+      const cuentaC = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Mercado Pago CASOC ${Date.now()}`,
+        tipo_destino: "billetera",
+        orden: -880
+      });
+      const cajaC = await abrirCaja(baseUrl, token, 0);
+      await guardarConciliacionCuentaDestino(baseUrl, token, {
+        caja_id: cajaC.id,
+        cuenta_destino_id: cuentaC.id,
+        saldo_inicial: 5000,
+        monto_sistema: 0,
+        monto_real: 0,
+        observaciones: "CASOC usuario confirma real = 0"
+      });
+      const filaTrasGuardarC = (await allSql(
+        dbPath,
+        "SELECT confirmado_usuario FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [cajaC.id, cuentaC.id]
+      ))[0];
+      assertEqual(Number(filaTrasGuardarC?.confirmado_usuario || 0), 1, "CASOC confirmado_usuario=1 con real=0 explicito");
+
+      await cerrarPorCircuitoReal();
+      const filaTrasCierreC = (await allSql(
+        dbPath,
+        "SELECT monto_real, saldo_arrastrado FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [cajaC.id, cuentaC.id]
+      ))[0];
+      assertApprox(filaTrasCierreC?.monto_real, 0, "CASOC cierre real respeta el 0 confirmado explicitamente, no lo reemplaza por el esperado 5000");
+      assertApprox(filaTrasCierreC?.saldo_arrastrado, 0, "CASOC cierre real arrastra 0");
+
+      // ===== CASO D: placeholder nunca confirmado, con movimientos reales del dia =====
+      // El usuario nunca abre "Conciliar cuenta" para esta cuenta: la unica fila que existe es el
+      // placeholder automatico de la apertura (confirmado_usuario=0). El cierre tiene que usar el
+      // esperado calculado (que ya incluye los movimientos del dia), no un monto_real desactualizado.
+      const cuentaD = await crearCuentaDestino(baseUrl, token, {
+        nombre: `Mercado Pago CASOD ${Date.now()}`,
+        tipo_destino: "banco",
+        orden: -870
+      });
+      const cuentaCobroD = await crearCuentaCobro(baseUrl, token, {
+        nombre: `Point CASOD ${Date.now()}`,
+        tipo_pago_codigo: "debito",
+        cuenta_destino_id: cuentaD.id
+      });
+      const cajaD = await abrirCaja(baseUrl, token, 0);
+      const ventaD = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "debito",
+        cuenta_cobro_id: cuentaCobroD.id,
+        items: [{ producto_id: 11, nombre_producto: "TEST CASOD", cantidad: 1, precio_unitario: 2000 }]
+      }), token);
+      if (!ventaD.response.ok) throw new Error(`CASOD venta fallo: ${ventaD.data?.message || ventaD.response.status}`);
+
+      const filaAntesDeCerrarD = (await allSql(
+        dbPath,
+        "SELECT confirmado_usuario FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [cajaD.id, cuentaD.id]
+      ))[0];
+      assertEqual(Number(filaAntesDeCerrarD?.confirmado_usuario || 0), 0, "CASOD nadie confirmo nada: sigue en confirmado_usuario=0");
+
+      await cerrarPorCircuitoReal();
+      const filaTrasCierreD = (await allSql(
+        dbPath,
+        "SELECT monto_real, saldo_arrastrado FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [cajaD.id, cuentaD.id]
+      ))[0];
+      assertApprox(filaTrasCierreD?.monto_real, 2000, "CASOD sin confirmacion, el cierre usa el esperado calculado (2000), que ya incluye la venta del dia");
+      assertApprox(filaTrasCierreD?.saldo_arrastrado, 2000, "CASOD cierre real arrastra el esperado 2000");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testConciliacionManualPorCuentaDestino() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -11503,6 +12507,13 @@ async function testConciliacionManualPorCuentaDestino() {
     await withServer(dbPath, async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       const apertura = await abrirCaja(baseUrl, token, 1000);
+      // La apertura genera continuidad digital automatica para cuentas digitales activas
+      // preexistentes (no relacionadas con este test); se toma como base y no como regresion.
+      const conciliacionesBaseline = (await allSql(
+        dbPath,
+        "SELECT COUNT(*) AS total FROM conciliaciones_cuentas_destino WHERE caja_id = ?",
+        [apertura.id]
+      ))[0].total;
       const mercadoPago = await crearCuentaDestino(baseUrl, token, {
         nombre: "Mercado Pago conciliacion destino TEST",
         tipo_destino: "billetera",
@@ -11572,8 +12583,8 @@ async function testConciliacionManualPorCuentaDestino() {
 
       const getPorCaja = await getCajaConciliacionesCuentasDestino(baseUrl, token, apertura.id);
       assertEqual(getPorCaja.caja.id, apertura.id, "GET conciliaciones destino por caja debe devolver caja solicitada");
-      if (getPorCaja.conciliaciones.length !== 2) {
-        throw new Error(`GET conciliaciones destino debe devolver dos registros. Actual=${JSON.stringify(getPorCaja.conciliaciones)}`);
+      if (getPorCaja.conciliaciones.length - conciliacionesBaseline !== 2) {
+        throw new Error(`GET conciliaciones destino debe devolver dos registros nuevos (mas alla de la continuidad digital automatica de apertura). Actual=${JSON.stringify(getPorCaja.conciliaciones)}`);
       }
 
       const resumenDespues = await getCajaResumenCuentasDestino(baseUrl, token, apertura.id);
@@ -14792,6 +15803,12 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCajaCierreOperativoEfectivoCaja03H);
   await _run(testCajaUiArqueoModeloOperativoCaja03I);
   await _run(testCajaSaldoInicialCuentaFisicaCaja03J);
+  await _run(testCajaContinuidadSaldosDigitales);
+  await _run(testCajaContinuidadSaldosDigitalesE2E);
+  await _run(testCajaContinuidadDigitalRealConciliadoNoSePierde);
+  await _run(testCajaCierreDigitalConfirmadoUsuario);
+  await _run(testCajaCierreVisualFisicoCaja03K);
+  await _run(testCajaControlOperativoGlobalEfectivo);
   await _run(testConciliacionManualPorCuentaDestino);
   await _run(testCajaResumenPorCuentaCobro);
   await _run(testConciliacionManualPorCuentaCobro);

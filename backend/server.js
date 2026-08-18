@@ -47,6 +47,7 @@ const {
   ensureConciliacionesCuentasDestinoTable,
   getCajaAbiertaActual,
   getEstadoEfectivoOperativo,
+  getEstadoDigitalOperativo,
   getCajaParaArqueos,
   getConciliacionesCuentaCobro,
   getConciliacionesCuentaDestino,
@@ -7076,14 +7077,61 @@ app.get("/caja/resumen/cuentas-destino", async (req, res) => {
   }
 });
 
+// El colaborador cuenta, Atlas compara: estos campos revelan cuanto "espera" encontrar el
+// sistema (o permiten reconstruirlo), asi que se redactan para todo rol que no sea admin/encargado.
+const CAMPOS_ESPERADO_EFECTIVO_CUENTA = ["saldo_inicial", "traslados_recibidos", "traslados_enviados", "pagos_efectivos", "saldo_actual"];
+const CAMPOS_ESPERADO_EFECTIVO_GLOBAL = ["caja_cambio", "reserva", "total_disponible", "total_parcial", "efectivo_esperado_global", "detalle_efectivo_global", "saldo_inicial_reserva", "traslados_recibidos", "traslados_enviados", "pagos_efectivos_reserva", "pagos_efectivos_caja_cambio"];
+
+function redactarEstadoEfectivoParaRol(estado, req) {
+  if (puedeRol(req, ROLES.ADMIN_ENCARGADO)) return estado;
+  const redactado = { ...estado };
+  CAMPOS_ESPERADO_EFECTIVO_GLOBAL.forEach((campo) => delete redactado[campo]);
+  if (Array.isArray(redactado.cuentas)) {
+    redactado.cuentas = redactado.cuentas.map((cuenta) => {
+      const cuentaRedactada = { ...cuenta };
+      CAMPOS_ESPERADO_EFECTIVO_CUENTA.forEach((campo) => delete cuentaRedactada[campo]);
+      return cuentaRedactada;
+    });
+  }
+  return redactado;
+}
+
+const CAMPOS_ESPERADO_DIGITAL_CUENTA = ["saldo_inicial", "ingresos", "egresos", "esperado"];
+const CAMPOS_ESPERADO_DIGITAL_GLOBAL = ["total_saldo_inicial", "total_ingresos", "total_egresos", "total_esperado"];
+
+function redactarEstadoDigitalParaRol(estado, req) {
+  if (puedeRol(req, ROLES.ADMIN_ENCARGADO)) return estado;
+  const redactado = { ...estado };
+  CAMPOS_ESPERADO_DIGITAL_GLOBAL.forEach((campo) => delete redactado[campo]);
+  if (Array.isArray(redactado.cuentas)) {
+    redactado.cuentas = redactado.cuentas.map((cuenta) => {
+      const cuentaRedactada = { ...cuenta };
+      CAMPOS_ESPERADO_DIGITAL_CUENTA.forEach((campo) => delete cuentaRedactada[campo]);
+      return cuentaRedactada;
+    });
+  }
+  return redactado;
+}
+
 app.get("/caja/estado-efectivo-operativo", async (req, res) => {
   try {
     const cajaId = Number(req.query.caja_id) || null;
     const estado = await getEstadoEfectivoOperativo({ cajaId });
-    return res.json({ estado });
+    return res.json({ estado: redactarEstadoEfectivoParaRol(estado, req) });
   } catch (error) {
     logError("Error al obtener estado operativo de efectivo:", error);
     return res.status(500).json({ message: "Error al obtener estado operativo de efectivo" });
+  }
+});
+
+app.get("/caja/estado-digital-operativo", async (req, res) => {
+  try {
+    const cajaId = Number(req.query.caja_id) || null;
+    const estado = await getEstadoDigitalOperativo({ cajaId });
+    return res.json({ estado: redactarEstadoDigitalParaRol(estado, req) });
+  } catch (error) {
+    logError("Error al obtener estado operativo digital:", error);
+    return res.status(500).json({ message: "Error al obtener estado operativo digital" });
   }
 });
 
@@ -7196,7 +7244,8 @@ app.post("/caja/conciliaciones/cuentas-destino", async (req, res) => {
     let saldoInicialDestino = req.body.saldo_inicial;
     let montoSistemaDestino = req.body.monto_sistema;
     let montoRealDestino = req.body.monto_real;
-    if (req.body.es_saldo_inicial_apertura === true || Number(req.body.es_saldo_inicial_apertura) === 1) {
+    const esSaldoInicialApertura = req.body.es_saldo_inicial_apertura === true || Number(req.body.es_saldo_inicial_apertura) === 1;
+    if (esSaldoInicialApertura) {
       const cuentaDestinoId = req.body.cuenta_destino_id == null || req.body.cuenta_destino_id === ""
         ? null
         : Number(req.body.cuenta_destino_id);
@@ -7211,6 +7260,8 @@ app.post("/caja/conciliaciones/cuentas-destino", async (req, res) => {
       montoSistemaDestino = 0;
       montoRealDestino = saldoInicialResuelto;
     }
+    // Un guardado manual (modal "Conciliar cuenta") es una confirmacion explicita del usuario.
+    // El flujo automatico de saldo inicial de apertura NO lo es: confirmado_usuario=0.
     const conciliacion = await guardarConciliacionCuentaDestino({
       cajaId: caja.id,
       cuentaDestinoId: req.body.cuenta_destino_id,
@@ -7221,6 +7272,7 @@ app.post("/caja/conciliaciones/cuentas-destino", async (req, res) => {
       montoRetiro: req.body.monto_retiro,
       saldoArrastrado: req.body.saldo_arrastrado,
       observaciones: req.body.observaciones,
+      confirmadoUsuario: !esSaldoInicialApertura,
       usuario: req.body.usuario || req.usuario?.nombre || req.usuario?.usuario || "admin",
       fecha,
       hora
@@ -7260,6 +7312,11 @@ app.get("/caja/apertura", async (req, res) => {
   }
 });
 
+// Marca las filas de conciliaciones_cuentas_destino digitales que la apertura crea
+// automaticamente para continuidad, y que por lo tanto todavia no reflejan ningun real
+// confirmado por el usuario ni los movimientos del dia (ver cierre digital mas abajo).
+const OBSERVACIONES_CONTINUIDAD_APERTURA_DIGITAL = "Saldo inicial digital (continuidad automatica)";
+
 // Registrar apertura de caja
 app.post("/caja/apertura", async (req, res) => {
   if (!(await requirePermiso(req, res, "caja_abrir", "No tenes permisos para abrir caja"))) return;
@@ -7290,6 +7347,34 @@ app.post("/caja/apertura", async (req, res) => {
       "SELECT * FROM caja_aperturas WHERE id = ?",
       [result.lastID]
     );
+
+    // Continuidad digital: igual que efectivo, cada cuenta digital activa arranca la
+    // jornada con el saldo real del ultimo cierre (si existe), persistido de una,
+    // para que ninguna conciliacion tecnica posterior pueda pisarlo con 0.
+    try {
+      const cuentasDigitales = await allQuery(
+        `SELECT id FROM cuentas_destino WHERE activo = 1 AND LOWER(COALESCE(tipo_destino, '')) != 'efectivo'`
+      );
+      for (const cuentaDigital of cuentasDigitales) {
+        const cuentaId = Number(cuentaDigital.id);
+        const arrastre = await getUltimoSaldoArrastradoPorCuenta(cuentaId);
+        const saldoInicial = Number(Number(arrastre?.saldo_arrastrado || 0).toFixed(2));
+        await guardarConciliacionCuentaDestino({
+          cajaId: apertura.id,
+          cuentaDestinoId: cuentaId,
+          montoSistema: 0,
+          montoReal: saldoInicial,
+          saldoInicial,
+          observaciones: OBSERVACIONES_CONTINUIDAD_APERTURA_DIGITAL,
+          confirmadoUsuario: false,
+          usuario,
+          fecha,
+          hora
+        });
+      }
+    } catch (continuidadError) {
+      logError("Error al inicializar continuidad digital en apertura:", continuidadError);
+    }
 
     return res.json({
       message: "Caja abierta correctamente",
@@ -7428,7 +7513,8 @@ function normalizarDecisionesCierreEfectivo(raw) {
   if (Array.isArray(fuente)) {
     return fuente.map((item) => ({
       cuenta_destino_id: Number(item?.cuenta_destino_id),
-      monto_retiro: Number(item?.monto_retiro ?? item?.retiro ?? 0)
+      monto_retiro: Number(item?.monto_retiro ?? item?.retiro ?? 0),
+      saldo_fisico_contado: item?.saldo_fisico_contado ?? item?.monto_real ?? item?.saldo_contado
     }));
   }
   if (fuente && typeof fuente === "object") {
@@ -7436,7 +7522,10 @@ function normalizarDecisionesCierreEfectivo(raw) {
       cuenta_destino_id: Number(cuentaId),
       monto_retiro: typeof value === "object" && value !== null
         ? Number(value.monto_retiro ?? value.retiro ?? 0)
-        : Number(value || 0)
+        : Number(value || 0),
+      saldo_fisico_contado: typeof value === "object" && value !== null
+        ? (value.saldo_fisico_contado ?? value.monto_real ?? value.saldo_contado)
+        : undefined
     }));
   }
   return [];
@@ -7500,7 +7589,19 @@ async function handlePostCajaCierreModelo1(req, res, fecha, hora) {
         await runQuery("ROLLBACK");
         return res.status(400).json({ message: `Monto de retiro invalido para cuenta destino ${cuentaId}` });
       }
-      decisionesMap.set(cuentaId, Number(retiro.toFixed(2)));
+      let contado = null;
+      if (decision.saldo_fisico_contado !== undefined && decision.saldo_fisico_contado !== null && decision.saldo_fisico_contado !== "") {
+        contado = Number(decision.saldo_fisico_contado);
+        if (!Number.isFinite(contado) || contado < 0) {
+          await runQuery("ROLLBACK");
+          return res.status(400).json({ message: `Saldo fisico contado invalido para cuenta destino ${cuentaId}` });
+        }
+        contado = Number(contado.toFixed(2));
+      }
+      decisionesMap.set(cuentaId, {
+        monto_retiro: Number(retiro.toFixed(2)),
+        saldo_fisico_contado: contado
+      });
     }
 
     const cuentasIds = new Set(cuentas.map((cuenta) => Number(cuenta.cuenta_destino_id)));
@@ -7522,23 +7623,30 @@ async function handlePostCajaCierreModelo1(req, res, fecha, hora) {
     const conciliaciones = [];
     let totalRetiro = 0;
     let totalArrastrado = 0;
+    let totalEsperadoPorCuenta = 0;
+    let totalContado = 0;
     for (const cuenta of cuentas) {
       const cuentaId = Number(cuenta.cuenta_destino_id);
-      const saldoActual = Number(Number(cuenta.saldo_actual || 0).toFixed(2));
-      const retiro = decisionesMap.get(cuentaId);
-      if (retiro > saldoActual + 0.01) {
+      const saldoEsperado = Number(Number(cuenta.saldo_actual || 0).toFixed(2));
+      const decision = decisionesMap.get(cuentaId);
+      const saldoFisicoContado = decision.saldo_fisico_contado === null
+        ? saldoEsperado
+        : decision.saldo_fisico_contado;
+      const retiro = decision.monto_retiro;
+      if (retiro > saldoFisicoContado + 0.01) {
         await runQuery("ROLLBACK");
-        return res.status(400).json({ message: `El retiro (${retiro}) supera el saldo actual (${saldoActual}) de la cuenta destino ${cuentaId}` });
+        return res.status(400).json({ message: `El retiro (${retiro}) supera el saldo fisico contado (${saldoFisicoContado}) de la cuenta destino ${cuentaId}` });
       }
       const conciliacion = await guardarConciliacionCuentaDestino({
         cajaId: apertura.id,
         cuentaDestinoId: cuentaId,
-        montoSistema: saldoActual,
-        montoReal: saldoActual,
+        montoSistema: saldoEsperado,
+        montoReal: saldoFisicoContado,
         saldoInicial: 0,
         decisionCierre: retiro > 0 ? "retirar" : "arrastrar",
         montoRetiro: retiro,
         observaciones: `Cierre operativo efectivo cuenta ${cuentaId}`,
+        confirmadoUsuario: true,
         usuario,
         fecha,
         hora
@@ -7546,6 +7654,49 @@ async function handlePostCajaCierreModelo1(req, res, fecha, hora) {
       conciliaciones.push(conciliacion);
       totalRetiro = Number((totalRetiro + retiro).toFixed(2));
       totalArrastrado = Number((totalArrastrado + Number(conciliacion.saldo_arrastrado || 0)).toFixed(2));
+      totalEsperadoPorCuenta = Number((totalEsperadoPorCuenta + saldoEsperado).toFixed(2));
+      totalContado = Number((totalContado + saldoFisicoContado).toFixed(2));
+    }
+    const totalEsperado = Number(Number(estadoOperativo.efectivo_esperado_global ?? totalEsperadoPorCuenta).toFixed(2));
+    const diferenciaTotal = Number((totalContado - totalEsperado).toFixed(2));
+
+    // Continuidad digital: cerrar (arrastrar) cada cuenta digital cuya conciliacion de esta
+    // caja no tenga ya una decision explicita. decision_cierre != NULL es la unica senal de
+    // que una fila es una declaracion deliberada del usuario; NULL es tecnica/no confirmada
+    // y no puede bloquear la continuidad (no se usa el monto en si, sea 0 o no, como senal).
+    // El REAL de cierre es el ultimo monto_real guardado por el usuario para esa cuenta en
+    // esta caja — nunca se recalcula desde movimientos. La senal de si ese monto_real fue
+    // confirmado por el usuario es la columna confirmado_usuario (no observaciones: el modal
+    // "Conciliar cuenta" precarga observaciones del valor existente, asi que un guardado real
+    // del usuario puede conservar el mismo texto que dejo la apertura automatica). Si nadie
+    // confirmo nada en toda la jornada (confirmado_usuario=0), corresponde usar el esperado
+    // calculado, que es la unica fuente que ya incluye los movimientos del dia.
+    const estadoDigitalCierre = await getEstadoDigitalOperativo({ cajaId: apertura.id });
+    for (const cuentaDigital of estadoDigitalCierre.cuentas) {
+      const cuentaId = Number(cuentaDigital.cuenta_destino_id);
+      const conciliacionExistente = await getQuery(
+        "SELECT decision_cierre, monto_real, saldo_inicial, confirmado_usuario FROM conciliaciones_cuentas_destino WHERE caja_id = ? AND cuenta_destino_id = ?",
+        [apertura.id, cuentaId]
+      );
+      if (conciliacionExistente?.decision_cierre) continue;
+      const tieneRealConfirmado = Boolean(conciliacionExistente) && Number(conciliacionExistente.confirmado_usuario || 0) === 1;
+      const montoRealCierre = tieneRealConfirmado
+        ? Number(conciliacionExistente.monto_real || 0)
+        : Number(cuentaDigital.esperado || 0);
+      const saldoInicialCierre = Number(cuentaDigital.saldo_inicial || 0);
+      await guardarConciliacionCuentaDestino({
+        cajaId: apertura.id,
+        cuentaDestinoId: cuentaId,
+        montoSistema: Number((Number(cuentaDigital.ingresos || 0) - Number(cuentaDigital.egresos || 0)).toFixed(2)),
+        montoReal: montoRealCierre,
+        saldoInicial: saldoInicialCierre,
+        decisionCierre: "arrastrar",
+        observaciones: `Cierre digital automatico cuenta ${cuentaId}`,
+        confirmadoUsuario: tieneRealConfirmado,
+        usuario,
+        fecha,
+        hora
+      });
     }
 
     const ventas = await buildCajaSnapshot(apertura.id);
@@ -7557,7 +7708,7 @@ async function handlePostCajaCierreModelo1(req, res, fecha, hora) {
            hora_cierre = ?,
            efectivo_esperado = ?,
            efectivo_contado = ?,
-           diferencia = 0,
+           diferencia = ?,
            monto_caja_apertura = ?,
            monto_caja_fondo = ?,
            conteo_detalle = ?,
@@ -7567,8 +7718,9 @@ async function handlePostCajaCierreModelo1(req, res, fecha, hora) {
        WHERE id = ?`,
       [
         hora,
-        Number(estadoOperativo.total_disponible || 0),
-        Number(estadoOperativo.total_disponible || 0),
+        totalEsperado,
+        totalContado,
+        diferenciaTotal,
         totalArrastrado,
         totalRetiro,
         JSON.stringify({ modelo_cierre_version: 1 }),
@@ -7576,6 +7728,10 @@ async function handlePostCajaCierreModelo1(req, res, fecha, hora) {
           ...resumen,
           modelo_cierre_version: 1,
           estado_efectivo_operativo: estadoOperativo,
+          total_esperado_efectivo: totalEsperado,
+          total_esperado_efectivo_por_cuenta: totalEsperadoPorCuenta,
+          total_contado_efectivo: totalContado,
+          diferencia_efectivo_total: diferenciaTotal,
           total_retiro_efectivo: totalRetiro,
           total_arrastrado_efectivo: totalArrastrado
         }),
@@ -7593,6 +7749,10 @@ async function handlePostCajaCierreModelo1(req, res, fecha, hora) {
       caja: cajaCerrada,
       estado_efectivo_operativo: estadoOperativo,
       conciliaciones,
+      total_esperado_efectivo: totalEsperado,
+      total_esperado_efectivo_por_cuenta: totalEsperadoPorCuenta,
+      total_contado_efectivo: totalContado,
+      diferencia_efectivo_total: diferenciaTotal,
       total_retiro_efectivo: totalRetiro,
       total_arrastrado_efectivo: totalArrastrado
     });
@@ -7726,6 +7886,19 @@ app.post("/caja/cierre", async (req, res) => {
   }
 });
 
+// El colaborador cuenta, Atlas compara: un arqueo mapeado completo revela esperado, diferencia
+// y el estado Sobra/Falta. Para todo rol que no sea admin/encargado se devuelve solo lo que el
+// propio colaborador cargo (su conteo) y datos estructurales, nunca la comparacion contra el sistema.
+const CAMPOS_ARQUEO_ESPERADO = ["efectivo_esperado", "diferencia_efectivo", "digital_esperado", "digital_real", "diferencia_digital", "resultado_final", "estado", "resumen_snapshot", "cuentas_detalle"];
+
+function mapCajaArqueoParaRol(arqueo, req) {
+  const mapeado = mapCajaArqueo(arqueo);
+  if (puedeRol(req, ROLES.ADMIN_ENCARGADO)) return mapeado;
+  const redactado = { ...mapeado };
+  CAMPOS_ARQUEO_ESPERADO.forEach((campo) => delete redactado[campo]);
+  return redactado;
+}
+
 // Historial de arqueos de caja
 app.get("/caja/arqueos", async (req, res) => {
   try {
@@ -7744,7 +7917,7 @@ app.get("/caja/arqueos", async (req, res) => {
       [caja.id]
     );
 
-    return res.json(arqueos.map(mapCajaArqueo));
+    return res.json(arqueos.map((arqueo) => mapCajaArqueoParaRol(arqueo, req)));
   } catch (error) {
     logError("Error al obtener arqueos:", error);
     return res.status(500).json({ message: "Error al obtener arqueos" });
@@ -7763,10 +7936,59 @@ app.get("/caja/arqueos/:id", async (req, res) => {
       return res.status(404).json({ message: "Arqueo no encontrado" });
     }
 
-    return res.json(mapCajaArqueo(arqueo));
+    return res.json(mapCajaArqueoParaRol(arqueo, req));
   } catch (error) {
     logError("Error al obtener detalle del arqueo:", error);
     return res.status(500).json({ message: "Error al obtener detalle del arqueo" });
+  }
+});
+
+app.post("/caja/arqueos/:id/usar-para-cierre", async (req, res) => {
+  if (!(await requirePermiso(req, res, "caja_registrar_arqueo", "No tenes permisos para registrar arqueos"))) return;
+
+  const arqueoId = Number(req.params.id);
+  if (!Number.isInteger(arqueoId) || arqueoId <= 0) {
+    return res.status(400).json({ message: "ID de arqueo invalido" });
+  }
+
+  try {
+    await ensureCajaArqueosTable();
+    const apertura = await getCajaAbiertaActual();
+    if (!apertura || apertura.estado !== "abierta") {
+      return res.status(400).json({ message: "No hay una caja abierta para usar el arqueo" });
+    }
+
+    const arqueo = await getQuery("SELECT * FROM caja_arqueos WHERE id = ?", [arqueoId]);
+    if (!arqueo) {
+      return res.status(404).json({ message: "Arqueo no encontrado" });
+    }
+    if (Number(arqueo.caja_id) !== Number(apertura.id)) {
+      return res.status(409).json({ message: "El arqueo no pertenece a la caja abierta" });
+    }
+    if (Number(arqueo.modelo_arqueo_version || 0) !== 1) {
+      return res.status(400).json({ message: "Solo un arqueo operativo puede usarse para cierre" });
+    }
+    if (String(arqueo.estado || "").toLowerCase() === "anulada") {
+      return res.status(409).json({ message: "El arqueo anulado no puede usarse para cierre" });
+    }
+    if (Number(arqueo.registrado_cierre || 0) === 1) {
+      return res.json({
+        message: "Arqueo ya listo para cierre",
+        idempotent_replay: true,
+        arqueo: mapCajaArqueoParaRol(arqueo, req)
+      });
+    }
+
+    await runQuery("UPDATE caja_arqueos SET registrado_cierre = 1 WHERE id = ?", [arqueoId]);
+    const actualizado = await getQuery("SELECT * FROM caja_arqueos WHERE id = ?", [arqueoId]);
+    return res.json({
+      message: "Arqueo listo para cierre",
+      idempotent_replay: false,
+      arqueo: mapCajaArqueoParaRol(actualizado, req)
+    });
+  } catch (error) {
+    logError("Error al marcar arqueo para cierre:", error);
+    return res.status(500).json({ message: "Error al marcar arqueo para cierre" });
   }
 });
 
@@ -7873,7 +8095,7 @@ async function handlePostCajaArqueoModelo1(req, res, fecha, hora, registradoCier
       return res.status(200).json({
         message: "Arqueo operativo ya registrado",
         idempotent_replay: true,
-        arqueo: mapCajaArqueo(arqueoExistente),
+        arqueo: mapCajaArqueoParaRol(arqueoExistente, req),
         traslado: trasladoExistente || null
       });
     }
@@ -7956,7 +8178,7 @@ async function handlePostCajaArqueoModelo1(req, res, fecha, hora, registradoCier
     return res.status(201).json({
       message: registradoCierre ? "Arqueo operativo registrado" : "Arqueo operativo guardado",
       idempotent_replay: false,
-      arqueo: mapCajaArqueo(arqueo),
+      arqueo: mapCajaArqueoParaRol(arqueo, req),
       traslado
     });
   } catch (error) {
@@ -8016,7 +8238,7 @@ app.post("/caja/arqueos", async (req, res) => {
     const arqueo = await getQuery("SELECT * FROM caja_arqueos WHERE id = ?", [result.lastID]);
     return res.status(201).json({
       message: registradoCierre ? "Arqueo registrado" : "Arqueo guardado",
-      arqueo: mapCajaArqueo(arqueo)
+      arqueo: mapCajaArqueoParaRol(arqueo, req)
     });
   } catch (error) {
     logError("Error al registrar arqueo:", error);
@@ -8089,7 +8311,7 @@ app.put("/caja/arqueos/:id", async (req, res) => {
     const arqueo = await getQuery("SELECT * FROM caja_arqueos WHERE id = ?", [arqueoId]);
     return res.json({
       message: registradoCierre ? "Arqueo registrado" : "Arqueo guardado",
-      arqueo: mapCajaArqueo(arqueo)
+      arqueo: mapCajaArqueoParaRol(arqueo, req)
     });
   } catch (error) {
     logError("Error al editar arqueo:", error);
