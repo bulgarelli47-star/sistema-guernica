@@ -583,6 +583,12 @@ async function ensureComprasSchema() {
   await ensureColumn("compra_recepcion_items", "precio_proveedor_anterior_snapshot", "REAL");
   await ensureColumn("compra_recepcion_items", "fecha_precio_proveedor_anterior_snapshot", "TEXT");
   await ensureColumn("compra_recepcion_items", "costo_referencial_actualizado", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn("compras", "anulada_at", "TEXT");
+  await ensureColumn("compras", "anulada_por", "TEXT");
+  await ensureColumn("compras", "motivo_anulacion", "TEXT");
+  await ensureColumn("compra_comprobantes", "anulado_at", "TEXT");
+  await ensureColumn("compra_comprobantes", "anulado_por", "TEXT");
+  await ensureColumn("compra_comprobantes", "motivo_anulacion", "TEXT");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_compras_proveedor_estado ON compras(proveedor_id, estado)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobantes_compra ON compra_comprobantes(compra_id)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobante_iva_comprobante ON compra_comprobante_iva(comprobante_id)");
@@ -4700,6 +4706,9 @@ app.post("/compras/:id/comprobantes", async (req, res) => {
   try {
     const compra = await getCompraBase(compraId);
     if (!compra) return res.status(404).json({ message: "Compra no encontrada" });
+    if (String(compra.estado || "").toLowerCase() === "anulada") {
+      return res.status(400).json({ message: "La compra anulada no admite nuevos comprobantes" });
+    }
 
     const proveedor = {
       nombre: compra.proveedor_nombre,
@@ -4764,6 +4773,70 @@ app.post("/compras/:id/comprobantes", async (req, res) => {
     try { await runQuery("ROLLBACK"); } catch {}
     logError("Error al registrar comprobante de compra:", error);
     return res.status(500).json({ message: "Error al registrar comprobante de compra" });
+  }
+});
+
+// Anula un comprobante de compra. COMPRA != COMPROBANTE: no toca compras.estado,
+// deuda, pagos, recepciones ni stock. Solo cambia el estado documental del comprobante.
+app.post("/compras/:compraId/comprobantes/:comprobanteId/anular", async (req, res) => {
+  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para anular comprobantes de compra"))) return;
+
+  const compraId = Number(req.params.compraId);
+  const comprobanteId = Number(req.params.comprobanteId);
+  const motivo = String(req.body?.motivo || "").trim();
+  if (!motivo) {
+    return res.status(400).json({ message: "Debe informar un motivo para anular el comprobante" });
+  }
+
+  try {
+    await runQuery("BEGIN IMMEDIATE");
+    const compra = await getCompraBase(compraId);
+    if (!compra) {
+      await runQuery("ROLLBACK");
+      return res.status(404).json({ message: "Compra no encontrada" });
+    }
+
+    const comprobante = await getQuery(
+      "SELECT * FROM compra_comprobantes WHERE id = ? AND compra_id = ?",
+      [comprobanteId, compraId]
+    );
+    if (!comprobante) {
+      await runQuery("ROLLBACK");
+      return res.status(404).json({ message: "Comprobante no encontrado para esta compra" });
+    }
+    if (String(comprobante.estado || "").toLowerCase() === "anulado") {
+      await runQuery("ROLLBACK");
+      const detalle = await getCompraDetalle(compraId);
+      return res.status(200).json({
+        message: "Comprobante ya anulado",
+        idempotent_replay: true,
+        comprobante_id: comprobanteId,
+        ...detalle
+      });
+    }
+
+    const usuario = String(req.usuario?.nombre || req.usuario?.usuario || "admin").trim() || "admin";
+    await runQuery(
+      `UPDATE compra_comprobantes
+       SET estado = 'anulado', anulado_at = datetime('now'), anulado_por = ?, motivo_anulacion = ?,
+           updated_at = datetime('now')
+       WHERE id = ?`,
+      [usuario, motivo, comprobanteId]
+    );
+
+    await runQuery("COMMIT");
+
+    const detalle = await getCompraDetalle(compraId);
+    return res.status(200).json({
+      message: "Comprobante anulado correctamente",
+      idempotent_replay: false,
+      comprobante_id: comprobanteId,
+      ...detalle
+    });
+  } catch (error) {
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("Error al anular comprobante de compra:", error);
+    return res.status(500).json({ message: "Error al anular comprobante de compra" });
   }
 });
 
@@ -4860,6 +4933,89 @@ app.post("/compras/:id/pagos", async (req, res) => {
     try { await runQuery("ROLLBACK"); } catch {}
     logError("Error al registrar pago de compra:", error);
     return res.status(500).json({ message: "Error al registrar pago de compra" });
+  }
+});
+
+// Anula una Compra completa. Solo permitido si no produjo efectos reales que deban
+// revertirse: sin recepciones activas (usar su propio mecanismo de reversa primero),
+// sin pagos reales registrados (no se inventa reversa automatica de dinero) y sin
+// comprobante activo (debe anularse explicitamente antes). COMPRA != COMPROBANTE !=
+// PAGO != RECEPCION: esta anulacion nunca hace cascada sobre esas entidades.
+app.post("/compras/:id/anular", async (req, res) => {
+  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para anular compras"))) return;
+
+  const compraId = Number(req.params.id);
+  const motivo = String(req.body?.motivo || "").trim();
+  if (!motivo) {
+    return res.status(400).json({ message: "Debe informar un motivo para anular la compra" });
+  }
+
+  try {
+    await runQuery("BEGIN IMMEDIATE");
+    const compra = await getCompraBase(compraId);
+    if (!compra) {
+      await runQuery("ROLLBACK");
+      return res.status(404).json({ message: "Compra no encontrada" });
+    }
+
+    if (String(compra.estado || "").toLowerCase() === "anulada") {
+      await runQuery("ROLLBACK");
+      const detalle = await getCompraDetalle(compraId);
+      return res.status(200).json({
+        message: "Compra ya anulada",
+        idempotent_replay: true,
+        ...detalle
+      });
+    }
+
+    const recepcionActiva = await getQuery(
+      "SELECT id FROM compra_recepciones WHERE compra_id = ? AND estado != 'anulada' LIMIT 1",
+      [compraId]
+    );
+    if (recepcionActiva) {
+      await runQuery("ROLLBACK");
+      return res.status(409).json({ message: "La compra tiene recepciones activas. Anulalas primero por su propio mecanismo de reversa." });
+    }
+
+    const pagoRegistrado = await getQuery(
+      "SELECT id FROM pagos WHERE compra_id = ? LIMIT 1",
+      [compraId]
+    );
+    if (pagoRegistrado) {
+      await runQuery("ROLLBACK");
+      return res.status(409).json({ message: "La compra tiene pagos reales registrados. No se revierte dinero automaticamente." });
+    }
+
+    const comprobanteActivo = await getQuery(
+      "SELECT id FROM compra_comprobantes WHERE compra_id = ? AND estado != 'anulado' LIMIT 1",
+      [compraId]
+    );
+    if (comprobanteActivo) {
+      await runQuery("ROLLBACK");
+      return res.status(409).json({ message: "La compra tiene un comprobante activo. Anulalo primero." });
+    }
+
+    const usuario = String(req.usuario?.nombre || req.usuario?.usuario || "admin").trim() || "admin";
+    await runQuery(
+      `UPDATE compras
+       SET estado = 'anulada', anulada_at = datetime('now'), anulada_por = ?, motivo_anulacion = ?,
+           updated_at = datetime('now')
+       WHERE id = ?`,
+      [usuario, motivo, compraId]
+    );
+
+    await runQuery("COMMIT");
+
+    const detalle = await getCompraDetalle(compraId);
+    return res.status(200).json({
+      message: "Compra anulada correctamente",
+      idempotent_replay: false,
+      ...detalle
+    });
+  } catch (error) {
+    try { await runQuery("ROLLBACK"); } catch {}
+    logError("Error al anular compra:", error);
+    return res.status(500).json({ message: "Error al anular compra" });
   }
 });
 

@@ -582,6 +582,12 @@ async function initDatabase() {
     await ensureColumn("compra_recepcion_items", "precio_proveedor_anterior_snapshot", "REAL");
     await ensureColumn("compra_recepcion_items", "fecha_precio_proveedor_anterior_snapshot", "TEXT");
     await ensureColumn("compra_recepcion_items", "costo_referencial_actualizado", "INTEGER NOT NULL DEFAULT 0");
+    await ensureColumn("compras", "anulada_at", "TEXT");
+    await ensureColumn("compras", "anulada_por", "TEXT");
+    await ensureColumn("compras", "motivo_anulacion", "TEXT");
+    await ensureColumn("compra_comprobantes", "anulado_at", "TEXT");
+    await ensureColumn("compra_comprobantes", "anulado_por", "TEXT");
+    await ensureColumn("compra_comprobantes", "motivo_anulacion", "TEXT");
 
     await runQuery(`
       CREATE TABLE IF NOT EXISTS configuracion_global (

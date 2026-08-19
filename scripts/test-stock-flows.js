@@ -6426,6 +6426,8 @@ async function testCompraRecepcionReversaCostoReferencialF3D4() {
         assertApprox(productoDespues[campo], productoAntes[campo], `F3D4 no modifica productos.${campo}`);
       }
       assertSame(productoDespues.precio_venta_modo, productoAntes.precio_venta_modo, "F3D4 no modifica precio_venta_modo");
+      assertEqual(Number(productoDespues.proveedor_id || 0), Number(productoAntes.proveedor_id || 0), "F3D4 no modifica productos.proveedor_id (proveedor principal)");
+      assertSame(productoDespues.proveedor_principal, productoAntes.proveedor_principal, "F3D4 no modifica productos.proveedor_principal");
       assertEqual(Number((await precioProveedor(productoId)).es_principal), 1, "F3D4 no cambia proveedor principal en producto_proveedores");
 
       const productoAntiguoId = await crearProducto(baseUrl, token, {
@@ -6477,6 +6479,8 @@ async function testCompraRecepcionReversaCostoReferencialF3D4() {
       for (const campo of ["precio_compra", "costo_final", "costo_economico", "precio_venta"]) {
         assertApprox(productoSinRelacionDespues[campo], productoSinRelacionAntes[campo], `F3D4 sin relacion no modifica productos.${campo}`);
       }
+      assertEqual(Number(productoSinRelacionDespues.proveedor_id || 0), Number(productoSinRelacionAntes.proveedor_id || 0), "F3D4 sin relacion no modifica productos.proveedor_id");
+      assertSame(productoSinRelacionDespues.proveedor_principal, productoSinRelacionAntes.proveedor_principal, "F3D4 sin relacion no modifica productos.proveedor_principal");
 
       const productoRollbackAId = await crearProducto(baseUrl, token, {
         nombre: `F3D4 Rollback A ${Date.now()}`,
@@ -6562,6 +6566,214 @@ async function testCompraRecepcionReversaCostoReferencialF3D4() {
       assertApprox(cajaDespues.resumen.total_pagos_general, cajaAntes.resumen.total_pagos_general, "F3D4 anular recepcion no mueve caja");
       const ivaDespues = (await allSql(dbPath, "SELECT iva_total FROM compra_comprobantes WHERE compra_id = ?", [compraId]))[0].iva_total;
       assertApprox(ivaDespues, ivaAntes, "F3D4 anular recepcion no modifica IVA documental");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3E-1: cierra los dos estados muertos de la auditoria F3 (compras.estado='anulada' y
+// compra_comprobantes.estado='anulado'), aditivo puro: no toca ningun flujo operativo
+// existente (pagos legacy, ingreso manual de stock, reportes, caja, ventas). Casos A-J
+// del pedido, en orden.
+async function testCompraCierreEstadosF3E1() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM compra_recepcion_items"],
+        ["DELETE FROM compra_recepciones"],
+        ["DELETE FROM compra_items"],
+        ["DELETE FROM compra_comprobante_iva"],
+        ["DELETE FROM compra_comprobantes"],
+        ["DELETE FROM compras"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3E1 ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E1 Cat ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `F3E1 Producto ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3E1",
+        stock: 0,
+        unidad_medida: "unidad",
+        maneja_stock: true
+      });
+
+      const crearCompra = async (concepto, total = 1000) => {
+        const res = await requestJson(baseUrl, "POST", "/compras", {
+          proveedor_id: proveedor.id,
+          fecha_compra: "2026-06-01",
+          concepto,
+          tipo_impacto: "costo_variable_mercaderia",
+          total_compra: total
+        }, token);
+        if (!res.response.ok) throw new Error(`F3E1 crear compra fallo: ${res.data?.message || res.response.status}`);
+        return res.data.compra.id;
+      };
+      const crearItem = async (compraId, overrides = {}) => {
+        const res = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+          items: [{ producto_id: productoId, cantidad_comprada: 5, costo_unitario: 100, afecta_stock: 1, ...overrides }]
+        }, token);
+        if (!res.response.ok) throw new Error(`F3E1 crear item fallo: ${res.data?.message || res.response.status}`);
+        return res.data.items[0];
+      };
+      const crearComprobante = async (compraId, total = 1000) => {
+        const res = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+          tipo_comprobante: "factura_a",
+          total_comprobante: total,
+          alicuotas: [{ alicuota: 21, neto_gravado: Math.round(total / 1.21), iva_monto: total - Math.round(total / 1.21) }]
+        }, token);
+        if (!res.response.ok) throw new Error(`F3E1 crear comprobante fallo: ${res.data?.message || res.response.status}`);
+        return res.data.comprobante_id;
+      };
+      const anularComprobante = (compraId, comprobanteId, motivo = "Correccion test F3E1") =>
+        requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes/${comprobanteId}/anular`, { motivo }, token);
+      const anularCompra = (compraId, motivo = "Correccion test F3E1") =>
+        requestJson(baseUrl, "POST", `/compras/${compraId}/anular`, { motivo }, token);
+      const compraRow = async (compraId) =>
+        (await allSql(dbPath, "SELECT * FROM compras WHERE id = ?", [compraId]))[0];
+      const comprobanteRow = async (comprobanteId) =>
+        (await allSql(dbPath, "SELECT * FROM compra_comprobantes WHERE id = ?", [comprobanteId]))[0];
+
+      // ===== CASO A/C/D: anular comprobante activo =====
+      const compra1 = await crearCompra("F3E1 compra con comprobante", 1210);
+      await crearItem(compra1);
+      const comprobante1 = await crearComprobante(compra1, 1210);
+
+      const stockAntesA = (await getProduct(baseUrl, token, productoId)).stock;
+      const compra1Antes = await compraRow(compra1);
+      const pagosAntesA = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos WHERE compra_id = ?", [compra1]))[0].total;
+
+      const sinMotivo = await anularComprobante(compra1, comprobante1, "");
+      assertEqual(sinMotivo.response.status, 400, "F3E1-A motivo vacio rechaza anular comprobante");
+
+      const anulaC1 = await anularComprobante(compra1, comprobante1, "Factura mal cargada");
+      if (!anulaC1.response.ok) throw new Error(`F3E1-A anular comprobante fallo: ${anulaC1.data?.message || anulaC1.response.status}`);
+      assertEqual(anulaC1.data.idempotent_replay, false, "F3E1-A primera anulacion no es replay");
+      const c1TrasAnular = await comprobanteRow(comprobante1);
+      assertSame(c1TrasAnular.estado, "anulado", "F3E1-A comprobante queda anulado");
+      if (!c1TrasAnular.anulado_at || !c1TrasAnular.anulado_por || c1TrasAnular.motivo_anulacion !== "Factura mal cargada") {
+        throw new Error("F3E1-A no persistio auditoria completa de anulacion de comprobante");
+      }
+
+      // C: Compra permanece activa
+      const compra1TrasAnularC = await compraRow(compra1);
+      assertSame(compra1TrasAnularC.estado, compra1Antes.estado, "F3E1-C anular comprobante no anula la compra");
+
+      // D: deuda/pagos/stock sin cambios
+      assertApprox(compra1TrasAnularC.saldo_pendiente, compra1Antes.saldo_pendiente, "F3E1-D anular comprobante no toca deuda");
+      const pagosDespuesA = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos WHERE compra_id = ?", [compra1]))[0].total;
+      assertEqual(pagosDespuesA, pagosAntesA, "F3E1-D anular comprobante no crea/toca pagos");
+      const stockDespuesA = (await getProduct(baseUrl, token, productoId)).stock;
+      assertApprox(stockDespuesA, stockAntesA, "F3E1-D anular comprobante no toca stock");
+
+      // ===== CASO B: repetir anulacion de comprobante -> idempotente =====
+      const replayC1 = await anularComprobante(compra1, comprobante1, "Motivo distinto en el replay");
+      assertEqual(replayC1.response.status, 200, "F3E1-B replay anular comprobante responde 200");
+      assertEqual(replayC1.data.idempotent_replay, true, "F3E1-B replay marca idempotent_replay");
+      const c1TrasReplay = await comprobanteRow(comprobante1);
+      assertSame(c1TrasReplay.anulado_at, c1TrasAnular.anulado_at, "F3E1-B replay no cambia anulado_at");
+      assertSame(c1TrasReplay.anulado_por, c1TrasAnular.anulado_por, "F3E1-B replay no cambia anulado_por");
+      assertSame(c1TrasReplay.motivo_anulacion, "Factura mal cargada", "F3E1-B replay no pisa motivo_anulacion original");
+
+      // ===== CASO E/F: anular compra vacia + idempotencia =====
+      const compra2 = await crearCompra("F3E1 compra vacia", 500);
+      const sinMotivoCompra = await anularCompra(compra2, "");
+      assertEqual(sinMotivoCompra.response.status, 400, "F3E1-E motivo vacio rechaza anular compra");
+
+      const anulaCompra2 = await anularCompra(compra2, "Compra cargada por error");
+      if (!anulaCompra2.response.ok) throw new Error(`F3E1-E anular compra vacia fallo: ${anulaCompra2.data?.message || anulaCompra2.response.status}`);
+      assertEqual(anulaCompra2.data.idempotent_replay, false, "F3E1-E primera anulacion de compra no es replay");
+      const compra2TrasAnular = await compraRow(compra2);
+      assertSame(compra2TrasAnular.estado, "anulada", "F3E1-E compra vacia queda anulada");
+      if (!compra2TrasAnular.anulada_at || !compra2TrasAnular.anulada_por || compra2TrasAnular.motivo_anulacion !== "Compra cargada por error") {
+        throw new Error("F3E1-E no persistio auditoria completa de anulacion de compra");
+      }
+
+      const replayCompra2 = await anularCompra(compra2, "Motivo distinto en el replay");
+      assertEqual(replayCompra2.response.status, 200, "F3E1-F replay anular compra responde 200");
+      assertEqual(replayCompra2.data.idempotent_replay, true, "F3E1-F replay marca idempotent_replay");
+      const compra2TrasReplay = await compraRow(compra2);
+      assertSame(compra2TrasReplay.anulada_at, compra2TrasAnular.anulada_at, "F3E1-F replay no cambia anulada_at");
+      assertSame(compra2TrasReplay.anulada_por, compra2TrasAnular.anulada_por, "F3E1-F replay no cambia anulada_por");
+      assertSame(compra2TrasReplay.motivo_anulacion, "Compra cargada por error", "F3E1-F replay no pisa motivo_anulacion original");
+
+      // ===== CASO G: compra con recepcion activa -> 409, stock intacto =====
+      const compra3 = await crearCompra("F3E1 compra con recepcion", 500);
+      const item3 = await crearItem(compra3);
+      const recepcion3 = await requestJson(baseUrl, "POST", `/compras/${compra3}/recepciones`, {
+        idempotency_key: `f3e1-recepcion-${Date.now()}`,
+        items: [{ compra_item_id: item3.id, cantidad_recibida: 5 }]
+      }, token);
+      if (!recepcion3.response.ok) throw new Error(`F3E1-G recepcion fallo: ${recepcion3.data?.message || recepcion3.response.status}`);
+      const stockTrasRecepcion3 = (await getProduct(baseUrl, token, productoId)).stock;
+
+      const anulaConRecepcion = await anularCompra(compra3, "No deberia poder anularse");
+      assertEqual(anulaConRecepcion.response.status, 409, "F3E1-G compra con recepcion activa responde 409");
+      const stockTrasIntento3 = (await getProduct(baseUrl, token, productoId)).stock;
+      assertApprox(stockTrasIntento3, stockTrasRecepcion3, "F3E1-G intento de anular con recepcion activa no toca stock");
+      const compra3TrasIntento = await compraRow(compra3);
+      assertSame(compra3TrasIntento.estado, "pendiente", "F3E1-G compra sigue activa tras el 409");
+
+      // ===== CASO H: compra con pago registrado -> 409, Caja/pago intactos =====
+      const compra4 = await crearCompra("F3E1 compra con pago", 500);
+      await abrirCaja(baseUrl, token, 100000);
+      const pago4 = await requestJson(baseUrl, "POST", `/compras/${compra4}/pagos`, {
+        monto_total: 500,
+        tipo_pago: "efectivo"
+      }, token);
+      if (!pago4.response.ok) throw new Error(`F3E1-H registrar pago fallo: ${pago4.data?.message || pago4.response.status}`);
+      const cajaAntesH = await getCajaResumen(baseUrl, token);
+      const pagosAntesH = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos WHERE compra_id = ?", [compra4]))[0].total;
+
+      const anulaConPago = await anularCompra(compra4, "No deberia poder anularse");
+      assertEqual(anulaConPago.response.status, 409, "F3E1-H compra con pago registrado responde 409");
+      const cajaDespuesH = await getCajaResumen(baseUrl, token);
+      assertApprox(cajaDespuesH.resumen.total_pagos_general, cajaAntesH.resumen.total_pagos_general, "F3E1-H intento de anular con pago no mueve caja");
+      const pagosDespuesH = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos WHERE compra_id = ?", [compra4]))[0].total;
+      assertEqual(pagosDespuesH, pagosAntesH, "F3E1-H intento de anular con pago no toca el pago");
+
+      // ===== CASO I: compra con comprobante activo -> 409 =====
+      const compra5 = await crearCompra("F3E1 compra con comprobante activo", 1000);
+      await crearComprobante(compra5, 1000);
+      const anulaConComprobante = await anularCompra(compra5, "No deberia poder anularse");
+      assertEqual(anulaConComprobante.response.status, 409, "F3E1-I compra con comprobante activo responde 409");
+
+      // ===== CASO J: compra anulada rechaza comprobante / items / pago / recepcion =====
+      // Reutiliza compra2, ya anulada en E, sin items/recepciones/pagos.
+      const comprobanteEnAnulada = await requestJson(baseUrl, "POST", `/compras/${compra2}/comprobantes`, {
+        tipo_comprobante: "factura_a",
+        total_comprobante: 100,
+        alicuotas: [{ alicuota: 21, neto_gravado: 83, iva_monto: 17 }]
+      }, token);
+      assertEqual(comprobanteEnAnulada.response.status, 400, "F3E1-J compra anulada rechaza nuevo comprobante");
+      assertSame(comprobanteEnAnulada.data?.message, "La compra anulada no admite nuevos comprobantes", "F3E1-J mensaje especifico de comprobante sobre compra anulada");
+
+      const itemEnAnulada = await requestJson(baseUrl, "POST", `/compras/${compra2}/items`, {
+        items: [{ producto_id: productoId, cantidad_comprada: 1, costo_unitario: 10, afecta_stock: 1 }]
+      }, token);
+      assertEqual(itemEnAnulada.response.status, 400, "F3E1-J compra anulada rechaza nuevo item");
+      assertSame(itemEnAnulada.data?.message, "La compra anulada no admite nuevos items", "F3E1-J mensaje especifico de item sobre compra anulada");
+
+      const pagoEnAnulada = await requestJson(baseUrl, "POST", `/compras/${compra2}/pagos`, {
+        monto_total: 10,
+        tipo_pago: "efectivo"
+      }, token);
+      assertEqual(pagoEnAnulada.response.status, 400, "F3E1-J compra anulada rechaza nuevo pago");
+      assertSame(pagoEnAnulada.data?.message, "La compra anulada no admite pagos", "F3E1-J mensaje especifico de pago sobre compra anulada");
+
+      const recepcionEnAnulada = await requestJson(baseUrl, "POST", `/compras/${compra2}/recepciones`, {
+        idempotency_key: `f3e1-recepcion-anulada-${Date.now()}`,
+        items: [{ compra_item_id: 999999999, cantidad_recibida: 1 }]
+      }, token);
+      assertEqual(recepcionEnAnulada.response.status, 400, "F3E1-J compra anulada rechaza nueva recepcion");
+      assertSame(recepcionEnAnulada.data?.message, "La compra anulada no admite recepciones", "F3E1-J mensaje especifico de recepcion sobre compra anulada");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -15755,6 +15967,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCompraItemsRecepcionesF3D2Schema);
   await _run(testCompraRecepcionOperativaF3D3);
   await _run(testCompraRecepcionReversaCostoReferencialF3D4);
+  await _run(testCompraCierreEstadosF3E1);
   await _run(testProductosMasVendidosDevuelveClaves);
   await _run(testProductosMasVendidosExcluyeVentasAnuladas);
   await _run(testProductosMasVendidosOrdenaPorCantidad);
