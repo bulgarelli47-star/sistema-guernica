@@ -6780,6 +6780,1484 @@ async function testCompraCierreEstadosF3E1() {
   }
 }
 
+// F3E-2 corregido: proteccion liviana (sin servidor) de que "Cargar compra" vive DENTRO
+// de pagos.html (no en un modulo/pagina separada) y usa exclusivamente el modelo F3 real,
+// nunca los flujos legacy salvo donde corresponde (Salida rapida = flujo legacy intacto).
+// No depende de posiciones exactas de HTML: busca los fragmentos reales por substring.
+async function testCargarCompraUiF3E2CorregidoExiste() {
+  const rutaCompras = path.join(ROOT, "frontend", "compras.html");
+  if (fs.existsSync(rutaCompras)) {
+    throw new Error("F3E2-corregido frontend/compras.html deberia haber sido eliminado: ya no debe quedar un segundo modulo de Compras accesible por URL");
+  }
+
+  const rutaPagos = path.join(ROOT, "frontend", "pagos.html");
+  if (!fs.existsSync(rutaPagos)) throw new Error("F3E2-corregido frontend/pagos.html no existe");
+  const html = fs.readFileSync(rutaPagos, "utf8");
+
+  // A: Salida rapida conserva el flujo legacy real (POST /pagos).
+  if (!html.includes('fetch("/pagos"')) {
+    throw new Error("F3E2-corregido pagos.html debe conservar POST /pagos para Salida rapida");
+  }
+  // B/C: ambas acciones conviven en el mismo modulo, sin pestaña ni pagina nueva.
+  if (!html.includes("Salida rápida")) {
+    throw new Error("F3E2-corregido pagos.html debe exponer la accion 'Salida rapida'");
+  }
+  if (!html.includes("Cargar compra")) {
+    throw new Error("F3E2-corregido pagos.html debe exponer la accion 'Cargar compra'");
+  }
+  if (!html.includes("Compras abiertas")) {
+    throw new Error("F3E2-corregido pagos.html debe conservar un acceso a 'Compras abiertas'");
+  }
+
+  // A/B (UX unica): "+ Cargar compra" abre DIRECTO la experiencia unica (ccfModal), nunca
+  // el selector/administrador de compras abiertas. No debe existir un paso intermedio de
+  // "Nueva compra" (modal -> modal -> compra).
+  if (!html.includes('document.getElementById("abrirCargarCompraModal")?.addEventListener("click", ccfAbrirModal)')) {
+    throw new Error("F3E2-corregido 'Cargar compra' debe abrir directamente ccfAbrirModal (experiencia unica), sin administrador previo");
+  }
+  if (html.includes("ccModalNueva") || html.includes("ccAbrirNuevaCompra") || html.includes("ccCrearCompra")) {
+    throw new Error("F3E2-corregido el flujo 'modal -> modal -> compra' (Nueva compra como paso previo) debe haber sido eliminado");
+  }
+  // "Compras abiertas" sigue abriendo el selector/detalle ya existente (gestion, no alta).
+  if (!html.includes('document.getElementById("abrirComprasAbiertasModal")?.addEventListener("click", ccAbrirPrincipal)')) {
+    throw new Error("F3E2-corregido 'Compras abiertas' debe seguir abriendo el selector/detalle existente para continuar una compra");
+  }
+
+  // C: los items de la factura se acumulan en memoria (ccfItems) y NO se persisten uno
+  // por uno -- recien se persisten todos juntos en el guardado final.
+  if (!html.includes("ccfItems.push(")) {
+    throw new Error("F3E2-corregido los items de 'Cargar compra' deben acumularse en memoria (ccfItems) antes de guardar");
+  }
+  const marcaAgregarItem = html.indexOf("function ccfAgregarItem()");
+  const marcaFinAgregarItem = html.indexOf("function ccfQuitarItem(");
+  if (marcaAgregarItem === -1 || marcaFinAgregarItem === -1 || marcaFinAgregarItem <= marcaAgregarItem) {
+    throw new Error("F3E2-corregido no se encontro ccfAgregarItem() en pagos.html");
+  }
+  const cuerpoAgregarItem = html.slice(marcaAgregarItem, marcaFinAgregarItem);
+  if (cuerpoAgregarItem.includes("ccRequestJson") || cuerpoAgregarItem.includes("fetch(")) {
+    throw new Error("F3E2-corregido agregar un producto a la factura no debe pegarle al backend todavia (debe quedar en memoria hasta 'Guardar factura')");
+  }
+
+  // J: el guardado de "Cargar compra" (ccfGuardar) NO debe crear ninguna Recepcion.
+  const marcaGuardar = html.indexOf("async function ccfGuardar()");
+  const marcaFinGuardar = html.indexOf("function ccfMostrarResumenFinal(");
+  if (marcaGuardar === -1 || marcaFinGuardar === -1 || marcaFinGuardar <= marcaGuardar) {
+    throw new Error("F3E2-corregido no se encontro ccfGuardar() en pagos.html");
+  }
+  const cuerpoGuardar = html.slice(marcaGuardar, marcaFinGuardar);
+  if (cuerpoGuardar.includes("/recepciones")) {
+    throw new Error("F3E2-corregido 'Cargar compra' no debe registrar Recepcion (Factura != Recepcion fisica): eso queda para Compras abiertas, despues");
+  }
+  // El guardado usa exclusivamente el modelo F3 real, en la secuencia correcta.
+  const secuenciaEsperada = ['"/compras"', "/compras/${compraId}/items", "/compras/${compraId}/comprobantes", "/compras/${compraId}/pagos"];
+  let cursor = -1;
+  for (const fragmento of secuenciaEsperada) {
+    const pos = cuerpoGuardar.indexOf(fragmento);
+    if (pos === -1) throw new Error(`F3E2-corregido ccfGuardar() no contempla ${fragmento}`);
+    if (pos <= cursor) throw new Error(`F3E2-corregido ccfGuardar() no respeta la secuencia esperada en ${fragmento}`);
+    cursor = pos;
+  }
+  if (cuerpoGuardar.includes('fetch("/pagos"')) {
+    throw new Error("F3E2-corregido el pago de la factura no debe usar el endpoint legacy /pagos");
+  }
+
+  // K/L: el boton de Cargar compra (y el de Compras abiertas) dependen EXCLUSIVAMENTE de la
+  // vista efectiva de *Pagos (Completa/Reducida), nunca de un nombre de rol ni de un permiso
+  // de Stock. La proteccion de backend real (misma regla) se verifica aparte, con servidor,
+  // en testCargarCompraSeguridadF3E2Corregido / testCargarCompraVistaPagosF3E2Corregido.
+  if (!html.includes('function puedeCargarCompra(){return getVistaOperativa(rolActual(),configPagos,"pagos")==="completa"}')) {
+    throw new Error("F3E2-corregido 'Cargar compra' debe depender de la vista efectiva de Pagos (getVistaOperativa), no de un permiso o rol hardcodeado");
+  }
+  if (html.includes("stock_ver_costos") || html.includes("stock_ajustar") || html.includes("stock_editar_producto")) {
+    throw new Error("F3E2-corregido 'Cargar compra' no debe depender de un permiso de Stock");
+  }
+  if (!html.includes('btnCA.style.display=puedeCargarCompra()?"":"none"')) {
+    throw new Error("F3E2-corregido el acceso a 'Compras abiertas' debe ocultarse con la misma regla de vista completa que 'Cargar compra'");
+  }
+}
+
+// Microajuste "simple y operativa": header sticky con Cancelar/Guardar unicos, sin
+// resumen fiscal manual, con alicuota por renglon derivando neto/IVA automaticamente (el
+// operador nunca los carga a mano). El selector global Final/Neto fue eliminado en una
+// fase posterior (ver testCargarCompraModoPorProductoF3E2): el modo se deriva por producto.
+async function testCargarCompraUxSimpleOperativaF3E2() {
+  const rutaPagos = path.join(ROOT, "frontend", "pagos.html");
+  const html = fs.readFileSync(rutaPagos, "utf8");
+
+  // A: header sticky.
+  if (!html.includes(".ccf-header-sticky { position: sticky;")) {
+    throw new Error("F3E2-ajuste: el header de Cargar compra debe ser sticky (position: sticky)");
+  }
+  if (!html.includes('class="modal-header ccf-header-sticky"')) {
+    throw new Error("F3E2-ajuste: el header de Cargar compra debe usar la clase ccf-header-sticky");
+  }
+
+  // B: Cancelar y Guardar viven en el header, sin footer duplicado.
+  const marcaHeader = html.indexOf('class="modal-header ccf-header-sticky"');
+  const marcaFinHeader = html.indexOf('<div class="modal-body">', marcaHeader);
+  const bloqueHeader = html.slice(marcaHeader, marcaFinHeader === -1 ? marcaHeader + 1200 : marcaFinHeader);
+  if (!bloqueHeader.includes('id="ccfCancelar"') || !bloqueHeader.includes('id="ccfBtnGuardar"')) {
+    throw new Error("F3E2-ajuste: Cancelar y Guardar deben estar en el header sticky de Cargar compra");
+  }
+  if (html.includes('id="ccfFooter"') || html.includes('id="ccfFooterFinal"')) {
+    throw new Error("F3E2-ajuste: no debe quedar un footer duplicado con Cancelar/Guardar");
+  }
+
+  // C: sin textarea de Observaciones permanente en la carga principal.
+  if (html.includes('id="ccfObservaciones"')) {
+    throw new Error("F3E2-ajuste: no debe existir un textarea permanente de Observaciones en la carga principal");
+  }
+  // D: accion secundaria "+ Agregar observación" con su propia modal chica, en memoria.
+  if (!html.includes('id="ccfBtnAgregarObservacion"') || !html.includes('id="ccfModalObservacion"')) {
+    throw new Error("F3E2-ajuste: debe existir '+ Agregar observación' como accion secundaria opcional");
+  }
+  if (!html.includes("ccfObservacionValor = document.getElementById(\"ccfObservacionTexto\").value.trim();")) {
+    throw new Error("F3E2-ajuste: la observación debe guardarse en memoria (ccfObservacionValor), no persistirse antes de Guardar");
+  }
+
+  // Resumen fiscal manual eliminado de la experiencia principal.
+  const eliminados = ['id="ccfAlicuotaNeto"', 'id="ccfAlicuotaIva"', 'id="ccfBtnAgregarAlicuota"', 'id="ccfTablaAlicuotas"', 'id="ccfExento"', 'id="ccfNoGravado"', 'id="ccfOtrosTributos"', 'id="ccfTotalCalculado"', 'id="ccfDiferencia"'];
+  for (const fragmento of eliminados) {
+    if (html.includes(fragmento)) {
+      throw new Error(`F3E2-ajuste: no debe quedar UI de resumen fiscal manual (${fragmento})`);
+    }
+  }
+
+  // E: el selector global Final/Neto fue eliminado -- el modo se deriva por producto
+  // (precio_compra_incluye_iva), el usuario ya no lo elige en la modal.
+  if (html.includes("data-ccf-tipo-precio") || html.includes('id="ccfTipoPrecio"') || html.includes('id="ccfTipoPrecioBotones"')) {
+    throw new Error("F3E2-toggle: no debe quedar el selector global de tipo de precio (Final/IVA incluido vs Neto/sin IVA)");
+  }
+  if (html.includes("Los precios ingresados son")) {
+    throw new Error("F3E2-toggle: no debe quedar el texto del selector global de tipo de precio eliminado");
+  }
+
+  // F: cada renglon conserva su propia alicuota IVA (selector compacto en la fila de alta).
+  if (!html.includes('id="ccfItemAlicuota"')) {
+    throw new Error("F3E2-ajuste: cada renglon debe permitir elegir su alicuota IVA");
+  }
+  if (!html.includes("alicuota,\n        subtotal:")) {
+    throw new Error("F3E2-ajuste: el item en memoria debe conservar la alicuota elegida junto al resto de sus datos");
+  }
+  // Solo alicuotas que Atlas ya conoce (21 / 10,5 / 27 / 0), nada inventado.
+  const opcionesEsperadas = ['<option value="21">21%</option>', '<option value="10.5">10,5%</option>', '<option value="27">27%</option>', '<option value="0">0% (exento)</option>'];
+  for (const opcion of opcionesEsperadas) {
+    if (!html.includes(opcion)) throw new Error(`F3E2-ajuste: falta la opcion de alicuota conocida ${opcion}`);
+  }
+
+  // J: el usuario nunca carga neto/IVA a mano -- Atlas los deriva con ccfCalcularLinea.
+  if (!html.includes("function ccfCalcularLinea(precioIngresado, alicuota, modo)")) {
+    throw new Error("F3E2-ajuste: falta la funcion que deriva neto/IVA por renglon (ccfCalcularLinea)");
+  }
+  if (!html.includes("function ccfAgruparPorAlicuota()")) {
+    throw new Error("F3E2-ajuste: falta el agrupamiento por alicuota para construir compra_comprobante_iva");
+  }
+
+  // K: el total de factura es un dato calculado (no un segundo input editable).
+  if (!html.includes('<strong id="ccfTotalFactura">')) {
+    throw new Error("F3E2-ajuste: TOTAL FACTURA debe ser un dato calculado (no un input editable)");
+  }
+  if (html.includes('type="number" id="ccfTotalFactura"')) {
+    throw new Error("F3E2-ajuste: TOTAL FACTURA no debe seguir siendo un campo editable");
+  }
+
+  // Concepto sale de la UX principal (no es obligatorio para el backend).
+  if (html.includes('id="ccfConcepto"') || html.includes('id="ccfFechaEmision"')) {
+    throw new Error("F3E2-ajuste: Concepto y Fecha de emisión deben salir de la UX principal (se compactaron/eliminaron)");
+  }
+}
+
+// Microajuste final de header: Cancelar/Guardar del header sticky de "Cargar compra" quedan
+// como iconos SOLOS (sin texto visible), reusando iconografia YA VALIDADA de Atlas
+// (nav-icons.css, clase .app-icon), la misma que usan pagoModal/editarPagoModal/ccModal
+// (icon-close) y proveedores.html/clientes.html (icon-save) -- nunca una libreria nueva,
+// emoji, unicode de reemplazo ni un SVG arbitrario. La accion sigue siendo identificable
+// via aria-label/title (E/F/G).
+async function testCargarCompraHeaderIconografiaAtlasF3E2() {
+  const rutaPagos = path.join(ROOT, "frontend", "pagos.html");
+  const html = fs.readFileSync(rutaPagos, "utf8");
+
+  // Atlas ya carga su hoja de iconos propia; no se debe sumar ninguna otra.
+  if (!html.includes('<link rel="stylesheet" href="/nav-icons.css')) {
+    throw new Error("F3E2-header: pagos.html debe seguir usando la hoja de iconos propia de Atlas (nav-icons.css)");
+  }
+  const librosIconosAjenos = ["font-awesome", "fontawesome", "material-icons", "bootstrap-icons", "feather-icons", "cdn.jsdelivr", "unpkg.com"];
+  for (const libre of librosIconosAjenos) {
+    if (html.toLowerCase().includes(libre)) {
+      throw new Error(`F3E2-header: no debe sumarse una libreria de iconos externa (${libre})`);
+    }
+  }
+
+  const marcaHeader = html.indexOf('class="modal-header ccf-header-sticky"');
+  const marcaFinHeader = html.indexOf('<div class="modal-body">', marcaHeader);
+  const bloqueHeader = html.slice(marcaHeader, marcaFinHeader === -1 ? marcaHeader + 1600 : marcaFinHeader);
+
+  // Cancelar y Guardar reusan exactamente la clase .app-icon + icon-close/icon-save que
+  // Atlas ya usa en produccion (pagoModal, editarPagoModal, ccModal, proveedores.html,
+  // clientes.html), nunca un icono elegido a ciegas.
+  const marcaCancelar = bloqueHeader.indexOf('id="ccfCancelar"');
+  const marcaGuardar = bloqueHeader.indexOf('id="ccfBtnGuardar"');
+  if (marcaCancelar === -1 || marcaGuardar === -1) {
+    throw new Error("F3E2-header: no se encontraron los botones Cancelar/Guardar dentro del header sticky");
+  }
+  const botonCancelar = bloqueHeader.slice(marcaCancelar, bloqueHeader.indexOf("</button>", marcaCancelar));
+  const botonGuardar = bloqueHeader.slice(marcaGuardar, bloqueHeader.indexOf("</button>", marcaGuardar));
+  if (!botonCancelar.includes('class="app-icon icon-close" aria-hidden="true"')) {
+    throw new Error("F3E2-header: Cancelar debe reusar el icono Atlas ya validado icon-close (el mismo de pagoModal/ccModal)");
+  }
+  if (!botonGuardar.includes('class="app-icon icon-save" aria-hidden="true"')) {
+    throw new Error("F3E2-header: Guardar debe reusar el icono Atlas ya validado icon-save (el mismo de proveedores.html/clientes.html)");
+  }
+
+  // E: header solo con iconos -- sin texto visible despues del <span> del icono.
+  if (!botonCancelar.trim().endsWith("</span>")) {
+    throw new Error("F3E2-header-icon: Cancelar no debe tener texto visible junto al icono (solo el icono)");
+  }
+  if (!botonGuardar.trim().endsWith("</span>")) {
+    throw new Error("F3E2-header-icon: Guardar no debe tener texto visible junto al icono (solo el icono)");
+  }
+
+  // G: aria-label/title siguen identificando la accion aunque sea solo un icono.
+  if (!botonCancelar.includes('aria-label="Cancelar"') || !botonCancelar.includes('title="Cancelar"')) {
+    throw new Error("F3E2-header-icon: Cancelar debe conservar aria-label=\"Cancelar\" y title=\"Cancelar\"");
+  }
+  if (!botonGuardar.includes('aria-label="Guardar compra"') || !botonGuardar.includes('title="Guardar compra"')) {
+    throw new Error("F3E2-header-icon: Guardar debe conservar aria-label=\"Guardar compra\" y title=\"Guardar compra\"");
+  }
+
+  // Nada de emoji ni de sustitutos unicode, y ningun SVG nuevo arbitrario dentro del header.
+  if (/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(bloqueHeader)) {
+    throw new Error("F3E2-header: no debe usarse emoji en el header de Cargar compra");
+  }
+  if (bloqueHeader.includes("<svg")) {
+    throw new Error("F3E2-header: no debe crearse un SVG nuevo arbitrario en el header (debe reusar .app-icon de nav-icons.css)");
+  }
+
+  // ccfAccionesFinal (estado post-guardado) tambien reusa el mismo icono de cierre, no texto
+  // plano ni un icono distinto inventado para la misma accion semantica (cerrar).
+  const marcaFinal = bloqueHeader.indexOf('id="ccfCerrarFinal"');
+  if (marcaFinal === -1) {
+    throw new Error("F3E2-header: no se encontro el boton de cierre del resumen final (ccfCerrarFinal)");
+  }
+  const botonFinal = bloqueHeader.slice(marcaFinal, bloqueHeader.indexOf("</button>", marcaFinal));
+  if (!botonFinal.includes('class="app-icon icon-close" aria-hidden="true"')) {
+    throw new Error("F3E2-header: ccfCerrarFinal debe reusar el mismo icono icon-close, no inventar uno distinto para la misma accion de cerrar");
+  }
+  if (!botonFinal.trim().endsWith("</span>")) {
+    throw new Error("F3E2-header-icon: ccfCerrarFinal no debe tener texto visible junto al icono");
+  }
+  if (!botonFinal.includes('aria-label="Cerrar"') || !botonFinal.includes('title="Cerrar"')) {
+    throw new Error("F3E2-header-icon: ccfCerrarFinal debe conservar aria-label=\"Cerrar\" y title=\"Cerrar\"");
+  }
+
+  // Jerarquia visual intacta: dos botones de accion en el header, no un header saturado de
+  // iconos -- el titulo sigue siendo el primer elemento del header.
+  if (bloqueHeader.indexOf("ccfModalTitulo") > bloqueHeader.indexOf('id="ccfCancelar"')) {
+    throw new Error("F3E2-header: el titulo 'Cargar compra' debe seguir precediendo a las acciones del header");
+  }
+}
+
+// Microajuste "proveedor -> tipo de comprobante": seleccionar un proveedor autocompleta el
+// Tipo de comprobante con su tipo_comprobante configurado (SOLO default, select nunca se
+// bloquea), sin agregar ningun bloque fiscal visual nuevo, y sin que esto interfiera con el
+// IVA por producto (que sigue derivando de la configuracion del PRODUCTO, no del proveedor).
+async function testCargarCompraProveedorTipoComprobanteDefaultF3E2() {
+  const rutaPagos = path.join(ROOT, "frontend", "pagos.html");
+  const html = fs.readFileSync(rutaPagos, "utf8");
+
+  const src = ccfExtraerFuncion(html, "ccfTipoComprobanteDefaultProveedor");
+  // eslint-disable-next-line no-eval
+  const { ccfTipoComprobanteDefaultProveedor } = new Function(`${src}\nreturn { ccfTipoComprobanteDefaultProveedor };`)();
+
+  // A: proveedor con tipo_comprobante configurado -> default correspondiente.
+  assertSame(ccfTipoComprobanteDefaultProveedor({ tipo_comprobante: "factura_a" }), "factura_a", "A: proveedor factura_a -> default factura_a");
+  assertSame(ccfTipoComprobanteDefaultProveedor({ tipo_comprobante: "ticket" }), "ticket", "A: proveedor ticket -> default ticket");
+  // Valor no soportado por el selector -> sin default (nunca se inventa uno).
+  assertSame(ccfTipoComprobanteDefaultProveedor({ tipo_comprobante: "" }), null, "proveedor sin tipo_comprobante -> sin default");
+  assertSame(ccfTipoComprobanteDefaultProveedor(null), null, "sin proveedor -> sin default");
+
+  // A/B: el listener de "change" en ccfProveedor recalcula el default en cada cambio de
+  // proveedor (mismo mecanismo, se re-ejecuta por cada seleccion -- cubre A y B).
+  if (!html.includes('document.getElementById("ccfProveedor")?.addEventListener("change"')) {
+    throw new Error("F3E2-proveedor: debe existir un listener de 'change' en ccfProveedor que actualice el default de tipo de comprobante");
+  }
+  const cuerpoListener = html.slice(
+    html.indexOf('document.getElementById("ccfProveedor")?.addEventListener("change"'),
+    html.indexOf("});", html.indexOf('document.getElementById("ccfProveedor")?.addEventListener("change"')) + 3
+  );
+  if (!cuerpoListener.includes("ccfTipoComprobanteDefaultProveedor(")) {
+    throw new Error("F3E2-proveedor: el listener de proveedor debe usar ccfTipoComprobanteDefaultProveedor para el default");
+  }
+  if (!cuerpoListener.includes('getElementById("ccfTipoComprobante").value = tipoDefault')) {
+    throw new Error("F3E2-proveedor: el listener debe asignar el default a ccfTipoComprobante.value");
+  }
+
+  // C: el select de Tipo de comprobante nunca se deshabilita -- el documento real siempre manda.
+  if (/id="ccfTipoComprobante"[^>]*disabled/.test(html)) {
+    throw new Error("C: el select de Tipo de comprobante no debe bloquearse (el operador debe poder cambiarlo)");
+  }
+  if (cuerpoListener.includes("disabled")) {
+    throw new Error("C: el listener de proveedor no debe deshabilitar el select de Tipo de comprobante");
+  }
+
+  // D: el listener de proveedor no debe tocar el IVA por fila (eso sigue siendo exclusivo
+  // de ccfSeleccionarProducto, derivado del PRODUCTO, nunca del proveedor).
+  if (cuerpoListener.includes("ccfItemAlicuota")) {
+    throw new Error("D: el default de proveedor no debe sobrescribir ccfItemAlicuota (IVA del producto)");
+  }
+  const cuerpoSeleccionarProducto = ccfExtraerFuncion(html, "ccfSeleccionarProducto");
+  if (cuerpoSeleccionarProducto.includes("Proveedor") || cuerpoSeleccionarProducto.includes("proveedor")) {
+    throw new Error("D: ccfSeleccionarProducto no debe depender de datos de proveedor para el IVA por fila");
+  }
+
+  // No se agrega informacion fiscal visual nueva (condicion IVA, alicuota proveedor,
+  // resumen fiscal, etc.) -- Atlas usa esos datos por detras, sin exponerlos en la UI.
+  const prohibidos = ['id="ccfCondicionIva"', 'id="ccfAlicuotaProveedor"', 'id="ccfCategoriaFiscal"', 'id="ccfResumenFiscalProveedor"'];
+  for (const id of prohibidos) {
+    if (html.includes(id)) throw new Error(`F3E2-proveedor: no debe agregarse informacion fiscal visual nueva (${id})`);
+  }
+}
+
+// H/I: verifica la aritmetica real de ccfCalcularLinea (extraida y evaluada tal cual vive
+// en pagos.html) para los dos ejemplos pedidos explicitamente.
+async function testCargarCompraCalculoFinalNetoF3E2() {
+  const rutaPagos = path.join(ROOT, "frontend", "pagos.html");
+  const html = fs.readFileSync(rutaPagos, "utf8");
+  const inicio = html.indexOf("function ccfCalcularLinea(precioIngresado, alicuota, modo)");
+  if (inicio === -1) throw new Error("F3E2-ajuste: no se encontro ccfCalcularLinea en pagos.html");
+  const finFuncion = html.indexOf("\n    }\n", inicio) + 6;
+  const src = html.slice(inicio, finFuncion);
+
+  // eslint-disable-next-line no-eval
+  const ccfCalcularLinea = new Function(`${src}\nreturn ccfCalcularLinea;`)();
+
+  // H: modo FINAL, precio 1210, IVA 21% -> neto interno 1000 / IVA interno 210.
+  const h = ccfCalcularLinea(1210, 21, "final");
+  assertApprox(h.neto, 1000, "H: modo Final $1210 + IVA 21% -> neto interno $1000");
+  assertApprox(h.iva, 210, "H: modo Final $1210 + IVA 21% -> IVA interno $210");
+  assertApprox(h.final, 1210, "H: modo Final conserva el final ingresado");
+
+  // I: modo NETO, precio 1000, IVA 21% -> total final 1210.
+  const i = ccfCalcularLinea(1000, 21, "neto");
+  assertApprox(i.neto, 1000, "I: modo Neto $1000 conserva el neto ingresado");
+  assertApprox(i.iva, 210, "I: modo Neto $1000 + IVA 21% -> IVA $210");
+  assertApprox(i.final, 1210, "I: modo Neto $1000 + IVA 21% -> total final $1210");
+
+  // Simetria con otra alicuota conocida (10,5%) para descartar que 21% este hardcodeado.
+  const h2 = ccfCalcularLinea(1105, 10.5, "final");
+  assertApprox(h2.neto, 1000, "modo Final $1105 + IVA 10,5% -> neto interno $1000");
+  assertApprox(h2.iva, 105, "modo Final $1105 + IVA 10,5% -> IVA interno $105");
+}
+
+// Microfix critico: TOTAL FACTURA (y el desglose fiscal) deben considerar la CANTIDAD de
+// cada item, no solo el costo unitario. Reproduce ccfAgregarItem() tal cual llama a
+// ccfCalcularLinea en pagos.html: con el importe de LINEA (cantidad x costo_unitario), no
+// con el costo unitario solo. (ccfSetTipoPrecio() ya no existe: el modo se deriva por
+// producto vía precio_compra_incluye_iva, no hay un segundo call-site que recalcule al
+// cambiar un toggle global -- ver testCargarCompraModoPorProductoF3E2.)
+async function testCargarCompraTotalConsideraCantidadF3E2() {
+  const rutaPagos = path.join(ROOT, "frontend", "pagos.html");
+  const html = fs.readFileSync(rutaPagos, "utf8");
+
+  // Confirma que el bug esta corregido en el codigo real: el unico call-site de
+  // ccfCalcularLinea en ccfAgregarItem() debe multiplicar por cantidad, no pasar el costo
+  // unitario solo.
+  if (!html.includes("ccfCalcularLinea(cantidad * costoUnitario, alicuota, modo)")) {
+    throw new Error("F3E2-microfix: ccfAgregarItem() debe llamar a ccfCalcularLinea con el importe de linea (cantidad x costo_unitario)");
+  }
+  if (html.includes("function ccfSetTipoPrecio(")) {
+    throw new Error("F3E2-toggle: ccfSetTipoPrecio() debe haber sido eliminada junto con el toggle global Final/Neto");
+  }
+
+  const inicio = html.indexOf("function ccfCalcularLinea(precioIngresado, alicuota, modo)");
+  if (inicio === -1) throw new Error("F3E2-microfix: no se encontro ccfCalcularLinea en pagos.html");
+  const finFuncion = html.indexOf("\n    }\n", inicio) + 6;
+  const src = html.slice(inicio, finFuncion);
+  // eslint-disable-next-line no-eval
+  const ccfCalcularLinea = new Function(`${src}\nreturn ccfCalcularLinea;`)();
+
+  // Reproduce exactamente como el frontend arma el renglon: pasa cantidad * costo_unitario.
+  const linea = (cantidad, costoUnitario, alicuota, modo) => ccfCalcularLinea(cantidad * costoUnitario, alicuota, modo);
+
+  // A: 24 x 2600 final IVA 21 + 3 x 2400 final IVA 21 -> Total factura = 69600.
+  const a1 = linea(24, 2600, 21, "final");
+  const a2 = linea(3, 2400, 21, "final");
+  assertApprox(a1.final + a2.final, 69600, "A: Total factura (modo Final) = 24x2600 + 3x2400 = 69600");
+
+  // B: 24 x 2600 neto IVA 21 + 3 x 2400 neto IVA 21 -> Total factura = 84216.
+  const b1 = linea(24, 2600, 21, "neto");
+  const b2 = linea(3, 2400, 21, "neto");
+  assertApprox(b1.final + b2.final, 84216, "B: Total factura (modo Neto) = 24x2600 + 3x2400 + IVA 21% = 84216");
+
+  // C: 2 x 1210 final IVA 21 -> neto total 2000 / IVA total 420 / final total 2420.
+  const c = linea(2, 1210, 21, "final");
+  assertApprox(c.neto, 2000, "C: neto total (modo Final, 2x1210, IVA21) = 2000");
+  assertApprox(c.iva, 420, "C: IVA total (modo Final, 2x1210, IVA21) = 420");
+  assertApprox(c.final, 2420, "C: final total (modo Final, 2x1210, IVA21) = 2420");
+
+  // D: 2 x 1000 neto IVA 21 -> neto total 2000 / IVA total 420 / final total 2420.
+  const d = linea(2, 1000, 21, "neto");
+  assertApprox(d.neto, 2000, "D: neto total (modo Neto, 2x1000, IVA21) = 2000");
+  assertApprox(d.iva, 420, "D: IVA total (modo Neto, 2x1000, IVA21) = 420");
+  assertApprox(d.final, 2420, "D: final total (modo Neto, 2x1000, IVA21) = 2420");
+
+  // E: cantidades y alicuotas distintas agrupan correctamente los importes YA
+  // multiplicados por cantidad (nunca valores unitarios) -- simula ccfAgruparPorAlicuota().
+  const itemsSimulados = [
+    { cantidad: 24, costo_unitario: 2600, alicuota: 21 },
+    { cantidad: 3, costo_unitario: 2400, alicuota: 21 },
+    { cantidad: 10, costo_unitario: 800, alicuota: 10.5 }
+  ].map((it) => ({ ...it, ...linea(it.cantidad, it.costo_unitario, it.alicuota, "final") }));
+
+  const grupos = new Map();
+  itemsSimulados.forEach((item) => {
+    const key = Number(item.alicuota);
+    const actual = grupos.get(key) || { alicuota: key, neto: 0, iva: 0 };
+    actual.neto = Number((actual.neto + item.neto).toFixed(2));
+    actual.iva = Number((actual.iva + item.iva).toFixed(2));
+    grupos.set(key, actual);
+  });
+  const grupo21 = grupos.get(21);
+  const grupo105 = grupos.get(10.5);
+  assertApprox(grupo21.neto + grupo21.iva, 69600, "E: grupo 21% agrupa 24x2600 + 3x2400 ya multiplicados por cantidad");
+  const linea10_5 = linea(10, 800, 10.5, "final");
+  assertApprox(grupo105.neto, linea10_5.neto, "E: grupo 10,5% no se mezcla con el grupo 21% y usa el importe de linea (10x800)");
+  assertApprox(grupo105.iva, linea10_5.iva, "E: IVA del grupo 10,5% corresponde a 10x800, no a 800 solo");
+
+  const totalFacturaCompleto = itemsSimulados.reduce((acc, it) => acc + it.final, 0);
+  assertApprox(totalFacturaCompleto, 69600 + linea10_5.final, "E: Total factura final suma las 3 lineas ya multiplicadas por cantidad");
+}
+
+function ccfExtraerFuncion(html, nombre) {
+  const inicio = html.indexOf(`function ${nombre}(`);
+  if (inicio === -1) throw new Error(`F3E2-ajuste: no se encontro ${nombre} en pagos.html`);
+  const fin = html.indexOf("\n    }\n", inicio) + 6;
+  return html.slice(inicio, fin);
+}
+
+// Microajuste "eliminacion del toggle Final/Neto": el modo de interpretacion del costo
+// unitario (final vs neto) se deriva por producto via precio_compra_incluye_iva, nunca lo
+// elige el operador en la modal. Casos F/G pedidos explicitamente (24 x 2600 @21%), mas el
+// bloqueo cuando el contrato no entrega el dato (nunca se interpreta undefined como Neto).
+async function testCargarCompraModoPorProductoF3E2() {
+  const rutaPagos = path.join(ROOT, "frontend", "pagos.html");
+  const html = fs.readFileSync(rutaPagos, "utf8");
+
+  // E: no debe quedar ningun rastro del toggle global ni de su estado interno.
+  for (const fragmento of ["ccfTipoPrecio", "ccfSetTipoPrecio", "data-ccf-tipo-precio", "Los precios ingresados son"]) {
+    if (html.includes(fragmento)) throw new Error(`F3E2-toggle: no debe quedar ningun rastro del toggle Final/Neto eliminado (${fragmento})`);
+  }
+
+  // ccfAgregarItem() deriva el modo del producto seleccionado, no de un input global.
+  const cuerpoAgregar = ccfExtraerFuncion(html, "ccfAgregarItem");
+  if (!cuerpoAgregar.includes("ccfModoPrecioProducto(producto)")) {
+    throw new Error("F3E2-toggle: ccfAgregarItem() debe derivar el modo con ccfModoPrecioProducto(producto), no con un toggle global");
+  }
+  // Bloqueo explicito cuando el producto no trae el dato (undefined/null nunca es Neto).
+  if (!/modo === null[\s\S]{0,200}return;/.test(cuerpoAgregar)) {
+    throw new Error("F3E2-toggle: ccfAgregarItem() debe bloquear el alta si ccfModoPrecioProducto devuelve null (dato faltante)");
+  }
+
+  const src = ccfExtraerFuncion(html, "ccfModoPrecioProducto") + "\n" + ccfExtraerFuncion(html, "ccfCalcularLinea");
+  // eslint-disable-next-line no-eval
+  const fns = new Function(`${src}\nreturn { ccfModoPrecioProducto, ccfCalcularLinea };`)();
+
+  // Dato faltante: undefined/null NUNCA se interpreta como Neto (false) -- es "sin dato".
+  assertSame(fns.ccfModoPrecioProducto({}), null, "producto sin precio_compra_incluye_iva -> sin dato, no Neto por defecto");
+  assertSame(fns.ccfModoPrecioProducto({ precio_compra_incluye_iva: undefined }), null, "precio_compra_incluye_iva undefined -> sin dato");
+  assertSame(fns.ccfModoPrecioProducto({ precio_compra_incluye_iva: null }), null, "precio_compra_incluye_iva null -> sin dato");
+  assertSame(fns.ccfModoPrecioProducto(null), null, "sin producto -> sin dato");
+
+  // F: producto con precio_compra_incluye_iva=1 -> el costo ingresado es FINAL.
+  assertSame(fns.ccfModoPrecioProducto({ precio_compra_incluye_iva: 1 }), "final", "precio_compra_incluye_iva=1 -> modo final");
+  const f = fns.ccfCalcularLinea(24 * 2600, 21, fns.ccfModoPrecioProducto({ precio_compra_incluye_iva: 1 }));
+  assertApprox(f.final, 62400, "F: 24 x 2600 @21% con precio_compra_incluye_iva=1 -> final 62400");
+
+  // G: producto con precio_compra_incluye_iva=0 -> el costo ingresado es NETO.
+  assertSame(fns.ccfModoPrecioProducto({ precio_compra_incluye_iva: 0 }), "neto", "precio_compra_incluye_iva=0 -> modo neto");
+  const g = fns.ccfCalcularLinea(24 * 2600, 21, fns.ccfModoPrecioProducto({ precio_compra_incluye_iva: 0 }));
+  assertApprox(g.neto, 62400, "G: 24 x 2600 @21% con precio_compra_incluye_iva=0 -> neto 62400");
+  assertApprox(g.final, 75504, "G: 24 x 2600 @21% con precio_compra_incluye_iva=0 -> final 75504");
+
+  // H: la cantidad sigue contemplada (F/G ya multiplican cantidad x costo_unitario antes
+  // de interpretar el precio -- no se perdio el fix del microfix critico anterior).
+  assertApprox(f.final, 24 * 2600, "H: modo final conserva cantidad x costo_unitario como importe de linea");
+
+  // I: el selector de IVA por fila sigue siendo un <select> editable (sin cambios).
+  if (!/<select id="ccfItemAlicuota" class="field">/.test(html)) {
+    throw new Error("F3E2-toggle: el IVA por renglon debe seguir siendo un selector editable");
+  }
+
+  // J: el guardado sigue sin registrar Recepcion (ya cubierto en detalle por
+  // testCargarCompraUiF3E2CorregidoExiste; se reconfirma aca por completitud de la matriz).
+  const cuerpoGuardar = html.slice(html.indexOf("async function ccfGuardar()"), html.indexOf("function ccfMostrarResumenFinal("));
+  if (cuerpoGuardar.includes("/recepciones")) {
+    throw new Error("J: ccfGuardar() no debe registrar Recepcion");
+  }
+}
+
+// Microajuste final: selector unico de producto (A/B), referencia de costo actual sin
+// autocompletar (C/D), IVA configurado del producto como DEFAULT editable (F/G/H), y
+// comportamiento neutro cuando no hay costo/IVA configurado, sin tocar el producto (7/J).
+async function testCargarCompraProductoComboReferenciaF3E2() {
+  const rutaPagos = path.join(ROOT, "frontend", "pagos.html");
+  const html = fs.readFileSync(rutaPagos, "utf8");
+
+  // A: no deben quedar dos controles independientes (buscador + select separados).
+  if (html.includes('id="ccfBuscarProducto"') || html.includes('id="ccfProducto"')) {
+    throw new Error("F3E2-ajuste: no debe quedar el viejo par 'Buscar producto' + 'Producto ▼' como controles separados");
+  }
+  // B: un unico control combinado (buscar + seleccionar).
+  if (!html.includes('id="ccfProductoInput"') || !html.includes('id="ccfProductoDropdown"')) {
+    throw new Error("F3E2-ajuste: debe existir un unico control de busqueda/seleccion de producto");
+  }
+
+  // C/D: seleccionar un producto carga la referencia de costo actual, pero NUNCA escribe
+  // el input de "Costo unit." (que sigue siendo el costo segun la factura).
+  const cuerpoSeleccionar = ccfExtraerFuncion(html, "ccfSeleccionarProducto");
+  if (!cuerpoSeleccionar.includes("ccfCostoActualRef")) {
+    throw new Error("F3E2-ajuste: seleccionar un producto debe mostrar la referencia de costo actual");
+  }
+  if (cuerpoSeleccionar.includes('getElementById("ccfCostoUnitario").value =')) {
+    throw new Error("F3E2-ajuste: seleccionar un producto NO debe autocompletar 'Costo unit.' (el operador escribe el costo de la factura)");
+  }
+
+  // J/7: nada de esto llama al backend para mutar el producto, ni crea Ajustes pendientes,
+  // ni Recepciones -- ni al seleccionar, ni al agregar la linea.
+  const cuerpoAgregar = ccfExtraerFuncion(html, "ccfAgregarItem");
+  for (const cuerpo of [cuerpoSeleccionar, cuerpoAgregar]) {
+    if (/fetch\(|ccRequestJson\(/.test(cuerpo)) {
+      throw new Error("F3E2-ajuste: seleccionar/agregar un producto no debe pegarle al backend (nada se persiste hasta 'Guardar')");
+    }
+    if (cuerpo.includes("/stock/ajustes-pendientes") || cuerpo.includes("/recepciones") || cuerpo.includes("/productos/${")) {
+      throw new Error("F3E2-ajuste: no debe generarse Ajuste pendiente, Recepcion, ni mutacion de producto en esta fase");
+    }
+  }
+
+  // Verificacion de la aritmetica real de costo actual / IVA configurado (extraida y
+  // evaluada tal cual vive en pagos.html).
+  const src = ccfExtraerFuncion(html, "ccfCostoActualProducto") + "\n" + ccfExtraerFuncion(html, "ccfIvaConfiguradoProducto");
+  // eslint-disable-next-line no-eval
+  const fns = new Function(`${src}\nreturn { ccfCostoActualProducto, ccfIvaConfiguradoProducto };`)();
+
+  // C: costo actual disponible.
+  assertApprox(fns.ccfCostoActualProducto({ costo_teorico: 2600 }), 2600, "C: producto con costo_teorico=2600 -> referencia $2600");
+  // 4: sin costo configurado -> null (la UI debe mostrar 'sin referencia', nunca $0 como si fuera real).
+  assertSame(fns.ccfCostoActualProducto({ costo_teorico: 0 }), null, "4: sin costo_teorico -> sin referencia (no inventa $0)");
+  assertSame(fns.ccfCostoActualProducto({}), null, "4: producto sin costo_teorico -> sin referencia");
+
+  // F: Queso configurado a 10,5% (modelo legacy) -> default 10,5%.
+  assertEqual(fns.ccfIvaConfiguradoProducto({ modelo_fiscal: "legacy", iva_porcentaje: 10.5 }), 10.5, "F: producto con IVA 10,5% configurado -> default 10,5%");
+  // G: Jamon configurado a 21%.
+  assertEqual(fns.ccfIvaConfiguradoProducto({ modelo_fiscal: "legacy", iva_porcentaje: 21 }), 21, "G: producto con IVA 21% configurado -> default 21%");
+  // Modelo normalizado, exento explicito.
+  assertEqual(fns.ccfIvaConfiguradoProducto({ modelo_fiscal: "normalizado", iva_venta_tratamiento: "exento" }), 0, "Modelo normalizado exento -> default 0%");
+  // Modelo normalizado, gravado 27%.
+  assertEqual(fns.ccfIvaConfiguradoProducto({ modelo_fiscal: "normalizado", iva_venta_tratamiento: "gravado", iva_venta_alicuota: 27 }), 27, "Modelo normalizado gravado 27% -> default 27%");
+  // 7: sin IVA configurado (0 en el campo legacy, NOT NULL DEFAULT 0 -> ambiguo, se trata como no configurado).
+  assertSame(fns.ccfIvaConfiguradoProducto({ modelo_fiscal: "legacy", iva_porcentaje: 0 }), null, "7: iva_porcentaje=0 (default de columna) se trata como 'sin configuracion', no como Exento real");
+  assertSame(fns.ccfIvaConfiguradoProducto(null), null, "7: sin producto -> sin configuracion");
+
+  // K: el selector de IVA de la fila sigue siendo un <select> editable, no un valor fijo.
+  if (!/<select id="ccfItemAlicuota" class="field">/.test(html)) {
+    throw new Error("F3E2-ajuste: el IVA por renglon debe seguir siendo un selector editable, no un valor impuesto");
+  }
+}
+
+// Helper: fija la vista operativa (Completa/Reducida) de un modulo para un rol,
+// escribiendo directamente en configuracion_global (misma clave que usa el frontend
+// y el nuevo helper backend getVistaOperativaRol/tieneVistaCompleta).
+function setVistaOperativaStatement(modulo, rol, valor) {
+  return [
+    `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)
+     VALUES (?, ?, 'usuarios_permisos', datetime('now'))
+     ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`,
+    [`vista_operativa_${modulo}_${rol}`, JSON.stringify(valor)]
+  ];
+}
+
+// Contrato de GET /productos para precio_compra_incluye_iva: Cargar compra necesita ese
+// booleano para interpretar el costo unitario (final vs neto), incluso con *Stock en vista
+// reducida -- pero SIN exponer ningun monto de costo real. La regla es especifica a
+// *Pagos=completa, no una ampliacion de permisos de Stock (Casos A-D pedidos explicitamente).
+async function testProductosContratoPrecioCompraIncluyeIvaF3E2() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      const categoriaId = await crearCategoria(baseUrl, adminToken, `Contrato F3E2 ${Date.now()}`);
+      const productoId = await crearProducto(baseUrl, adminToken, {
+        nombre: `Producto Contrato F3E2 ${Date.now()}`,
+        categoria_id: categoriaId,
+        precio_compra_incluye_iva: true,
+        precio_compra: 2600,
+        iva_porcentaje: 21
+      });
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Contrato F3E2", usuario: "colaborador_contrato_f3e2", password: "colaborador123",
+        confirmar_password: "colaborador123", rol: "colaborador", activo: true
+      }, adminToken);
+      const colaboradorToken = await login(baseUrl, "colaborador_contrato_f3e2", "colaborador123");
+
+      const setVista = (modulo, valor) => prepareDb(dbPath, [setVistaOperativaStatement(modulo, "colaborador", valor)]);
+      const buscarProducto = async (token) => {
+        const res = await requestJson(baseUrl, "GET", "/productos", null, token);
+        if (!res.response.ok) throw new Error(`GET /productos fallo: ${res.response.status}`);
+        const producto = res.data.find((p) => p.id === productoId);
+        if (!producto) throw new Error("No se encontro el producto de prueba en /productos");
+        return producto;
+      };
+
+      const CAMPOS_COSTO_MONTO = ["precio_compra", "costo_final", "costo_teorico", "costo_consumo_unitario",
+        "margen_porcentaje", "precio_sugerido", "precio_referencial_proveedor", "costo_economico",
+        "precio_neto_sugerido", "iva_sugerido", "precio_final_sugerido", "precio_neto_desde_final", "iva_desde_final"];
+
+      // Caso A: Stock completo -> recibe costos + precio_compra_incluye_iva (comportamiento actual, sin cambios).
+      await setVista("stock", "completa");
+      await setVista("pagos", "reducida");
+      const casoA = await buscarProducto(colaboradorToken);
+      if (!("precio_compra" in casoA)) throw new Error("Caso A: Stock completo debe seguir exponiendo los montos de costo");
+      if (!("precio_compra_incluye_iva" in casoA)) throw new Error("Caso A: Stock completo debe seguir exponiendo precio_compra_incluye_iva");
+      assertEqual(Number(casoA.precio_compra_incluye_iva), 1, "Caso A: precio_compra_incluye_iva=1 llega intacto con Stock completo");
+
+      // Caso B: Stock reducido + Pagos reducido -> NO recibe costos NI precio_compra_incluye_iva.
+      await setVista("stock", "reducida");
+      await setVista("pagos", "reducida");
+      const casoB = await buscarProducto(colaboradorToken);
+      for (const campo of CAMPOS_COSTO_MONTO) {
+        if (campo in casoB) throw new Error(`Caso B: Stock reducido + Pagos reducido no debe exponer ${campo}`);
+      }
+      if ("precio_compra_incluye_iva" in casoB) throw new Error("Caso B: Stock reducido + Pagos reducido no debe exponer precio_compra_incluye_iva");
+
+      // Caso C: Stock reducido + Pagos completo -> NO recibe costos, SI recibe precio_compra_incluye_iva.
+      await setVista("stock", "reducida");
+      await setVista("pagos", "completa");
+      const casoC = await buscarProducto(colaboradorToken);
+      for (const campo of CAMPOS_COSTO_MONTO) {
+        if (campo in casoC) throw new Error(`Caso C/D: Stock reducido + Pagos completo no debe exponer ${campo} (ningun otro monto se filtra por accidente)`);
+      }
+      if (!("precio_compra_incluye_iva" in casoC)) throw new Error("Caso C: Stock reducido + Pagos completo debe exponer precio_compra_incluye_iva");
+      assertEqual(Number(casoC.precio_compra_incluye_iva), 1, "Caso C: precio_compra_incluye_iva=1 llega intacto con Stock reducido + Pagos completo");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3E-2 corregido: prueba que "Cargar compra" depende EXCLUSIVAMENTE de la vista efectiva
+// de *Pagos (Completa/Reducida) y no del nombre del rol. Mismo rol, distinta configuracion,
+// distinto resultado (Casos A-D pedidos explicitamente).
+async function testCargarCompraVistaPagosF3E2Corregido() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM compra_recepcion_items"],
+        ["DELETE FROM compra_recepciones"],
+        ["DELETE FROM compra_items"],
+        ["DELETE FROM compra_comprobante_iva"],
+        ["DELETE FROM compra_comprobantes"],
+        ["DELETE FROM compras"]
+      ]);
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, adminToken, {
+        nombre: `Proveedor Vista F3E2 ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Encargado Vista F3E2", usuario: "encargado_vista_f3e2", password: "encargado123",
+        confirmar_password: "encargado123", rol: "encargado", activo: true
+      }, adminToken);
+      const encargadoToken = await login(baseUrl, "encargado_vista_f3e2", "encargado123");
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Vista F3E2", usuario: "colaborador_vista_f3e2", password: "colaborador123",
+        confirmar_password: "colaborador123", rol: "colaborador", activo: true
+      }, adminToken);
+      const colaboradorToken = await login(baseUrl, "colaborador_vista_f3e2", "colaborador123");
+
+      const setVistaPagos = (rol, valor) => prepareDb(dbPath, [setVistaOperativaStatement("pagos", rol, valor)]);
+      const intentarCompra = (token) => requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-01", concepto: "Vista F3E2",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 100
+      }, token);
+
+      // Caso A: colaborador + Pagos reducida -> rechazado
+      await setVistaPagos("colaborador", "reducida");
+      const casoALista = await requestJson(baseUrl, "GET", "/compras", null, colaboradorToken);
+      assertEqual(casoALista.response.status, 403, "Caso A: colaborador con Pagos reducida no debe listar compras");
+      const casoAPost = await intentarCompra(colaboradorToken);
+      assertEqual(casoAPost.response.status, 403, "Caso A: colaborador con Pagos reducida no debe crear compras");
+
+      // Caso B: colaborador + Pagos completa -> permitido
+      await setVistaPagos("colaborador", "completa");
+      const casoBLista = await requestJson(baseUrl, "GET", "/compras", null, colaboradorToken);
+      if (!casoBLista.response.ok) throw new Error(`Caso B: colaborador con Pagos completa debe listar compras, dio ${casoBLista.response.status}`);
+      const casoBPost = await intentarCompra(colaboradorToken);
+      if (!casoBPost.response.ok) throw new Error(`Caso B: colaborador con Pagos completa debe crear compras, dio ${casoBPost.response.status}`);
+
+      // Caso C: encargado + Pagos reducida -> rechazado
+      await setVistaPagos("encargado", "reducida");
+      const casoCLista = await requestJson(baseUrl, "GET", "/compras", null, encargadoToken);
+      assertEqual(casoCLista.response.status, 403, "Caso C: encargado con Pagos reducida no debe listar compras");
+      const casoCPost = await intentarCompra(encargadoToken);
+      assertEqual(casoCPost.response.status, 403, "Caso C: encargado con Pagos reducida no debe crear compras");
+
+      // Caso D: encargado + Pagos completa -> permitido
+      await setVistaPagos("encargado", "completa");
+      const casoDLista = await requestJson(baseUrl, "GET", "/compras", null, encargadoToken);
+      if (!casoDLista.response.ok) throw new Error(`Caso D: encargado con Pagos completa debe listar compras, dio ${casoDLista.response.status}`);
+      const casoDPost = await intentarCompra(encargadoToken);
+      if (!casoDPost.response.ok) throw new Error(`Caso D: encargado con Pagos completa debe crear compras, dio ${casoDPost.response.status}`);
+
+      // Colaborador con Pagos reducida sigue rechazado aunque encargado ya tenga Pagos completa
+      // (confirma que la configuracion es por rol, no un interruptor global).
+      const colabSigueRechazado = await requestJson(baseUrl, "GET", "/compras", null, colaboradorToken);
+      if (!colabSigueRechazado.response.ok) throw new Error("Caso B/D: colaborador debia seguir con Pagos completa (no se toco su config), debe listar compras");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3E-2 corregido: test de seguridad obligatorio (con servidor), cobertura completa de los
+// 10 endpoints F3 de "Cargar compra" bajo Pagos completa vs Pagos reducida, mismo rol
+// (colaborador), solo cambia la configuracion. Ocultar el boton no alcanza.
+async function testCargarCompraSeguridadF3E2Corregido() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM compra_recepcion_items"],
+        ["DELETE FROM compra_recepciones"],
+        ["DELETE FROM compra_items"],
+        ["DELETE FROM compra_comprobante_iva"],
+        ["DELETE FROM compra_comprobantes"],
+        ["DELETE FROM compras"]
+      ]);
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, adminToken, 100000);
+      const proveedor = await crearProveedor(baseUrl, adminToken, {
+        nombre: `Proveedor Seguridad F3E2 ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Seguridad F3E2", usuario: "colaborador_seguridad_f3e2", password: "colaborador123",
+        confirmar_password: "colaborador123", rol: "colaborador", activo: true
+      }, adminToken);
+      const colaboradorToken = await login(baseUrl, "colaborador_seguridad_f3e2", "colaborador123");
+      const setVistaPagosColaborador = (valor) => prepareDb(dbPath, [setVistaOperativaStatement("pagos", "colaborador", valor)]);
+
+      // Con Pagos completa, colaborador puede recorrer el flujo entero (los 10 endpoints F3).
+      await setVistaPagosColaborador("completa");
+      const compra = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-01", concepto: "Seguridad F3E2 completa",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 100
+      }, colaboradorToken);
+      if (!compra.response.ok) throw new Error(`Colaborador+completa debe poder POST /compras, dio ${compra.response.status}`);
+      const compraId = compra.data.compra.id;
+
+      const detalle = await requestJson(baseUrl, "GET", `/compras/${compraId}`, null, colaboradorToken);
+      if (!detalle.response.ok) throw new Error("Colaborador+completa debe poder GET /compras/:id");
+
+      const item = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ descripcion_snapshot: "x", cantidad_comprada: 1, costo_unitario: 100, afecta_stock: 0 }]
+      }, colaboradorToken);
+      if (!item.response.ok) throw new Error("Colaborador+completa debe poder POST /compras/:id/items");
+
+      const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a", total_comprobante: 100
+      }, colaboradorToken);
+      if (!comprobante.response.ok) throw new Error("Colaborador+completa debe poder POST /compras/:id/comprobantes");
+      const comprobanteId = comprobante.data.comprobante_id;
+
+      const anularComprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes/${comprobanteId}/anular`, { motivo: "Test" }, colaboradorToken);
+      if (!anularComprobante.response.ok) throw new Error("Colaborador+completa debe poder POST /compras/:compraId/comprobantes/:comprobanteId/anular");
+
+      const recepcion = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+        idempotency_key: `f3e2-seguridad-completa-${Date.now()}`, items: []
+      }, colaboradorToken);
+      assertEqual(recepcion.response.status, 400, "Colaborador+completa llega a la ruta (400 por payload vacio, no 403 de permiso)");
+
+      const pago = await requestJson(baseUrl, "POST", `/compras/${compraId}/pagos`, {
+        monto_total: 100, tipo_pago: "efectivo"
+      }, colaboradorToken);
+      if (!pago.response.ok) throw new Error("Colaborador+completa debe poder POST /compras/:id/pagos");
+
+      const compraVacia = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-01", concepto: "Para anular",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 50
+      }, colaboradorToken);
+      const anularCompra = await requestJson(baseUrl, "POST", `/compras/${compraVacia.data.compra.id}/anular`, { motivo: "Test" }, colaboradorToken);
+      if (!anularCompra.response.ok) throw new Error("Colaborador+completa debe poder POST /compras/:id/anular");
+
+      const recepcionAnularRuta = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones/999999999/anular`, { motivo: "Test" }, colaboradorToken);
+      assertEqual(recepcionAnularRuta.response.status, 404, "Colaborador+completa llega a la ruta de anular recepcion (404 por recepcion inexistente, no 403 de permiso)");
+
+      // Con Pagos reducida, el MISMO colaborador queda rechazado en los 10 endpoints.
+      await setVistaPagosColaborador("reducida");
+      const compraReducida = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-01", concepto: "No deberia poder",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 100
+      }, colaboradorToken);
+      assertEqual(compraReducida.response.status, 403, "Colaborador+reducida no debe POST /compras");
+
+      const listaReducida = await requestJson(baseUrl, "GET", "/compras", null, colaboradorToken);
+      assertEqual(listaReducida.response.status, 403, "Colaborador+reducida no debe GET /compras");
+
+      const detalleReducida = await requestJson(baseUrl, "GET", `/compras/${compraId}`, null, colaboradorToken);
+      assertEqual(detalleReducida.response.status, 403, "Colaborador+reducida no debe GET /compras/:id");
+
+      const itemReducida = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ descripcion_snapshot: "x", cantidad_comprada: 1, costo_unitario: 1, afecta_stock: 0 }]
+      }, colaboradorToken);
+      assertEqual(itemReducida.response.status, 403, "Colaborador+reducida no debe POST /compras/:id/items");
+
+      const comprobanteReducida = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a", total_comprobante: 100
+      }, colaboradorToken);
+      assertEqual(comprobanteReducida.response.status, 403, "Colaborador+reducida no debe POST /compras/:id/comprobantes");
+
+      const anularComprobanteReducida = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes/${comprobanteId}/anular`, { motivo: "Test" }, colaboradorToken);
+      assertEqual(anularComprobanteReducida.response.status, 403, "Colaborador+reducida no debe anular comprobantes de compra");
+
+      const recepcionReducida = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+        idempotency_key: `f3e2-seguridad-reducida-${Date.now()}`, items: [{ compra_item_id: 999999999, cantidad_recibida: 1 }]
+      }, colaboradorToken);
+      assertEqual(recepcionReducida.response.status, 403, "Colaborador+reducida no debe registrar recepciones");
+
+      const recepcionAnularReducida = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones/999999999/anular`, { motivo: "Test" }, colaboradorToken);
+      assertEqual(recepcionAnularReducida.response.status, 403, "Colaborador+reducida no debe anular recepciones");
+
+      const pagoReducida = await requestJson(baseUrl, "POST", `/compras/${compraId}/pagos`, {
+        monto_total: 10, tipo_pago: "efectivo"
+      }, colaboradorToken);
+      assertEqual(pagoReducida.response.status, 403, "Colaborador+reducida no debe registrar pagos de compra");
+
+      const anularCompraReducida = await requestJson(baseUrl, "POST", `/compras/${compraId}/anular`, { motivo: "Test" }, colaboradorToken);
+      assertEqual(anularCompraReducida.response.status, 403, "Colaborador+reducida no debe anular compras");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3E-2 corregido: equivalente de Stock. Mismo rol (colaborador), distinta configuracion de
+// vista de *Stock, distinto resultado para una accion representativa de Stock=completa
+// (F(x) Ingreso/Egreso, hoy bloqueada por el middleware hardcodeado ADMIN_ENCARGADO).
+async function testStockVistaConfigurableF3E2Corregido() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      const categoriaId = await crearCategoria(baseUrl, adminToken, `Vista Stock F3E2 ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, adminToken, {
+        nombre: `Vista Stock F3E2 Producto ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "VistaStockF3E2", stock: 10, unidad_medida: "unidad", maneja_stock: true
+      });
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Vista Stock F3E2", usuario: "colaborador_vista_stock_f3e2", password: "colaborador123",
+        confirmar_password: "colaborador123", rol: "colaborador", activo: true
+      }, adminToken);
+      const colaboradorToken = await login(baseUrl, "colaborador_vista_stock_f3e2", "colaborador123");
+      const setVistaStockColaborador = (valor) => prepareDb(dbPath, [setVistaOperativaStatement("stock", "colaborador", valor)]);
+
+      const intentarMovimiento = () => requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, {
+        tipo_movimiento: "ingreso", cantidad: 5, motivo: "Vista F3E2"
+      }, colaboradorToken);
+
+      // colaborador + Stock reducida -> rechazado (hoy este endpoint esta detras del middleware
+      // hardcodeado ADMIN_ENCARGADO; con la vista efectiva colaborador+reducida sigue rechazado)
+      await setVistaStockColaborador("reducida");
+      const reducida = await intentarMovimiento();
+      assertEqual(reducida.response.status, 403, "colaborador+Stock reducida no debe poder registrar F(x) Ingreso/Egreso");
+
+      // colaborador + Stock completa -> permitido (antes era imposible sin importar la config,
+      // por el hardcode de nombre de rol; ahora la configuracion manda)
+      await setVistaStockColaborador("completa");
+      const completa = await intentarMovimiento();
+      if (!completa.response.ok) throw new Error(`colaborador+Stock completa debe poder registrar F(x) Ingreso/Egreso, dio ${completa.response.status}`);
+
+      const productoTrasIngreso = await getProduct(baseUrl, adminToken, productoId);
+      assertApprox(productoTrasIngreso.stock, 15, "El ingreso +5 se aplico sobre el stock inicial de 10");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// Control final: la vista efectiva de *Stock debe ser AUTORITATIVA para F(x) Ingreso/Egreso.
+// No debe existir una segunda condicion legacy (permisos_acciones_roles.stock_ajustar) que
+// vuelva a decidir por debajo. Se fuerza explicitamente stock_ajustar al valor OPUESTO de lo
+// que la vista diria, para dos roles distintos, y se comprueba que gana la vista siempre.
+function setPermisoAccionLegacyStatement(accion, valores) {
+  return [
+    `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)
+     VALUES ('permisos_acciones_roles', ?, 'usuarios_permisos', datetime('now'))
+     ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`,
+    [JSON.stringify({ [accion]: valores })]
+  ];
+}
+function setStockAjustarStatement(valores) {
+  return setPermisoAccionLegacyStatement("stock_ajustar", valores);
+}
+
+async function testStockVistaAutoritativaSobreStockAjustarF3E2Corregido() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      const categoriaId = await crearCategoria(baseUrl, adminToken, `DobleGate F3E2 ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, adminToken, {
+        nombre: `DobleGate F3E2 Producto ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "DobleGateF3E2", stock: 10, unidad_medida: "unidad", maneja_stock: true
+      });
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador DobleGate F3E2", usuario: "colaborador_doblegate_f3e2", password: "colaborador123",
+        confirmar_password: "colaborador123", rol: "colaborador", activo: true
+      }, adminToken);
+      const colaboradorToken = await login(baseUrl, "colaborador_doblegate_f3e2", "colaborador123");
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Encargado DobleGate F3E2", usuario: "encargado_doblegate_f3e2", password: "encargado123",
+        confirmar_password: "encargado123", rol: "encargado", activo: true
+      }, adminToken);
+      const encargadoToken = await login(baseUrl, "encargado_doblegate_f3e2", "encargado123");
+
+      const setVistaStock = (rol, valor) => prepareDb(dbPath, [setVistaOperativaStatement("stock", rol, valor)]);
+      const intentarMovimiento = (token) => requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, {
+        tipo_movimiento: "ingreso", cantidad: 1, motivo: "DobleGate F3E2"
+      }, token);
+
+      // Caso A: colaborador, Stock=completa, stock_ajustar=false -> debe FUNCIONAR (vista manda)
+      await setVistaStock("colaborador", "completa");
+      await prepareDb(dbPath, [setStockAjustarStatement({ admin: true, encargado: true, colaborador: false })]);
+      const casoA = await intentarMovimiento(colaboradorToken);
+      if (!casoA.response.ok) {
+        throw new Error(`Caso A: colaborador+Stock completa debe registrar F(x) Ingreso/Egreso aunque stock_ajustar=false, dio ${casoA.response.status} (${casoA.data?.message})`);
+      }
+
+      // Caso B: colaborador, Stock=reducida, stock_ajustar=true -> debe RECHAZARSE (vista manda)
+      await setVistaStock("colaborador", "reducida");
+      await prepareDb(dbPath, [setStockAjustarStatement({ admin: true, encargado: true, colaborador: true })]);
+      const casoB = await intentarMovimiento(colaboradorToken);
+      assertEqual(casoB.response.status, 403, "Caso B: colaborador+Stock reducida debe rechazarse aunque stock_ajustar=true");
+
+      // Caso C: encargado, Stock=completa, stock_ajustar=false -> debe FUNCIONAR (vista manda)
+      await setVistaStock("encargado", "completa");
+      await prepareDb(dbPath, [setStockAjustarStatement({ admin: true, encargado: false, colaborador: true })]);
+      const casoC = await intentarMovimiento(encargadoToken);
+      if (!casoC.response.ok) {
+        throw new Error(`Caso C: encargado+Stock completa debe registrar F(x) Ingreso/Egreso aunque stock_ajustar=false, dio ${casoC.response.status} (${casoC.data?.message})`);
+      }
+
+      // Caso D: encargado, Stock=reducida, stock_ajustar=true -> debe RECHAZARSE (vista manda)
+      await setVistaStock("encargado", "reducida");
+      await prepareDb(dbPath, [setStockAjustarStatement({ admin: true, encargado: true, colaborador: true })]);
+      const casoD = await intentarMovimiento(encargadoToken);
+      assertEqual(casoD.response.status, 403, "Caso D: encargado+Stock reducida debe rechazarse aunque stock_ajustar=true");
+
+      const productoFinal = await getProduct(baseUrl, adminToken, productoId);
+      assertApprox(productoFinal.stock, 12, "Solo los Casos A y C (permitidos) debieron aplicar +1 cada uno sobre el stock inicial de 10");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// Control final (accion CRUD representativa, ademas de F(x)): Editar producto. Misma logica
+// que el cruce anterior mostro para stock_ajustar, ahora con stock_editar_producto.
+async function testStockCrudVistaAutoritativaSobrePermisoLegacyF3E2Corregido() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      const categoriaId = await crearCategoria(baseUrl, adminToken, `DobleGateCrud F3E2 ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, adminToken, {
+        nombre: `DobleGateCrud F3E2 Producto ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "DobleGateCrudF3E2", stock: 5, unidad_medida: "unidad", maneja_stock: true
+      });
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador DobleGateCrud F3E2", usuario: "colaborador_doblegatecrud_f3e2", password: "colaborador123",
+        confirmar_password: "colaborador123", rol: "colaborador", activo: true
+      }, adminToken);
+      const colaboradorToken = await login(baseUrl, "colaborador_doblegatecrud_f3e2", "colaborador123");
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Encargado DobleGateCrud F3E2", usuario: "encargado_doblegatecrud_f3e2", password: "encargado123",
+        confirmar_password: "encargado123", rol: "encargado", activo: true
+      }, adminToken);
+      const encargadoToken = await login(baseUrl, "encargado_doblegatecrud_f3e2", "encargado123");
+
+      const setVistaStock = (rol, valor) => prepareDb(dbPath, [setVistaOperativaStatement("stock", rol, valor)]);
+      let concepto = 0;
+      const intentarEditar = (token) => requestJson(baseUrl, "PUT", `/productos/${productoId}`, {
+        nombre: `DobleGateCrud F3E2 Producto editado ${Date.now()}-${concepto++}`,
+        categoria: "DobleGateCrudF3E2", categoria_id: categoriaId, precio_compra: 10, precio_venta: 100,
+        maneja_stock: true, unidad_medida: "unidad"
+      }, token);
+
+      // Caso A: colaborador, Stock=completa, stock_editar_producto=false -> debe FUNCIONAR (vista manda)
+      await setVistaStock("colaborador", "completa");
+      await prepareDb(dbPath, [setPermisoAccionLegacyStatement("stock_editar_producto", { admin: true, encargado: true, colaborador: false })]);
+      const casoA = await intentarEditar(colaboradorToken);
+      if (!casoA.response.ok) {
+        throw new Error(`Caso A: colaborador+Stock completa debe editar producto aunque stock_editar_producto=false, dio ${casoA.response.status} (${casoA.data?.message})`);
+      }
+
+      // Caso B: colaborador, Stock=reducida, stock_editar_producto=true -> debe RECHAZARSE (vista manda)
+      await setVistaStock("colaborador", "reducida");
+      await prepareDb(dbPath, [setPermisoAccionLegacyStatement("stock_editar_producto", { admin: true, encargado: true, colaborador: true })]);
+      const casoB = await intentarEditar(colaboradorToken);
+      assertEqual(casoB.response.status, 403, "Caso B: colaborador+Stock reducida debe rechazarse aunque stock_editar_producto=true");
+
+      // Caso C: encargado, Stock=completa, stock_editar_producto=false -> debe FUNCIONAR (vista manda)
+      await setVistaStock("encargado", "completa");
+      await prepareDb(dbPath, [setPermisoAccionLegacyStatement("stock_editar_producto", { admin: true, encargado: false, colaborador: true })]);
+      const casoC = await intentarEditar(encargadoToken);
+      if (!casoC.response.ok) {
+        throw new Error(`Caso C: encargado+Stock completa debe editar producto aunque stock_editar_producto=false, dio ${casoC.response.status} (${casoC.data?.message})`);
+      }
+
+      // Caso D: encargado, Stock=reducida, stock_editar_producto=true -> debe RECHAZARSE (vista manda)
+      await setVistaStock("encargado", "reducida");
+      await prepareDb(dbPath, [setPermisoAccionLegacyStatement("stock_editar_producto", { admin: true, encargado: true, colaborador: true })]);
+      const casoD = await intentarEditar(encargadoToken);
+      assertEqual(casoD.response.status, 403, "Caso D: encargado+Stock reducida debe rechazarse aunque stock_editar_producto=true");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// Control final por flujo funcional: una operacion real de edicion de producto usa MAS DE UN
+// endpoint (lectura de costos/ingredientes + edicion de producto/ingrediente/modificador).
+// Con Stock=completa y stock_editar_producto=false, TODO el flujo debe funcionar de punta a
+// punta (ninguna pata se cae por el permiso legacy). Con Stock=reducida y
+// stock_editar_producto=true, TODO el flujo debe rechazarse. Se prueba con colaborador y
+// encargado para descartar un verde accidental por rol.
+async function testStockFlujoCompletoMultiEndpointF3E2Corregido() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      const categoriaId = await crearCategoria(baseUrl, adminToken, `FlujoStock F3E2 ${Date.now()}`, { maneja_stock: true });
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador FlujoStock F3E2", usuario: "colaborador_flujostock_f3e2", password: "colaborador123",
+        confirmar_password: "colaborador123", rol: "colaborador", activo: true
+      }, adminToken);
+      const colaboradorToken = await login(baseUrl, "colaborador_flujostock_f3e2", "colaborador123");
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Encargado FlujoStock F3E2", usuario: "encargado_flujostock_f3e2", password: "encargado123",
+        confirmar_password: "encargado123", rol: "encargado", activo: true
+      }, adminToken);
+      const encargadoToken = await login(baseUrl, "encargado_flujostock_f3e2", "encargado123");
+
+      const setVistaStock = (rol, valor) => prepareDb(dbPath, [setVistaOperativaStatement("stock", rol, valor)]);
+
+      async function correrFlujoCompleto(rol, token) {
+        const productoId = await crearProducto(baseUrl, adminToken, {
+          nombre: `FlujoStock F3E2 ${rol} ${Date.now()}`,
+          categoria_id: categoriaId, categoria: "FlujoStockF3E2", stock: 5, unidad_medida: "unidad", maneja_stock: true
+        });
+        const otroRol = rol === "colaborador" ? "encargado" : "colaborador";
+
+        // ── Stock completa + permiso legacy stock_editar_producto=false -> flujo entero OK ──
+        await setVistaStock(rol, "completa");
+        await prepareDb(dbPath, [setPermisoAccionLegacyStatement("stock_editar_producto", { admin: true, [rol]: false, [otroRol]: false })]);
+
+        const costos = await requestJson(baseUrl, "GET", `/productos/${productoId}/costos-insumos`, null, token);
+        if (!costos.response.ok) throw new Error(`${rol}+completa: GET costos-insumos debe funcionar, dio ${costos.response.status}`);
+
+        const ingredientesLista = await requestJson(baseUrl, "GET", `/productos/${productoId}/ingredientes-visibles?todos=1`, null, token);
+        if (!ingredientesLista.response.ok) throw new Error(`${rol}+completa: GET ingredientes-visibles debe funcionar, dio ${ingredientesLista.response.status}`);
+
+        const editar = await requestJson(baseUrl, "PUT", `/productos/${productoId}`, {
+          nombre: `FlujoStock F3E2 ${rol} editado ${Date.now()}`,
+          categoria: "FlujoStockF3E2", categoria_id: categoriaId, precio_compra: 10, precio_venta: 100,
+          maneja_stock: true, unidad_medida: "unidad"
+        }, token);
+        if (!editar.response.ok) throw new Error(`${rol}+completa: PUT /productos/:id debe funcionar, dio ${editar.response.status}`);
+
+        const ingrediente = await requestJson(baseUrl, "POST", `/productos/${productoId}/ingredientes-visibles`, {
+          nombre: "Ingrediente test", incluido_por_defecto: true, permite_quitar: true, orden: 1, activo: true
+        }, token);
+        if (!ingrediente.response.ok) throw new Error(`${rol}+completa: POST ingredientes-visibles debe funcionar, dio ${ingrediente.response.status}`);
+        const ingredienteId = ingrediente.data.id;
+
+        const editarIngrediente = await requestJson(baseUrl, "PUT", `/productos/${productoId}/ingredientes-visibles/${ingredienteId}`, {
+          nombre: "Ingrediente test editado", incluido_por_defecto: true, permite_quitar: true, orden: 1, activo: true
+        }, token);
+        if (!editarIngrediente.response.ok) throw new Error(`${rol}+completa: PUT ingredientes-visibles/:id debe funcionar, dio ${editarIngrediente.response.status}`);
+
+        const modificador = await requestJson(baseUrl, "POST", `/productos/${productoId}/modificadores`, {
+          nombre: "Modificador test", tipo: "observacion", precio_extra: 0, activo: true, componentes: []
+        }, token);
+        if (!modificador.response.ok) throw new Error(`${rol}+completa: POST modificadores debe funcionar, dio ${modificador.response.status}`);
+        const modificadorId = modificador.data.modificador.id;
+
+        const editarModificador = await requestJson(baseUrl, "PUT", `/modificadores/${modificadorId}`, {
+          nombre: "Modificador test editado", tipo: "observacion", precio_extra: 0, activo: true, componentes: []
+        }, token);
+        if (!editarModificador.response.ok) throw new Error(`${rol}+completa: PUT /modificadores/:id debe funcionar, dio ${editarModificador.response.status}`);
+
+        const toggleModificador = await requestJson(baseUrl, "PATCH", `/modificadores/${modificadorId}/activo`, { activo: false }, token);
+        if (!toggleModificador.response.ok) throw new Error(`${rol}+completa: PATCH /modificadores/:id/activo debe funcionar, dio ${toggleModificador.response.status}`);
+
+        // ── Stock reducida + permiso legacy stock_editar_producto=true -> flujo entero rechazado ──
+        await setVistaStock(rol, "reducida");
+        await prepareDb(dbPath, [setPermisoAccionLegacyStatement("stock_editar_producto", { admin: true, [rol]: true, [otroRol]: true })]);
+
+        const costosReducida = await requestJson(baseUrl, "GET", `/productos/${productoId}/costos-insumos`, null, token);
+        assertEqual(costosReducida.response.status, 403, `${rol}+reducida: GET costos-insumos debe rechazarse`);
+
+        const ingredientesReducida = await requestJson(baseUrl, "GET", `/productos/${productoId}/ingredientes-visibles?todos=1`, null, token);
+        assertEqual(ingredientesReducida.response.status, 403, `${rol}+reducida: GET ingredientes-visibles debe rechazarse`);
+
+        const editarReducida = await requestJson(baseUrl, "PUT", `/productos/${productoId}`, {
+          nombre: "No deberia poder", categoria: "FlujoStockF3E2", categoria_id: categoriaId, precio_compra: 10, precio_venta: 100,
+          maneja_stock: true, unidad_medida: "unidad"
+        }, token);
+        assertEqual(editarReducida.response.status, 403, `${rol}+reducida: PUT /productos/:id debe rechazarse`);
+
+        const ingredienteReducida = await requestJson(baseUrl, "POST", `/productos/${productoId}/ingredientes-visibles`, {
+          nombre: "No deberia poder", incluido_por_defecto: true, permite_quitar: true, orden: 1, activo: true
+        }, token);
+        assertEqual(ingredienteReducida.response.status, 403, `${rol}+reducida: POST ingredientes-visibles debe rechazarse`);
+
+        const editarIngredienteReducida = await requestJson(baseUrl, "PUT", `/productos/${productoId}/ingredientes-visibles/${ingredienteId}`, {
+          nombre: "No deberia poder", incluido_por_defecto: true, permite_quitar: true, orden: 1, activo: true
+        }, token);
+        assertEqual(editarIngredienteReducida.response.status, 403, `${rol}+reducida: PUT ingredientes-visibles/:id debe rechazarse`);
+
+        const modificadorReducida = await requestJson(baseUrl, "POST", `/productos/${productoId}/modificadores`, {
+          nombre: "No deberia poder", tipo: "observacion", precio_extra: 0, activo: true, componentes: []
+        }, token);
+        assertEqual(modificadorReducida.response.status, 403, `${rol}+reducida: POST modificadores debe rechazarse`);
+
+        const editarModificadorReducida = await requestJson(baseUrl, "PUT", `/modificadores/${modificadorId}`, {
+          nombre: "No deberia poder", tipo: "observacion", precio_extra: 0, activo: true, componentes: []
+        }, token);
+        assertEqual(editarModificadorReducida.response.status, 403, `${rol}+reducida: PUT /modificadores/:id debe rechazarse`);
+
+        const toggleModificadorReducida = await requestJson(baseUrl, "PATCH", `/modificadores/${modificadorId}/activo`, { activo: true }, token);
+        assertEqual(toggleModificadorReducida.response.status, 403, `${rol}+reducida: PATCH /modificadores/:id/activo debe rechazarse`);
+      }
+
+      await correrFlujoCompleto("colaborador", colaboradorToken);
+      await correrFlujoCompleto("encargado", encargadoToken);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// UX unica "Cargar compra": reproduce EXACTAMENTE la secuencia que ejecuta ccfGuardar()
+// (POST /compras -> /items -> /comprobantes -> /pagos si corresponde), verificando punto por
+// punto lo pedido en la microfase: subtotal por item, multiples items, multiples alicuotas,
+// el ejemplo 205380/205300/80, pago=0 sin crear fila en pagos, pago parcial via el endpoint
+// F3 real, y que NUNCA se crea una Recepcion desde este flujo.
+async function testCargarCompraUxUnicaFlujoF3E2Corregido() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM compra_recepcion_items"],
+        ["DELETE FROM compra_recepciones"],
+        ["DELETE FROM compra_items"],
+        ["DELETE FROM compra_comprobante_iva"],
+        ["DELETE FROM compra_comprobantes"],
+        ["DELETE FROM compras"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 500000);
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor UX Unica F3E2 ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `UX Unica F3E2 Cat ${Date.now()}`, { maneja_stock: true });
+      const productoA = await crearProducto(baseUrl, token, {
+        nombre: `UX Unica F3E2 Coca ${Date.now()}`, categoria_id: categoriaId, categoria: "UXUnicaF3E2",
+        stock: 0, unidad_medida: "unidad", maneja_stock: true
+      });
+      const productoB = await crearProducto(baseUrl, token, {
+        nombre: `UX Unica F3E2 Sprite ${Date.now()}`, categoria_id: categoriaId, categoria: "UXUnicaF3E2",
+        stock: 0, unidad_medida: "unidad", maneja_stock: true
+      });
+
+      // ── D/E: multiples items, subtotal = cantidad x costo_unitario, acumulados client-side
+      // (esto ultimo ya lo prueba testCargarCompraUiF3E2CorregidoExiste por contenido; aca se
+      // prueba que lo que EFECTIVAMENTE persiste coincide con ese calculo). ──
+      const crear = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-01", tipo_impacto: "costo_variable_mercaderia",
+        concepto: "", observaciones: "", total_compra: 205380
+      }, token);
+      if (!crear.response.ok) throw new Error(`UX unica: POST /compras fallo: ${crear.data?.message || crear.response.status}`);
+      const compraId = crear.data.compra.id;
+
+      const items = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [
+          { producto_id: productoA, cantidad_comprada: 36, costo_unitario: 3800, afecta_stock: 1 },
+          { producto_id: productoB, cantidad_comprada: 24, costo_unitario: 2800.83, afecta_stock: 1 }
+        ]
+      }, token);
+      if (!items.response.ok) throw new Error(`UX unica: POST items fallo: ${items.data?.message || items.response.status}`);
+      assertEqual(items.data.items.length, 2, "UX unica: se persisten los 2 items de la factura (E)");
+      const itemA = items.data.items.find((it) => Number(it.producto_id) === productoA);
+      const itemB = items.data.items.find((it) => Number(it.producto_id) === productoB);
+      assertApprox(itemA.subtotal, 36 * 3800, "UX unica: subtotal item A = cantidad x costo_unitario (D)");
+      assertApprox(itemB.subtotal, 24 * 2800.83, "UX unica: subtotal item B = cantidad x costo_unitario (D)");
+
+      // ── F: resumen fiscal con multiples alicuotas ──
+      const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a", numero_comprobante: "0003-00050536", punto_venta: "0003",
+        fecha_emision: "2026-06-01", total_comprobante: 205380,
+        neto_gravado: 169735.54, iva_total: 35644.46, monto_exento: 0, monto_no_gravado: 0, otros_tributos: 0,
+        alicuotas: [
+          { alicuota: 21, neto_gravado: 136800, iva_monto: 28728 },
+          { alicuota: 10.5, neto_gravado: 32935.54, iva_monto: 6916.46 }
+        ]
+      }, token);
+      if (!comprobante.response.ok) throw new Error(`UX unica: POST comprobantes fallo: ${comprobante.data?.message || comprobante.response.status}`);
+      const detalleTrasComprobante = await requestJson(baseUrl, "GET", `/compras/${compraId}`, null, token);
+      const comprobantePersistido = detalleTrasComprobante.data.comprobantes.find((c) => Number(c.id) === Number(comprobante.data.comprobante_id));
+      assertEqual(comprobantePersistido.alicuotas.length, 2, "UX unica: el comprobante soporta multiples alicuotas simultaneas (F)");
+      assertApprox(comprobantePersistido.alicuotas.reduce((acc, a) => acc + Number(a.iva_monto), 0), 35644.46, "UX unica: suma de IVA por alicuota coincide con lo cargado");
+
+      // ── G: total factura 205.380 + pago 205.300 -> saldo 80 (sin tocar el total historico) ──
+      const pago1 = await requestJson(baseUrl, "POST", `/compras/${compraId}/pagos`, {
+        monto_total: 205300, tipo_pago: "efectivo", fecha: "2026-06-01"
+      }, token);
+      if (!pago1.response.ok) throw new Error(`UX unica: POST pagos (parcial) fallo: ${pago1.data?.message || pago1.response.status}`);
+      const detalleTrasPago = (await requestJson(baseUrl, "GET", `/compras/${compraId}`, null, token)).data;
+      assertApprox(detalleTrasPago.resumen_pago.total_compra, 205380, "UX unica (G): total de compra no se toca para igualar el pago");
+      assertApprox(detalleTrasPago.resumen_pago.total_pagado, 205300, "UX unica (G): pago real = 205.300");
+      assertApprox(detalleTrasPago.resumen_pago.saldo_pendiente, 80, "UX unica (G): saldo = 205380 - 205300 = 80");
+      assertSame(String(detalleTrasPago.resumen_pago.estado || "").toLowerCase(), "parcial", "UX unica (G/I): compra queda 'parcial', confirmando que el pago parcial ya funciona con el endpoint F3 real");
+
+      // ── J: en ningun momento de este flujo se crea una Recepcion ──
+      const recepcionesTrasFlujo = await allSql(dbPath, "SELECT COUNT(*) AS total FROM compra_recepciones WHERE compra_id = ?", [compraId]);
+      assertEqual(recepcionesTrasFlujo[0].total, 0, "UX unica (J): 'Cargar compra' no debe crear ninguna Recepcion");
+      const stockTrasFlujo = await getProduct(baseUrl, token, productoA);
+      assertApprox(stockTrasFlujo.stock, 0, "UX unica (J): sin Recepcion, el stock del producto no se mueve");
+
+      // ── H: compra separada con monto pagado = 0 -> no se llama a POST /compras/:id/pagos,
+      // sin fila en pagos, saldo = total completo. ──
+      const crearSinPago = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-01", tipo_impacto: "costo_variable_mercaderia",
+        concepto: "", observaciones: "", total_compra: 50000
+      }, token);
+      if (!crearSinPago.response.ok) throw new Error("UX unica (H): POST /compras (sin pago) fallo");
+      const compraSinPagoId = crearSinPago.data.compra.id;
+      await requestJson(baseUrl, "POST", `/compras/${compraSinPagoId}/items`, {
+        items: [{ producto_id: productoA, cantidad_comprada: 10, costo_unitario: 5000, afecta_stock: 1 }]
+      }, token);
+      await requestJson(baseUrl, "POST", `/compras/${compraSinPagoId}/comprobantes`, {
+        tipo_comprobante: "factura_a", numero_comprobante: "0003-00050537", total_comprobante: 50000,
+        alicuotas: [{ alicuota: 21, neto_gravado: 41322.31, iva_monto: 8677.69 }]
+      }, token);
+      // monto pagado = 0 -> ccfGuardar() NO llama a POST /compras/:id/pagos; se reproduce
+      // aca simplemente NO haciendo esa llamada.
+      const pagosCompraSinPago = await allSql(dbPath, "SELECT * FROM pagos WHERE compra_id = ?", [compraSinPagoId]);
+      assertEqual(pagosCompraSinPago.length, 0, "UX unica (H): monto pagado = 0 no crea ninguna fila en pagos");
+      const detalleSinPago = (await requestJson(baseUrl, "GET", `/compras/${compraSinPagoId}`, null, token)).data;
+      assertApprox(detalleSinPago.resumen_pago.saldo_pendiente, 50000, "UX unica (H): saldo = total completo cuando no hubo pago");
+      assertSame(String(detalleSinPago.resumen_pago.estado || "").toLowerCase(), "pendiente", "UX unica (H): estado economico 'pendiente', no fantasma");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3E-2 corregido: test funcional obligatorio del flujo completo (compra parcial -> saldada),
+// confirmando ademas que dinero y stock se mueven solo por su mecanismo propio, sin duplicados
+// ni pago pendiente legacy fantasma, y que Salida rapida (POST /pagos) sigue intacta.
+async function testCargarCompraFlujoFuncionalF3E2Corregido() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      await prepareDb(dbPath, [
+        ["DELETE FROM compra_recepcion_items"],
+        ["DELETE FROM compra_recepciones"],
+        ["DELETE FROM compra_items"],
+        ["DELETE FROM compra_comprobante_iva"],
+        ["DELETE FROM compra_comprobantes"],
+        ["DELETE FROM compras"]
+      ]);
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 500000);
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor Funcional F3E2 ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E2 Cat ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `F3E2 Producto ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3E2",
+        stock: 0,
+        unidad_medida: "unidad",
+        maneja_stock: true
+      });
+      const stockInicial = (await getProduct(baseUrl, token, productoId)).stock;
+      const pagosAntesGlobal = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos"))[0].total;
+
+      // 1. crear Compra $100.000
+      const crear = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id,
+        fecha_compra: "2026-06-01",
+        concepto: "Funcional F3E2 corregido",
+        tipo_impacto: "costo_variable_mercaderia",
+        total_compra: 100000
+      }, token);
+      if (!crear.response.ok) throw new Error(`F3E2-Func crear compra fallo: ${crear.data?.message || crear.response.status}`);
+      const compraId = crear.data.compra.id;
+
+      // Deuda de compra != pago pendiente legacy: crear una Compra con saldo NO debe generar
+      // ninguna fila en pagos.
+      const pagosTrasCrear = await allSql(dbPath, "SELECT * FROM pagos WHERE compra_id = ?", [compraId]);
+      assertEqual(pagosTrasCrear.length, 0, "F3E2-Func compra recien creada no genera ninguna fila en pagos (sin pago pendiente fantasma)");
+      const detalleInicial = (await requestJson(baseUrl, "GET", `/compras/${compraId}`, null, token)).data;
+      assertApprox(detalleInicial.resumen_pago.total_compra, 100000, "F3E2-Func total compra inicial");
+      assertApprox(detalleInicial.resumen_pago.total_pagado, 0, "F3E2-Func pagado inicial es cero");
+      assertApprox(detalleInicial.resumen_pago.saldo_pendiente, 100000, "F3E2-Func saldo inicial = total");
+      assertSame(String(detalleInicial.resumen_pago.estado || "").toLowerCase(), "pendiente", "F3E2-Func estado economico inicial es pendiente (deuda de compra)");
+
+      // 2. agregar producto cantidad 10
+      const item = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ producto_id: productoId, cantidad_comprada: 10, costo_unitario: 10000, afecta_stock: 1 }]
+      }, token);
+      if (!item.response.ok) throw new Error(`F3E2-Func agregar item fallo: ${item.data?.message || item.response.status}`);
+      const itemId = item.data.items[0].id;
+
+      // 3. registrar comprobante
+      const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a",
+        total_comprobante: 100000,
+        alicuotas: [{ alicuota: 21, neto_gravado: Math.round(100000 / 1.21), iva_monto: 100000 - Math.round(100000 / 1.21) }]
+      }, token);
+      if (!comprobante.response.ok) throw new Error(`F3E2-Func registrar comprobante fallo: ${comprobante.data?.message || comprobante.response.status}`);
+
+      // 4. recibir 6
+      const recepcion1 = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+        idempotency_key: `f3e2-func-recepcion1-${Date.now()}`,
+        items: [{ compra_item_id: itemId, cantidad_recibida: 6 }]
+      }, token);
+      if (!recepcion1.response.ok) throw new Error(`F3E2-Func recepcion parcial fallo: ${recepcion1.data?.message || recepcion1.response.status}`);
+      const stockTrasRecepcion1 = (await getProduct(baseUrl, token, productoId)).stock;
+      assertApprox(stockTrasRecepcion1, stockInicial + 6, "F3E2-Func stock sube exactamente 6 tras primera recepcion");
+
+      // 5. verificar comprado 10 / recibido 6 / pendiente 4
+      const detalleTrasRecepcion1 = (await requestJson(baseUrl, "GET", `/compras/${compraId}`, null, token)).data;
+      const itemTrasRecepcion1 = detalleTrasRecepcion1.items.find((it) => Number(it.id) === Number(itemId));
+      assertApprox(itemTrasRecepcion1.resumen_recepcion.cantidad_comprada, 10, "F3E2-Func comprado=10");
+      assertApprox(itemTrasRecepcion1.resumen_recepcion.cantidad_recibida, 6, "F3E2-Func recibido=6");
+      assertApprox(itemTrasRecepcion1.resumen_recepcion.cantidad_pendiente, 4, "F3E2-Func pendiente=4");
+      assertSame(itemTrasRecepcion1.resumen_recepcion.estado_recepcion, "parcial", "F3E2-Func item queda en estado parcial");
+
+      // 6. registrar pago $40.000
+      const cajaAntesPago1 = await getCajaResumen(baseUrl, token);
+      const pago1 = await requestJson(baseUrl, "POST", `/compras/${compraId}/pagos`, {
+        monto_total: 40000, tipo_pago: "efectivo"
+      }, token);
+      if (!pago1.response.ok) throw new Error(`F3E2-Func pago parcial fallo: ${pago1.data?.message || pago1.response.status}`);
+      const cajaTrasPago1 = await getCajaResumen(baseUrl, token);
+      assertApprox(cajaTrasPago1.resumen.total_pagos_general, cajaAntesPago1.resumen.total_pagos_general + 40000, "F3E2-Func el pago de compra mueve caja por su monto exacto");
+
+      // 7. verificar total 100.000 / pagado 40.000 / saldo 60.000
+      const detalleTrasPago1 = (await requestJson(baseUrl, "GET", `/compras/${compraId}`, null, token)).data;
+      assertApprox(detalleTrasPago1.resumen_pago.total_compra, 100000, "F3E2-Func total tras pago 1");
+      assertApprox(detalleTrasPago1.resumen_pago.total_pagado, 40000, "F3E2-Func pagado tras pago 1");
+      assertApprox(detalleTrasPago1.resumen_pago.saldo_pendiente, 60000, "F3E2-Func saldo tras pago 1");
+      assertSame(String(detalleTrasPago1.resumen_pago.estado || "").toLowerCase(), "parcial", "F3E2-Func estado economico parcial tras primer pago");
+
+      // El pago no debe mover stock.
+      const stockTrasPago1 = (await getProduct(baseUrl, token, productoId)).stock;
+      assertApprox(stockTrasPago1, stockTrasRecepcion1, "F3E2-Func el pago no mueve stock");
+
+      // 8. recibir 4 restantes
+      const recepcion2 = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+        idempotency_key: `f3e2-func-recepcion2-${Date.now()}`,
+        items: [{ compra_item_id: itemId, cantidad_recibida: 4 }]
+      }, token);
+      if (!recepcion2.response.ok) throw new Error(`F3E2-Func recepcion final fallo: ${recepcion2.data?.message || recepcion2.response.status}`);
+      const stockTrasRecepcion2 = (await getProduct(baseUrl, token, productoId)).stock;
+      assertApprox(stockTrasRecepcion2, stockInicial + 10, "F3E2-Func stock final = inicial + 10 (comprado completo, solo por recepcion)");
+
+      // 9. verificar recepcion completa
+      const detalleTrasRecepcion2 = (await requestJson(baseUrl, "GET", `/compras/${compraId}`, null, token)).data;
+      const itemTrasRecepcion2 = detalleTrasRecepcion2.items.find((it) => Number(it.id) === Number(itemId));
+      assertApprox(itemTrasRecepcion2.resumen_recepcion.cantidad_recibida, 10, "F3E2-Func recibido final=10");
+      assertApprox(itemTrasRecepcion2.resumen_recepcion.cantidad_pendiente, 0, "F3E2-Func pendiente final=0");
+      assertSame(itemTrasRecepcion2.resumen_recepcion.estado_recepcion, "completa", "F3E2-Func item queda completo");
+
+      // 10. pagar 60.000
+      const pago2 = await requestJson(baseUrl, "POST", `/compras/${compraId}/pagos`, {
+        monto_total: 60000, tipo_pago: "efectivo"
+      }, token);
+      if (!pago2.response.ok) throw new Error(`F3E2-Func pago final fallo: ${pago2.data?.message || pago2.response.status}`);
+
+      // 11. verificar Compra saldada
+      const detalleFinal = (await requestJson(baseUrl, "GET", `/compras/${compraId}`, null, token)).data;
+      assertApprox(detalleFinal.resumen_pago.total_pagado, 100000, "F3E2-Func pagado final = total");
+      assertApprox(detalleFinal.resumen_pago.saldo_pendiente, 0, "F3E2-Func saldo final = 0");
+      assertSame(String(detalleFinal.resumen_pago.estado || "").toLowerCase(), "saldada", "F3E2-Func estado economico final saldada");
+
+      // Confirmaciones finales: dinero solo por pago, stock solo por recepcion, sin duplicados,
+      // sin pago pendiente fantasma.
+      const pagosDeCompra = await allSql(dbPath, "SELECT * FROM pagos WHERE compra_id = ?", [compraId]);
+      assertEqual(pagosDeCompra.length, 2, "F3E2-Func exactamente 2 pagos reales, ninguno duplicado");
+      pagosDeCompra.forEach((p) => {
+        assertSame(String(p.estado), "registrado", "F3E2-Func todo pago de compra queda registrado (nunca pendiente legacy)");
+      });
+      const totalPagadoSql = pagosDeCompra.reduce((acc, p) => acc + Number(p.monto_total), 0);
+      assertApprox(totalPagadoSql, 100000, "F3E2-Func suma de pagos reales = total de la compra, sin duplicar");
+
+      const pagosDespuesGlobal = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos"))[0].total;
+      assertEqual(pagosDespuesGlobal, pagosAntesGlobal + 2, "F3E2-Func el flujo completo crea exactamente 2 filas nuevas en pagos: los 2 pagos reales, nada mas");
+
+      // Salida rapida (POST /pagos generico) sigue funcionando exactamente igual, sin asociarse a ninguna compra.
+      const pagoLibre = await registrarPago(baseUrl, token, {
+        concepto: "F3E2-Func salida rapida sigue funcionando",
+        monto_total: 500,
+        tipo_pago: "efectivo",
+        estado: "registrado"
+      });
+      if (pagoLibre.compra_id) {
+        throw new Error("F3E2-Func un pago libre (Salida rapida) no debe quedar asociado a ninguna compra");
+      }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 async function testProductosMasVendidosDevuelveClaves() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -15968,6 +17446,23 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCompraRecepcionOperativaF3D3);
   await _run(testCompraRecepcionReversaCostoReferencialF3D4);
   await _run(testCompraCierreEstadosF3E1);
+  await _run(testCargarCompraUiF3E2CorregidoExiste);
+  await _run(testCargarCompraUxSimpleOperativaF3E2);
+  await _run(testCargarCompraHeaderIconografiaAtlasF3E2);
+  await _run(testCargarCompraProveedorTipoComprobanteDefaultF3E2);
+  await _run(testCargarCompraCalculoFinalNetoF3E2);
+  await _run(testCargarCompraTotalConsideraCantidadF3E2);
+  await _run(testCargarCompraModoPorProductoF3E2);
+  await _run(testCargarCompraProductoComboReferenciaF3E2);
+  await _run(testProductosContratoPrecioCompraIncluyeIvaF3E2);
+  await _run(testCargarCompraVistaPagosF3E2Corregido);
+  await _run(testCargarCompraSeguridadF3E2Corregido);
+  await _run(testStockVistaConfigurableF3E2Corregido);
+  await _run(testStockVistaAutoritativaSobreStockAjustarF3E2Corregido);
+  await _run(testStockCrudVistaAutoritativaSobrePermisoLegacyF3E2Corregido);
+  await _run(testStockFlujoCompletoMultiEndpointF3E2Corregido);
+  await _run(testCargarCompraUxUnicaFlujoF3E2Corregido);
+  await _run(testCargarCompraFlujoFuncionalF3E2Corregido);
   await _run(testProductosMasVendidosDevuelveClaves);
   await _run(testProductosMasVendidosExcluyeVentasAnuladas);
   await _run(testProductosMasVendidosOrdenaPorCantidad);

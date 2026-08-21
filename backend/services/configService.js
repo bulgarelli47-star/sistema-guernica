@@ -391,6 +391,44 @@ async function requirePermiso(req, res, accion, mensaje) {
   return false;
 }
 
+// Vista operativa COMPLETA/REDUCIDA por modulo+rol: misma precedencia que el frontend
+// (pagos.html/productos.html: getVistaOperativa). El nombre del rol NO determina la
+// funcion operativa del modulo; la configuracion de vista de ese rol para ese modulo si.
+function normalizarVistaOperativa(valor) {
+  const v = String(valor ?? "").replace(/^"+|"+$/g, "").trim().toLowerCase();
+  if (["complejo", "completa"].includes(v)) return "completa";
+  if (["simple", "reducida"].includes(v)) return "reducida";
+  return "";
+}
+
+function getVistaOperativaRol(config, rol, modulo) {
+  const canonical = normalizarRolPermiso(rol);
+  if (canonical === "admin") return "completa";
+  if (modulo) {
+    const porModulo = normalizarVistaOperativa(config?.[`vista_operativa_${modulo}_${canonical}`]);
+    if (porModulo) return porModulo;
+  }
+  const directa = normalizarVistaOperativa(config?.[`vista_operativa_${canonical}`]);
+  if (directa) return directa;
+  const legacy = normalizarVistaOperativa(config?.[`dashboard_tipo_${canonical}`]);
+  if (legacy) return legacy;
+  return canonical === "colaborador" ? "reducida" : "completa";
+}
+
+async function tieneVistaCompleta(req, modulo) {
+  if (!req.usuario) return true;
+  const rol = normalizarRolPermiso(req.usuario.rol);
+  if (rol === "admin") return true;
+  const config = await getConfiguracionGlobal();
+  return getVistaOperativaRol(config, rol, modulo) === "completa";
+}
+
+async function requireVistaCompleta(req, res, modulo, mensaje) {
+  if (await tieneVistaCompleta(req, modulo)) return true;
+  res.status(403).json({ message: mensaje || "Esta accion requiere la vista completa del modulo" });
+  return false;
+}
+
 module.exports = {
   CONFIGURACION_DEFAULTS,
   PERMISOS_ACCIONES_DEFAULTS,
@@ -402,5 +440,9 @@ module.exports = {
   sanitizarConfiguracionParaRol,
   tienePermisoAccion,
   puedeAccionUsuario,
-  requirePermiso
+  requirePermiso,
+  normalizarVistaOperativa,
+  getVistaOperativaRol,
+  tieneVistaCompleta,
+  requireVistaCompleta
 };

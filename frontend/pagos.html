@@ -1265,6 +1265,71 @@
     .user-box .logout-btn:hover{background:rgba(220,38,38,.18)!important;border-color:rgba(248,113,113,.30)!important;color:#fff!important}
     .user-box .logout-btn:focus-visible{outline:none!important;box-shadow:0 0 0 3px rgba(248,113,113,.18)!important}
     @media(max-width:860px){.topbar{align-items:flex-start;flex-direction:column}.topbar-left{flex-wrap:wrap}.topbar-divider{display:none}}
+
+    /* ── Cargar compra (F3E-2 corregido) ──────────────────────── */
+    .button.compact { padding: 7px 10px; font-size: 12px; }
+    .pill.off { background: rgba(224, 82, 82, 0.12); color: var(--danger); }
+    .pill.warn { background: rgba(217, 154, 33, 0.14); color: var(--warning, #d99a21); }
+    .pill.ok { background: rgba(34, 163, 90, 0.12); color: var(--success); }
+    #ccModal, #ccfModal { z-index: 120; }
+    #ccModalItem, #ccModalComprobante, #ccModalRecepcion, #ccModalPago, #ccModalMotivo, #ccfModalObservacion { z-index: 130; }
+    .cc-modal-card, .ccf-modal-card { width: min(880px, 100%); }
+    .table-wrap { overflow: auto; }
+    #ccfModal .ccf-modal-card { padding: 0; display: flex; flex-direction: column; max-height: calc(100vh - 56px); }
+    .ccf-header-sticky { position: sticky; top: 0; z-index: 5; background: linear-gradient(135deg, #16052e 0%, #2a1450 100%); color: #fff; padding: 14px 18px; margin: 0; border-radius: var(--radius) var(--radius) 0 0; flex-shrink: 0; }
+    .ccf-header-sticky h2 { color: #fff; margin: 0; }
+    .ccf-header-sticky .message { margin: 2px 0 0; }
+    #ccfModal .modal-body { overflow: auto; padding: 16px 18px 18px; }
+    #ccfModal .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-shrink: 0; }
+    #ccfModal .header-actions .button { display: inline-grid; place-items: center; min-width: 44px; min-height: 44px; padding: 8px; }
+    .ccf-datos-compactos { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .ccf-observacion-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+    .ccf-total-protagonista { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 0 0 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); font-weight: 800; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+    .ccf-total-protagonista strong { font-size: 28px; color: var(--text); letter-spacing: 0; text-transform: none; }
+    .ccf-linea-agregar { display: grid; grid-template-columns: 1.8fr .6fr 1fr .8fr auto; gap: 8px; align-items: start; margin-top: 10px; }
+    .ccf-producto-combo { position: relative; }
+    .ccf-producto-dropdown { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 20; background: #fff; border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); max-height: 220px; overflow: auto; }
+    .ccf-dropdown-item { display: block; width: 100%; text-align: left; padding: 9px 12px; border: none; background: none; cursor: pointer; font: inherit; color: var(--text); }
+    .ccf-dropdown-item:hover, .ccf-dropdown-item:focus { background: var(--primary-soft); }
+    .ccf-dropdown-empty { padding: 9px 12px; color: var(--muted); font-size: 13px; }
+    .ccf-costo-con-referencia { display: grid; gap: 2px; }
+    .ccf-costo-con-referencia small { color: var(--muted); font-size: 11px; padding-left: 2px; min-height: 14px; }
+    @media (max-width: 860px) {
+      .ccf-datos-compactos { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 720px) {
+      .ccf-linea-agregar { grid-template-columns: 1fr; }
+      .ccf-datos-compactos { grid-template-columns: 1fr; }
+      .ccf-total-protagonista { flex-direction: column; align-items: flex-start; gap: 2px; }
+    }
+    .cc-empty-note { color: var(--muted); font-size: 13px; padding: 14px; text-align: center; border: 1px dashed var(--border); border-radius: 12px; }
+    .compra-detalle-header { border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); margin-bottom: 16px; }
+    .compra-detalle-head-top { background: linear-gradient(135deg, #16052e 0%, #2a1450 100%); color: #fff; padding: 16px 18px; display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+    .compra-detalle-head-top h3 { margin: 0; color: #fff; }
+    .compra-detalle-head-top p { margin: 4px 0 0; color: rgba(255,255,255,.72); }
+    .compra-detalle-head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .compra-resumen-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; background: #fff; padding: 14px 18px; }
+    .compra-resumen-item { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; }
+    .compra-resumen-item span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .03em; }
+    .compra-resumen-item strong { font-size: 15px; }
+    .seccion-compra { margin-bottom: 14px; border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; background: #fff; }
+    .seccion-compra-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+    .seccion-compra-head h4 { margin: 0; }
+    .item-card, .doc-card { border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; background: #fafafe; margin-bottom: 8px; }
+    .item-card-head, .doc-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+    .item-card-metrics, .doc-card-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 8px; margin-top: 8px; }
+    .item-card-metric span, .doc-card-metric span { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; }
+    .item-card-metric strong, .doc-card-metric strong { font-size: 13px; }
+    .doc-card-actions { display: flex; gap: 6px; flex-shrink: 0; }
+    .doc-card-meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .recepcion-item-row { display: grid; grid-template-columns: 1.4fr .8fr; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .recepcion-item-row:last-child { border-bottom: none; }
+    #ccTablaAbiertas td, #ccTablaAbiertas th { padding: 8px 7px; }
+    .compra-hidden { display: none !important; }
+    @media (max-width: 720px) {
+      .compra-resumen-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .recepcion-item-row { grid-template-columns: 1fr; gap: 4px; }
+    }
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=7" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -1365,7 +1430,9 @@
           </div>
           <div class="toolbar-actions">
             <button type="button" class="button secondary" id="actualizarPagos">Actualizar</button>
-            <button type="button" class="icon-button" id="abrirPagoModal" aria-label="Registrar pago" title="Registrar pago"><span class="app-icon icon-add" aria-hidden="true"></span></button>
+            <button type="button" class="button success" id="abrirPagoModal" aria-label="Salida rapida — Registrar pago" title="Salida rapida">+ Salida rápida</button>
+            <button type="button" class="button" id="abrirCargarCompraModal" aria-label="Cargar compra" title="Cargar compra — disponible en vista completa de Pagos">+ Cargar compra 🔒</button>
+            <button type="button" class="button secondary compact" id="abrirComprasAbiertasModal" aria-label="Compras abiertas" title="Continuar una compra ya iniciada">Compras abiertas</button>
           </div>
         </div>
         <div class="payment-history-table-wrap" style="overflow:auto;">
@@ -1587,6 +1654,352 @@
     </article>
   </div>
 
+  <!-- ══════════════ Cargar compra (F3E-2 corregido) ══════════════ -->
+  <!-- Modal secundario: Compras abiertas (gestion/reapertura de compras existentes).
+       NO es el punto de entrada de "Cargar compra" -- eso abre ccfModal, una unica
+       experiencia nueva. Esta modal sirve para continuar una compra ya iniciada. -->
+  <div class="modal-backdrop" id="ccModal" aria-hidden="true">
+    <article class="modal-card cc-modal-card" role="dialog" aria-modal="true" aria-labelledby="ccModalTitulo">
+      <div class="modal-header">
+        <div>
+          <h2 id="ccModalTitulo">Compras abiertas</h2>
+          <p style="color:var(--muted);margin:4px 0 0;">Continuar una compra ya iniciada — comprobante, recepción y pago, cada cosa por separado.</p>
+          <p class="message" id="ccMensaje"></p>
+        </div>
+        <button type="button" class="close-button" id="ccCerrarModal" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+      </div>
+      <div class="modal-body">
+
+        <section id="ccVistaSelector">
+          <div class="table-toolbar">
+            <label style="margin:0;">Mostrar
+              <select id="ccFiltroEstado" class="field" style="display:inline-block;width:auto;margin-left:6px;">
+                <option value="abiertas">Compras abiertas</option>
+                <option value="todas">Todas</option>
+              </select>
+            </label>
+            <div class="toolbar-actions">
+              <button type="button" class="button secondary" id="ccActualizarAbiertas">Actualizar</button>
+            </div>
+          </div>
+          <p id="ccContadorAbiertas" style="font-size:12px;font-weight:700;color:var(--muted);margin:4px 0;"></p>
+          <div style="overflow:auto;">
+            <table>
+              <thead>
+                <tr><th>Proveedor</th><th>Fecha</th><th>Concepto</th><th>Total</th><th>Saldo</th><th>Estado</th><th>Acción</th></tr>
+              </thead>
+              <tbody id="ccTablaAbiertas"><tr><td colspan="7">Cargando compras...</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="ccVistaDetalle" class="compra-hidden">
+          <div class="compra-detalle-header">
+            <div class="compra-detalle-head-top">
+              <div>
+                <button type="button" class="button secondary compact" id="ccBtnVolverSelector" style="margin-bottom:8px;">← Volver a compras abiertas</button>
+                <h3 id="ccDetalleProveedorNombre">-</h3>
+                <p id="ccDetalleCompraSubtitulo">-</p>
+              </div>
+              <div class="compra-detalle-head-actions">
+                <span class="pill" id="ccDetalleEstadoPill">-</span>
+                <button type="button" class="button secondary compact" id="ccBtnAnularCompra">Anular compra</button>
+              </div>
+            </div>
+            <div class="compra-resumen-grid">
+              <div class="compra-resumen-item"><span>Total compra</span><strong id="ccResumenTotal">$0.00</strong></div>
+              <div class="compra-resumen-item"><span>Total pagado</span><strong id="ccResumenPagado">$0.00</strong></div>
+              <div class="compra-resumen-item"><span>Saldo pendiente</span><strong id="ccResumenSaldo">$0.00</strong></div>
+              <div class="compra-resumen-item"><span>Total comprobantes</span><strong id="ccResumenComprobantes">$0.00</strong></div>
+              <div class="compra-resumen-item"><span>Compra − comprobantes</span><strong id="ccResumenDiferencia">$0.00</strong></div>
+            </div>
+          </div>
+
+          <p class="message" id="ccMensajeDetalle"></p>
+
+          <section class="seccion-compra">
+            <div class="seccion-compra-head"><h4>Productos</h4><button type="button" class="button secondary compact" id="ccBtnAgregarItem">+ Agregar item</button></div>
+            <div id="ccListaItems"><div class="cc-empty-note">Esta compra todavía no tiene items cargados.</div></div>
+          </section>
+
+          <section class="seccion-compra">
+            <div class="seccion-compra-head"><h4>Comprobante</h4><button type="button" class="button secondary compact" id="ccBtnNuevoComprobante">+ Registrar comprobante</button></div>
+            <div id="ccListaComprobantes"><div class="cc-empty-note">Sin comprobantes registrados.</div></div>
+          </section>
+
+          <section class="seccion-compra">
+            <div class="seccion-compra-head"><h4>Recepción</h4><button type="button" class="button secondary compact" id="ccBtnNuevaRecepcion">+ Registrar recepción</button></div>
+            <div id="ccListaRecepciones"><div class="cc-empty-note">Sin recepciones registradas.</div></div>
+          </section>
+
+          <section class="seccion-compra">
+            <div class="seccion-compra-head"><h4>Pagos asociados</h4><button type="button" class="button secondary compact" id="ccBtnNuevoPago">+ Registrar pago</button></div>
+            <div id="ccListaPagos"><div class="cc-empty-note">Sin pagos registrados.</div></div>
+          </section>
+        </section>
+
+      </div>
+    </article>
+  </div>
+
+  <!-- ══════════════ Cargar compra: experiencia unica (transcribir una factura) ══════════════ -->
+  <div class="modal-backdrop" id="ccfModal" aria-hidden="true">
+    <article class="modal-card ccf-modal-card" role="dialog" aria-modal="true" aria-labelledby="ccfModalTitulo">
+      <div class="modal-header ccf-header-sticky">
+        <div>
+          <h2 id="ccfModalTitulo">Cargar compra</h2>
+          <p class="message" id="ccfMensaje"></p>
+        </div>
+        <div class="header-actions" id="ccfAccionesNormal">
+          <button type="button" class="button secondary" id="ccfCancelar" aria-label="Cancelar" title="Cancelar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+          <button type="button" class="button success" id="ccfBtnGuardar" aria-label="Guardar compra" title="Guardar compra"><span class="app-icon icon-save" aria-hidden="true"></span></button>
+        </div>
+        <div class="header-actions compra-hidden" id="ccfAccionesFinal">
+          <button type="button" class="button success" id="ccfCerrarFinal" aria-label="Cerrar" title="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+        </div>
+      </div>
+      <div class="modal-body">
+
+        <!-- Datos del comprobante, compactos -->
+        <section class="seccion-compra ccf-paso">
+          <div class="form-grid ccf-datos-compactos">
+            <label>Proveedor *<select id="ccfProveedor" class="field"></select></label>
+            <label>Tipo de comprobante *
+              <select id="ccfTipoComprobante" class="field">
+                <option value="factura_a">Factura A</option>
+                <option value="factura_b">Factura B</option>
+                <option value="factura_c">Factura C</option>
+                <option value="ticket">Ticket</option>
+                <option value="recibo">Recibo</option>
+                <option value="nota_credito">Nota de crédito</option>
+                <option value="nota_debito">Nota de débito</option>
+                <option value="otro">Otro</option>
+              </select>
+            </label>
+            <label>Punto de venta<input type="text" id="ccfPuntoVenta" class="field" /></label>
+            <label>Número *<input type="text" id="ccfNumeroComprobante" class="field" placeholder="0003-00050536" /></label>
+            <label>Fecha *<input type="date" id="ccfFecha" class="field" /></label>
+          </div>
+          <div class="ccf-observacion-row">
+            <button type="button" class="button secondary compact" id="ccfBtnAgregarObservacion">+ Agregar observación</button>
+            <span class="pill compra-hidden" id="ccfObservacionIndicador">Con observación</span>
+          </div>
+        </section>
+
+        <!-- Productos -->
+        <section class="seccion-compra ccf-paso">
+          <div class="seccion-compra-head"><h4>Productos</h4></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Producto</th><th>Cant.</th><th>Costo unit.</th><th>IVA</th><th>Subtotal</th><th></th></tr></thead>
+              <tbody id="ccfTablaItems"><tr><td colspan="6" class="cc-empty-note">Todavía no agregaste productos.</td></tr></tbody>
+            </table>
+          </div>
+          <div class="ccf-linea-agregar ccf-linea-agregar-productos">
+            <div class="ccf-producto-combo">
+              <input type="text" id="ccfProductoInput" class="field" placeholder="Buscar / seleccionar producto..." autocomplete="off" />
+              <div class="ccf-producto-dropdown compra-hidden" id="ccfProductoDropdown"></div>
+            </div>
+            <input type="number" id="ccfCantidad" class="field" placeholder="Cant." min="0.0001" step="any" />
+            <div class="ccf-costo-con-referencia">
+              <input type="number" id="ccfCostoUnitario" class="field" placeholder="Costo unit. (factura)" min="0" step="0.01" />
+              <small id="ccfCostoActualRef"></small>
+            </div>
+            <select id="ccfItemAlicuota" class="field">
+              <option value="21">21%</option>
+              <option value="10.5">10,5%</option>
+              <option value="27">27%</option>
+              <option value="0">0% (exento)</option>
+            </select>
+            <button type="button" class="button secondary compact" id="ccfBtnAgregarItem">+ Agregar</button>
+          </div>
+        </section>
+
+        <!-- Total + Pago -->
+        <section class="seccion-compra ccf-paso">
+          <p class="ccf-total-protagonista">TOTAL FACTURA <strong id="ccfTotalFactura">$0.00</strong></p>
+          <label>Monto pagado <small>(0 = sin pago por ahora)</small>
+            <input type="number" id="ccfMontoPagado" class="field" min="0" step="0.01" />
+          </label>
+          <div id="ccfPagoDetalle">
+            <label>Método de pago
+              <input type="hidden" id="ccfTipoPago" value="efectivo" />
+              <div class="method-buttons" id="ccfMetodosPagoBotones">
+                <button type="button" class="method-button active" data-ccf-metodo-pago="efectivo">Efectivo</button>
+                <button type="button" class="method-button" data-ccf-metodo-pago="debito">Débito</button>
+                <button type="button" class="method-button" data-ccf-metodo-pago="mixto">Mixto</button>
+              </div>
+            </label>
+            <div id="ccfBloqueMixto" class="form-grid compra-hidden">
+              <label>Monto efectivo<input type="number" id="ccfMontoEfectivo" class="field" step="0.01" min="0" /></label>
+              <label>Monto digital<input type="number" id="ccfMontoDebito" class="field" step="0.01" min="0" /></label>
+            </div>
+            <label id="ccfCuentaCobroWrap" class="compra-hidden">Cuenta / terminal
+              <select id="ccfCuentaCobro" class="field"><option value="">Sin asignar</option></select>
+            </label>
+          </div>
+          <p style="text-align:right;font-weight:800;margin:6px 0 0;">Saldo: <span id="ccfSaldoPreview">$0.00</span></p>
+        </section>
+
+        <!-- Resumen final (se muestra tras guardar) -->
+        <section class="seccion-compra compra-hidden" id="ccfResumenFinal">
+          <div class="seccion-compra-head"><h4>Compra cargada</h4></div>
+          <div id="ccfResumenFinalContenido"></div>
+        </section>
+
+      </div>
+    </article>
+  </div>
+
+  <!-- Modal pequeña: observación de la compra (opcional, en memoria hasta Guardar) -->
+  <div class="modal-backdrop" id="ccfModalObservacion" aria-hidden="true">
+    <article class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div><h2>Observación de la compra</h2></div>
+        <button type="button" class="close-button" id="ccfCerrarModalObservacion" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+      </div>
+      <div class="modal-body">
+        <textarea id="ccfObservacionTexto" class="field" rows="4"></textarea>
+      </div>
+      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;">
+        <button type="button" class="button secondary" id="ccfCancelarObservacion">Cancelar</button>
+        <button type="button" class="button success" id="ccfGuardarObservacion">Guardar</button>
+      </div>
+    </article>
+  </div>
+
+  <!-- Modal: Agregar item -->
+  <div class="modal-backdrop" id="ccModalItem" aria-hidden="true">
+    <article class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div><h2>Agregar item</h2><p style="color:var(--muted);margin:4px 0 0;">Se agrega a la compra actual. No modifica stock todavía.</p></div>
+        <button type="button" class="close-button" id="ccCerrarModalItem" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+      </div>
+      <div class="modal-body">
+        <label>Producto
+          <select id="ccItemProducto" class="field"><option value="">Sin producto (solo descripción)</option></select>
+        </label>
+        <label>Descripción<input type="text" id="ccItemDescripcion" class="field" placeholder="Requerido si no elegís un producto" /></label>
+        <label>Cantidad comprada<input type="number" id="ccItemCantidad" class="field" min="0.0001" step="any" /></label>
+        <label>Costo unitario<input type="number" id="ccItemCosto" class="field" min="0" step="0.01" /></label>
+        <label style="display:flex;align-items:center;gap:8px;flex-direction:row;">
+          <input type="checkbox" id="ccItemAfectaStock" style="width:auto;" />
+          <span>Este item va a recibirse físicamente (afecta stock)</span>
+        </label>
+      </div>
+      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;">
+        <button type="button" class="button secondary" id="ccCancelarItem">Cancelar</button>
+        <button type="button" class="button success" id="ccGuardarItem">Agregar item</button>
+      </div>
+    </article>
+  </div>
+
+  <!-- Modal: Registrar comprobante -->
+  <div class="modal-backdrop" id="ccModalComprobante" aria-hidden="true">
+    <article class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div><h2>Registrar comprobante</h2><p style="color:var(--muted);margin:4px 0 0;">Documenta la operación. No afecta stock ni pagos.</p></div>
+        <button type="button" class="close-button" id="ccCerrarModalComprobante" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+      </div>
+      <div class="modal-body">
+        <label>Tipo de comprobante
+          <select id="ccCompTipo" class="field">
+            <option value="factura_a">Factura A</option>
+            <option value="factura_b">Factura B</option>
+            <option value="factura_c">Factura C</option>
+            <option value="ticket">Ticket</option>
+            <option value="recibo">Recibo</option>
+            <option value="nota_credito">Nota de crédito</option>
+            <option value="nota_debito">Nota de débito</option>
+            <option value="otro">Otro</option>
+          </select>
+        </label>
+        <label>Punto de venta<input type="text" id="ccCompPuntoVenta" class="field" /></label>
+        <label>Número de comprobante<input type="text" id="ccCompNumero" class="field" /></label>
+        <label>Fecha de emisión<input type="date" id="ccCompFechaEmision" class="field" /></label>
+        <label>Total del comprobante<input type="number" id="ccCompTotal" class="field" min="0.01" step="0.01" /></label>
+        <label>Neto gravado (opcional)<input type="number" id="ccCompNeto" class="field" min="0" step="0.01" /></label>
+        <label>IVA total (opcional)<input type="number" id="ccCompIva" class="field" min="0" step="0.01" /></label>
+        <label>Observaciones<textarea id="ccCompObservaciones" class="field"></textarea></label>
+      </div>
+      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;">
+        <button type="button" class="button secondary" id="ccCancelarComprobante">Cancelar</button>
+        <button type="button" class="button success" id="ccGuardarComprobante">Registrar comprobante</button>
+      </div>
+    </article>
+  </div>
+
+  <!-- Modal: Registrar recepción -->
+  <div class="modal-backdrop" id="ccModalRecepcion" aria-hidden="true">
+    <article class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div><h2>Registrar recepción</h2><p style="color:var(--muted);margin:4px 0 0;">Solo cantidades pendientes. Se puede recibir en varias veces.</p></div>
+        <button type="button" class="close-button" id="ccCerrarModalRecepcion" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+      </div>
+      <div class="modal-body">
+        <label>Fecha de recepción<input type="date" id="ccRecepcionFecha" class="field" /></label>
+        <div id="ccRecepcionItemsBody"></div>
+        <div class="cc-empty-note compra-hidden" id="ccRecepcionSinPendientes">Todos los items de esta compra ya fueron recibidos por completo.</div>
+      </div>
+      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;">
+        <button type="button" class="button secondary" id="ccCancelarRecepcion">Cancelar</button>
+        <button type="button" class="button success" id="ccGuardarRecepcion">Registrar recepción</button>
+      </div>
+    </article>
+  </div>
+
+  <!-- Modal: Registrar pago de la compra (reutiliza el lenguaje de Salida rapida) -->
+  <div class="modal-backdrop" id="ccModalPago" aria-hidden="true">
+    <article class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div><h2>Registrar pago</h2><p id="ccPagoSaldoHint" style="color:var(--muted);margin:4px 0 0;">Saldo pendiente: $0.00</p></div>
+        <button type="button" class="close-button" id="ccCerrarModalPago" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+      </div>
+      <div class="modal-body">
+        <label>Fecha<input type="date" id="ccPagoFecha" class="field" /></label>
+        <label>Monto<input type="number" id="ccPagoMonto" class="field" min="0.01" step="0.01" /></label>
+        <label>Método de pago
+          <input type="hidden" id="ccPagoTipo" value="efectivo" />
+          <div class="method-buttons" id="ccMetodosPagoBotones">
+            <button type="button" class="method-button active" data-cc-metodo-pago="efectivo">Efectivo</button>
+            <button type="button" class="method-button" data-cc-metodo-pago="debito">Débito</button>
+            <button type="button" class="method-button" data-cc-metodo-pago="mixto">Mixto</button>
+          </div>
+        </label>
+        <div id="ccPagoBloqueMixto" class="form-grid compra-hidden">
+          <label>Monto efectivo<input type="number" id="ccPagoMontoEfectivo" class="field" step="0.01" min="0" /></label>
+          <label>Monto digital<input type="number" id="ccPagoMontoDebito" class="field" step="0.01" min="0" /></label>
+        </div>
+        <label id="ccPagoCuentaCobroWrap" class="compra-hidden">Cuenta / terminal
+          <select id="ccPagoCuentaCobro" class="field"><option value="">Sin asignar</option></select>
+        </label>
+        <label>Concepto (opcional)<input type="text" id="ccPagoConcepto" class="field" /></label>
+      </div>
+      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;">
+        <button type="button" class="button secondary" id="ccCancelarPago">Cancelar</button>
+        <button type="button" class="button success" id="ccGuardarPago">Registrar pago</button>
+      </div>
+    </article>
+  </div>
+
+  <!-- Modal genérico: motivo (anular comprobante / recepción / compra) -->
+  <div class="modal-backdrop" id="ccModalMotivo" aria-hidden="true">
+    <article class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div><h2 id="ccMotivoTitulo">Anular</h2><p style="color:var(--muted);margin:4px 0 0;">Esta acción no se puede deshacer. Contá brevemente por qué.</p></div>
+        <button type="button" class="close-button" id="ccCerrarModalMotivo" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+      </div>
+      <div class="modal-body">
+        <label>Motivo<textarea id="ccMotivoTexto" class="field" placeholder="Obligatorio"></textarea></label>
+      </div>
+      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;">
+        <button type="button" class="button secondary" id="ccCancelarMotivo">Cancelar</button>
+        <button type="button" class="button danger" id="ccConfirmarMotivo">Confirmar anulación</button>
+      </div>
+    </article>
+  </div>
+  <!-- ══════════════ fin Cargar compra ══════════════ -->
+
   <script src="/kpi-visibility.js?v=2"></script>
   <script>
     const mensaje = document.getElementById("mensaje");
@@ -1649,7 +2062,8 @@
     function puedeCrearPagos(){return getPermisoAccionPagos("pagos_crear",["admin","encargado","colaborador"])}
     function puedeAccionProtegidaPagos(){return ["admin","encargado","colaborador"].includes(rolActual())}
     function puedeVerKpisPagos(config=configPagos){return getVistaOperativa(rolActual(),config,"pagos")==="completa"}
-    function aplicarPermisosPagosUI(){if(abrirPagoModal)abrirPagoModal.style.display=puedeCrearPagos()?"":"none"}
+    function puedeCargarCompra(){return getVistaOperativa(rolActual(),configPagos,"pagos")==="completa"}
+    function aplicarPermisosPagosUI(){if(abrirPagoModal)abrirPagoModal.style.display=puedeCrearPagos()?"":"none";const btnCC=document.getElementById("abrirCargarCompraModal");if(btnCC)btnCC.style.display=puedeCargarCompra()?"":"none";const btnCA=document.getElementById("abrirComprasAbiertasModal");if(btnCA)btnCA.style.display=puedeCargarCompra()?"":"none"}
     function mostrarKpisComplejos(config){aplicarVistaOperativaPagos();const complejo=puedeVerKpisPagos(config);if(window.initKpiVisibility){window.initKpiVisibility({storageKey:"guernica_kpis_pagos",enabled:complejo})}else if(kpiGrid){kpiGrid.style.display=complejo?"grid":"none"}}
     async function aplicarVisibilidadKpis(){try{const res=await fetch("/configuracion");const data=res.ok ? await res.json():{config:{}};configPagos=data.config||{};mostrarKpisComplejos(configPagos)}catch{configPagos={};mostrarKpisComplejos({})}finally{aplicarPermisosPagosUI()}}
 
@@ -1989,7 +2403,7 @@
         row.innerHTML = `
           <td class="payment-cell-date" data-label="Fecha">${pago.fecha || "-"} ${pago.hora || ""}</td>
           <td class="payment-cell-type" data-label="Tipo de gasto">${impactoLabel(pago.categoria_pago || pago.proveedor_tipo_impacto)}</td>
-          <td class="payment-cell-provider" data-label="Proveedor">${pago.proveedor_nombre || "Sin proveedor"}</td>
+          <td class="payment-cell-provider" data-label="Proveedor">${pago.proveedor_nombre || "Sin proveedor"}${pago.compra_id ? ` <span class="pill" style="margin-left:4px;">Compra #${pago.compra_id}</span>` : ""}</td>
           <td class="payment-cell-receipt" data-label="Comprobante">${pago.comprobante || "-"} ${pago.numero_comprobante || ""}</td>
           <td class="payment-cell-method" data-label="Forma">${pago.tipo_pago || "-"}</td>
           <td class="payment-cell-account" data-label="Cuenta">${pago.cuenta_cobro_nombre || pago.cuenta_destino || "-"}</td>
@@ -2526,6 +2940,1088 @@
     replaceButtonListener("confirmarEliminarPago",submitEliminarPago);
     document.getElementById("eliminarPagoClave").addEventListener("keydown",e=>{if(e.key==="Enter")submitEliminarPago()});
     eliminarPagoModalActual.addEventListener("click",e=>{if(e.target===eliminarPagoModalActual)cerrarEliminarPagoModal()});
+
+    // ══════════════ Cargar compra (F3E-2 corregido) ══════════════
+    // Compra != Pago: comparte modulo *Pagos, no la entidad. Usa exclusivamente
+    // el modelo F3 real (backend/server.js rutas /compras*). "Salida rapida"
+    // (arriba) no se toca.
+    let ccComprasCache = [];
+    let ccProveedoresCache = [];
+    let ccProductosCache = [];
+    let ccCompraActualId = null;
+    let ccCompraActualDetalle = null;
+    let ccMotivoCallback = null;
+
+    function ccMostrarMensaje(texto, esError = false) {
+      const el = document.getElementById("ccMensaje");
+      if (!el) return;
+      el.innerText = texto;
+      el.style.color = esError ? "var(--danger)" : "var(--success)";
+    }
+    function ccMostrarMensajeDetalle(texto, esError = false) {
+      const el = document.getElementById("ccMensajeDetalle");
+      if (!el) return;
+      el.innerText = texto;
+      el.style.color = esError ? "var(--danger)" : "var(--success)";
+    }
+    function ccGenerarIdempotencyKey() {
+      if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+      return `cc-recepcion-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+    async function ccRequestJson(method, url, body) {
+      const response = await fetch(url, {
+        method,
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined
+      });
+      const text = await response.text();
+      const data = text ? JSON.parse(text) : null;
+      return { response, data };
+    }
+    function ccAbrirModal(modal) { modal.classList.add("open"); modal.setAttribute("aria-hidden", "false"); }
+    function ccCerrarModal(modal) { modal.classList.remove("open"); modal.setAttribute("aria-hidden", "true"); }
+
+    function ccEstadoCompraPill(estado) {
+      const map = {
+        pendiente: { clase: "", texto: "Pendiente" },
+        parcial: { clase: "warn", texto: "Parcial" },
+        saldada: { clase: "ok", texto: "Saldada" },
+        anulada: { clase: "off", texto: "Anulada" }
+      };
+      const info = map[estado] || { clase: "", texto: estado || "-" };
+      return `<span class="pill ${info.clase}">${info.texto}</span>`;
+    }
+    function ccEstadoComprobantePill(estado) {
+      return estado === "anulado" ? '<span class="pill off">Anulado</span>' : '<span class="pill ok">Activo</span>';
+    }
+    function ccEstadoRecepcionPill(estado) {
+      return estado === "anulada" ? '<span class="pill off">Anulada</span>' : '<span class="pill ok">Activa</span>';
+    }
+    function ccEstadoItemRecepcionPill(estado) {
+      const map = {
+        pendiente: { clase: "", texto: "Pendiente" },
+        parcial: { clase: "warn", texto: "Parcial" },
+        completa: { clase: "ok", texto: "Completa" }
+      };
+      const info = map[estado] || { clase: "", texto: estado || "-" };
+      return `<span class="pill ${info.clase}">${info.texto}</span>`;
+    }
+    function ccNombreProveedor(id) {
+      return ccProveedoresCache.find((p) => Number(p.id) === Number(id))?.nombre
+        || proveedoresActuales.find((p) => Number(p.id) === Number(id))?.nombre
+        || `Proveedor #${id}`;
+    }
+
+    // ── Entrada / salida principal ─────────────────────────────
+    async function ccAbrirPrincipal() {
+      document.getElementById("ccVistaDetalle").classList.add("compra-hidden");
+      document.getElementById("ccVistaSelector").classList.remove("compra-hidden");
+      ccMostrarMensaje("");
+      ccAbrirModal(document.getElementById("ccModal"));
+      await ccCargarComprasAbiertas();
+    }
+    function ccCerrarPrincipal() { ccCerrarModal(document.getElementById("ccModal")); }
+
+    // ── Selector: compras abiertas ─────────────────────────────
+    async function ccCargarComprasAbiertas() {
+      try {
+        const res = await fetch("/compras");
+        if (!res.ok) throw new Error("No se pudo obtener el listado de compras");
+        ccComprasCache = await res.json();
+        ccRenderizarSelector();
+      } catch (error) {
+        console.error("Error al cargar compras:", error);
+        ccMostrarMensaje("No se pudo cargar el listado de compras", true);
+        document.getElementById("ccTablaAbiertas").innerHTML = '<tr><td colspan="7">Error al cargar compras.</td></tr>';
+      }
+    }
+    function ccComprasFiltradas() {
+      const modo = document.getElementById("ccFiltroEstado").value;
+      if (modo === "todas") return ccComprasCache;
+      return ccComprasCache.filter((c) => {
+        const estado = String((c.resumen_pago || {}).estado || c.estado || "").toLowerCase();
+        return estado !== "saldada" && estado !== "anulada";
+      });
+    }
+    function ccRenderizarSelector() {
+      const compras = ccComprasFiltradas();
+      const tabla = document.getElementById("ccTablaAbiertas");
+      document.getElementById("ccContadorAbiertas").innerText = `${compras.length} de ${ccComprasCache.length} compras`;
+      if (!compras.length) {
+        tabla.innerHTML = '<tr><td colspan="7">No hay compras que coincidan con el filtro.</td></tr>';
+        return;
+      }
+      tabla.innerHTML = compras.map((c) => {
+        const resumen = c.resumen_pago || {};
+        return `
+          <tr>
+            <td data-label="Proveedor"><strong>${c.proveedor_nombre || "-"}</strong></td>
+            <td data-label="Fecha">${c.fecha_compra || "-"}</td>
+            <td data-label="Concepto">${c.concepto || "-"}</td>
+            <td data-label="Total">${money(resumen.total_compra ?? c.total_compra)}</td>
+            <td data-label="Saldo">${money(resumen.saldo_pendiente ?? c.saldo_pendiente)}</td>
+            <td data-label="Estado">${ccEstadoCompraPill(resumen.estado || c.estado)}</td>
+            <td data-label="Accion"><button type="button" class="button secondary compact" data-cc-ver="${c.id}">Continuar</button></td>
+          </tr>
+        `;
+      }).join("");
+      tabla.querySelectorAll("[data-cc-ver]").forEach((btn) => {
+        btn.addEventListener("click", () => ccAbrirDetalle(Number(btn.dataset.ccVer)));
+      });
+    }
+
+
+    // ── Detalle (GET /compras/:id como fuente unica) ────────────
+    async function ccAbrirDetalle(id) {
+      ccCompraActualId = id;
+      document.getElementById("ccVistaSelector").classList.add("compra-hidden");
+      document.getElementById("ccVistaDetalle").classList.remove("compra-hidden");
+      await ccCargarDetalle();
+    }
+    function ccVolverSelector() {
+      ccCompraActualId = null;
+      ccCompraActualDetalle = null;
+      document.getElementById("ccVistaDetalle").classList.add("compra-hidden");
+      document.getElementById("ccVistaSelector").classList.remove("compra-hidden");
+      ccCargarComprasAbiertas();
+    }
+    async function ccCargarDetalle() {
+      if (!ccCompraActualId) return;
+      try {
+        const res = await fetch(`/compras/${ccCompraActualId}`);
+        if (!res.ok) throw new Error("No se pudo obtener el detalle de la compra");
+        ccCompraActualDetalle = await res.json();
+        ccRenderizarDetalle();
+      } catch (error) {
+        console.error("Error al cargar detalle de compra:", error);
+        ccMostrarMensajeDetalle("No se pudo cargar el detalle de esta compra", true);
+      }
+    }
+    function ccRenderizarDetalle() {
+      const detalle = ccCompraActualDetalle;
+      if (!detalle) return;
+      const compra = detalle.compra;
+      const resumen = detalle.resumen_pago || {};
+      const anulada = String(compra.estado || "").toLowerCase() === "anulada";
+      const saldada = Number(resumen.saldo_pendiente || 0) <= 0.009;
+
+      document.getElementById("ccDetalleProveedorNombre").innerText = compra.proveedor_nombre || ccNombreProveedor(compra.proveedor_id);
+      document.getElementById("ccDetalleCompraSubtitulo").innerText = `${compra.fecha_compra || "-"} · ${compra.concepto || "Sin concepto"}`;
+      const pillEstado = document.getElementById("ccDetalleEstadoPill");
+      pillEstado.outerHTML = ccEstadoCompraPill(compra.estado).replace("<span", '<span id="ccDetalleEstadoPill"');
+
+      document.getElementById("ccResumenTotal").innerText = money(resumen.total_compra);
+      document.getElementById("ccResumenPagado").innerText = money(resumen.total_pagado);
+      document.getElementById("ccResumenSaldo").innerText = money(resumen.saldo_pendiente);
+      document.getElementById("ccResumenComprobantes").innerText = money(resumen.total_comprobantes);
+      document.getElementById("ccResumenDiferencia").innerText = money(resumen.diferencia_compra_comprobantes);
+
+      document.getElementById("ccBtnAnularCompra").hidden = anulada;
+      document.getElementById("ccBtnAgregarItem").disabled = anulada;
+      document.getElementById("ccBtnNuevoComprobante").disabled = anulada;
+      document.getElementById("ccBtnNuevaRecepcion").disabled = anulada;
+      document.getElementById("ccBtnNuevoPago").disabled = anulada || saldada;
+
+      ccRenderizarItems(detalle.items || []);
+      ccRenderizarComprobantes(detalle.comprobantes || []);
+      ccRenderizarRecepciones(detalle.recepciones || []);
+      ccRenderizarPagos(detalle.pagos || []);
+    }
+    function ccRenderizarItems(items) {
+      const cont = document.getElementById("ccListaItems");
+      if (!items.length) { cont.innerHTML = '<div class="cc-empty-note">Esta compra todavía no tiene items cargados.</div>'; return; }
+      cont.innerHTML = items.map((item) => {
+        const r = item.resumen_recepcion || {};
+        return `
+          <div class="item-card">
+            <div class="item-card-head">
+              <strong>${item.descripcion_snapshot || "Item"}</strong>
+              ${ccEstadoItemRecepcionPill(r.estado_recepcion)}
+            </div>
+            <div class="item-card-metrics">
+              <div class="item-card-metric"><span>Comprado</span><strong>${Number(r.cantidad_comprada ?? item.cantidad_comprada).toFixed(2)} ${item.unidad_snapshot || ""}</strong></div>
+              <div class="item-card-metric"><span>Recibido</span><strong>${Number(r.cantidad_recibida || 0).toFixed(2)}</strong></div>
+              <div class="item-card-metric"><span>Pendiente</span><strong>${Number(r.cantidad_pendiente ?? item.cantidad_comprada).toFixed(2)}</strong></div>
+              <div class="item-card-metric"><span>Costo unitario</span><strong>${money(item.costo_unitario)}</strong></div>
+              <div class="item-card-metric"><span>Subtotal</span><strong>${money(item.subtotal)}</strong></div>
+              <div class="item-card-metric"><span>Afecta stock</span><strong>${Number(item.afecta_stock) === 1 ? "Sí" : "No"}</strong></div>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+    function ccRenderizarComprobantes(comprobantes) {
+      const cont = document.getElementById("ccListaComprobantes");
+      if (!comprobantes.length) { cont.innerHTML = '<div class="cc-empty-note">Sin comprobantes registrados.</div>'; return; }
+      cont.innerHTML = comprobantes.map((comp) => {
+        const activo = String(comp.estado || "").toLowerCase() !== "anulado";
+        return `
+          <div class="doc-card">
+            <div class="doc-card-head">
+              <div>
+                <strong>${comp.tipo_comprobante || "-"} ${comp.numero_comprobante ? "· " + comp.numero_comprobante : ""}</strong>
+                <div class="doc-card-meta">${comp.fecha_emision || "-"}${comp.punto_venta ? " · PV " + comp.punto_venta : ""}</div>
+              </div>
+              <div class="doc-card-actions">
+                ${ccEstadoComprobantePill(comp.estado)}
+                ${activo ? `<button type="button" class="button secondary compact" data-cc-anular-comprobante="${comp.id}">Anular</button>` : ""}
+              </div>
+            </div>
+            <div class="doc-card-metrics">
+              <div class="doc-card-metric"><span>Total</span><strong>${money(comp.total_comprobante)}</strong></div>
+              <div class="doc-card-metric"><span>Neto gravado</span><strong>${money(comp.neto_gravado)}</strong></div>
+              <div class="doc-card-metric"><span>IVA</span><strong>${money(comp.iva_total)}</strong></div>
+            </div>
+            ${!activo ? `<div class="doc-card-meta">Anulado ${comp.anulado_at || ""} por ${comp.anulado_por || "-"}${comp.motivo_anulacion ? " · " + comp.motivo_anulacion : ""}</div>` : ""}
+          </div>
+        `;
+      }).join("");
+      cont.querySelectorAll("[data-cc-anular-comprobante]").forEach((btn) => {
+        btn.addEventListener("click", () => ccAbrirMotivo("Anular comprobante", (motivo) => ccAnularComprobante(Number(btn.dataset.ccAnularComprobante), motivo)));
+      });
+    }
+    function ccRenderizarRecepciones(recepciones) {
+      const cont = document.getElementById("ccListaRecepciones");
+      if (!recepciones.length) { cont.innerHTML = '<div class="cc-empty-note">Sin recepciones registradas.</div>'; return; }
+      const itemsPorId = new Map((ccCompraActualDetalle?.items || []).map((item) => [Number(item.id), item]));
+      cont.innerHTML = recepciones.map((rec) => {
+        const activa = String(rec.estado || "").toLowerCase() !== "anulada";
+        const itemsTexto = (rec.items || [])
+          .map((it) => {
+            const itemCompra = itemsPorId.get(Number(it.compra_item_id));
+            const nombre = itemCompra?.descripcion_snapshot || `producto #${it.producto_id}`;
+            return `${Number(it.cantidad_recibida).toFixed(2)} ${it.unidad_snapshot || ""} de ${nombre}`;
+          })
+          .join(" · ");
+        return `
+          <div class="doc-card">
+            <div class="doc-card-head">
+              <div>
+                <strong>Recepción del ${rec.fecha || "-"}</strong>
+                <div class="doc-card-meta">${itemsTexto || "Sin items"}</div>
+                ${rec.observaciones ? `<div class="doc-card-meta">${rec.observaciones}</div>` : ""}
+              </div>
+              <div class="doc-card-actions">
+                ${ccEstadoRecepcionPill(rec.estado)}
+                ${activa ? `<button type="button" class="button secondary compact" data-cc-anular-recepcion="${rec.id}">Anular recepción</button>` : ""}
+              </div>
+            </div>
+            ${!activa ? `<div class="doc-card-meta">Anulada ${rec.anulada_at || ""} por ${rec.anulada_por || "-"}${rec.motivo_anulacion ? " · " + rec.motivo_anulacion : ""}</div>` : ""}
+          </div>
+        `;
+      }).join("");
+      cont.querySelectorAll("[data-cc-anular-recepcion]").forEach((btn) => {
+        btn.addEventListener("click", () => ccAbrirMotivo("Anular recepción", (motivo) => ccAnularRecepcion(Number(btn.dataset.ccAnularRecepcion), motivo)));
+      });
+    }
+    function ccRenderizarPagos(pagos) {
+      const cont = document.getElementById("ccListaPagos");
+      if (!pagos.length) { cont.innerHTML = '<div class="cc-empty-note">Sin pagos registrados.</div>'; return; }
+      cont.innerHTML = pagos.map((pago) => `
+        <div class="doc-card">
+          <div class="doc-card-head">
+            <div>
+              <strong>${money(pago.monto_total)}</strong>
+              <div class="doc-card-meta">${pago.fecha || "-"} · ${pago.tipo_pago || "-"}${pago.concepto ? " · " + pago.concepto : ""}</div>
+            </div>
+            <span class="pill ok">Registrado</span>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    // ── Items ───────────────────────────────────────────────────
+    async function ccAbrirModalItem() {
+      if (!ccProductosCache.length) {
+        try {
+          const res = await fetch("/productos");
+          ccProductosCache = res.ok ? await res.json() : [];
+        } catch { ccProductosCache = []; }
+      }
+      const select = document.getElementById("ccItemProducto");
+      const opciones = ccProductosCache
+        .filter((p) => Number(p.eliminado || 0) === 0)
+        .map((p) => `<option value="${p.id}">${p.nombre}${Number(p.maneja_stock) !== 1 ? " (sin stock)" : ""}</option>`)
+        .join("");
+      select.innerHTML = '<option value="">Sin producto (solo descripción)</option>' + opciones;
+      document.getElementById("ccItemDescripcion").value = "";
+      document.getElementById("ccItemCantidad").value = "";
+      document.getElementById("ccItemCosto").value = "";
+      document.getElementById("ccItemAfectaStock").checked = false;
+      document.getElementById("ccItemAfectaStock").disabled = true;
+      ccAbrirModal(document.getElementById("ccModalItem"));
+    }
+    function ccOnCambioItemProducto() {
+      const productoId = Number(document.getElementById("ccItemProducto").value || 0);
+      const checkbox = document.getElementById("ccItemAfectaStock");
+      if (!productoId) { checkbox.checked = false; checkbox.disabled = true; return; }
+      const producto = ccProductosCache.find((p) => Number(p.id) === productoId);
+      const manejaStock = producto && Number(producto.maneja_stock) === 1;
+      checkbox.disabled = !manejaStock;
+      if (!manejaStock) checkbox.checked = false;
+    }
+    async function ccGuardarItem() {
+      const productoId = document.getElementById("ccItemProducto").value;
+      const descripcion = document.getElementById("ccItemDescripcion").value.trim();
+      const cantidad = Number(document.getElementById("ccItemCantidad").value || 0);
+      const costo = Number(document.getElementById("ccItemCosto").value || 0);
+      const afectaStock = document.getElementById("ccItemAfectaStock").checked;
+      if (!productoId && !descripcion) { ccMostrarMensajeDetalle("Elegí un producto o escribí una descripción", true); return; }
+      if (!(cantidad > 0)) { ccMostrarMensajeDetalle("La cantidad comprada debe ser mayor a cero", true); return; }
+      const payload = {
+        items: [{
+          producto_id: productoId || null,
+          descripcion_snapshot: descripcion || undefined,
+          cantidad_comprada: cantidad,
+          costo_unitario: costo,
+          afecta_stock: afectaStock ? 1 : 0
+        }]
+      };
+      const { response, data } = await ccRequestJson("POST", `/compras/${ccCompraActualId}/items`, payload);
+      if (!response.ok) { ccMostrarMensajeDetalle(data?.message || "No se pudo agregar el item", true); return; }
+      ccCerrarModal(document.getElementById("ccModalItem"));
+      ccMostrarMensajeDetalle("Item agregado correctamente");
+      await ccCargarDetalle();
+    }
+
+    // ── Comprobantes ────────────────────────────────────────────
+    function ccAbrirModalComprobante() {
+      document.getElementById("ccCompTipo").value = "factura_a";
+      document.getElementById("ccCompPuntoVenta").value = "";
+      document.getElementById("ccCompNumero").value = "";
+      document.getElementById("ccCompFechaEmision").value = hoyISO();
+      document.getElementById("ccCompTotal").value = "";
+      document.getElementById("ccCompNeto").value = "";
+      document.getElementById("ccCompIva").value = "";
+      document.getElementById("ccCompObservaciones").value = "";
+      ccAbrirModal(document.getElementById("ccModalComprobante"));
+    }
+    async function ccGuardarComprobante() {
+      const total = Number(document.getElementById("ccCompTotal").value || 0);
+      if (total <= 0) { ccMostrarMensajeDetalle("El total del comprobante debe ser mayor a cero", true); return; }
+      const neto = document.getElementById("ccCompNeto").value;
+      const iva = document.getElementById("ccCompIva").value;
+      const payload = {
+        tipo_comprobante: document.getElementById("ccCompTipo").value,
+        punto_venta: document.getElementById("ccCompPuntoVenta").value.trim(),
+        numero_comprobante: document.getElementById("ccCompNumero").value.trim(),
+        fecha_emision: document.getElementById("ccCompFechaEmision").value || hoyISO(),
+        total_comprobante: total,
+        neto_gravado: neto === "" ? null : Number(neto),
+        iva_total: iva === "" ? null : Number(iva),
+        observaciones: document.getElementById("ccCompObservaciones").value.trim()
+      };
+      const { response, data } = await ccRequestJson("POST", `/compras/${ccCompraActualId}/comprobantes`, payload);
+      if (!response.ok) { ccMostrarMensajeDetalle(data?.message || "No se pudo registrar el comprobante", true); return; }
+      ccCerrarModal(document.getElementById("ccModalComprobante"));
+      ccMostrarMensajeDetalle("Comprobante registrado correctamente");
+      await ccCargarDetalle();
+    }
+    async function ccAnularComprobante(comprobanteId, motivo) {
+      const { response, data } = await ccRequestJson("POST", `/compras/${ccCompraActualId}/comprobantes/${comprobanteId}/anular`, { motivo });
+      if (!response.ok) { ccMostrarMensajeDetalle(data?.message || "No se pudo anular el comprobante", true); return; }
+      ccMostrarMensajeDetalle(data.message || "Comprobante anulado");
+      await ccCargarDetalle();
+    }
+
+    // ── Recepciones ─────────────────────────────────────────────
+    function ccAbrirModalRecepcion() {
+      document.getElementById("ccRecepcionFecha").value = hoyISO();
+      const items = (ccCompraActualDetalle?.items || []).filter((item) => Number(item.resumen_recepcion?.cantidad_pendiente || 0) > 0);
+      const cont = document.getElementById("ccRecepcionItemsBody");
+      const sinPendientes = document.getElementById("ccRecepcionSinPendientes");
+      if (!items.length) {
+        cont.innerHTML = "";
+        sinPendientes.classList.remove("compra-hidden");
+        document.getElementById("ccGuardarRecepcion").disabled = true;
+      } else {
+        sinPendientes.classList.add("compra-hidden");
+        document.getElementById("ccGuardarRecepcion").disabled = false;
+        cont.innerHTML = items.map((item) => {
+          const pendiente = Number(item.resumen_recepcion.cantidad_pendiente || 0);
+          return `
+            <div class="recepcion-item-row">
+              <div>
+                <strong>${item.descripcion_snapshot}</strong>
+                <div style="font-size:12px;color:var(--muted);">Pendiente: ${pendiente.toFixed(2)} ${item.unidad_snapshot || ""}</div>
+              </div>
+              <label style="margin:0;">Recibir ahora
+                <input type="number" class="field" data-cc-recepcion-item="${item.id}" data-pendiente="${pendiente}" min="0" max="${pendiente}" step="any" value="0" />
+              </label>
+            </div>
+          `;
+        }).join("");
+      }
+      ccAbrirModal(document.getElementById("ccModalRecepcion"));
+    }
+    async function ccGuardarRecepcion() {
+      const inputs = [...document.querySelectorAll("[data-cc-recepcion-item]")];
+      const items = inputs
+        .map((input) => ({
+          compra_item_id: Number(input.dataset.ccRecepcionItem),
+          cantidad_recibida: Number(input.value || 0)
+        }))
+        .filter((item) => item.cantidad_recibida > 0);
+      if (!items.length) { ccMostrarMensajeDetalle("Indicá una cantidad a recibir en al menos un item", true); return; }
+      const payload = {
+        idempotency_key: ccGenerarIdempotencyKey(),
+        fecha: document.getElementById("ccRecepcionFecha").value || hoyISO(),
+        items
+      };
+      const { response, data } = await ccRequestJson("POST", `/compras/${ccCompraActualId}/recepciones`, payload);
+      if (!response.ok) { ccMostrarMensajeDetalle(data?.message || "No se pudo registrar la recepción", true); return; }
+      ccCerrarModal(document.getElementById("ccModalRecepcion"));
+      ccMostrarMensajeDetalle(data.message || "Recepción registrada correctamente");
+      await ccCargarDetalle();
+    }
+    async function ccAnularRecepcion(recepcionId, motivo) {
+      const { response, data } = await ccRequestJson("POST", `/compras/${ccCompraActualId}/recepciones/${recepcionId}/anular`, { motivo });
+      if (!response.ok) { ccMostrarMensajeDetalle(data?.message || "No se pudo anular la recepción", true); return; }
+      ccMostrarMensajeDetalle(data.message || "Recepción anulada");
+      await ccCargarDetalle();
+    }
+
+    // ── Pagos de la compra (reutiliza el lenguaje visual de Salida rapida) ──
+    function ccSetMetodoPago(metodo) {
+      document.getElementById("ccPagoTipo").value = metodo;
+      document.querySelectorAll("[data-cc-metodo-pago]").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.ccMetodoPago === metodo);
+      });
+      ccActualizarBloquesPago();
+      ccCargarCuentasCobro(metodo);
+    }
+    function ccActualizarBloquesPago() {
+      const metodo = document.getElementById("ccPagoTipo").value;
+      document.getElementById("ccPagoBloqueMixto").classList.toggle("compra-hidden", metodo !== "mixto");
+      const select = document.getElementById("ccPagoCuentaCobro");
+      const wrap = document.getElementById("ccPagoCuentaCobroWrap");
+      const tieneCuentas = select && select.options.length > 1;
+      wrap.classList.toggle("compra-hidden", !(requiereCuentaCobroMetodoPago(metodo) && tieneCuentas));
+    }
+    async function ccCargarCuentasCobro(metodo) {
+      const select = document.getElementById("ccPagoCuentaCobro");
+      select.innerHTML = '<option value="">Sin asignar</option>';
+      document.getElementById("ccPagoCuentaCobroWrap").classList.add("compra-hidden");
+      if (!metodo) { ccActualizarBloquesPago(); return; }
+      const tipoCuenta = metodo === "mixto" ? "debito" : metodo;
+      try {
+        const res = await fetch(`/cuentas_cobro/tipo/${encodeURIComponent(tipoCuenta)}`);
+        if (!res.ok) throw new Error("fallo");
+        const cuentas = await res.json();
+        if (Array.isArray(cuentas)) {
+          cuentas.forEach((cuenta) => {
+            const opt = document.createElement("option");
+            opt.value = cuenta.id;
+            opt.textContent = cuenta.nombre;
+            select.appendChild(opt);
+          });
+        }
+        ccActualizarBloquesPago();
+      } catch {
+        ccActualizarBloquesPago();
+      }
+    }
+    function ccAbrirModalPago() {
+      const saldo = Number(ccCompraActualDetalle?.resumen_pago?.saldo_pendiente || 0);
+      document.getElementById("ccPagoSaldoHint").innerText = `Saldo pendiente: ${money(saldo)}`;
+      document.getElementById("ccPagoFecha").value = hoyISO();
+      document.getElementById("ccPagoMonto").value = "";
+      document.getElementById("ccPagoMonto").max = saldo;
+      document.getElementById("ccPagoMontoEfectivo").value = "";
+      document.getElementById("ccPagoMontoDebito").value = "";
+      document.getElementById("ccPagoConcepto").value = "";
+      ccSetMetodoPago("efectivo");
+      ccAbrirModal(document.getElementById("ccModalPago"));
+    }
+    async function ccGuardarPago() {
+      const monto = Number(document.getElementById("ccPagoMonto").value || 0);
+      if (monto <= 0) { ccMostrarMensajeDetalle("El monto debe ser mayor a cero", true); return; }
+      const metodo = document.getElementById("ccPagoTipo").value;
+      const montoEfectivo = Number(document.getElementById("ccPagoMontoEfectivo").value || 0);
+      const montoDebito = Number(document.getElementById("ccPagoMontoDebito").value || 0);
+      if (metodo === "mixto") {
+        const suma = Number((montoEfectivo + montoDebito).toFixed(2));
+        if (suma !== Number(monto.toFixed(2))) { ccMostrarMensajeDetalle("En pago mixto, efectivo + digital debe ser igual al importe", true); return; }
+      }
+      const cuentaCobroSelect = document.getElementById("ccPagoCuentaCobro");
+      const cuentaCobroWrap = document.getElementById("ccPagoCuentaCobroWrap");
+      const cuentaCobroId = cuentaCobroSelect.value;
+      if (!cuentaCobroWrap.classList.contains("compra-hidden") && !cuentaCobroId) {
+        ccMostrarMensajeDetalle("Seleccioná cuenta/terminal para registrar pagos digitales.", true);
+        return;
+      }
+      const payload = {
+        monto_total: monto,
+        tipo_pago: metodo,
+        monto_efectivo: montoEfectivo,
+        monto_debito: montoDebito,
+        fecha: document.getElementById("ccPagoFecha").value || hoyISO(),
+        cuenta_cobro_id: cuentaCobroId ? Number(cuentaCobroId) : null,
+        concepto: document.getElementById("ccPagoConcepto").value.trim() || undefined
+      };
+      const { response, data } = await ccRequestJson("POST", `/compras/${ccCompraActualId}/pagos`, payload);
+      if (!response.ok) { ccMostrarMensajeDetalle(data?.message || "No se pudo registrar el pago", true); return; }
+      ccCerrarModal(document.getElementById("ccModalPago"));
+      ccMostrarMensajeDetalle(data.message || "Pago registrado correctamente");
+      await ccCargarDetalle();
+      localStorage.setItem("atlas_caja_refresh", Date.now().toString());
+      await cargarPagos();
+      await cargarCaja();
+    }
+
+    // ── Anular compra ───────────────────────────────────────────
+    async function ccAnularCompra(motivo) {
+      const { response, data } = await ccRequestJson("POST", `/compras/${ccCompraActualId}/anular`, { motivo });
+      if (!response.ok) { ccMostrarMensajeDetalle(data?.message || "No se pudo anular la compra", true); return; }
+      ccMostrarMensajeDetalle(data.message || "Compra anulada correctamente");
+      await ccCargarDetalle();
+    }
+
+    // ── Modal generico de motivo ────────────────────────────────
+    function ccAbrirMotivo(titulo, callback) {
+      document.getElementById("ccMotivoTitulo").innerText = titulo;
+      document.getElementById("ccMotivoTexto").value = "";
+      ccMotivoCallback = callback;
+      ccAbrirModal(document.getElementById("ccModalMotivo"));
+    }
+    function ccConfirmarMotivo() {
+      const motivo = document.getElementById("ccMotivoTexto").value.trim();
+      if (!motivo) { ccMostrarMensajeDetalle("El motivo es obligatorio", true); return; }
+      ccCerrarModal(document.getElementById("ccModalMotivo"));
+      const callback = ccMotivoCallback;
+      ccMotivoCallback = null;
+      if (callback) callback(motivo);
+    }
+
+    // ── Wiring ──────────────────────────────────────────────────
+    // "+ Cargar compra" abre SIEMPRE la experiencia unica nueva (ccfModal). "Compras abiertas"
+    // (acceso secundario) abre el selector/detalle existente para continuar una compra ya
+    // iniciada -- misma vista efectiva de Pagos, sin gate nuevo.
+    document.getElementById("abrirCargarCompraModal")?.addEventListener("click", ccfAbrirModal);
+    document.getElementById("abrirComprasAbiertasModal")?.addEventListener("click", ccAbrirPrincipal);
+    document.getElementById("ccCerrarModal")?.addEventListener("click", ccCerrarPrincipal);
+    document.getElementById("ccModal")?.addEventListener("click", (e) => { if (e.target === document.getElementById("ccModal")) ccCerrarPrincipal(); });
+    document.getElementById("ccActualizarAbiertas")?.addEventListener("click", ccCargarComprasAbiertas);
+    document.getElementById("ccFiltroEstado")?.addEventListener("change", ccRenderizarSelector);
+
+    document.getElementById("ccBtnVolverSelector")?.addEventListener("click", ccVolverSelector);
+    document.getElementById("ccBtnAnularCompra")?.addEventListener("click", () => ccAbrirMotivo("Anular compra", ccAnularCompra));
+
+    document.getElementById("ccBtnAgregarItem")?.addEventListener("click", ccAbrirModalItem);
+    document.getElementById("ccCerrarModalItem")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalItem")));
+    document.getElementById("ccCancelarItem")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalItem")));
+    document.getElementById("ccItemProducto")?.addEventListener("change", ccOnCambioItemProducto);
+    document.getElementById("ccGuardarItem")?.addEventListener("click", ccGuardarItem);
+
+    document.getElementById("ccBtnNuevoComprobante")?.addEventListener("click", ccAbrirModalComprobante);
+    document.getElementById("ccCerrarModalComprobante")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalComprobante")));
+    document.getElementById("ccCancelarComprobante")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalComprobante")));
+    document.getElementById("ccGuardarComprobante")?.addEventListener("click", ccGuardarComprobante);
+
+    document.getElementById("ccBtnNuevaRecepcion")?.addEventListener("click", ccAbrirModalRecepcion);
+    document.getElementById("ccCerrarModalRecepcion")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalRecepcion")));
+    document.getElementById("ccCancelarRecepcion")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalRecepcion")));
+    document.getElementById("ccGuardarRecepcion")?.addEventListener("click", ccGuardarRecepcion);
+
+    document.getElementById("ccBtnNuevoPago")?.addEventListener("click", ccAbrirModalPago);
+    document.getElementById("ccCerrarModalPago")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalPago")));
+    document.getElementById("ccCancelarPago")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalPago")));
+    document.getElementById("ccGuardarPago")?.addEventListener("click", ccGuardarPago);
+    document.getElementById("ccMetodosPagoBotones")?.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-cc-metodo-pago]");
+      if (btn) ccSetMetodoPago(btn.dataset.ccMetodoPago);
+    });
+
+    document.getElementById("ccCerrarModalMotivo")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalMotivo")));
+    document.getElementById("ccCancelarMotivo")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalMotivo")));
+    document.getElementById("ccConfirmarMotivo")?.addEventListener("click", ccConfirmarMotivo);
+
+    // ══════════════ Cargar compra: experiencia unica (F3E-2, ajustada) ══════════════
+    // Una sola modal: transcribir una factura de arriba hacia abajo. Los items viven SOLO
+    // en memoria (ccfItems) hasta "Guardar" -- recien ahi se llama a la secuencia real:
+    // POST /compras -> /items -> /comprobantes -> (si monto pagado > 0) /pagos. Recepcion
+    // queda fuera de esta modal a proposito (Compra != Comprobante != Pago != Recepcion):
+    // se hace despues desde "Compras abiertas". El operador NO carga neto/IVA a mano: elige
+    // una vez si los precios son Final/Neto y una alicuota por renglon, y Atlas deriva el
+    // resto (ccfCalcularLinea) agrupando por alicuota para compra_comprobante_iva.
+    let ccfItems = [];
+    let ccfMontoPagadoTocado = false;
+    let ccfGuardando = false;
+    let ccfProductosCacheLocal = [];
+    let ccfProveedoresCacheLocal = [];
+    let ccfObservacionValor = "";
+
+    function ccfMostrarMensaje(texto, esError = false) {
+      const el = document.getElementById("ccfMensaje");
+      if (!el) return;
+      el.innerText = texto;
+      el.style.color = esError ? "var(--danger)" : "var(--success)";
+    }
+
+    // Deriva neto/IVA/final de un renglon a partir del precio ingresado, la alicuota
+    // elegida y el modo global (Final/IVA incluido, o Neto/sin IVA). Pura funcion de
+    // aritmetica -- el usuario nunca carga neto/IVA a mano.
+    function ccfCalcularLinea(precioIngresado, alicuota, modo) {
+      const precio = Number(precioIngresado) || 0;
+      const tasa = Number(alicuota) || 0;
+      let neto, iva, final;
+      if (modo === "neto") {
+        neto = Number(precio.toFixed(2));
+        iva = Number((neto * tasa / 100).toFixed(2));
+        final = Number((neto + iva).toFixed(2));
+      } else {
+        final = Number(precio.toFixed(2));
+        neto = Number((final / (1 + tasa / 100)).toFixed(2));
+        iva = Number((final - neto).toFixed(2));
+      }
+      return { neto, iva, final };
+    }
+
+    async function ccfAbrirModal() {
+      ccfItems = [];
+      ccfMontoPagadoTocado = false;
+      ccfGuardando = false;
+      ccfObservacionValor = "";
+      ccfMostrarMensaje("");
+
+      document.querySelectorAll(".ccf-paso").forEach((el) => el.hidden = false);
+      document.getElementById("ccfResumenFinal").classList.add("compra-hidden");
+      document.getElementById("ccfAccionesNormal").classList.remove("compra-hidden");
+      document.getElementById("ccfAccionesFinal").classList.add("compra-hidden");
+      document.getElementById("ccfObservacionIndicador").classList.add("compra-hidden");
+
+      document.getElementById("ccfFecha").value = hoyISO();
+      document.getElementById("ccfTipoComprobante").value = "factura_a";
+      document.getElementById("ccfPuntoVenta").value = "";
+      document.getElementById("ccfNumeroComprobante").value = "";
+      ccfProductoSeleccionadoId = null;
+      document.getElementById("ccfProductoInput").value = "";
+      document.getElementById("ccfProductoDropdown").innerHTML = "";
+      document.getElementById("ccfProductoDropdown").classList.add("compra-hidden");
+      document.getElementById("ccfCostoActualRef").innerText = "";
+      document.getElementById("ccfCantidad").value = "";
+      document.getElementById("ccfCostoUnitario").value = "";
+      document.getElementById("ccfItemAlicuota").value = "21";
+      document.getElementById("ccfMontoPagado").value = "";
+      document.getElementById("ccfMontoEfectivo").value = "";
+      document.getElementById("ccfMontoDebito").value = "";
+
+      try {
+        const res = await fetch("/proveedores");
+        const proveedores = res.ok ? await res.json() : [];
+        ccfProveedoresCacheLocal = proveedores;
+        const select = document.getElementById("ccfProveedor");
+        select.innerHTML = proveedores
+          .filter((p) => Number(p.activo) === 1)
+          .map((p) => `<option value="${p.id}">${p.nombre}</option>`)
+          .join("") || '<option value="">Sin proveedores activos</option>';
+      } catch { ccfProveedoresCacheLocal = []; document.getElementById("ccfProveedor").innerHTML = '<option value="">Sin proveedores activos</option>'; }
+
+      try {
+        const res = await fetch("/productos");
+        ccfProductosCacheLocal = res.ok ? await res.json() : [];
+      } catch { ccfProductosCacheLocal = []; }
+
+      ccfSetMetodoPago("efectivo");
+      ccfRenderizarItems();
+      ccfRecalcularTotales();
+      ccAbrirModal(document.getElementById("ccfModal"));
+      setTimeout(() => document.getElementById("ccfProveedor")?.focus(), 0);
+    }
+
+    function ccfCerrarModal() { ccCerrarModal(document.getElementById("ccfModal")); }
+
+    // ── Observacion (opcional, en memoria hasta Guardar) ─────────
+    function ccfAbrirModalObservacion() {
+      document.getElementById("ccfObservacionTexto").value = ccfObservacionValor;
+      ccAbrirModal(document.getElementById("ccfModalObservacion"));
+      setTimeout(() => document.getElementById("ccfObservacionTexto")?.focus(), 0);
+    }
+    function ccfCerrarModalObservacion() { ccCerrarModal(document.getElementById("ccfModalObservacion")); }
+    function ccfGuardarObservacion() {
+      ccfObservacionValor = document.getElementById("ccfObservacionTexto").value.trim();
+      document.getElementById("ccfObservacionIndicador").classList.toggle("compra-hidden", !ccfObservacionValor);
+      ccfCerrarModalObservacion();
+    }
+
+    // ── Productos ───────────────────────────────────────────────
+    function ccfNorm(v) { return String(v || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim(); }
+    let ccfProductoSeleccionadoId = null;
+
+    // Costo actual del producto (solo referencia -- nunca se autocompleta en "Costo unit.",
+    // que siempre representa el costo segun la factura que esta transcribiendo el operador).
+    function ccfCostoActualProducto(producto) {
+      const costo = Number(producto?.costo_teorico || 0);
+      return costo > 0 ? costo : null;
+    }
+
+    // IVA configurado del producto, solo si el modelo actual lo deja inequivoco y coincide
+    // con una de las alicuotas ya soportadas (21 / 10,5 / 27 / 0). Es un DEFAULT, no una
+    // imposicion: el selector de la fila sigue siendo editable a mano.
+    function ccfIvaConfiguradoProducto(producto) {
+      if (!producto) return null;
+      const OPCIONES_VALIDAS = [21, 10.5, 27, 0];
+      if (producto.modelo_fiscal === "normalizado") {
+        const tratamiento = String(producto.iva_venta_tratamiento || "").toLowerCase();
+        if (tratamiento === "exento" || tratamiento === "no_gravado") return 0;
+        if (tratamiento === "gravado") {
+          const alicuota = Number(producto.iva_venta_alicuota);
+          if (OPCIONES_VALIDAS.includes(alicuota)) return alicuota;
+        }
+        return null;
+      }
+      const legacy = Number(producto.iva_porcentaje);
+      return OPCIONES_VALIDAS.includes(legacy) && legacy > 0 ? legacy : null;
+    }
+
+    // Como se interpreta el costo unitario cargado para este producto: 1 = el precio
+    // ingresado ya incluye IVA (final), 0 = el precio ingresado es neto (sin IVA). El
+    // colaborador no elige esto en la modal -- lo define la configuracion del producto.
+    // undefined/null (contrato no lo entrego, p.ej. Stock reducido + Pagos reducido) NUNCA
+    // se interpreta como Neto: se trata como "sin dato" para bloquear el alta del item.
+    function ccfModoPrecioProducto(producto) {
+      const v = producto?.precio_compra_incluye_iva;
+      if (v === undefined || v === null) return null;
+      return Number(v) === 1 ? "final" : "neto";
+    }
+
+    // Tipo de comprobante configurado en el proveedor (factura_a/b/c, ticket, recibo, etc.),
+    // solo si coincide con una opcion ya soportada por el selector. Es un DEFAULT que ahorra
+    // carga manual -- nunca se impone: el operador sigue pudiendo elegir otro tipo si el
+    // documento real de esa compra puntual es distinto (nota de credito/debito, etc.).
+    function ccfTipoComprobanteDefaultProveedor(proveedor) {
+      const OPCIONES_VALIDAS = ["factura_a", "factura_b", "factura_c", "ticket", "recibo", "nota_credito", "nota_debito", "otro"];
+      const tipo = String(proveedor?.tipo_comprobante || "").toLowerCase().trim();
+      return OPCIONES_VALIDAS.includes(tipo) ? tipo : null;
+    }
+
+    function ccfRenderizarDropdownProducto(filtro) {
+      const cont = document.getElementById("ccfProductoDropdown");
+      const texto = ccfNorm(filtro);
+      if (!texto) { cont.innerHTML = ""; cont.classList.add("compra-hidden"); return; }
+      const disponibles = ccfProductosCacheLocal
+        .filter((p) => Number(p.eliminado || 0) === 0)
+        .filter((p) => ccfNorm(p.nombre).includes(texto))
+        .slice(0, 8);
+      cont.innerHTML = disponibles.length
+        ? disponibles.map((p) => `<button type="button" class="ccf-dropdown-item" data-ccf-producto-opcion="${p.id}">${p.nombre}</button>`).join("")
+        : '<div class="ccf-dropdown-empty">Sin resultados</div>';
+      cont.classList.remove("compra-hidden");
+      cont.querySelectorAll("[data-ccf-producto-opcion]").forEach((btn) => {
+        btn.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          ccfSeleccionarProducto(Number(btn.dataset.ccfProductoOpcion));
+        });
+      });
+    }
+
+    function ccfSeleccionarProducto(productoId) {
+      const producto = ccfProductosCacheLocal.find((p) => Number(p.id) === productoId);
+      if (!producto) return;
+      ccfProductoSeleccionadoId = productoId;
+      document.getElementById("ccfProductoInput").value = producto.nombre;
+      document.getElementById("ccfProductoDropdown").classList.add("compra-hidden");
+      document.getElementById("ccfProductoDropdown").innerHTML = "";
+
+      const costoActual = ccfCostoActualProducto(producto);
+      document.getElementById("ccfCostoActualRef").innerText = costoActual !== null ? `Actual: ${money(costoActual)}` : "Actual: sin referencia";
+
+      const ivaConfigurado = ccfIvaConfiguradoProducto(producto);
+      document.getElementById("ccfItemAlicuota").value = ivaConfigurado !== null ? String(ivaConfigurado) : "21";
+    }
+
+    function ccfAgregarItem() {
+      const productoId = ccfProductoSeleccionadoId;
+      const cantidad = Number(document.getElementById("ccfCantidad").value || 0);
+      const costoUnitario = Number(document.getElementById("ccfCostoUnitario").value || 0);
+      const alicuota = Number(document.getElementById("ccfItemAlicuota").value || 0);
+      if (!productoId) { ccfMostrarMensaje("Elegí un producto de la lista", true); return; }
+      if (!(cantidad > 0)) { ccfMostrarMensaje("La cantidad debe ser mayor a cero", true); return; }
+      if (costoUnitario < 0) { ccfMostrarMensaje("El costo unitario no puede ser negativo", true); return; }
+      const producto = ccfProductosCacheLocal.find((p) => Number(p.id) === productoId);
+      if (!producto) { ccfMostrarMensaje("Producto inválido", true); return; }
+      const modo = ccfModoPrecioProducto(producto);
+      if (modo === null) { ccfMostrarMensaje("Falta configurar si el precio de compra incluye IVA para este producto", true); return; }
+      // ccfCalcularLinea recibe el importe de LINEA (cantidad x costo_unitario), no el
+      // unitario: TOTAL FACTURA y el desglose fiscal deben considerar la cantidad de cada item.
+      const calc = ccfCalcularLinea(cantidad * costoUnitario, alicuota, modo);
+      ccfItems.push({
+        producto_id: productoId,
+        descripcion: producto.nombre,
+        unidad: producto.unidad_medida || "",
+        cantidad,
+        costo_unitario: costoUnitario,
+        alicuota,
+        subtotal: Number((cantidad * costoUnitario).toFixed(2)),
+        neto: calc.neto,
+        iva: calc.iva,
+        final: calc.final
+      });
+      ccfProductoSeleccionadoId = null;
+      document.getElementById("ccfProductoInput").value = "";
+      document.getElementById("ccfCostoActualRef").innerText = "";
+      document.getElementById("ccfCantidad").value = "";
+      document.getElementById("ccfCostoUnitario").value = "";
+      document.getElementById("ccfItemAlicuota").value = "21";
+      ccfMostrarMensaje("");
+      ccfRenderizarItems();
+      ccfRecalcularTotales();
+    }
+
+    function ccfQuitarItem(idx) {
+      ccfItems.splice(idx, 1);
+      ccfRenderizarItems();
+      ccfRecalcularTotales();
+    }
+
+    function ccfEtiquetaAlicuota(alicuota) {
+      const n = Number(alicuota);
+      return n === 0 ? "0%" : `${n}%`.replace(".", ",");
+    }
+
+    function ccfRenderizarItems() {
+      const cont = document.getElementById("ccfTablaItems");
+      if (!ccfItems.length) {
+        cont.innerHTML = '<tr><td colspan="6" class="cc-empty-note">Todavía no agregaste productos.</td></tr>';
+        return;
+      }
+      cont.innerHTML = ccfItems.map((item, idx) => `
+        <tr>
+          <td data-label="Producto">${item.descripcion}</td>
+          <td data-label="Cant.">${Number(item.cantidad).toFixed(2)} ${item.unidad || ""}</td>
+          <td data-label="Costo unit.">${money(item.costo_unitario)}</td>
+          <td data-label="IVA">${ccfEtiquetaAlicuota(item.alicuota)}</td>
+          <td data-label="Subtotal">${money(item.subtotal)}</td>
+          <td><button type="button" class="button secondary compact" data-ccf-quitar-item="${idx}">✕</button></td>
+        </tr>
+      `).join("");
+      cont.querySelectorAll("[data-ccf-quitar-item]").forEach((btn) => {
+        btn.addEventListener("click", () => ccfQuitarItem(Number(btn.dataset.ccfQuitarItem)));
+      });
+    }
+
+    // Agrupa los renglones por alicuota para construir el payload de
+    // compra_comprobante_iva -- este agrupamiento nunca se muestra al usuario.
+    function ccfAgruparPorAlicuota() {
+      const grupos = new Map();
+      ccfItems.forEach((item) => {
+        const key = Number(item.alicuota);
+        const actual = grupos.get(key) || { alicuota: key, neto: 0, iva: 0 };
+        actual.neto = Number((actual.neto + item.neto).toFixed(2));
+        actual.iva = Number((actual.iva + item.iva).toFixed(2));
+        grupos.set(key, actual);
+      });
+      return [...grupos.values()];
+    }
+
+    // ── Totales en vivo ─────────────────────────────────────────
+    function ccfRecalcularTotales() {
+      const totalFactura = Number(ccfItems.reduce((acc, item) => acc + Number(item.final || 0), 0).toFixed(2));
+      document.getElementById("ccfTotalFactura").innerText = money(totalFactura);
+
+      const montoPagadoInput = document.getElementById("ccfMontoPagado");
+      if (!ccfMontoPagadoTocado) montoPagadoInput.value = totalFactura > 0 ? totalFactura.toFixed(2) : "";
+      const montoPagado = Number(montoPagadoInput.value || 0);
+      const saldo = Number((totalFactura - montoPagado).toFixed(2));
+      document.getElementById("ccfSaldoPreview").innerText = money(saldo);
+
+      document.getElementById("ccfPagoDetalle").classList.toggle("compra-hidden", !(montoPagado > 0));
+    }
+
+    // ── Metodo de pago (mismo lenguaje visual que Salida rapida) ─
+    function ccfSetMetodoPago(metodo) {
+      document.getElementById("ccfTipoPago").value = metodo;
+      document.querySelectorAll("[data-ccf-metodo-pago]").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.ccfMetodoPago === metodo);
+      });
+      ccfActualizarBloquesPago();
+      ccfCargarCuentasCobro(metodo);
+    }
+    function ccfActualizarBloquesPago() {
+      const metodo = document.getElementById("ccfTipoPago").value;
+      document.getElementById("ccfBloqueMixto").classList.toggle("compra-hidden", metodo !== "mixto");
+      const select = document.getElementById("ccfCuentaCobro");
+      const wrap = document.getElementById("ccfCuentaCobroWrap");
+      const tieneCuentas = select && select.options.length > 1;
+      wrap.classList.toggle("compra-hidden", !(requiereCuentaCobroMetodoPago(metodo) && tieneCuentas));
+    }
+    async function ccfCargarCuentasCobro(metodo) {
+      const select = document.getElementById("ccfCuentaCobro");
+      select.innerHTML = '<option value="">Sin asignar</option>';
+      document.getElementById("ccfCuentaCobroWrap").classList.add("compra-hidden");
+      if (!metodo) { ccfActualizarBloquesPago(); return; }
+      const tipoCuenta = metodo === "mixto" ? "debito" : metodo;
+      try {
+        const res = await fetch(`/cuentas_cobro/tipo/${encodeURIComponent(tipoCuenta)}`);
+        if (!res.ok) throw new Error("fallo");
+        const cuentas = await res.json();
+        if (Array.isArray(cuentas)) {
+          cuentas.forEach((cuenta) => {
+            const opt = document.createElement("option");
+            opt.value = cuenta.id;
+            opt.textContent = cuenta.nombre;
+            select.appendChild(opt);
+          });
+        }
+        ccfActualizarBloquesPago();
+      } catch {
+        ccfActualizarBloquesPago();
+      }
+    }
+
+    // ── Guardado: unica secuencia real contra el backend F3 ──────
+    async function ccfGuardar() {
+      if (ccfGuardando) return;
+
+      const proveedorId = Number(document.getElementById("ccfProveedor").value || 0);
+      const fecha = document.getElementById("ccfFecha").value || hoyISO();
+      const tipoComprobante = document.getElementById("ccfTipoComprobante").value;
+      const numeroComprobante = document.getElementById("ccfNumeroComprobante").value.trim();
+      const totalFactura = Number(ccfItems.reduce((acc, item) => acc + Number(item.final || 0), 0).toFixed(2));
+
+      if (!proveedorId) { ccfMostrarMensaje("Elegí un proveedor", true); return; }
+      if (!numeroComprobante) { ccfMostrarMensaje("El número de comprobante es obligatorio", true); return; }
+      if (!ccfItems.length) { ccfMostrarMensaje("Agregá al menos un producto", true); return; }
+      if (!(totalFactura > 0)) { ccfMostrarMensaje("El total de la factura debe ser mayor a cero", true); return; }
+
+      const montoPagado = Number(document.getElementById("ccfMontoPagado").value || 0);
+      const btn = document.getElementById("ccfBtnGuardar");
+      ccfGuardando = true;
+      btn.disabled = true;
+      ccfMostrarMensaje("Guardando...");
+
+      let compraId = null;
+      try {
+        const compra = await ccRequestJson("POST", "/compras", {
+          proveedor_id: proveedorId,
+          fecha_compra: fecha,
+          tipo_impacto: "costo_variable_mercaderia",
+          observaciones: ccfObservacionValor,
+          total_compra: totalFactura
+        });
+        if (!compra.response.ok) { ccfMostrarMensaje(compra.data?.message || "No se pudo registrar la compra", true); return; }
+        compraId = compra.data.compra.id;
+
+        const items = await ccRequestJson("POST", `/compras/${compraId}/items`, {
+          items: ccfItems.map((item) => ({
+            producto_id: item.producto_id,
+            cantidad_comprada: item.cantidad,
+            costo_unitario: item.costo_unitario,
+            afecta_stock: 1
+          }))
+        });
+        if (!items.response.ok) {
+          ccfMostrarMensaje(`La compra quedó guardada parcialmente (sin productos: ${items.data?.message || "error"}). Podés continuarla desde Compras abiertas.`, true);
+          await ccCargarComprasAbiertas();
+          return;
+        }
+
+        const grupos = ccfAgruparPorAlicuota();
+        const comprobante = await ccRequestJson("POST", `/compras/${compraId}/comprobantes`, {
+          tipo_comprobante: tipoComprobante,
+          punto_venta: document.getElementById("ccfPuntoVenta").value.trim(),
+          numero_comprobante: numeroComprobante,
+          fecha_emision: fecha,
+          total_comprobante: totalFactura,
+          neto_gravado: Number(grupos.reduce((acc, g) => acc + g.neto, 0).toFixed(2)),
+          iva_total: Number(grupos.reduce((acc, g) => acc + g.iva, 0).toFixed(2)),
+          monto_exento: 0,
+          monto_no_gravado: 0,
+          otros_tributos: 0,
+          alicuotas: grupos.map((g) => ({ alicuota: g.alicuota, neto_gravado: g.neto, iva_monto: g.iva }))
+        });
+        if (!comprobante.response.ok) {
+          ccfMostrarMensaje(`La compra y los productos quedaron guardados (sin comprobante: ${comprobante.data?.message || "error"}). Podés continuarla desde Compras abiertas.`, true);
+          await ccCargarComprasAbiertas();
+          return;
+        }
+
+        if (montoPagado > 0) {
+          const metodo = document.getElementById("ccfTipoPago").value;
+          const cuentaCobroId = document.getElementById("ccfCuentaCobro").value;
+          const pago = await ccRequestJson("POST", `/compras/${compraId}/pagos`, {
+            monto_total: montoPagado,
+            tipo_pago: metodo,
+            monto_efectivo: Number(document.getElementById("ccfMontoEfectivo").value || 0),
+            monto_debito: Number(document.getElementById("ccfMontoDebito").value || 0),
+            fecha,
+            cuenta_cobro_id: cuentaCobroId ? Number(cuentaCobroId) : null
+          });
+          if (!pago.response.ok) {
+            ccfMostrarMensaje(`La compra, los productos y el comprobante quedaron guardados (el pago no se pudo registrar: ${pago.data?.message || "error"}). Podés reintentar el pago desde Compras abiertas.`, true);
+            await ccCargarComprasAbiertas();
+            return;
+          }
+          localStorage.setItem("atlas_caja_refresh", Date.now().toString());
+          await cargarPagos();
+          await cargarCaja();
+        }
+
+        await ccCargarComprasAbiertas();
+        ccfMostrarResumenFinal({ numeroComprobante, cantidadItems: ccfItems.length, totalFactura, montoPagado, saldo: Number((totalFactura - montoPagado).toFixed(2)) });
+      } catch (error) {
+        console.error("Error al guardar la compra:", error);
+        ccfMostrarMensaje(compraId ? "La compra quedó guardada parcialmente. Podés continuarla desde Compras abiertas." : "Error al guardar la compra", true);
+      } finally {
+        ccfGuardando = false;
+        btn.disabled = false;
+      }
+    }
+
+    function ccfMostrarResumenFinal({ numeroComprobante, cantidadItems, totalFactura, montoPagado, saldo }) {
+      document.querySelectorAll(".ccf-paso").forEach((el) => el.hidden = true);
+      document.getElementById("ccfAccionesNormal").classList.add("compra-hidden");
+      document.getElementById("ccfAccionesFinal").classList.remove("compra-hidden");
+      document.getElementById("ccfResumenFinal").classList.remove("compra-hidden");
+      document.getElementById("ccfResumenFinalContenido").innerHTML = `
+        <p>Factura ${numeroComprobante}</p>
+        <p>${cantidadItems} producto${cantidadItems === 1 ? "" : "s"}</p>
+        <div class="compra-resumen-grid" style="grid-template-columns:repeat(3,minmax(0,1fr));padding:0;">
+          <div class="compra-resumen-item"><span>Total</span><strong>${money(totalFactura)}</strong></div>
+          <div class="compra-resumen-item"><span>Pagado</span><strong>${money(montoPagado)}</strong></div>
+          <div class="compra-resumen-item"><span>Saldo</span><strong>${money(saldo)}</strong></div>
+        </div>
+      `;
+      ccfMostrarMensaje("");
+    }
+
+    // ── Wiring ──────────────────────────────────────────────────
+    document.getElementById("ccfCancelar")?.addEventListener("click", ccfCerrarModal);
+    document.getElementById("ccfCerrarFinal")?.addEventListener("click", ccfCerrarModal);
+    document.getElementById("ccfModal")?.addEventListener("click", (e) => { if (e.target === document.getElementById("ccfModal")) ccfCerrarModal(); });
+
+    document.getElementById("ccfProveedor")?.addEventListener("change", (e) => {
+      const proveedor = ccfProveedoresCacheLocal.find((p) => Number(p.id) === Number(e.target.value));
+      const tipoDefault = ccfTipoComprobanteDefaultProveedor(proveedor);
+      if (tipoDefault) document.getElementById("ccfTipoComprobante").value = tipoDefault;
+    });
+
+    document.getElementById("ccfBtnAgregarObservacion")?.addEventListener("click", ccfAbrirModalObservacion);
+    document.getElementById("ccfCerrarModalObservacion")?.addEventListener("click", ccfCerrarModalObservacion);
+    document.getElementById("ccfCancelarObservacion")?.addEventListener("click", ccfCerrarModalObservacion);
+    document.getElementById("ccfGuardarObservacion")?.addEventListener("click", ccfGuardarObservacion);
+
+    document.getElementById("ccfProductoInput")?.addEventListener("input", (e) => {
+      ccfProductoSeleccionadoId = null;
+      document.getElementById("ccfCostoActualRef").innerText = "";
+      ccfRenderizarDropdownProducto(e.target.value);
+    });
+    document.getElementById("ccfProductoInput")?.addEventListener("focus", (e) => {
+      if (e.target.value && !ccfProductoSeleccionadoId) ccfRenderizarDropdownProducto(e.target.value);
+    });
+    document.getElementById("ccfProductoInput")?.addEventListener("blur", () => {
+      setTimeout(() => document.getElementById("ccfProductoDropdown")?.classList.add("compra-hidden"), 150);
+    });
+    document.getElementById("ccfBtnAgregarItem")?.addEventListener("click", ccfAgregarItem);
+
+    document.getElementById("ccfMontoPagado")?.addEventListener("input", () => { ccfMontoPagadoTocado = true; ccfRecalcularTotales(); });
+
+    document.getElementById("ccfMetodosPagoBotones")?.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-ccf-metodo-pago]");
+      if (btn) ccfSetMetodoPago(btn.dataset.ccfMetodoPago);
+    });
+
+    document.getElementById("ccfBtnGuardar")?.addEventListener("click", ccfGuardar);
   </script>
   <script src="/nav-permissions.js?v=6" defer></script>
   <script src="/mobile-nav.js?v=1"></script>

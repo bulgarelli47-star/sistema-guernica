@@ -13,7 +13,9 @@ const {
   requirePermiso,
   sanitizarConfiguracionParaRol,
   serializarConfigValor,
-  tienePermisoAccion
+  tienePermisoAccion,
+  tieneVistaCompleta,
+  requireVistaCompleta
 } = require("./services/configService");
 const {
   normalizarInsumosCostos,
@@ -392,7 +394,10 @@ async function requireServerPermissions(req, res, next) {
     || pathname.startsWith("/categorias")
   ) {
     if (esLectura) return next();
-    if (!puedeRol(req, ROLES.ADMIN_ENCARGADO)) return res.status(403).json({ message: "No tenes permisos para modificar stock" });
+    // Vista efectiva de *Stock, no nombre de rol: un rol con Stock=completa configurado
+    // debe poder mutar; el permiso de accion especifico (stock_crear_producto, etc.) sigue
+    // gobernando la capacidad puntual dentro de esa vista.
+    if (!(await tieneVistaCompleta(req, "stock"))) return res.status(403).json({ message: "No tenes permisos para modificar stock" });
     return next();
   }
 
@@ -2031,7 +2036,8 @@ app.post("/productos/imagen", async (req, res) => {
 
 // Crear producto
 app.post("/productos", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_crear_producto", "No tenes permisos para crear productos"))) return;
+  // Crear producto pertenece al contrato Completo/Reducido de *Stock: la vista efectiva ya
+  // se exige en el middleware global (requireServerPermissions, prefijo /productos).
 
   const {
     nombre,
@@ -2343,9 +2349,23 @@ app.get("/productos", async (req, res) => {
     });
 
     const CAMPOS_COSTO = ["precio_compra","costo_final","costo_teorico","costo_consumo_unitario","margen_porcentaje","precio_sugerido","precio_referencial_proveedor","precio_compra_incluye_iva","costo_economico","precio_neto_sugerido","iva_sugerido","precio_final_sugerido","precio_neto_desde_final","iva_desde_final"];
-    const productos = !puedeRol(req, ROLES.ADMIN_ENCARGADO)
-      ? enriquecidos.map(p => { const f = { ...p }; CAMPOS_COSTO.forEach(c => delete f[c]); return f; })
-      : enriquecidos;
+    // Vista efectiva de *Stock, no nombre de rol: ver costos es una capacidad de Stock=completa.
+    const stockCompleto = await tieneVistaCompleta(req, "stock");
+    let productos;
+    if (stockCompleto) {
+      productos = enriquecidos;
+    } else {
+      // *Pagos=completa necesita precio_compra_incluye_iva para interpretar el costo unitario
+      // de Cargar compra (final vs neto), sin exponer ningun monto de costo real: se
+      // preserva solo ese booleano, el resto de CAMPOS_COSTO se sigue redactando igual.
+      const pagosCompleto = await tieneVistaCompleta(req, "pagos");
+      productos = enriquecidos.map(p => {
+        const f = { ...p };
+        CAMPOS_COSTO.forEach(c => delete f[c]);
+        if (pagosCompleto) f.precio_compra_incluye_iva = p.precio_compra_incluye_iva;
+        return f;
+      });
+    }
     return res.json(productos);
   } catch (err) {
     logError("Error al listar productos:", err);
@@ -2355,7 +2375,8 @@ app.get("/productos", async (req, res) => {
 
 // Editar producto
 app.put("/productos/:id", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar productos"))) return;
+  // Editar producto pertenece al contrato Completo/Reducido de *Stock (vista ya exigida
+  // por el middleware global, prefijo /productos).
 
   const productoId = Number(req.params.id);
   const {
@@ -2544,7 +2565,8 @@ app.put("/productos/:id", async (req, res) => {
 });
 
 app.patch("/productos/:id/inactivar", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_eliminar_producto", "No tenes permisos para eliminar productos"))) return;
+  // Cambio de estado pertenece al contrato Completo/Reducido de *Stock (vista ya exigida
+  // por el middleware global, prefijo /productos).
 
   const productoId = Number(req.params.id);
 
@@ -2566,7 +2588,8 @@ app.patch("/productos/:id/inactivar", async (req, res) => {
 });
 
 app.patch("/productos/:id/combo", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar productos"))) return;
+  // Acciones de combo pertenecen al contrato Completo/Reducido de *Stock (vista ya exigida
+  // por el middleware global, prefijo /productos).
 
   const productoId = Number(req.params.id);
   const aplicaParaCombo = req.body?.aplica_para_combo ? 1 : 0;
@@ -2661,7 +2684,8 @@ app.post("/admin/combo-aplicar", async (req, res) => {
 });
 
 app.post("/productos_compuestos", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_crear_producto", "No tenes permisos para crear productos"))) return;
+  // Crear producto/combo pertenece al contrato Completo/Reducido de *Stock (vista ya exigida
+  // por el middleware global, prefijo /productos_compuestos).
 
   const {
     nombre,
@@ -2829,7 +2853,8 @@ app.get("/productos_compuestos/:id/stock_disponible", async (req, res) => {
 });
 
 app.patch("/productos/aumento-masivo", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar productos"))) return;
+  // Aumento masivo pertenece al contrato Completo/Reducido de *Stock (vista ya exigida
+  // por el middleware global, prefijo /productos).
 
   const proveedorId = req.body?.proveedor_id ? Number(req.body.proveedor_id) : null;
   const categoriaId = req.body?.categoria_id ? Number(req.body.categoria_id) : null;
@@ -2903,7 +2928,8 @@ app.patch("/productos/aumento-masivo", async (req, res) => {
 });
 
 app.patch("/productos/:id/reactivar", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar productos"))) return;
+  // Cambio de estado pertenece al contrato Completo/Reducido de *Stock (vista ya exigida
+  // por el middleware global, prefijo /productos).
 
   const productoId = Number(req.params.id);
 
@@ -2929,7 +2955,8 @@ app.patch("/productos/:id/reactivar", async (req, res) => {
 });
 
 app.patch("/productos/:id/restaurar", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar productos"))) return;
+  // Restaurar producto pertenece al contrato Completo/Reducido de *Stock (vista ya exigida
+  // por el middleware global, prefijo /productos).
 
   const productoId = Number(req.params.id);
 
@@ -2965,7 +2992,8 @@ app.patch("/productos/:id/restaurar", async (req, res) => {
 });
 
 app.delete("/productos/:id", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_eliminar_producto", "No tenes permisos para eliminar productos"))) return;
+  // Archivar/eliminar producto pertenece al contrato Completo/Reducido de *Stock (vista ya
+  // exigida por el middleware global, prefijo /productos).
 
   const productoId = Number(req.params.id);
   const clave = String(req.body?.clave || req.body?.authorization_code || "").trim();
@@ -3028,7 +3056,8 @@ app.get("/categorias", async (req, res) => {
 });
 
 app.post("/categorias", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_crear_producto", "No tenes permisos para crear categorias"))) return;
+  // Gestion de categorias pertenece al contrato Completo/Reducido de *Stock (vista ya
+  // exigida por el middleware global, prefijo /categorias).
 
   const nombre = String(req.body.nombre || "").trim();
   const margen = Number(req.body.margen_porcentaje) || 0;
@@ -3052,7 +3081,8 @@ app.post("/categorias", async (req, res) => {
 });
 
 app.put("/categorias/:id", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar categorias"))) return;
+  // Gestion de categorias pertenece al contrato Completo/Reducido de *Stock (vista ya
+  // exigida por el middleware global, prefijo /categorias).
 
   const categoriaId = Number(req.params.id);
   const nombre = String(req.body.nombre || "").trim();
@@ -3077,6 +3107,12 @@ app.put("/categorias/:id", async (req, res) => {
 });
 
 app.get("/productos/:id/costos-insumos", async (req, res) => {
+  // Se lee unicamente desde cargarFormulario() en productos.html (modal de edicion de
+  // producto, ya gateado por Stock completo en el frontend). Es informacion de costo, no
+  // visible en Stock reducido: el backend debe exigir la vista igual, no alcanza con ocultar
+  // el boton de editar.
+  if (!(await requireVistaCompleta(req, res, "stock", "No tenes permisos para ver costos de insumos"))) return;
+
   const productoId = Number(req.params.id);
   try {
     const insumos = await allQuery(
@@ -3105,7 +3141,11 @@ app.get("/productos/:id/modificadores", async (req, res) => {
 });
 
 app.put("/modificadores/:id", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar modificadores"))) return;
+  // Editar modificador se invoca desde el mismo modal de edicion de producto que
+  // POST /productos/:id/modificadores (guardarModificadorActual/guardarOpcionSinImpactoActual
+  // en productos.html). Pertenece al contrato Completo/Reducido de *Stock. Esta ruta NO esta
+  // bajo el prefijo /productos que cubre el middleware global, asi que se exige aca directo.
+  if (!(await requireVistaCompleta(req, res, "stock", "No tenes permisos para editar modificadores"))) return;
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ message: "ID inválido" });
   try {
@@ -3118,7 +3158,10 @@ app.put("/modificadores/:id", async (req, res) => {
 });
 
 app.patch("/modificadores/:id/activo", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar modificadores"))) return;
+  // Mismo flujo que PUT /modificadores/:id (toggleActivoModificadorProducto en
+  // productos.html, dentro del modal de edicion de producto). Ruta fuera del prefijo
+  // /productos que cubre el middleware global, se exige la vista aca directo.
+  if (!(await requireVistaCompleta(req, res, "stock", "No tenes permisos para editar modificadores"))) return;
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ message: "ID inválido" });
   const activo = req.body.activo !== false && req.body.activo !== 0 && req.body.activo !== "0";
@@ -3132,7 +3175,8 @@ app.patch("/modificadores/:id/activo", async (req, res) => {
 });
 
 app.post("/productos/:id/modificadores", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar productos"))) return;
+  // Editar producto (modificadores) pertenece al contrato Completo/Reducido de *Stock
+  // (vista ya exigida por el middleware global, prefijo /productos).
 
   try {
     const producto = await getQuery("SELECT id FROM productos WHERE id = ? AND COALESCE(eliminado, 0) = 0", [req.params.id]);
@@ -3168,7 +3212,8 @@ app.get("/productos/:id/proveedores", async (req, res) => {
 });
 
 app.post("/productos/:id/proveedores", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar productos"))) return;
+  // Editar producto (relacion con proveedores) pertenece al contrato Completo/Reducido de
+  // *Stock (vista ya exigida por el middleware global, prefijo /productos).
 
   const productoId = Number(req.params.id);
   const proveedorId = Number(req.body.proveedor_id) || 0;
@@ -3211,7 +3256,11 @@ app.post("/productos/:id/proveedores", async (req, res) => {
 });
 
 app.post("/productos/:id/movimientos-stock", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_ajustar", "No tenes permisos para ajustar stock"))) return;
+  // F(x) Ingreso/Egreso pertenece al contrato Completo/Reducido de *Stock: la vista efectiva
+  // ya se exige en el middleware global (requireServerPermissions, prefijo /productos), que
+  // corre antes de llegar aca. No se repite una segunda condicion basada en
+  // permisos_acciones_roles.stock_ajustar: esa doble autorizacion podia rechazar a un usuario
+  // con Stock=completa configurado solo porque stock_ajustar quedo en false.
 
   const productoId = Number(req.params.id);
   const tipoMovimiento = String(req.body.tipo_movimiento || "").trim();
@@ -3360,8 +3409,9 @@ app.get("/productos/:id/historial", async (req, res) => {
 });
 
 async function puedeGestionarAjustesPendientes(req) {
-  if (normalizarRol(req.usuario?.rol) === "colaborador") return false;
-  return puedeRol(req, ROLES.ADMIN_ENCARGADO) || await tienePermisoAccion(req, "stock_ajustar");
+  // Vista efectiva de *Stock, no nombre de rol: gestionar ajustes pendientes es una
+  // capacidad de Stock=completa, sin importar si el rol se llama colaborador o encargado.
+  return tieneVistaCompleta(req, "stock");
 }
 
 function buildConsumoTeoricoWhere(query = {}) {
@@ -4224,7 +4274,7 @@ async function getRelacionProductoProveedor(productoId, proveedorId) {
 }
 
 app.get("/compras", async (req, res) => {
-  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para consultar compras"))) return;
+  if (!(await requireVistaCompleta(req, res, "pagos", "No tenes permisos para consultar compras"))) return;
 
   try {
     const compras = await allQuery(
@@ -4248,7 +4298,7 @@ app.get("/compras", async (req, res) => {
 });
 
 app.get("/compras/:id", async (req, res) => {
-  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para consultar compras"))) return;
+  if (!(await requireVistaCompleta(req, res, "pagos", "No tenes permisos para consultar compras"))) return;
 
   try {
     const detalle = await getCompraDetalle(Number(req.params.id));
@@ -4261,7 +4311,7 @@ app.get("/compras/:id", async (req, res) => {
 });
 
 app.post("/compras", async (req, res) => {
-  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para registrar compras"))) return;
+  if (!(await requireVistaCompleta(req, res, "pagos", "No tenes permisos para registrar compras"))) return;
 
   try {
     const proveedorId = Number(req.body.proveedor_id || 0);
@@ -4312,7 +4362,7 @@ app.post("/compras", async (req, res) => {
 });
 
 app.post("/compras/:id/items", async (req, res) => {
-  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para registrar items de compra"))) return;
+  if (!(await requireVistaCompleta(req, res, "pagos", "No tenes permisos para registrar items de compra"))) return;
 
   const compraId = Number(req.params.id);
   try {
@@ -4393,7 +4443,7 @@ app.post("/compras/:id/items", async (req, res) => {
 });
 
 app.post("/compras/:id/recepciones", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_ajustar", "No tenes permisos para recibir mercaderia"))) return;
+  if (!(await requireVistaCompleta(req, res, "pagos", "No tenes permisos para recibir mercaderia"))) return;
 
   const compraId = Number(req.params.id);
   const idempotencyKey = String(req.body.idempotency_key || "").trim();
@@ -4562,7 +4612,7 @@ app.post("/compras/:id/recepciones", async (req, res) => {
 });
 
 app.post("/compras/:id/recepciones/:recepcionId/anular", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_ajustar", "No tenes permisos para anular recepciones"))) return;
+  if (!(await requireVistaCompleta(req, res, "pagos", "No tenes permisos para anular recepciones"))) return;
 
   const compraId = Number(req.params.id);
   const recepcionId = Number(req.params.recepcionId);
@@ -4700,7 +4750,7 @@ app.post("/compras/:id/recepciones/:recepcionId/anular", async (req, res) => {
 });
 
 app.post("/compras/:id/comprobantes", async (req, res) => {
-  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para registrar comprobantes de compra"))) return;
+  if (!(await requireVistaCompleta(req, res, "pagos", "No tenes permisos para registrar comprobantes de compra"))) return;
 
   const compraId = Number(req.params.id);
   try {
@@ -4779,7 +4829,7 @@ app.post("/compras/:id/comprobantes", async (req, res) => {
 // Anula un comprobante de compra. COMPRA != COMPROBANTE: no toca compras.estado,
 // deuda, pagos, recepciones ni stock. Solo cambia el estado documental del comprobante.
 app.post("/compras/:compraId/comprobantes/:comprobanteId/anular", async (req, res) => {
-  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para anular comprobantes de compra"))) return;
+  if (!(await requireVistaCompleta(req, res, "pagos", "No tenes permisos para anular comprobantes de compra"))) return;
 
   const compraId = Number(req.params.compraId);
   const comprobanteId = Number(req.params.comprobanteId);
@@ -4841,7 +4891,7 @@ app.post("/compras/:compraId/comprobantes/:comprobanteId/anular", async (req, re
 });
 
 app.post("/compras/:id/pagos", async (req, res) => {
-  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para registrar pagos"))) return;
+  if (!(await requireVistaCompleta(req, res, "pagos", "No tenes permisos para registrar pagos de compra"))) return;
 
   const compraId = Number(req.params.id);
   try {
@@ -4942,7 +4992,7 @@ app.post("/compras/:id/pagos", async (req, res) => {
 // comprobante activo (debe anularse explicitamente antes). COMPRA != COMPROBANTE !=
 // PAGO != RECEPCION: esta anulacion nunca hace cascada sobre esas entidades.
 app.post("/compras/:id/anular", async (req, res) => {
-  if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para anular compras"))) return;
+  if (!(await requireVistaCompleta(req, res, "pagos", "No tenes permisos para anular compras"))) return;
 
   const compraId = Number(req.params.id);
   const motivo = String(req.body?.motivo || "").trim();
@@ -11063,7 +11113,11 @@ app.post("/tienda/pedidos/:id/convertir-venta", async (req, res) => {
 // ── Admin CRUD: ingredientes visibles por producto ────────────────────────────
 
 app.get("/productos/:id/ingredientes-visibles", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para ver ingredientes"))) return;
+  // Se lee unicamente desde cargarIngredientesProducto() en productos.html, dentro del
+  // mismo modal de edicion de producto que POST/PUT/DELETE de esta misma ruta (ya
+  // gobernados por vista completa). Si Stock completo no pudiera leer esto, el modal
+  // mostraria la seccion de ingredientes vacia aunque el alta/edicion funcione.
+  if (!(await requireVistaCompleta(req, res, "stock", "No tenes permisos para ver ingredientes"))) return;
   const productoId = Number(req.params.id);
   const todos = req.query.todos === "1";
   try {
@@ -11096,7 +11150,8 @@ app.get("/productos/:id/ingredientes-visibles", async (req, res) => {
 });
 
 app.post("/productos/:id/ingredientes-visibles", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para agregar ingredientes"))) return;
+  // Editar producto (ingredientes) pertenece al contrato Completo/Reducido de *Stock
+  // (vista ya exigida por el middleware global, prefijo /productos).
   const productoId = Number(req.params.id);
   const { nombre, incluido_por_defecto = 1, permite_quitar = 1, permite_extra = 0, precio_extra = 0, orden = 0 } = req.body || {};
   const nombreClean = String(nombre || "").trim();
@@ -11133,7 +11188,8 @@ app.post("/productos/:id/ingredientes-visibles", async (req, res) => {
 });
 
 app.put("/productos/:id/ingredientes-visibles/:ingId", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para editar ingredientes"))) return;
+  // Editar producto (ingredientes) pertenece al contrato Completo/Reducido de *Stock
+  // (vista ya exigida por el middleware global, prefijo /productos).
   const productoId = Number(req.params.id);
   const ingId = Number(req.params.ingId);
   const { nombre, incluido_por_defecto, permite_quitar, permite_extra, precio_extra, orden, activo } = req.body || {};
@@ -11173,7 +11229,8 @@ app.put("/productos/:id/ingredientes-visibles/:ingId", async (req, res) => {
 });
 
 app.delete("/productos/:id/ingredientes-visibles/:ingId", async (req, res) => {
-  if (!(await requirePermiso(req, res, "stock_editar_producto", "No tenes permisos para eliminar ingredientes"))) return;
+  // Editar producto (ingredientes) pertenece al contrato Completo/Reducido de *Stock
+  // (vista ya exigida por el middleware global, prefijo /productos).
   const productoId = Number(req.params.id);
   const ingId = Number(req.params.ingId);
   try {
