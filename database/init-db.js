@@ -589,6 +589,37 @@ async function initDatabase() {
     await ensureColumn("compra_comprobantes", "anulado_por", "TEXT");
     await ensureColumn("compra_comprobantes", "motivo_anulacion", "TEXT");
 
+    // F3D-4bis: revision de configuracion (costo de proveedor) separada de
+    // stock_ajustes_pendientes -- nunca mueve stock, nunca crea movimientos_stock.
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS producto_revisiones_pendientes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tipo_revision TEXT NOT NULL DEFAULT 'costo_proveedor',
+        estado TEXT NOT NULL DEFAULT 'pendiente',
+        producto_id INTEGER NOT NULL,
+        proveedor_id INTEGER NOT NULL,
+        compra_id INTEGER NOT NULL,
+        compra_item_id INTEGER NOT NULL,
+        comprobante_id INTEGER,
+        valor_actual REAL NOT NULL,
+        valor_propuesto REAL NOT NULL,
+        motivo TEXT,
+        creado_at TEXT NOT NULL,
+        creado_por TEXT,
+        revisado_at TEXT,
+        revisado_por TEXT,
+        decision TEXT,
+        UNIQUE (tipo_revision, compra_item_id),
+        FOREIGN KEY (producto_id) REFERENCES productos(id),
+        FOREIGN KEY (proveedor_id) REFERENCES proveedores(id),
+        FOREIGN KEY (compra_id) REFERENCES compras(id),
+        FOREIGN KEY (compra_item_id) REFERENCES compra_items(id),
+        FOREIGN KEY (comprobante_id) REFERENCES compra_comprobantes(id)
+      )
+    `);
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_producto_revisiones_pendientes_estado ON producto_revisiones_pendientes(estado)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_producto_revisiones_pendientes_producto ON producto_revisiones_pendientes(producto_id)");
+
     await runQuery(`
       CREATE TABLE IF NOT EXISTS configuracion_global (
         clave TEXT PRIMARY KEY,

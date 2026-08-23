@@ -154,6 +154,12 @@ const {
   validarCantidadRecepcion
 } = require("./services/compraService");
 const {
+  aprobarRevisionPendienteCostoProveedor,
+  generarRevisionesPendientesCostoProveedor,
+  listarRevisionesPendientesCostoProveedor,
+  rechazarRevisionPendienteCostoProveedor
+} = require("./services/productoRevisionService");
+const {
   aplicarStockComponentesSnapshot,
   aplicarStockDiffComponentesExtra,
   borrarSnapshotsDetalles,
@@ -594,6 +600,36 @@ async function ensureComprasSchema() {
   await ensureColumn("compra_comprobantes", "anulado_at", "TEXT");
   await ensureColumn("compra_comprobantes", "anulado_por", "TEXT");
   await ensureColumn("compra_comprobantes", "motivo_anulacion", "TEXT");
+  // F3D-4bis: revision de configuracion (costo de proveedor) separada de
+  // stock_ajustes_pendientes -- nunca mueve stock, nunca crea movimientos_stock.
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS producto_revisiones_pendientes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tipo_revision TEXT NOT NULL DEFAULT 'costo_proveedor',
+      estado TEXT NOT NULL DEFAULT 'pendiente',
+      producto_id INTEGER NOT NULL,
+      proveedor_id INTEGER NOT NULL,
+      compra_id INTEGER NOT NULL,
+      compra_item_id INTEGER NOT NULL,
+      comprobante_id INTEGER,
+      valor_actual REAL NOT NULL,
+      valor_propuesto REAL NOT NULL,
+      motivo TEXT,
+      creado_at TEXT NOT NULL,
+      creado_por TEXT,
+      revisado_at TEXT,
+      revisado_por TEXT,
+      decision TEXT,
+      UNIQUE (tipo_revision, compra_item_id),
+      FOREIGN KEY (producto_id) REFERENCES productos(id),
+      FOREIGN KEY (proveedor_id) REFERENCES proveedores(id),
+      FOREIGN KEY (compra_id) REFERENCES compras(id),
+      FOREIGN KEY (compra_item_id) REFERENCES compra_items(id),
+      FOREIGN KEY (comprobante_id) REFERENCES compra_comprobantes(id)
+    )
+  `);
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_producto_revisiones_pendientes_estado ON producto_revisiones_pendientes(estado)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_producto_revisiones_pendientes_producto ON producto_revisiones_pendientes(producto_id)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_compras_proveedor_estado ON compras(proveedor_id, estado)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobantes_compra ON compra_comprobantes(compra_id)");
   await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobante_iva_comprobante ON compra_comprobante_iva(comprobante_id)");
@@ -753,6 +789,30 @@ async function ensureProductosSchema() {
   `);
   await runQuery(
     "UPDATE productos SET stock = 0, stock_minimo = 0, alerta_stock_minimo = 0 WHERE tipo = 'compuesto' AND maneja_stock = 0"
+  );
+
+  // F3D-4bis: backfill de migracion legacy -> normalizado. productos.proveedor_id (el
+  // vinculo que la UI real escribe) pasa a reflejarse tambien como relacion normalizada en
+  // producto_proveedores (la fuente de costo vigente por proveedor que usa F3). Idempotente
+  // via NOT EXISTS: correr esto en cada arranque nunca duplica una relacion ya presente ni
+  // sobrescribe su precio_compra. No toca stock/precio_venta/costo_final/IVA ni genera
+  // producto_revisiones_pendientes -- es normalizacion de datos, no una actualizacion
+  // originada por factura.
+  const { fecha: fechaBackfillProveedor } = getNowParts();
+  await runQuery(
+    `INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+     SELECT p.id, p.proveedor_id, COALESCE(p.precio_compra, 0), ?,
+            CASE WHEN NOT EXISTS (
+              SELECT 1 FROM producto_proveedores pp2
+              WHERE pp2.producto_id = p.id AND pp2.es_principal = 1
+            ) THEN 1 ELSE 0 END
+     FROM productos p
+     WHERE p.proveedor_id IS NOT NULL AND p.proveedor_id > 0
+       AND NOT EXISTS (
+         SELECT 1 FROM producto_proveedores pp
+         WHERE pp.producto_id = p.id AND pp.proveedor_id = p.proveedor_id
+       )`,
+    [fechaBackfillProveedor]
   );
 }
 
@@ -2186,6 +2246,18 @@ app.post("/productos", async (req, res) => {
     if (usaCostos) await guardarInsumosProducto(result.lastID, costos_insumos);
     if (tipoProducto === "compuesto") await guardarProductoCompuestoConfig(result.lastID, componentes, costos_extra);
 
+    // F3D-4bis: el alta de producto es una accion explicita de configuracion (no una factura),
+    // asi que puede inicializar la relacion normalizada producto_proveedores con el proveedor
+    // recien seleccionado como principal. productos.proveedor_id se mantiene por compatibilidad.
+    if (proveedor_id && Number(proveedor_id) > 0) {
+      const { fecha: fechaAltaProveedor } = getNowParts();
+      await runQuery(
+        `INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+         VALUES (?, ?, ?, ?, 1)`,
+        [result.lastID, Number(proveedor_id), costoBase, fechaAltaProveedor]
+      );
+    }
+
     const nuevo = await getQuery("SELECT * FROM productos WHERE id = ?", [result.lastID]);
     await registrarCambiosProducto(result.lastID, null, nuevo, usuario || "admin", "creacion");
 
@@ -2231,7 +2303,7 @@ app.get("/productos", async (req, res) => {
       .map((r) => r.id);
     const chComp = compuestoIds.length ? compuestoIds.map(() => "?").join(",") : null;
 
-    const [insumosRaw, componentesRaw, costosExtraRaw] = await Promise.all([
+    const [insumosRaw, componentesRaw, costosExtraRaw, principalesRaw] = await Promise.all([
       allQuery(`SELECT producto_id, costo_unitario, cantidad_usada FROM producto_costos_insumos WHERE producto_id IN (${ph})`, ids),
       chComp ? allQuery(
         `SELECT pc.producto_compuesto_id, pc.producto_id, pc.cantidad,
@@ -2241,8 +2313,18 @@ app.get("/productos", async (req, res) => {
          LEFT JOIN productos p ON p.id = pc.producto_id
          WHERE pc.producto_compuesto_id IN (${chComp})`, compuestoIds
       ) : Promise.resolve([]),
-      chComp ? allQuery(`SELECT producto_compuesto_id, monto FROM producto_costos_extra WHERE producto_compuesto_id IN (${chComp})`, compuestoIds) : Promise.resolve([])
+      chComp ? allQuery(`SELECT producto_compuesto_id, monto FROM producto_costos_extra WHERE producto_compuesto_id IN (${chComp})`, compuestoIds) : Promise.resolve([]),
+      allQuery(
+        `SELECT pp.producto_id, pp.precio_compra, pp.proveedor_id, prov.nombre AS proveedor_nombre
+         FROM producto_proveedores pp
+         JOIN proveedores prov ON prov.id = pp.proveedor_id
+         WHERE pp.es_principal = 1 AND pp.producto_id IN (${ph})`, ids
+      )
     ]);
+    // Fuente derivada de solo-lectura del costo de proveedor normalizado (F3D-4bis): nunca
+    // se escribe de vuelta en columnas legacy, y si ninguna relacion es principal (o no
+    // existe relacion) el producto queda sin entrada en el map -> "sin referencia" aguas abajo.
+    const principalMap = new Map(principalesRaw.map((r) => [r.producto_id, r]));
 
     const insumosMap = new Map();
     for (const i of insumosRaw) {
@@ -2346,9 +2428,17 @@ app.get("/productos", async (req, res) => {
         costo_consumo_unitario: costoConsumo,
         precio_sugerido: calcularPrecioSugerido(row.costo_final, row.margen_porcentaje, row.redondeo)
       });
+    }).map((producto) => {
+      const principal = principalMap.get(producto.id);
+      return {
+        ...producto,
+        precio_compra_proveedor_principal: principal ? principal.precio_compra : null,
+        proveedor_principal_id: principal ? principal.proveedor_id : null,
+        proveedor_principal_nombre: principal ? principal.proveedor_nombre : null
+      };
     });
 
-    const CAMPOS_COSTO = ["precio_compra","costo_final","costo_teorico","costo_consumo_unitario","margen_porcentaje","precio_sugerido","precio_referencial_proveedor","precio_compra_incluye_iva","costo_economico","precio_neto_sugerido","iva_sugerido","precio_final_sugerido","precio_neto_desde_final","iva_desde_final"];
+    const CAMPOS_COSTO = ["precio_compra","costo_final","costo_teorico","costo_consumo_unitario","margen_porcentaje","precio_sugerido","precio_referencial_proveedor","precio_compra_incluye_iva","costo_economico","precio_neto_sugerido","iva_sugerido","precio_final_sugerido","precio_neto_desde_final","iva_desde_final","precio_compra_proveedor_principal"];
     // Vista efectiva de *Stock, no nombre de rol: ver costos es una capacidad de Stock=completa.
     const stockCompleto = await tieneVistaCompleta(req, "stock");
     let productos;
@@ -2548,6 +2638,50 @@ app.put("/productos/:id", async (req, res) => {
     } else {
       await runQuery("DELETE FROM producto_componentes WHERE producto_compuesto_id = ?", [productoId]);
       await runQuery("DELETE FROM producto_costos_extra WHERE producto_compuesto_id = ?", [productoId]);
+    }
+
+    // F3D-4bis: la edicion explicita de producto (proveedor principal y/o precio_compra) SI
+    // sincroniza el modelo normalizado -- es configuracion deliberada del operador, no una
+    // actualizacion silenciosa originada por factura (eso sigue prohibido en productoRevisionService).
+    const proveedorIdNuevo = proveedor_id ? Number(proveedor_id) : null;
+    const proveedorIdAnterior = existente.proveedor_id ? Number(existente.proveedor_id) : null;
+    if (proveedorIdNuevo) {
+      if (proveedorIdNuevo !== proveedorIdAnterior) {
+        // A: cambio de proveedor principal -- quita es_principal al anterior, conserva la fila
+        // (relaciones historicas/alternativas no se borran ni se tocan de otra forma).
+        await runQuery(
+          "UPDATE producto_proveedores SET es_principal = 0 WHERE producto_id = ? AND es_principal = 1",
+          [productoId]
+        );
+      }
+      const relacionProveedorNuevo = await getQuery(
+        "SELECT id FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?",
+        [productoId, proveedorIdNuevo]
+      );
+      const cambioPrecioCompra = Number(precio_compra) !== Number(existente.precio_compra);
+      if (!relacionProveedorNuevo) {
+        // B: la relacion con el proveedor seleccionado no existe todavia -> crearla como principal.
+        const { fecha: fechaEdicionProveedorAlta } = getNowParts();
+        await runQuery(
+          `INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+           VALUES (?, ?, ?, ?, 1)`,
+          [productoId, proveedorIdNuevo, costoBase, fechaEdicionProveedorAlta]
+        );
+      } else if (cambioPrecioCompra) {
+        // C/D: la relacion ya existe -> no duplicar; se marca principal y, como el operador
+        // modifico explicitamente precio_compra, se sincroniza el precio de esa relacion.
+        const { fecha: fechaEdicionProveedorPrecio } = getNowParts();
+        await runQuery(
+          "UPDATE producto_proveedores SET es_principal = 1, precio_compra = ?, fecha_actualizacion = ? WHERE id = ?",
+          [costoBase, fechaEdicionProveedorPrecio, relacionProveedorNuevo.id]
+        );
+      } else {
+        // C: la relacion ya existe y el precio no cambio -> solo asegurar que quede marcada principal.
+        await runQuery(
+          "UPDATE producto_proveedores SET es_principal = 1 WHERE id = ?",
+          [relacionProveedorNuevo.id]
+        );
+      }
     }
 
     await runQuery("COMMIT");
@@ -3233,12 +3367,24 @@ app.post("/productos/:id/proveedores", async (req, res) => {
       );
     }
 
-    await runQuery(
-      `INSERT INTO producto_proveedores
-      (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
-      VALUES (?, ?, ?, ?, ?)`,
-      [productoId, proveedorId, precioCompra, fecha, esPrincipal]
+    // F3D-4bis: no duplicar la relacion si ya existe para este producto+proveedor.
+    const relacionExistente = await getQuery(
+      "SELECT id FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?",
+      [productoId, proveedorId]
     );
+    if (relacionExistente) {
+      await runQuery(
+        "UPDATE producto_proveedores SET precio_compra = ?, fecha_actualizacion = ?, es_principal = ? WHERE id = ?",
+        [precioCompra, fecha, esPrincipal, relacionExistente.id]
+      );
+    } else {
+      await runQuery(
+        `INSERT INTO producto_proveedores
+        (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+        VALUES (?, ?, ?, ?, ?)`,
+        [productoId, proveedorId, precioCompra, fecha, esPrincipal]
+      );
+    }
 
     if (esPrincipal) {
       await runQuery(
@@ -3375,10 +3521,25 @@ app.get("/productos/:id/movimientos-stock", async (req, res) => {
   const productoId = Number(req.params.id);
 
   try {
+    // F3E-3D.1: LEFT JOIN a compra_recepcion_items (por movimiento_stock_id, y por
+    // movimiento_stock_reversa_id) para que el frontend identifique una recepcion y su estado
+    // de reversa sin parsear el texto de `motivo`. Cada join es 1:0-o-1 (un movimiento_stock
+    // nunca es referenciado por mas de una fila de compra_recepcion_items en cada columna), asi
+    // que no hay riesgo de duplicar filas del resultado.
     const movimientos = await allQuery(
-      `SELECT ms.*, p.nombre AS proveedor_nombre
+      `SELECT ms.*, p.nombre AS proveedor_nombre,
+              cri_orig.recepcion_id AS recepcion_id,
+              cr_orig.compra_id AS compra_id,
+              cri_orig.compra_item_id AS compra_item_id,
+              cr_orig.estado AS recepcion_estado,
+              cri_orig.movimiento_stock_reversa_id AS movimiento_stock_reversa_id,
+              CASE WHEN cri_orig.id IS NOT NULL AND cri_orig.movimiento_stock_reversa_id IS NOT NULL THEN 1 ELSE 0 END AS recepcion_revertida,
+              CASE WHEN cri_rev.id IS NOT NULL THEN 1 ELSE 0 END AS es_reversa_recepcion
        FROM movimientos_stock ms
        LEFT JOIN proveedores p ON p.id = ms.proveedor_id
+       LEFT JOIN compra_recepcion_items cri_orig ON cri_orig.movimiento_stock_id = ms.id
+       LEFT JOIN compra_recepciones cr_orig ON cr_orig.id = cri_orig.recepcion_id
+       LEFT JOIN compra_recepcion_items cri_rev ON cri_rev.movimiento_stock_reversa_id = ms.id
        WHERE ms.producto_id = ?
        ORDER BY ms.id DESC`,
       [productoId]
@@ -3635,6 +3796,192 @@ app.get("/stock/ajustes-pendientes", async (req, res) => {
   }
 });
 
+// F3E-3B: lectura agregada, exclusivamente derivada -- ninguna tabla nueva. Un compra_item
+// propone a *Stock solo si su Compra esta activa Y tiene al menos un comprobante activo
+// (factura huerfana sin comprobante todavia no es propuesta). cantidad_recibida/pendiente se
+// derivan con la MISMA funcion que ya usa Pagos (buildResumenRecepcionItem), nunca duplicada.
+// costo_proveedor_actual sale de la relacion EXACTA (producto_id, proveedor_id) de la Compra,
+// nunca del proveedor principal del producto -- una Compra a proveedor eventual jamas
+// crea/modifica producto_proveedores ni cambia es_principal (esto es un GET, cero escritura).
+app.get("/stock/compras-pendientes", async (req, res) => {
+  if (!(await requireVistaCompleta(req, res, "stock", "No tenes permisos para ver propuestas de compra pendientes"))) return;
+
+  try {
+    const items = await allQuery(
+      `SELECT ci.id, ci.compra_id, ci.producto_id, ci.cantidad_comprada, ci.costo_unitario, ci.afecta_stock,
+              c.proveedor_id, pr.nombre AS proveedor_nombre,
+              p.nombre AS producto_nombre, p.stock AS stock_actual
+       FROM compra_items ci
+       JOIN compras c ON c.id = ci.compra_id
+       JOIN proveedores pr ON pr.id = c.proveedor_id
+       JOIN productos p ON p.id = ci.producto_id
+       WHERE c.estado != 'anulada'
+         AND ci.producto_id IS NOT NULL
+         AND EXISTS (
+           SELECT 1 FROM compra_comprobantes cc
+           WHERE cc.compra_id = c.id AND cc.estado = 'registrado'
+         )
+       ORDER BY ci.id ASC`
+    );
+    if (!items.length) return res.json([]);
+
+    const itemIds = [...new Set(items.map((i) => i.id))];
+    const productoIds = [...new Set(items.map((i) => i.producto_id))];
+    const proveedorIds = [...new Set(items.map((i) => i.proveedor_id))];
+    const phItems = itemIds.map(() => "?").join(",");
+    const phProductos = productoIds.map(() => "?").join(",");
+    const phProveedores = proveedorIds.map(() => "?").join(",");
+
+    const [recepcionRows, revisiones, relacionesProveedor] = await Promise.all([
+      allQuery(
+        `SELECT cri.compra_item_id, cri.cantidad_recibida, cr.estado
+         FROM compra_recepcion_items cri
+         JOIN compra_recepciones cr ON cr.id = cri.recepcion_id
+         WHERE cri.compra_item_id IN (${phItems})`,
+        itemIds
+      ),
+      allQuery(
+        `SELECT * FROM producto_revisiones_pendientes
+         WHERE tipo_revision = 'costo_proveedor' AND compra_item_id IN (${phItems})`,
+        itemIds
+      ),
+      allQuery(
+        `SELECT producto_id, proveedor_id, precio_compra
+         FROM producto_proveedores
+         WHERE producto_id IN (${phProductos}) AND proveedor_id IN (${phProveedores})`,
+        [...productoIds, ...proveedorIds]
+      )
+    ]);
+
+    const recepcionesPorItem = new Map();
+    for (const r of recepcionRows) {
+      if (!recepcionesPorItem.has(r.compra_item_id)) recepcionesPorItem.set(r.compra_item_id, []);
+      recepcionesPorItem.get(r.compra_item_id).push(r);
+    }
+    const revisionPorItem = new Map(revisiones.map((r) => [r.compra_item_id, r]));
+    const relacionPorPar = new Map(relacionesProveedor.map((r) => [`${r.producto_id}:${r.proveedor_id}`, r]));
+
+    const propuestas = items
+      .map((item) => {
+        const resumen = buildResumenRecepcionItem(item, recepcionesPorItem.get(item.id) || []);
+        const revision = revisionPorItem.get(item.id) || null;
+        const relacion = relacionPorPar.get(`${item.producto_id}:${item.proveedor_id}`) || null;
+        return {
+          compra_id: item.compra_id,
+          compra_item_id: item.id,
+          producto_id: item.producto_id,
+          producto_nombre: item.producto_nombre,
+          proveedor_id: item.proveedor_id,
+          proveedor_nombre: item.proveedor_nombre,
+          afecta_stock: Number(item.afecta_stock) === 1,
+          cantidad_comprada: resumen.cantidad_comprada,
+          cantidad_recibida: resumen.cantidad_recibida,
+          cantidad_pendiente: resumen.cantidad_pendiente,
+          estado_recepcion: resumen.estado_recepcion,
+          stock_actual: Number(item.stock_actual || 0),
+          costo_factura: Number(item.costo_unitario || 0),
+          costo_proveedor_actual: relacion ? relacion.precio_compra : null,
+          revision_costo_id: revision ? revision.id : null,
+          estado_revision_costo: revision ? revision.estado : "sin_revision",
+          revision_valor_actual: revision ? revision.valor_actual : null,
+          revision_valor_propuesto: revision ? revision.valor_propuesto : null
+        };
+      })
+      .filter((p) => p.cantidad_pendiente > 0 || p.estado_revision_costo === "pendiente");
+
+    return res.json(propuestas);
+  } catch (error) {
+    logError("Error al listar propuestas de compra pendientes para stock:", error);
+    return res.status(500).json({ message: "Error al listar propuestas de compra pendientes" });
+  }
+});
+
+// F3E-3C: "Aceptar"/"Modificar" desde *Stock reutilizan el MISMO motor de recepcion F3
+// (registrarRecepcionCompra) que ya usa *Pagos -- cero logica SQL duplicada. La diferencia es
+// solo de contrato de entrada: un compra_item por vez, y en modo "aceptar" la cantidad la
+// determina el backend (nunca se confia en lo que vio el frontend). Gateado exclusivamente por
+// Stock=completa -- distinto del endpoint de Pagos, que sigue exigiendo Pagos=completa.
+app.post("/stock/compras-pendientes/:compraItemId/recibir", async (req, res) => {
+  if (!(await requireVistaCompleta(req, res, "stock", "No tenes permisos para confirmar recepciones de compra"))) return;
+
+  const compraItemId = Number(req.params.compraItemId);
+  const modo = String(req.body.modo || "").trim().toLowerCase();
+  const idempotencyKey = String(req.body.idempotency_key || "").trim();
+
+  if (!["aceptar", "modificar"].includes(modo)) {
+    return res.status(400).json({ message: "modo invalido: debe ser 'aceptar' o 'modificar'" });
+  }
+  if (!idempotencyKey) {
+    return res.status(400).json({ message: "idempotency_key es obligatoria" });
+  }
+
+  try {
+    const item = await getQuery("SELECT * FROM compra_items WHERE id = ?", [compraItemId]);
+    if (!item) return res.status(404).json({ message: "Item de compra no encontrado" });
+
+    const compra = await getCompraBase(item.compra_id);
+    if (!compra) return res.status(404).json({ message: "Compra no encontrada" });
+    if (String(compra.estado || "").toLowerCase() === "anulada") {
+      return res.status(400).json({ message: "La compra anulada no admite recepciones" });
+    }
+    const comprobanteActivo = await getQuery(
+      "SELECT id FROM compra_comprobantes WHERE compra_id = ? AND estado = 'registrado' LIMIT 1",
+      [item.compra_id]
+    );
+    if (!comprobanteActivo) {
+      return res.status(409).json({ message: "La compra no tiene ningun comprobante activo: la recepcion no es accionable desde Stock" });
+    }
+
+    // Idempotencia: si esta key ya genero una recepcion para este item, reusar la cantidad
+    // YA registrada entonces -- nunca recalcular "pendiente ahora", que cambia apenas la
+    // primera ejecucion tiene efecto (esto es especialmente crítico en modo=aceptar, cuya
+    // cantidad depende del estado vigente al momento del calculo).
+    const recepcionExistente = await getQuery(
+      `SELECT cri.cantidad_recibida
+       FROM compra_recepciones cr
+       JOIN compra_recepcion_items cri ON cri.recepcion_id = cr.id
+       WHERE cr.compra_id = ? AND cr.idempotency_key = ? AND cri.compra_item_id = ?`,
+      [item.compra_id, idempotencyKey, compraItemId]
+    );
+
+    const recepcionesActuales = await getCompraRecepcionRows(item.compra_id);
+    const resumen = buildResumenRecepcionItem(item, recepcionesActuales);
+
+    let cantidadRecibida;
+    if (recepcionExistente) {
+      cantidadRecibida = Number(recepcionExistente.cantidad_recibida);
+    } else if (modo === "aceptar") {
+      cantidadRecibida = resumen.cantidad_pendiente;
+      if (!(cantidadRecibida > 0)) {
+        return res.status(409).json({ message: "Este item ya no tiene cantidad pendiente de recepcion" });
+      }
+    } else {
+      cantidadRecibida = Number(req.body.cantidad_recibida);
+      if (!(cantidadRecibida > 0)) {
+        return res.status(400).json({ message: "cantidad_recibida debe ser mayor a cero" });
+      }
+      if (cantidadRecibida > resumen.cantidad_pendiente + 0.0001) {
+        return res.status(400).json({ message: "cantidad_recibida no puede superar la cantidad pendiente" });
+      }
+    }
+
+    const usuario = req.usuario?.nombre || req.usuario?.usuario || "admin";
+    const resultado = await registrarRecepcionCompra(
+      item.compra_id,
+      idempotencyKey,
+      [{ compra_item_id: compraItemId, cantidad_recibida: cantidadRecibida }],
+      { usuario }
+    );
+    return res.status(resultado.status).json(resultado.body);
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    logError("Error al registrar recepcion desde Stock:", error);
+    return res.status(500).json({ message: "Error al registrar recepcion desde Stock" });
+  }
+});
+
 app.get("/stock/ajustes-pendientes/resumen", async (req, res) => {
   if (!(await puedeGestionarAjustesPendientes(req))) {
     return res.status(403).json({ message: "No tenes permisos para consultar resumen de ajustes pendientes" });
@@ -3767,6 +4114,56 @@ app.post("/stock/ajustes-pendientes/:id/cuenta-local", async (req, res) => {
     }
     logError("Error al resolver ajuste pendiente con Cuenta Local:", error);
     return res.status(500).json({ message: "Error al resolver ajuste pendiente con Cuenta Local" });
+  }
+});
+
+// F3D-4bis: revisiones pendientes de configuracion (costo de proveedor). Entidad separada
+// de stock_ajustes_pendientes -- nunca mueven stock, nunca crean movimientos_stock. Gate
+// exclusivamente por vista efectiva de *Stock (nunca por rol, ni por Pagos, ni por el
+// contrato de stock_ajustes_pendientes).
+app.get("/productos/revisiones-pendientes", async (req, res) => {
+  if (!(await requireVistaCompleta(req, res, "stock", "No tenes permisos para ver revisiones pendientes de costo"))) return;
+
+  try {
+    const revisiones = await listarRevisionesPendientesCostoProveedor({ estado: req.query.estado });
+    return res.json(revisiones);
+  } catch (error) {
+    logError("Error al listar revisiones pendientes de costo proveedor:", error);
+    return res.status(500).json({ message: "Error al listar revisiones pendientes de costo" });
+  }
+});
+
+app.post("/productos/revisiones-pendientes/:id/aprobar", async (req, res) => {
+  if (!(await requireVistaCompleta(req, res, "stock", "No tenes permisos para resolver revisiones pendientes de costo"))) return;
+
+  try {
+    const revision = await aprobarRevisionPendienteCostoProveedor(req.params.id, {
+      usuario: req.usuario?.nombre || req.usuario?.usuario || "admin"
+    });
+    return res.json({ message: "Revision aprobada: costo de proveedor actualizado", revision });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    logError("Error al aprobar revision pendiente de costo proveedor:", error);
+    return res.status(500).json({ message: "Error al aprobar revision pendiente de costo" });
+  }
+});
+
+app.post("/productos/revisiones-pendientes/:id/rechazar", async (req, res) => {
+  if (!(await requireVistaCompleta(req, res, "stock", "No tenes permisos para resolver revisiones pendientes de costo"))) return;
+
+  try {
+    const revision = await rechazarRevisionPendienteCostoProveedor(req.params.id, {
+      usuario: req.usuario?.nombre || req.usuario?.usuario || "admin"
+    });
+    return res.json({ message: "Revision rechazada: costo de proveedor sin cambios", revision });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    logError("Error al rechazar revision pendiente de costo proveedor:", error);
+    return res.status(500).json({ message: "Error al rechazar revision pendiente de costo" });
   }
 });
 
@@ -4442,29 +4839,17 @@ app.post("/compras/:id/items", async (req, res) => {
   }
 });
 
-app.post("/compras/:id/recepciones", async (req, res) => {
-  if (!(await requireVistaCompleta(req, res, "pagos", "No tenes permisos para recibir mercaderia"))) return;
-
-  const compraId = Number(req.params.id);
-  const idempotencyKey = String(req.body.idempotency_key || "").trim();
-  if (!idempotencyKey) {
-    return res.status(400).json({ message: "idempotency_key es obligatoria para registrar recepciones" });
-  }
-  const payloadItems = Array.isArray(req.body.items) ? req.body.items : [];
-  if (!payloadItems.length) {
-    return res.status(400).json({ message: "Debe informar al menos un item a recibir" });
-  }
-
+// Motor F3 de recepcion, compartido por *Pagos (POST /compras/:id/recepciones, multi-item) y
+// *Stock (POST /stock/compras-pendientes/:compraItemId/recibir, F3E-3C, un item por vez). Toda
+// la validacion/transaccion/idempotencia vive ACA UNA sola vez -- ninguno de los dos endpoints
+// duplica esta logica, solo arman payloadItems distinto segun su propio contrato de entrada.
+async function registrarRecepcionCompra(compraId, idempotencyKey, payloadItems, meta = {}) {
+  await runQuery("BEGIN IMMEDIATE");
   try {
-    await runQuery("BEGIN IMMEDIATE");
     const compra = await getCompraBase(compraId);
-    if (!compra) {
-      await runQuery("ROLLBACK");
-      return res.status(404).json({ message: "Compra no encontrada" });
-    }
+    if (!compra) throw crearErrorHttp("Compra no encontrada", 404);
     if (String(compra.estado || "").toLowerCase() === "anulada") {
-      await runQuery("ROLLBACK");
-      return res.status(400).json({ message: "La compra anulada no admite recepciones" });
+      throw crearErrorHttp("La compra anulada no admite recepciones", 400);
     }
 
     const recepcionExistente = await getQuery(
@@ -4478,19 +4863,17 @@ app.post("/compras/:id/recepciones", async (req, res) => {
       );
       await runQuery("ROLLBACK");
       if (String(recepcionExistente.estado || "").toLowerCase() === "anulada") {
-        return res.status(409).json({ message: "La idempotency_key ya pertenece a una recepcion anulada" });
+        throw crearErrorHttp("La idempotency_key ya pertenece a una recepcion anulada", 409);
       }
       if (!payloadRecepcionIgual(payloadItems, itemsExistentes)) {
-        return res.status(409).json({ message: "La idempotency_key ya fue usada con otro payload" });
+        throw crearErrorHttp("La idempotency_key ya fue usada con otro payload", 409);
       }
       const detalle = await getCompraDetalle(compraId);
       const recepcion = await getRecepcionCompraConItems(recepcionExistente.id);
-      return res.status(200).json({
-        message: "Recepcion ya registrada",
-        idempotent_replay: true,
-        recepcion,
-        ...detalle
-      });
+      return {
+        status: 200,
+        body: { message: "Recepcion ya registrada", idempotent_replay: true, recepcion, ...detalle }
+      };
     }
 
     const itemIds = new Set();
@@ -4499,51 +4882,43 @@ app.post("/compras/:id/recepciones", async (req, res) => {
     for (const payload of payloadItems) {
       const compraItemId = Number(payload.compra_item_id);
       if (!compraItemId || itemIds.has(compraItemId)) {
-        await runQuery("ROLLBACK");
-        return res.status(400).json({ message: "Los items de recepcion son invalidos o duplicados" });
+        throw crearErrorHttp("Los items de recepcion son invalidos o duplicados", 400);
       }
       itemIds.add(compraItemId);
       const item = await getQuery(
         "SELECT * FROM compra_items WHERE id = ? AND compra_id = ?",
         [compraItemId, compraId]
       );
-      if (!item) {
-        await runQuery("ROLLBACK");
-        return res.status(400).json({ message: "Item de compra invalido para esta recepcion" });
-      }
+      if (!item) throw crearErrorHttp("Item de compra invalido para esta recepcion", 400);
       const producto = await getQuery(
         "SELECT id, nombre, unidad_medida, tipo, maneja_stock, stock, COALESCE(eliminado, 0) AS eliminado FROM productos WHERE id = ?",
         [item.producto_id]
       );
       if (!producto || Number(producto.eliminado) === 1 || Number(producto.maneja_stock) !== 1) {
-        await runQuery("ROLLBACK");
-        return res.status(400).json({ message: "El producto del item no es apto para recibir stock" });
+        throw crearErrorHttp("El producto del item no es apto para recibir stock", 400);
       }
       const validacion = validarCantidadRecepcion(item, recepcionesActuales, payload.cantidad_recibida, compra);
-      if (!validacion.ok) {
-        await runQuery("ROLLBACK");
-        return res.status(400).json({ message: validacion.errores.join(". ") });
-      }
-      recepcionItems.push({
-        item,
-        producto,
-        cantidad: validacion.cantidad_nueva
-      });
+      if (!validacion.ok) throw crearErrorHttp(validacion.errores.join(". "), 400);
+      recepcionItems.push({ item, producto, cantidad: validacion.cantidad_nueva });
     }
 
     const nowParts = getNowParts();
-    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.fecha || "")) ? String(req.body.fecha) : nowParts.fecha;
-    const hora = req.body.hora || nowParts.hora;
-    const usuario = String(req.usuario?.nombre || req.usuario?.usuario || "admin").trim() || "admin";
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(meta.fecha || "")) ? String(meta.fecha) : nowParts.fecha;
+    const hora = meta.hora || nowParts.hora;
+    const usuario = String(meta.usuario || "admin").trim() || "admin";
     const recepcionResult = await runQuery(
       `INSERT INTO compra_recepciones
        (compra_id, fecha, hora, observaciones, usuario, estado, idempotency_key, created_at)
        VALUES (?, ?, ?, ?, ?, 'registrada', ?, datetime('now'))`,
-      [compraId, fecha, hora, String(req.body.observaciones || "").trim(), usuario, idempotencyKey]
+      [compraId, fecha, hora, String(meta.observaciones || "").trim(), usuario, idempotencyKey]
     );
 
     for (const recepcionItem of recepcionItems) {
-      const relacionProveedor = await getRelacionProductoProveedor(recepcionItem.producto.id, compra.proveedor_id);
+      // F3D-4bis: las recepciones NUEVAS nunca actualizan producto_proveedores.precio_compra
+      // (esa decision ahora es una revision pendiente de configuracion generada al registrar
+      // el comprobante, resuelta desde *Stock). costo_referencial_actualizado queda siempre en
+      // 0 -- el mecanismo de reversa historico (costo_referencial_actualizado=1) solo aplica a
+      // recepciones anteriores a este cambio, y no se toca aqui.
       const productoActual = await getQuery("SELECT stock FROM productos WHERE id = ?", [recepcionItem.producto.id]);
       const stockAnterior = roundCompra4(Number(productoActual?.stock || 0));
       const stockNuevo = roundCompra4(stockAnterior + recepcionItem.cantidad);
@@ -4552,16 +4927,13 @@ app.post("/compras/:id/recepciones", async (req, res) => {
          (recepcion_id, compra_item_id, producto_id, cantidad_recibida, unidad_snapshot,
           movimiento_stock_id, precio_proveedor_anterior_snapshot,
           fecha_precio_proveedor_anterior_snapshot, costo_referencial_actualizado, created_at)
-         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, datetime('now'))`,
+         VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, 0, datetime('now'))`,
         [
           recepcionResult.lastID,
           recepcionItem.item.id,
           recepcionItem.producto.id,
           recepcionItem.cantidad,
-          recepcionItem.item.unidad_snapshot,
-          relacionProveedor ? relacionProveedor.precio_compra : null,
-          relacionProveedor ? relacionProveedor.fecha_actualizacion : null,
-          relacionProveedor ? 1 : 0
+          recepcionItem.item.unidad_snapshot
         ]
       );
       await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockNuevo, recepcionItem.producto.id]);
@@ -4586,67 +4958,83 @@ app.post("/compras/:id/recepciones", async (req, res) => {
         [movimientoResult.lastID, itemResult.lastID]
       );
       recepcionItem.producto.stock = stockNuevo;
-      if (relacionProveedor) {
-        await refreshCostoReferencialProveedorProducto(
-          { producto_id: recepcionItem.producto.id, proveedor_id: compra.proveedor_id },
-          { getQuery, runQuery }
-        );
-      }
     }
 
     await runQuery("COMMIT");
 
     const detalle = await getCompraDetalle(compraId);
     const recepcion = await getRecepcionCompraConItems(recepcionResult.lastID);
-    return res.status(201).json({
-      message: "Recepcion registrada correctamente",
-      idempotent_replay: false,
-      recepcion,
-      ...detalle
-    });
+    return {
+      status: 201,
+      body: { message: "Recepcion registrada correctamente", idempotent_replay: false, recepcion, ...detalle }
+    };
   } catch (error) {
     try { await runQuery("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
+function crearErrorHttp(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+app.post("/compras/:id/recepciones", async (req, res) => {
+  if (!(await requireVistaCompleta(req, res, "pagos", "No tenes permisos para recibir mercaderia"))) return;
+
+  const compraId = Number(req.params.id);
+  const idempotencyKey = String(req.body.idempotency_key || "").trim();
+  if (!idempotencyKey) {
+    return res.status(400).json({ message: "idempotency_key es obligatoria para registrar recepciones" });
+  }
+  const payloadItems = Array.isArray(req.body.items) ? req.body.items : [];
+  if (!payloadItems.length) {
+    return res.status(400).json({ message: "Debe informar al menos un item a recibir" });
+  }
+
+  try {
+    const usuario = req.usuario?.nombre || req.usuario?.usuario || "admin";
+    const resultado = await registrarRecepcionCompra(compraId, idempotencyKey, payloadItems, {
+      usuario,
+      fecha: req.body.fecha,
+      hora: req.body.hora,
+      observaciones: req.body.observaciones
+    });
+    return res.status(resultado.status).json(resultado.body);
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     logError("Error al registrar recepcion de compra:", error);
     return res.status(500).json({ message: "Error al registrar recepcion de compra" });
   }
 });
 
-app.post("/compras/:id/recepciones/:recepcionId/anular", async (req, res) => {
-  if (!(await requireVistaCompleta(req, res, "pagos", "No tenes permisos para anular recepciones"))) return;
-
-  const compraId = Number(req.params.id);
-  const recepcionId = Number(req.params.recepcionId);
-  const motivo = String(req.body?.motivo || "").trim();
-  if (!motivo) {
-    return res.status(400).json({ message: "Debe informar un motivo para anular la recepcion" });
-  }
-
+// F3E-3D.1: motor compartido de reversa, extraido del endpoint legacy de Pagos sin cambiar
+// su comportamiento (misma validacion, mismo orden, mismos mensajes). Reutilizado por el
+// endpoint legacy de Pagos y por el nuevo endpoint Stock-domain, igual que registrarRecepcionCompra
+// ya es compartido entre /compras/:id/recepciones y /stock/compras-pendientes/:id/recibir.
+async function anularRecepcionCompra(compraId, recepcionId, motivo, meta = {}) {
+  await runQuery("BEGIN IMMEDIATE");
   try {
-    await runQuery("BEGIN IMMEDIATE");
     const compra = await getCompraBase(compraId);
-    if (!compra) {
-      await runQuery("ROLLBACK");
-      return res.status(404).json({ message: "Compra no encontrada" });
-    }
+    if (!compra) throw crearErrorHttp("Compra no encontrada", 404);
 
     const recepcion = await getQuery(
       "SELECT * FROM compra_recepciones WHERE id = ? AND compra_id = ?",
       [recepcionId, compraId]
     );
-    if (!recepcion) {
-      await runQuery("ROLLBACK");
-      return res.status(404).json({ message: "Recepcion no encontrada para esta compra" });
-    }
+    if (!recepcion) throw crearErrorHttp("Recepcion no encontrada para esta compra", 404);
+
     if (String(recepcion.estado || "").toLowerCase() === "anulada") {
       await runQuery("ROLLBACK");
       const detalle = await getCompraDetalle(compraId);
       const recepcionActual = await getRecepcionCompraConItems(recepcionId);
-      return res.status(200).json({
-        message: "Recepcion ya anulada",
-        idempotent_replay: true,
-        recepcion: recepcionActual,
-        ...detalle
-      });
+      return {
+        status: 200,
+        body: { message: "Recepcion ya anulada", idempotent_replay: true, recepcion: recepcionActual, ...detalle }
+      };
     }
 
     const items = await allQuery(
@@ -4658,13 +5046,9 @@ app.post("/compras/:id/recepciones/:recepcionId/anular", async (req, res) => {
        ORDER BY cri.id ASC`,
       [recepcionId]
     );
-    if (!items.length) {
-      await runQuery("ROLLBACK");
-      return res.status(400).json({ message: "La recepcion no tiene items para anular" });
-    }
+    if (!items.length) throw crearErrorHttp("La recepcion no tiene items para anular", 400);
     if (items.some((item) => item.movimiento_stock_reversa_id != null)) {
-      await runQuery("ROLLBACK");
-      return res.status(409).json({ message: "La recepcion ya tiene movimientos de reversa registrados" });
+      throw crearErrorHttp("La recepcion ya tiene movimientos de reversa registrados", 409);
     }
 
     const cantidadPorProducto = new Map();
@@ -4679,15 +5063,12 @@ app.post("/compras/:id/recepciones/:recepcionId/anular", async (req, res) => {
     for (const [productoId, cantidadTotal] of cantidadPorProducto.entries()) {
       const stockActual = stockPorProducto.get(productoId) || 0;
       if (stockActual + 0.0001 < cantidadTotal) {
-        await runQuery("ROLLBACK");
-        return res.status(409).json({
-          message: "La recepcion no puede anularse porque parte del stock ya no esta disponible."
-        });
+        throw crearErrorHttp("La recepcion no puede anularse porque parte del stock ya no esta disponible.", 409);
       }
     }
 
     const nowParts = getNowParts();
-    const usuario = String(req.usuario?.nombre || req.usuario?.usuario || "admin").trim() || "admin";
+    const usuario = String(meta.usuario || "admin").trim() || "admin";
     const productosAfectados = new Set();
     for (const item of items) {
       const cantidad = roundCompra4(Number(item.cantidad_recibida || 0));
@@ -4715,7 +5096,13 @@ app.post("/compras/:id/recepciones/:recepcionId/anular", async (req, res) => {
         "UPDATE compra_recepcion_items SET movimiento_stock_reversa_id = ? WHERE id = ?",
         [movimientoResult.lastID, item.id]
       );
-      productosAfectados.add(Number(item.producto_id));
+      // F3D-4bis: solo los items HISTORICOS (costo_referencial_actualizado=1, de antes de
+      // este cambio) dispararon una actualizacion real de producto_proveedores.precio_compra
+      // -- solo esos ameritan la reversa. Un item nuevo (=0) nunca la toco, asi que anularlo
+      // no debe recalcular/modificar costo proveedor.
+      if (Number(item.costo_referencial_actualizado) === 1) {
+        productosAfectados.add(Number(item.producto_id));
+      }
     }
 
     await runQuery(
@@ -4736,16 +5123,65 @@ app.post("/compras/:id/recepciones/:recepcionId/anular", async (req, res) => {
 
     const detalle = await getCompraDetalle(compraId);
     const recepcionAnulada = await getRecepcionCompraConItems(recepcionId);
-    return res.status(200).json({
-      message: "Recepcion anulada correctamente",
-      idempotent_replay: false,
-      recepcion: recepcionAnulada,
-      ...detalle
-    });
+    return {
+      status: 200,
+      body: { message: "Recepcion anulada correctamente", idempotent_replay: false, recepcion: recepcionAnulada, ...detalle }
+    };
   } catch (error) {
     try { await runQuery("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
+app.post("/compras/:id/recepciones/:recepcionId/anular", async (req, res) => {
+  if (!(await requireVistaCompleta(req, res, "pagos", "No tenes permisos para anular recepciones"))) return;
+
+  const compraId = Number(req.params.id);
+  const recepcionId = Number(req.params.recepcionId);
+  const motivo = String(req.body?.motivo || "").trim();
+  if (!motivo) {
+    return res.status(400).json({ message: "Debe informar un motivo para anular la recepcion" });
+  }
+
+  try {
+    const usuario = req.usuario?.nombre || req.usuario?.usuario || "admin";
+    const resultado = await anularRecepcionCompra(compraId, recepcionId, motivo, { usuario });
+    return res.status(resultado.status).json(resultado.body);
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     logError("Error al anular recepcion de compra:", error);
     return res.status(500).json({ message: "Error al anular recepcion de compra" });
+  }
+});
+
+// F3E-3D.1: misma reversa, dominio Stock. Reutiliza anularRecepcionCompra (ningun SQL
+// duplicado) para que Pagos y Stock queden garantizados identicos por construccion. Gate de
+// permiso independiente de Pagos: Stock=completa, igual que /stock/compras-pendientes/:id/recibir.
+app.post("/stock/recepciones/:recepcionId/revertir", async (req, res) => {
+  if (!(await requireVistaCompleta(req, res, "stock", "No tenes permisos para revertir recepciones"))) return;
+
+  const recepcionId = Number(req.params.recepcionId);
+  const motivo = String(req.body?.motivo || "").trim();
+  if (!motivo) {
+    return res.status(400).json({ message: "Debe informar un motivo para revertir la recepcion" });
+  }
+
+  try {
+    const recepcionBase = await getQuery("SELECT compra_id FROM compra_recepciones WHERE id = ?", [recepcionId]);
+    if (!recepcionBase) {
+      return res.status(404).json({ message: "Recepcion no encontrada" });
+    }
+    const usuario = req.usuario?.nombre || req.usuario?.usuario || "admin";
+    const resultado = await anularRecepcionCompra(recepcionBase.compra_id, recepcionId, motivo, { usuario });
+    return res.status(resultado.status).json(resultado.body);
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+    logError("Error al revertir recepcion de compra desde stock:", error);
+    return res.status(500).json({ message: "Error al revertir la recepcion" });
   }
 });
 
@@ -4810,6 +5246,19 @@ app.post("/compras/:id/comprobantes", async (req, res) => {
         [result.lastID, alicuota.alicuota, alicuota.neto_gravado, alicuota.iva_monto]
       );
     }
+
+    // F3D-4bis: un comprobante activo es la evidencia documentada del costo. Propone
+    // revisiones pendientes de configuracion (costo_proveedor) para *Stock -- nunca
+    // actualiza producto_proveedores por si sola, nunca mueve stock.
+    const usuarioComprobante = String(req.usuario?.nombre || req.usuario?.usuario || "admin").trim() || "admin";
+    await generarRevisionesPendientesCostoProveedor(
+      compraId,
+      compra.proveedor_id,
+      result.lastID,
+      usuarioComprobante,
+      { getQuery, runQuery, allQuery }
+    );
+
     await runQuery("COMMIT");
 
     const detalle = await getCompraDetalle(compraId);

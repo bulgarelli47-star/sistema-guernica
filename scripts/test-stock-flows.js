@@ -6271,7 +6271,9 @@ async function testCompraRecepcionOperativaF3D3() {
       assertApprox(productoDespues.costo_economico, productoAntes.costo_economico, "F3D3 no modifica productos.costo_economico");
       assertApprox(productoDespues.precio_venta, productoAntes.precio_venta, "F3D3 no modifica productos.precio_venta");
       assertApprox(proveedorPrecioAntes.precio_compra, 12, "F3D3 fixture conserva baseline proveedor");
-      assertApprox(proveedorPrecioDespues.precio_compra, 2, "F3D4 actualiza producto_proveedores.precio_compra cuando existe asociacion");
+      // F3D-4bis: la recepcion es NUEVA (creada via este endpoint, sin el parche historico) y
+      // ya no debe tocar producto_proveedores.precio_compra -- se mantiene igual al baseline.
+      assertApprox(proveedorPrecioDespues.precio_compra, 12, "F3D4bis recepcion nueva NO actualiza producto_proveedores.precio_compra");
 
       const pagosDespues = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos WHERE compra_id = ?", [compraId]))[0].total;
       assertEqual(pagosDespues, pagosAntes, "F3D3 recepcion no crea pagos");
@@ -6287,6 +6289,12 @@ async function testCompraRecepcionOperativaF3D3() {
   }
 }
 
+// F3D-4bis: las recepciones NUEVAS ya no actualizan producto_proveedores.precio_compra
+// (eso ahora es una revision pendiente resuelta desde *Stock -- ver
+// testCompraRecepcionNuevaNoActualizaCostoProveedorF3D4bis). Este test preserva la cobertura
+// de COMPATIBILIDAD HISTORICA: simula (via SQL directo, marcando costo_referencial_actualizado=1
+// y el snapshot correspondiente) el estado que una recepcion habria dejado con el mecanismo
+// F3D-4 original, y confirma que la reversa al anular sigue funcionando identico.
 async function testCompraRecepcionReversaCostoReferencialF3D4() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -6340,6 +6348,34 @@ async function testCompraRecepcionReversaCostoReferencialF3D4() {
         (await allSql(dbPath, "SELECT precio_compra, fecha_actualizacion, es_principal FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoId, proveedor.id]))[0];
       const camposProducto = async (productoId) =>
         (await allSql(dbPath, "SELECT precio_compra, costo_final, costo_economico, precio_venta, precio_venta_modo, proveedor_id, proveedor_principal FROM productos WHERE id = ?", [productoId]))[0];
+      // F3D-4bis: las recepciones NUEVAS ya NO actualizan producto_proveedores.precio_compra
+      // (ver testCompraRecepcionNuevaNoActualizaCostoProveedorF3D4bis). Este test verifica que
+      // el mecanismo de REVERSA HISTORICA (recepciones ya marcadas costo_referencial_actualizado=1
+      // de antes del cambio) siga funcionando exactamente igual. Como el endpoint real ya no deja
+      // ese flag en 1, lo simulamos reproduciendo el efecto que el codigo viejo producia: la
+      // recepcion HTTP real ya movio stock/movimientos correctamente, y aca solo retro-marcamos
+      // el item como historico (snapshot = precio vigente antes de esta operacion) y aplicamos el
+      // mismo efecto de costo que F3D-4 original hubiera aplicado.
+      const simularActualizacionHistorica = async (recepcion, proveedorId) => {
+        for (const item of recepcion.items) {
+          const compraItem = (await allSql(dbPath, "SELECT costo_unitario FROM compra_items WHERE id = ?", [item.compra_item_id]))[0];
+          const relacionAntes = (await allSql(dbPath,
+            "SELECT precio_compra, fecha_actualizacion FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?",
+            [item.producto_id, proveedorId]))[0];
+          await runSql(dbPath,
+            `UPDATE compra_recepcion_items
+             SET costo_referencial_actualizado = 1, precio_proveedor_anterior_snapshot = ?, fecha_precio_proveedor_anterior_snapshot = ?
+             WHERE id = ?`,
+            [relacionAntes ? relacionAntes.precio_compra : null, relacionAntes ? relacionAntes.fecha_actualizacion : null, item.id]
+          );
+          if (relacionAntes) {
+            await runSql(dbPath,
+              "UPDATE producto_proveedores SET precio_compra = ?, fecha_actualizacion = ? WHERE producto_id = ? AND proveedor_id = ?",
+              [compraItem.costo_unitario, recepcion.fecha, item.producto_id, proveedorId]
+            );
+          }
+        }
+      };
 
       const productoId = await crearProducto(baseUrl, token, {
         nombre: `F3D4 Producto Ref ${Date.now()}`,
@@ -6381,7 +6417,8 @@ async function testCompraRecepcionReversaCostoReferencialF3D4() {
 
       const recep100 = await recibir(compraId, "f3d4-ref-100", [{ compra_item_id: item100.id, cantidad_recibida: 10 }], "2026-05-02");
       assertApprox((await getProduct(baseUrl, token, productoId)).stock, 10, "F3D4 R1 incrementa stock");
-      assertApprox((await precioProveedor(productoId)).precio_compra, 100, "F3D4 R1 actualiza costo referencial");
+      await simularActualizacionHistorica(recep100, proveedor.id);
+      assertApprox((await precioProveedor(productoId)).precio_compra, 100, "F3D4 R1 actualiza costo referencial (historico simulado)");
       const snapshotR1 = (await allSql(dbPath, "SELECT precio_proveedor_anterior_snapshot, fecha_precio_proveedor_anterior_snapshot, costo_referencial_actualizado FROM compra_recepcion_items WHERE recepcion_id = ?", [recep100.id]))[0];
       assertApprox(snapshotR1.precio_proveedor_anterior_snapshot, 90, "F3D4 snapshot guarda precio proveedor previo");
       assertSame(snapshotR1.fecha_precio_proveedor_anterior_snapshot, "2026-04-01", "F3D4 snapshot guarda fecha previa");
@@ -6389,7 +6426,8 @@ async function testCompraRecepcionReversaCostoReferencialF3D4() {
 
       const recep120 = await recibir(compraId, "f3d4-ref-120", [{ compra_item_id: item120.id, cantidad_recibida: 10 }], "2026-05-03");
       assertApprox((await getProduct(baseUrl, token, productoId)).stock, 20, "F3D4 R2 incrementa stock");
-      assertApprox((await precioProveedor(productoId)).precio_compra, 120, "F3D4 ultima recepcion activa manda");
+      await simularActualizacionHistorica(recep120, proveedor.id);
+      assertApprox((await precioProveedor(productoId)).precio_compra, 120, "F3D4 ultima recepcion activa manda (historico simulado)");
 
       const movimientosAntesAnularR2 = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock WHERE producto_id = ?", [productoId]))[0].total;
       const anulaR2 = await anular(compraId, recep120.id);
@@ -6449,8 +6487,10 @@ async function testCompraRecepcionReversaCostoReferencialF3D4() {
       const oldItem100 = itemsOld.find((item) => Number(item.costo_unitario) === 100);
       const oldItem120 = itemsOld.find((item) => Number(item.costo_unitario) === 120);
       const oldR1 = await recibir(compraOld, "f3d4-old-100", [{ compra_item_id: oldItem100.id, cantidad_recibida: 5 }], "2026-05-04");
-      await recibir(compraOld, "f3d4-old-120", [{ compra_item_id: oldItem120.id, cantidad_recibida: 5 }], "2026-05-05");
-      assertApprox((await precioProveedor(productoAntiguoId)).precio_compra, 120, "F3D4 old fixture queda en ultima recepcion");
+      await simularActualizacionHistorica(oldR1, proveedor.id);
+      const oldR2 = await recibir(compraOld, "f3d4-old-120", [{ compra_item_id: oldItem120.id, cantidad_recibida: 5 }], "2026-05-05");
+      await simularActualizacionHistorica(oldR2, proveedor.id);
+      assertApprox((await precioProveedor(productoAntiguoId)).precio_compra, 120, "F3D4 old fixture queda en ultima recepcion (historico simulado)");
       const anulaOld = await anular(compraOld, oldR1.id);
       if (!anulaOld.response.ok) throw new Error(`F3D4 anular antigua fallo: ${anulaOld.data?.message || anulaOld.response.status}`);
       assertApprox((await precioProveedor(productoAntiguoId)).precio_compra, 120, "F3D4 anular antigua no pisa recepcion posterior activa");
@@ -6566,6 +6606,1952 @@ async function testCompraRecepcionReversaCostoReferencialF3D4() {
       assertApprox(cajaDespues.resumen.total_pagos_general, cajaAntes.resumen.total_pagos_general, "F3D4 anular recepcion no mueve caja");
       const ivaDespues = (await allSql(dbPath, "SELECT iva_total FROM compra_comprobantes WHERE compra_id = ?", [compraId]))[0].iva_total;
       assertApprox(ivaDespues, ivaAntes, "F3D4 anular recepcion no modifica IVA documental");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3D-4bis (M/N): confirma con el flujo HTTP real que una recepcion NUEVA mueve stock pero
+// NUNCA toca producto_proveedores.precio_compra, y que su compra_recepcion_item queda con
+// costo_referencial_actualizado=0. Anular esa recepcion nueva tampoco debe recalcular costo
+// (a diferencia de una recepcion historica, cubierta en testCompraRecepcionReversaCostoReferencialF3D4).
+async function testCompraRecepcionNuevaNoActualizaCostoProveedorF3D4bis() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3D4bis ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3D4bis Cat ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `F3D4bis Producto ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3D4bis",
+        stock: 0,
+        maneja_stock: true
+      });
+      await runSql(dbPath, `
+        INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+        VALUES (?, ?, 50, '2026-06-01', 1)
+      `, [productoId, proveedor.id]);
+
+      const compra = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-10", concepto: "Compra F3D4bis",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 800
+      }, token);
+      if (!compra.response.ok) throw new Error(`F3D4bis crear compra fallo: ${compra.data?.message || compra.response.status}`);
+      const compraId = compra.data.compra.id;
+
+      const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a", total_comprobante: 968,
+        alicuotas: [{ alicuota: 21, neto_gravado: 800, iva_monto: 168 }]
+      }, token);
+      if (!comprobante.response.ok) throw new Error(`F3D4bis comprobante fallo: ${comprobante.data?.message || comprobante.response.status}`);
+
+      const itemsRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ producto_id: productoId, cantidad_comprada: 10, costo_unitario: 80, afecta_stock: 1 }]
+      }, token);
+      if (!itemsRes.response.ok) throw new Error(`F3D4bis crear item fallo: ${itemsRes.data?.message || itemsRes.response.status}`);
+      const item = itemsRes.data.items[0];
+
+      const recepcion = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+        idempotency_key: "f3d4bis-nueva-1", items: [{ compra_item_id: item.id, cantidad_recibida: 10 }]
+      }, token);
+      if (!recepcion.response.ok) throw new Error(`F3D4bis recepcion fallo: ${recepcion.data?.message || recepcion.response.status}`);
+
+      // M: stock si cambia, costo proveedor NO cambia, costo_referencial_actualizado=0.
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 10, "F3D4bis M: recepcion nueva incrementa stock");
+      const relacionTrasRecepcion = (await allSql(dbPath, "SELECT precio_compra FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoId, proveedor.id]))[0];
+      assertApprox(relacionTrasRecepcion.precio_compra, 50, "F3D4bis M: recepcion nueva NO actualiza producto_proveedores.precio_compra");
+      const itemRecepcion = (await allSql(dbPath, "SELECT costo_referencial_actualizado, precio_proveedor_anterior_snapshot FROM compra_recepcion_items WHERE recepcion_id = ?", [recepcion.data.recepcion.id]))[0];
+      assertEqual(itemRecepcion.costo_referencial_actualizado, 0, "F3D4bis M: recepcion nueva queda con costo_referencial_actualizado=0");
+      assertSame(itemRecepcion.precio_proveedor_anterior_snapshot, null, "F3D4bis M: recepcion nueva no guarda snapshot de costo proveedor");
+
+      const anulacion = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones/${recepcion.data.recepcion.id}/anular`, {
+        motivo: "Correccion F3D4bis"
+      }, token);
+      if (!anulacion.response.ok) throw new Error(`F3D4bis anular fallo: ${anulacion.data?.message || anulacion.response.status}`);
+
+      // Anular una recepcion NUEVA tampoco recalcula costo proveedor (no era historica).
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 0, "F3D4bis anular recepcion nueva revierte stock");
+      const relacionTrasAnular = (await allSql(dbPath, "SELECT precio_compra FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoId, proveedor.id]))[0];
+      assertApprox(relacionTrasAnular.precio_compra, 50, "F3D4bis anular recepcion nueva NO recalcula costo proveedor");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3D-4bis normalizacion (A/B/C/H): backfill legacy (productos.proveedor_id) -> normalizado
+// (producto_proveedores) en el bootstrap de arranque (ensureProductosSchema). Idempotente:
+// reiniciar el servidor (proceso nuevo) sobre el mismo archivo de DB no debe duplicar
+// relaciones ya presentes, ni sobrescribir el precio_compra de una relacion ya normalizada.
+async function testProductoProveedorBackfillF3D4bis() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    let productoLegacyId, productoConRelacionId, proveedorId;
+
+    // Primera pasada: fixtures simulando el estado LEGACY -- proveedor_id seteado por fuera
+    // del endpoint (como datos preexistentes de antes de este fix), sin relacion normalizada.
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor Backfill F3D4bis ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      proveedorId = proveedor.id;
+      const categoriaId = await crearCategoria(baseUrl, token, `Backfill F3D4bis Cat ${Date.now()}`, { maneja_stock: true });
+
+      productoLegacyId = await crearProducto(baseUrl, token, {
+        nombre: `Backfill Legacy ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "Backfill", stock: 5, maneja_stock: true,
+        precio_compra: 2076.92
+      });
+      await runSql(dbPath, "UPDATE productos SET proveedor_id = ? WHERE id = ?", [proveedorId, productoLegacyId]);
+
+      // Producto con relacion normalizada YA existente, con precio DISTINTO al de
+      // productos.precio_compra -- para el caso C (el backfill no debe tocarla).
+      productoConRelacionId = await crearProducto(baseUrl, token, {
+        nombre: `Backfill Con Relacion ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "Backfill", stock: 3, maneja_stock: true,
+        precio_compra: 500
+      });
+      await runSql(dbPath, "UPDATE productos SET proveedor_id = ? WHERE id = ?", [proveedorId, productoConRelacionId]);
+      await runSql(dbPath, `
+        INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+        VALUES (?, ?, 999, '2026-01-01', 1)
+      `, [productoConRelacionId, proveedorId]);
+    });
+
+    const relacionLegacyAntes = await allSql(dbPath, "SELECT * FROM producto_proveedores WHERE producto_id = ?", [productoLegacyId]);
+    assertEqual(relacionLegacyAntes.length, 0, "Precondicion: producto legacy sin relacion normalizada antes del backfill");
+
+    // Segunda pasada: reinicia el servidor (proceso nuevo) -> corre ensureProductosSchema() ->
+    // backfill. A: legacy pasa a normalizado. C: la relacion previa no se sobrescribe.
+    await withServer(dbPath, async () => {
+      const relacionLegacyDespues = await allSql(dbPath, "SELECT * FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoLegacyId, proveedorId]);
+      assertEqual(relacionLegacyDespues.length, 1, "A: backfill crea la relacion normalizada para el producto legacy");
+      assertApprox(relacionLegacyDespues[0].precio_compra, 2076.92, "A: backfill usa productos.precio_compra como precio_compra inicial");
+      assertEqual(relacionLegacyDespues[0].es_principal, 1, "A: backfill marca la relacion como principal");
+
+      const relacionBDespues = await allSql(dbPath, "SELECT * FROM producto_proveedores WHERE producto_id = ?", [productoConRelacionId]);
+      assertEqual(relacionBDespues.length, 1, "C: backfill no duplica una relacion ya existente");
+      assertApprox(relacionBDespues[0].precio_compra, 999, "C: backfill no sobrescribe precio_compra de una relacion ya existente");
+
+      const productoLegacyStock = (await allSql(dbPath, "SELECT stock FROM productos WHERE id = ?", [productoLegacyId]))[0];
+      assertApprox(productoLegacyStock.stock, 5, "H: backfill no modifica stock");
+    });
+
+    // Tercera pasada: reiniciar OTRA VEZ -- B: idempotencia, no duplica nada ya presente.
+    const totalRelacionesAntesReinicio = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM producto_proveedores"))[0].total;
+    await withServer(dbPath, async () => {
+      const totalRelacionesDespuesReinicio = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM producto_proveedores"))[0].total;
+      assertEqual(totalRelacionesDespuesReinicio, totalRelacionesAntesReinicio, "B: correr el backfill de nuevo (reinicio del servidor) no duplica relaciones");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3D-4bis normalizacion (D/E/F): alta y edicion explicita de producto sincronizan el modelo
+// normalizado (producto_proveedores), porque son configuracion deliberada del operador, no
+// una actualizacion silenciosa originada por factura.
+async function testProductoProveedorAltaEdicionSincronizaF3D4bis() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedorUno = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor Uno AltaEdicion ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const proveedorDos = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor Dos AltaEdicion ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `AltaEdicion F3D4bis Cat ${Date.now()}`, { maneja_stock: true });
+      const relacionDe = async (productoId, proveedorId) =>
+        (await allSql(dbPath, "SELECT * FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoId, proveedorId]))[0] || null;
+
+      // D: alta de producto CON proveedor crea la relacion normalizada como principal.
+      const productoRes = await requestJson(baseUrl, "POST", "/productos", {
+        nombre: `AltaEdicion Producto ${Date.now()}`,
+        categoria: "AltaEdicion", categoria_id: categoriaId, precio_compra: 1000, precio_venta: 2000,
+        stock: 10, maneja_stock: true, proveedor_id: proveedorUno.id, activo: true
+      }, token);
+      if (!productoRes.response.ok) throw new Error(`D: alta de producto fallo: ${productoRes.data?.message || productoRes.response.status}`);
+      const productoId = productoRes.data.id;
+      const relacionUnoTrasAlta = await relacionDe(productoId, proveedorUno.id);
+      if (!relacionUnoTrasAlta) throw new Error("D: el alta con proveedor deberia crear la relacion normalizada");
+      assertApprox(relacionUnoTrasAlta.precio_compra, 1000, "D: la relacion nace con el precio_compra del alta");
+      assertEqual(relacionUnoTrasAlta.es_principal, 1, "D: la relacion nace principal (unico proveedor del alta)");
+
+      // E: editar cambiando el proveedor principal -- conserva la relacion anterior (solo
+      // pierde es_principal), crea la nueva relacion como principal.
+      const edicionCambioProveedor = await requestJson(baseUrl, "PUT", `/productos/${productoId}`, {
+        nombre: `AltaEdicion Producto ${Date.now()}`,
+        categoria: "AltaEdicion", categoria_id: categoriaId, precio_compra: 1000, precio_venta: 2000,
+        stock: 10, maneja_stock: true, proveedor_id: proveedorDos.id, activo: true
+      }, token);
+      if (!edicionCambioProveedor.response.ok) throw new Error(`E: edicion cambio proveedor fallo: ${edicionCambioProveedor.data?.message || edicionCambioProveedor.response.status}`);
+      const relacionUnoTrasCambio = await relacionDe(productoId, proveedorUno.id);
+      if (!relacionUnoTrasCambio) throw new Error("E: la relacion con el proveedor anterior no debe borrarse, solo perder es_principal");
+      assertEqual(relacionUnoTrasCambio.es_principal, 0, "E: la relacion anterior pierde es_principal");
+      const relacionDosTrasCambio = await relacionDe(productoId, proveedorDos.id);
+      if (!relacionDosTrasCambio) throw new Error("E: deberia crearse la relacion con el nuevo proveedor principal");
+      assertEqual(relacionDosTrasCambio.es_principal, 1, "E: la nueva relacion queda marcada principal");
+      const productoTrasCambio = (await allSql(dbPath, "SELECT proveedor_id FROM productos WHERE id = ?", [productoId]))[0];
+      assertEqual(Number(productoTrasCambio.proveedor_id), Number(proveedorDos.id), "E: productos.proveedor_id refleja el nuevo principal");
+
+      // F: editar precio_compra explicitamente sincroniza el precio de la relacion principal
+      // vigente (proveedorDos), sin tocar la del proveedor anterior.
+      const edicionCambioPrecio = await requestJson(baseUrl, "PUT", `/productos/${productoId}`, {
+        nombre: `AltaEdicion Producto ${Date.now()}`,
+        categoria: "AltaEdicion", categoria_id: categoriaId, precio_compra: 1300, precio_venta: 2000,
+        stock: 10, maneja_stock: true, proveedor_id: proveedorDos.id, activo: true
+      }, token);
+      if (!edicionCambioPrecio.response.ok) throw new Error(`F: edicion cambio precio fallo: ${edicionCambioPrecio.data?.message || edicionCambioPrecio.response.status}`);
+      const relacionDosTrasPrecio = await relacionDe(productoId, proveedorDos.id);
+      assertApprox(relacionDosTrasPrecio.precio_compra, 1300, "F: editar precio_compra explicitamente sincroniza la relacion principal");
+      const relacionUnoTrasPrecio = await relacionDe(productoId, proveedorUno.id);
+      assertApprox(relacionUnoTrasPrecio.precio_compra, 1000, "F: la relacion del proveedor anterior (no principal) no se toca al cambiar el precio");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3D-4bis normalizacion (G/I): reproduce el caso real reportado (producto legacy migrado
+// via backfill + Cargar compra con costo distinto) de punta a punta. Confirma que, una vez
+// normalizado, el circuito de revision de costo funciona sobre el producto migrado, y que
+// registrar el comprobante NUNCA actualiza producto_proveedores.precio_compra en silencio.
+async function testF3D4bisSobreProductoMigradoGeneraRevisionF3D4bis() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    let productoId, proveedorId, compraId;
+
+    // Primera pasada: fixture legacy identico al caso real reportado (Coca Cola 1250).
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Coca Cola Company Migrado ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      proveedorId = proveedor.id;
+      const categoriaId = await crearCategoria(baseUrl, token, `Migrado F3D4bis Cat ${Date.now()}`, { maneja_stock: true });
+      productoId = await crearProducto(baseUrl, token, {
+        nombre: `Coca Cola 1250 Migrado ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "Migrado", stock: 65, maneja_stock: true,
+        precio_compra: 2076.92
+      });
+      await runSql(dbPath, "UPDATE productos SET proveedor_id = ? WHERE id = ?", [proveedorId, productoId]);
+    });
+
+    // Segunda pasada: reinicio dispara el backfill -- confirma normalizacion antes de seguir.
+    await withServer(dbPath, async () => {
+      const relacion = (await allSql(dbPath, "SELECT * FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoId, proveedorId]))[0];
+      if (!relacion) throw new Error("Precondicion: el backfill deberia haber normalizado este producto");
+      assertApprox(relacion.precio_compra, 2076.92, "Precondicion: costo vigente migrado = 2076.92");
+    });
+
+    // Tercera pasada: Cargar compra real (compra + item + comprobante), sin recepcion,
+    // costo de factura distinto al vigente migrado.
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const stockAntes = (await getProduct(baseUrl, token, productoId)).stock;
+
+      const compra = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedorId, fecha_compra: "2026-08-21", concepto: "Compra migrado F3D4bis",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 43328
+      }, token);
+      if (!compra.response.ok) throw new Error(`crear compra fallo: ${compra.data?.message || compra.response.status}`);
+      compraId = compra.data.compra.id;
+
+      const itemsRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ producto_id: productoId, cantidad_comprada: 16, costo_unitario: 2708, afecta_stock: 1 }]
+      }, token);
+      if (!itemsRes.response.ok) throw new Error(`crear item fallo: ${itemsRes.data?.message || itemsRes.response.status}`);
+      const item = itemsRes.data.items.find((i) => Number(i.producto_id) === Number(productoId));
+
+      const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a", punto_venta: "casa central", numero_comprobante: "KFJ3546ADS-2",
+        total_comprobante: 52426.88, neto_gravado: 43328, iva_total: 9098.88,
+        alicuotas: [{ alicuota: 21, neto_gravado: 43328, iva_monto: 9098.88 }]
+      }, token);
+      if (!comprobante.response.ok) throw new Error(`comprobante fallo: ${comprobante.data?.message || comprobante.response.status}`);
+
+      // G: se genero UNA revision con los valores correctos.
+      const revision = (await allSql(dbPath, "SELECT * FROM producto_revisiones_pendientes WHERE tipo_revision = 'costo_proveedor' AND compra_item_id = ?", [item.id]))[0];
+      if (!revision) throw new Error("G: deberia haberse generado una revision pendiente para el producto migrado");
+      assertApprox(revision.valor_actual, 2076.92, "G: valor_actual = costo vigente migrado (2076.92)");
+      assertApprox(revision.valor_propuesto, 2708, "G: valor_propuesto = costo de factura (2708)");
+      assertSame(revision.estado, "pendiente", "G: la revision nace pendiente");
+
+      // I: la factura NUNCA actualiza producto_proveedores.precio_compra en silencio.
+      const relacionTrasComprobante = (await allSql(dbPath, "SELECT precio_compra FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoId, proveedorId]))[0];
+      assertApprox(relacionTrasComprobante.precio_compra, 2076.92, "I: registrar el comprobante NO actualiza producto_proveedores.precio_compra en silencio");
+
+      // H: stock permanece intacto (sin recepcion).
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, stockAntes, "H: stock no cambia (Cargar compra sin recepcion)");
+
+      // La API real de *Stock > Ajustes pendientes debe devolver esta revision.
+      const listado = await requestJson(baseUrl, "GET", "/productos/revisiones-pendientes?estado=pendiente", null, token);
+      if (!listado.response.ok) throw new Error(`listar revisiones fallo: ${listado.response.status}`);
+      const encontrada = listado.data.find((r) => Number(r.id) === Number(revision.id));
+      if (!encontrada) throw new Error("La API de revisiones pendientes deberia incluir la revision del producto migrado");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3D-4bis (A-J): generacion de revisiones pendientes de costo_proveedor al registrar un
+// comprobante activo, y su resolucion (aprobar/rechazar) desde *Stock. Nunca mueve stock,
+// nunca toca productos, nunca actualiza producto_proveedores excepto al aprobar.
+async function testProductoRevisionPendienteCostoProveedorF3D4bis() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3D4bisRev ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3D4bisRev Cat ${Date.now()}`, { maneja_stock: true });
+
+      const crearProductoConRelacion = async (sufijo, precioCompraVigente) => {
+        const productoId = await crearProducto(baseUrl, token, {
+          nombre: `F3D4bisRev ${sufijo} ${Date.now()}`,
+          categoria_id: categoriaId, categoria: "F3D4bisRev", stock: 0, maneja_stock: true
+        });
+        if (precioCompraVigente !== null) {
+          await runSql(dbPath, `
+            INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+            VALUES (?, ?, ?, '2026-06-01', 1)
+          `, [productoId, proveedor.id, precioCompraVigente]);
+        }
+        return productoId;
+      };
+      const revisionDe = async (compraItemId) =>
+        (await allSql(dbPath, "SELECT * FROM producto_revisiones_pendientes WHERE tipo_revision = 'costo_proveedor' AND compra_item_id = ?", [compraItemId]))[0] || null;
+      const precioProveedor = async (productoId) =>
+        (await allSql(dbPath, "SELECT precio_compra FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoId, proveedor.id]))[0];
+
+      // A: actual 1000 / factura 1000 -> sin revision.
+      const productoA = await crearProductoConRelacion("A", 1000);
+      // B: actual 1000 / factura 1200 -> revision pendiente.
+      const productoB = await crearProductoConRelacion("B", 1000);
+      // C: actual 1200 / factura 1000 -> revision pendiente tambien (no solo aumentos).
+      const productoC = await crearProductoConRelacion("C", 1200);
+      // D: sin producto_proveedores -> no crea relacion, sin revision accionable.
+      const productoD = await crearProductoConRelacion("D", null);
+
+      const compra = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-10", concepto: "Compra F3D4bisRev",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 4000
+      }, token);
+      if (!compra.response.ok) throw new Error(`F3D4bisRev crear compra fallo: ${compra.data?.message || compra.response.status}`);
+      const compraId = compra.data.compra.id;
+
+      const movimientosAntes = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock"))[0].total;
+
+      const itemsRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [
+          { producto_id: productoA, cantidad_comprada: 1, costo_unitario: 1000, afecta_stock: 1 },
+          { producto_id: productoB, cantidad_comprada: 1, costo_unitario: 1200, afecta_stock: 1 },
+          { producto_id: productoC, cantidad_comprada: 1, costo_unitario: 1000, afecta_stock: 1 },
+          { producto_id: productoD, cantidad_comprada: 1, costo_unitario: 500, afecta_stock: 1 }
+        ]
+      }, token);
+      if (!itemsRes.response.ok) throw new Error(`F3D4bisRev crear items fallo: ${itemsRes.data?.message || itemsRes.response.status}`);
+      const itemA = itemsRes.data.items.find((i) => Number(i.producto_id) === Number(productoA));
+      const itemB = itemsRes.data.items.find((i) => Number(i.producto_id) === Number(productoB));
+      const itemC = itemsRes.data.items.find((i) => Number(i.producto_id) === Number(productoC));
+      const itemD = itemsRes.data.items.find((i) => Number(i.producto_id) === Number(productoD));
+
+      // El comprobante activo dispara la generacion de revisiones para toda la compra.
+      const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a", total_comprobante: 4840,
+        alicuotas: [{ alicuota: 21, neto_gravado: 4000, iva_monto: 840 }]
+      }, token);
+      if (!comprobante.response.ok) throw new Error(`F3D4bisRev comprobante fallo: ${comprobante.data?.message || comprobante.response.status}`);
+
+      // No crear ningun movimiento de stock ni tocar productos.stock al generar revisiones.
+      const movimientosDespues = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock"))[0].total;
+      assertEqual(movimientosDespues, movimientosAntes, "F3D4bisRev generar revisiones no crea movimientos_stock");
+
+      // A: sin diferencia -> sin revision.
+      assertSame(await revisionDe(itemA.id), null, "A: actual 1000 / factura 1000 -> no crea revision");
+      // B: revision pendiente con valores correctos.
+      const revB = await revisionDe(itemB.id);
+      if (!revB) throw new Error("B: deberia existir una revision pendiente para producto B");
+      assertSame(revB.estado, "pendiente", "B: revision de producto B nace pendiente");
+      assertApprox(revB.valor_actual, 1000, "B: valor_actual = costo vigente (1000)");
+      assertApprox(revB.valor_propuesto, 1200, "B: valor_propuesto = costo de factura (1200)");
+      // C: actual > factura tambien genera revision (no solo aumentos).
+      const revC = await revisionDe(itemC.id);
+      if (!revC) throw new Error("C: deberia existir una revision pendiente para producto C (actual > factura)");
+      assertApprox(revC.valor_actual, 1200, "C: valor_actual = costo vigente (1200)");
+      assertApprox(revC.valor_propuesto, 1000, "C: valor_propuesto = costo de factura (1000)");
+      // D: sin relacion -> sin revision accionable, y no se crea la relacion.
+      assertSame(await revisionDe(itemD.id), null, "D: sin producto_proveedores -> no crea revision accionable");
+      const relacionD = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoD, proveedor.id]))[0].total;
+      assertEqual(relacionD, 0, "D: no crea producto_proveedores silenciosamente");
+
+      // I: un segundo comprobante sobre la MISMA compra vuelve a evaluar los mismos items,
+      // pero no debe duplicar la revision ya existente (UNIQUE tipo_revision+compra_item_id).
+      const comprobante2 = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "nota_debito", total_comprobante: 10
+      }, token);
+      if (!comprobante2.response.ok) throw new Error(`F3D4bisRev segundo comprobante fallo: ${comprobante2.data?.message || comprobante2.response.status}`);
+      const revisionesB = await allSql(dbPath, "SELECT COUNT(*) AS total FROM producto_revisiones_pendientes WHERE tipo_revision = 'costo_proveedor' AND compra_item_id = ?", [itemB.id]);
+      assertEqual(revisionesB[0].total, 1, "I: segundo comprobante no duplica la revision de producto B");
+
+      // E/G/H: aprobar la revision de B actualiza SOLO producto_proveedores.precio_compra.
+      const stockBAntes = (await getProduct(baseUrl, token, productoB)).stock;
+      const productoBAntes = (await allSql(dbPath, "SELECT precio_compra, costo_final, costo_economico, precio_venta FROM productos WHERE id = ?", [productoB]))[0];
+      const movimientosAntesAprobar = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock"))[0].total;
+      const aprobarB = await requestJson(baseUrl, "POST", `/productos/revisiones-pendientes/${revB.id}/aprobar`, {}, token);
+      if (!aprobarB.response.ok) throw new Error(`E: aprobar revision B fallo: ${aprobarB.data?.message || aprobarB.response.status}`);
+      assertApprox((await precioProveedor(productoB)).precio_compra, 1200, "E: aprobar actualiza producto_proveedores.precio_compra al valor_propuesto");
+      assertSame((await revisionDe(itemB.id)).estado, "aprobada", "E: la revision queda marcada aprobada");
+      // G: no crea movimientos_stock ni cambia productos.stock.
+      assertEqual((await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock"))[0].total, movimientosAntesAprobar, "G: aprobar no crea movimientos_stock");
+      assertApprox((await getProduct(baseUrl, token, productoB)).stock, stockBAntes, "G: aprobar no cambia productos.stock");
+      // H: no modifica productos.* ni proveedor principal.
+      const productoBDespues = (await allSql(dbPath, "SELECT precio_compra, costo_final, costo_economico, precio_venta FROM productos WHERE id = ?", [productoB]))[0];
+      for (const campo of ["precio_compra", "costo_final", "costo_economico", "precio_venta"]) {
+        assertApprox(productoBDespues[campo], productoBAntes[campo], `H: aprobar no modifica productos.${campo}`);
+      }
+      assertEqual(Number((await allSql(dbPath, "SELECT es_principal FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoB, proveedor.id]))[0].es_principal), 1, "H: aprobar no cambia proveedor principal");
+
+      // F: rechazar la revision de C conserva el precio vigente.
+      const rechazarC = await requestJson(baseUrl, "POST", `/productos/revisiones-pendientes/${revC.id}/rechazar`, {}, token);
+      if (!rechazarC.response.ok) throw new Error(`F: rechazar revision C fallo: ${rechazarC.data?.message || rechazarC.response.status}`);
+      assertApprox((await precioProveedor(productoC)).precio_compra, 1200, "F: rechazar conserva el costo vigente sin cambios");
+      assertSame((await revisionDe(itemC.id)).estado, "rechazada", "F: la revision queda marcada rechazada");
+
+      // Replay de aprobada/rechazada: no se vuelve a aplicar (409).
+      const replayAprobar = await requestJson(baseUrl, "POST", `/productos/revisiones-pendientes/${revB.id}/aprobar`, {}, token);
+      assertEqual(replayAprobar.response.status, 409, "Replay de aprobar sobre revision ya resuelta responde 409");
+      const replayRechazar = await requestJson(baseUrl, "POST", `/productos/revisiones-pendientes/${revC.id}/rechazar`, {}, token);
+      assertEqual(replayRechazar.response.status, 409, "Replay de rechazar sobre revision ya resuelta responde 409");
+
+      // J: el costo vigente cambio desde que nacio la revision -> 409, no pisa el nuevo valor.
+      const productoF = await crearProductoConRelacion("F", 1000);
+      const itemsF = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ producto_id: productoF, cantidad_comprada: 1, costo_unitario: 1200, afecta_stock: 1 }]
+      }, token);
+      if (!itemsF.response.ok) throw new Error(`J: crear item F fallo: ${itemsF.data?.message || itemsF.response.status}`);
+      // Nota: POST /compras/:id/items devuelve en "items" TODOS los items de la compra, no
+      // solo los recien creados (deuda tecnica preexistente detectada en esta auditoria: en
+      // server.js el spread "...detalle" pisa el campo "items: itemsPersistidos" porque
+      // "detalle" trae su propia propiedad "items" con la lista completa -- ver reporte).
+      // Por eso se busca por producto_id, igual que el resto de los tests de este archivo.
+      const itemF = itemsF.data.items.find((i) => Number(i.producto_id) === Number(productoF));
+      const comprobante3 = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "nota_debito", total_comprobante: 10
+      }, token);
+      if (!comprobante3.response.ok) throw new Error(`J: tercer comprobante fallo: ${comprobante3.data?.message || comprobante3.response.status}`);
+      const revF = await revisionDe(itemF.id);
+      if (!revF) throw new Error("J: deberia existir una revision pendiente para producto F");
+      await runSql(dbPath, "UPDATE producto_proveedores SET precio_compra = 1100 WHERE producto_id = ? AND proveedor_id = ?", [productoF, proveedor.id]);
+      const aprobarFObsoleta = await requestJson(baseUrl, "POST", `/productos/revisiones-pendientes/${revF.id}/aprobar`, {}, token);
+      assertEqual(aprobarFObsoleta.response.status, 409, "J: costo vigente cambiado desde que nacio la revision -> 409");
+      assertApprox((await precioProveedor(productoF)).precio_compra, 1100, "J: no pisa el costo vigente cambiado externamente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3D-4bis (K/L): una revision pendiente no puede aprobarse si la Compra esta anulada, o si
+// ya no tiene ningun comprobante activo -- en ambos casos debe quedar no accionable (409),
+// sin perder el registro (no se borra ni se reabre nada).
+async function testProductoRevisionPendienteNoAccionableSiCompraOComprobanteAnuladoF3D4bis() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3D4bisKL ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3D4bisKL Cat ${Date.now()}`, { maneja_stock: true });
+
+      const prepararCompraConRevision = async (sufijo, precioVigente, costoFactura) => {
+        const productoId = await crearProducto(baseUrl, token, {
+          nombre: `F3D4bisKL ${sufijo} ${Date.now()}`,
+          categoria_id: categoriaId, categoria: "F3D4bisKL", stock: 0, maneja_stock: true
+        });
+        await runSql(dbPath, `
+          INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+          VALUES (?, ?, ?, '2026-06-01', 1)
+        `, [productoId, proveedor.id, precioVigente]);
+        const compra = await requestJson(baseUrl, "POST", "/compras", {
+          proveedor_id: proveedor.id, fecha_compra: "2026-06-10", concepto: `Compra F3D4bisKL ${sufijo}`,
+          tipo_impacto: "costo_variable_mercaderia", total_compra: 1000
+        }, token);
+        if (!compra.response.ok) throw new Error(`Compra ${sufijo} fallo: ${compra.data?.message || compra.response.status}`);
+        const compraId = compra.data.compra.id;
+        const itemRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+          items: [{ producto_id: productoId, cantidad_comprada: 1, costo_unitario: costoFactura, afecta_stock: 1 }]
+        }, token);
+        if (!itemRes.response.ok) throw new Error(`Item ${sufijo} fallo: ${itemRes.data?.message || itemRes.response.status}`);
+        const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+          tipo_comprobante: "factura_a", total_comprobante: Number((costoFactura * 1.21).toFixed(2)),
+          alicuotas: [{ alicuota: 21, neto_gravado: costoFactura, iva_monto: Number((costoFactura * 0.21).toFixed(2)) }]
+        }, token);
+        if (!comprobante.response.ok) throw new Error(`Comprobante ${sufijo} fallo: ${comprobante.data?.message || comprobante.response.status}`);
+        const revision = (await allSql(dbPath, "SELECT * FROM producto_revisiones_pendientes WHERE tipo_revision = 'costo_proveedor' AND compra_item_id = ?", [itemRes.data.items[0].id]))[0];
+        if (!revision) throw new Error(`No se genero revision para ${sufijo}`);
+        return { productoId, compraId, comprobanteId: comprobante.data.comprobante_id, revision };
+      };
+
+      // K: compra anulada -> no accionable (requiere anular primero el comprobante, luego la compra).
+      const casoK = await prepararCompraConRevision("K", 1000, 1200);
+      const anularComprobanteK = await requestJson(baseUrl, "POST", `/compras/${casoK.compraId}/comprobantes/${casoK.comprobanteId}/anular`, { motivo: "Cierre F3D4bisKL" }, token);
+      if (!anularComprobanteK.response.ok) throw new Error(`K: anular comprobante fallo: ${anularComprobanteK.data?.message || anularComprobanteK.response.status}`);
+      const anularCompraK = await requestJson(baseUrl, "POST", `/compras/${casoK.compraId}/anular`, { motivo: "Cierre F3D4bisKL" }, token);
+      if (!anularCompraK.response.ok) throw new Error(`K: anular compra fallo: ${anularCompraK.data?.message || anularCompraK.response.status}`);
+      const aprobarK = await requestJson(baseUrl, "POST", `/productos/revisiones-pendientes/${casoK.revision.id}/aprobar`, {}, token);
+      assertEqual(aprobarK.response.status, 409, "K: compra anulada -> revision no accionable (409)");
+      const revisionKTrasIntento = (await allSql(dbPath, "SELECT estado FROM producto_revisiones_pendientes WHERE id = ?", [casoK.revision.id]))[0];
+      assertSame(revisionKTrasIntento.estado, "pendiente", "K: la revision no se borra ni cambia de estado, sigue pendiente");
+
+      // L: compra activa pero sin ningun comprobante activo -> no accionable.
+      const casoL = await prepararCompraConRevision("L", 1000, 1200);
+      const anularComprobanteL = await requestJson(baseUrl, "POST", `/compras/${casoL.compraId}/comprobantes/${casoL.comprobanteId}/anular`, { motivo: "Cierre F3D4bisKL" }, token);
+      if (!anularComprobanteL.response.ok) throw new Error(`L: anular comprobante fallo: ${anularComprobanteL.data?.message || anularComprobanteL.response.status}`);
+      const aprobarL = await requestJson(baseUrl, "POST", `/productos/revisiones-pendientes/${casoL.revision.id}/aprobar`, {}, token);
+      assertEqual(aprobarL.response.status, 409, "L: sin comprobante activo -> revision no accionable (409)");
+      const revisionLTrasIntento = (await allSql(dbPath, "SELECT estado FROM producto_revisiones_pendientes WHERE id = ?", [casoL.revision.id]))[0];
+      assertSame(revisionLTrasIntento.estado, "pendiente", "L: la revision no se borra ni cambia de estado, sigue pendiente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// Extrae una funcion de un HTML minificado en una sola linea (sin saltos de linea entre
+// funciones, a diferencia de pagos.html): busca "function nombre(" y cierra por balance de
+// llaves en vez de depender de un patron de fin de linea.
+function extraerFuncionMinificada(html, nombre) {
+  const inicioFirma = html.indexOf(`function ${nombre}(`);
+  if (inicioFirma === -1) throw new Error(`F3D4bis-UI: no se encontro ${nombre} en el HTML`);
+  const inicioCuerpo = html.indexOf("{", inicioFirma);
+  let profundidad = 0;
+  for (let i = inicioCuerpo; i < html.length; i++) {
+    if (html[i] === "{") profundidad++;
+    else if (html[i] === "}") {
+      profundidad--;
+      if (profundidad === 0) return html.slice(inicioFirma, i + 1);
+    }
+  }
+  throw new Error(`F3D4bis-UI: no se pudo balancear las llaves de ${nombre}`);
+}
+
+// F3D-4bis (bug manual "Ajustes pendientes" desaparece al click): reproduce el flujo real
+// click-en-tab con un mock minimo de DOM/location, extrayendo actualizarTabsAjustesPendientes
+// y mostrarStockTab TAL CUAL viven en frontend/productos.html. Caso exacto reportado: 0
+// ajustes fisicos + 1 revision de costo -- el badge debe mostrarse ANTES del click, y la
+// pestana debe seguir visible y activa DESPUES del click (nunca debe forzar "resumen").
+async function testStockAjustesPendientesTabNoDesaparaceConSoloRevisionCostoF3D4bis() {
+  const html = fs.readFileSync(path.join(ROOT, "frontend", "productos.html"), "utf8");
+  const srcActualizarTabs = extraerFuncionMinificada(html, "actualizarTabsAjustesPendientes");
+  const srcMostrarTab = extraerFuncionMinificada(html, "mostrarStockTab");
+  if (!srcMostrarTab.includes("actualizarTabsAjustesPendientes([...ajustesPendientesActivos(),...comprasPendientesStock])")) {
+    throw new Error("F3E3C-UI: mostrarStockTab debe reevaluar la visibilidad con el universo combinado (fisicos + propuestas de compra pendientes)");
+  }
+
+  // Mock minimo de DOM: un boton de tab, un badge, un panel -- solo lo que estas dos
+  // funciones tocan realmente.
+  function crearElemento(dataset) {
+    const el = { dataset, hidden: false, _classes: new Set(), textContent: "" };
+    el.classList = {
+      toggle(cls, val) { if (val) el._classes.add(cls); else el._classes.delete(cls); },
+      contains(cls) { return el._classes.has(cls); }
+    };
+    return el;
+  }
+  const tabBtn = crearElemento({ stockTab: "ajustes-pendientes" });
+  const badge = crearElemento({ ajustesPendientesBadge: "" });
+  const panelAjustes = crearElemento({ stockPanel: "ajustes-pendientes" });
+  const panelResumen = crearElemento({ stockPanel: "resumen" });
+  const tabResumenBtn = crearElemento({ stockTab: "resumen" });
+  const mockDocument = {
+    querySelectorAll(selector) {
+      if (selector === '[data-stock-tab="ajustes-pendientes"]') return [tabBtn];
+      if (selector === "[data-ajustes-pendientes-badge]") return [badge];
+      if (selector === "[data-stock-tab]") return [tabBtn, tabResumenBtn];
+      if (selector === "[data-stock-panel]") return [panelAjustes, panelResumen];
+      return [];
+    }
+  };
+  const mockLocation = { hash: "", pathname: "/productos.html", search: "" };
+  const mockHistory = { replaceState() {} };
+
+  // Estado real del caso reportado (F3D-4bis) generalizado a F3E-3C: 0 ajustes fisicos, 1
+  // propuesta de compra pendiente (puede ser por cantidad, por costo, o ambas -- para este test
+  // de tabs/badge solo importa que el universo combinado tenga longitud 1).
+  const ajustesPendientesStock = [];
+  const comprasPendientesStock = [{ compra_item_id: 1, cantidad_pendiente: 6, estado_recepcion: "parcial", estado_revision_costo: "sin_revision" }];
+  const ajustesPendientesActivos = () => ajustesPendientesStock.filter((a) => String(a.estado || "pendiente") === "pendiente");
+  const puedeVerTabAjustesPendientes = () => true; // Stock completo, ya probado aparte en otros tests.
+
+  const contexto = {
+    document: mockDocument,
+    location: mockLocation,
+    history: mockHistory,
+    ajustesPendientesActivos,
+    puedeVerTabAjustesPendientes,
+    comprasPendientesStock
+  };
+  const fn = new Function(
+    "document", "location", "history", "ajustesPendientesActivos", "puedeVerTabAjustesPendientes", "comprasPendientesStock",
+    `${srcActualizarTabs}\n${srcMostrarTab}\nreturn { actualizarTabsAjustesPendientes, mostrarStockTab };`
+  )(contexto.document, contexto.location, contexto.history, contexto.ajustesPendientesActivos, contexto.puedeVerTabAjustesPendientes, contexto.comprasPendientesStock);
+
+  // 1) Carga inicial (simula cargarTodo -> renderPanelAjustesPendientes): badge=1, tab visible.
+  const visibleAntesDelClick = fn.actualizarTabsAjustesPendientes([...ajustesPendientesActivos(), ...comprasPendientesStock]);
+  assertEqual(visibleAntesDelClick ? 1 : 0, 1, "Antes del click: la pestana debe evaluarse visible (0 fisicos + 1 propuesta de compra pendiente)");
+  assertEqual(tabBtn.hidden, false, "Antes del click: la pestana no debe quedar hidden");
+  assertEqual(badge.textContent, 1, "Antes del click: el badge debe mostrar 1 (fisicos + propuestas de compra pendientes)");
+
+  // 2) Click en la pestana "Ajustes pendientes" -> mostrarStockTab("ajustes-pendientes").
+  fn.mostrarStockTab("ajustes-pendientes");
+
+  // 3) Invariante obligatoria: la pestana sigue visible y queda activa, NO vuelve a "resumen".
+  assertEqual(tabBtn.hidden, false, "Despues del click: la pestana NO debe ocultarse (bug reportado)");
+  assertEqual(tabBtn.classList.contains("active"), true, "Despues del click: la pestana 'ajustes-pendientes' debe quedar activa");
+  assertEqual(tabResumenBtn.classList.contains("active"), false, "Despues del click: 'resumen' (Inventario) NO debe quedar activa");
+  assertEqual(panelAjustes.classList.contains("hidden"), false, "Despues del click: el panel de Ajustes pendientes debe mostrarse");
+  assertEqual(panelResumen.classList.contains("hidden"), true, "Despues del click: el panel de Inventario debe ocultarse");
+}
+
+// F3D-4bis (exponer costo normalizado de proveedor en *Stock): GET /productos debe exponer
+// precio_compra_proveedor_principal / proveedor_principal_id / proveedor_principal_nombre como
+// lectura DERIVADA de producto_proveedores (es_principal = 1), sin copiar nunca ese valor hacia
+// columnas legacy. Cubre A (relacion principal con precio), B (relaciones sin ninguna marcada
+// principal -> nunca elegir arbitrariamente), C (sin relaciones), el gating identico al resto
+// de CAMPOS_COSTO cuando Stock no es completa, y el caso real X->Y: aprobar una revision debe
+// reflejarse en este mismo endpoint leyendo el estado YA persistido (no solo valor_propuesto),
+// sin tocar productos.precio_compra/costo_final ni el stock.
+async function testProductoCostoProveedorVisibleEnStockF3D4bis() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3D4bisStock ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const otroProveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3D4bisStockOtro ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3D4bisStock Cat ${Date.now()}`, { maneja_stock: true });
+      const crear = (sufijo) => crearProducto(baseUrl, token, {
+        nombre: `F3D4bisStock ${sufijo} ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "F3D4bisStock", stock: 0, maneja_stock: true
+      });
+
+      // A: relacion principal con precio > 0 -> se expone tal cual.
+      const productoA = await crear("A");
+      await runSql(dbPath, `
+        INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+        VALUES (?, ?, 2076.92, '2026-06-01', 1)
+      `, [productoA, proveedor.id]);
+
+      // B: dos relaciones, NINGUNA marcada principal -> no elegir arbitrariamente, null.
+      const productoB = await crear("B");
+      await runSql(dbPath, `
+        INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+        VALUES (?, ?, 500, '2026-06-01', 0), (?, ?, 600, '2026-06-01', 0)
+      `, [productoB, proveedor.id, productoB, otroProveedor.id]);
+
+      // C: sin ninguna relacion -> null.
+      const productoC = await crear("C");
+
+      const [prodA, prodB, prodC] = await Promise.all([
+        getProduct(baseUrl, token, productoA),
+        getProduct(baseUrl, token, productoB),
+        getProduct(baseUrl, token, productoC)
+      ]);
+      assertApprox(prodA.precio_compra_proveedor_principal, 2076.92, "A: expone el precio de la relacion principal");
+      assertEqual(prodA.proveedor_principal_id, proveedor.id, "A: expone el id del proveedor principal");
+      assertSame(prodA.proveedor_principal_nombre, proveedor.nombre, "A: expone el nombre del proveedor principal");
+      assertSame(prodB.precio_compra_proveedor_principal, null, "B: relaciones sin ninguna principal -> no elige arbitrariamente");
+      assertSame(prodC.precio_compra_proveedor_principal, null, "C: sin relaciones -> sin referencia");
+
+      // Nunca se copia hacia columnas legacy: productos.precio_compra sigue en su valor de alta.
+      const legacyA = (await allSql(dbPath, "SELECT precio_compra, costo_final FROM productos WHERE id = ?", [productoA]))[0];
+      assertApprox(legacyA.precio_compra, 10, "A: productos.precio_compra no se sincroniza con producto_proveedores");
+
+      // Gating: colaborador con Stock=reducida no debe recibir el campo (redactado igual que
+      // el resto de CAMPOS_COSTO), incluso con Pagos completa.
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador F3D4bisStock", usuario: "colaborador_f3d4bis_stock", password: "colaborador123",
+        confirmar_password: "colaborador123", rol: "colaborador", activo: true
+      }, token);
+      const colaboradorToken = await login(baseUrl, "colaborador_f3d4bis_stock", "colaborador123");
+      const setVista = (modulo, valor) => prepareDb(dbPath, [setVistaOperativaStatement(modulo, "colaborador", valor)]);
+      await setVista("stock", "reducida");
+      await setVista("pagos", "completa");
+      const prodAReducido = await getProduct(baseUrl, colaboradorToken, productoA);
+      assertSame(Object.prototype.hasOwnProperty.call(prodAReducido, "precio_compra_proveedor_principal"), false, "Stock reducida (aun con Pagos completa) no debe exponer precio_compra_proveedor_principal");
+
+      // Caso real X -> Y: generar y aprobar una revision de costo sobre el producto A y
+      // confirmar que GET /productos refleja el estado YA persistido despues de aprobar.
+      const compra = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-10", concepto: "Compra F3D4bisStock",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 2708
+      }, token);
+      if (!compra.response.ok) throw new Error(`crear compra fallo: ${compra.data?.message || compra.response.status}`);
+      const compraId = compra.data.compra.id;
+      const itemsRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ producto_id: productoA, cantidad_comprada: 1, costo_unitario: 2708, afecta_stock: 1 }]
+      }, token);
+      if (!itemsRes.response.ok) throw new Error(`crear item fallo: ${itemsRes.data?.message || itemsRes.response.status}`);
+      const itemA = itemsRes.data.items.find((i) => Number(i.producto_id) === Number(productoA));
+      const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a", total_comprobante: 3276.68,
+        alicuotas: [{ alicuota: 21, neto_gravado: 2708, iva_monto: 568.68 }]
+      }, token);
+      if (!comprobante.response.ok) throw new Error(`comprobante fallo: ${comprobante.data?.message || comprobante.response.status}`);
+      const revision = (await allSql(dbPath, "SELECT * FROM producto_revisiones_pendientes WHERE tipo_revision = 'costo_proveedor' AND compra_item_id = ?", [itemA.id]))[0];
+      if (!revision) throw new Error("No se genero la revision pendiente de costo para el producto A");
+
+      const prodAntesAprobar = await getProduct(baseUrl, token, productoA);
+      assertApprox(prodAntesAprobar.precio_compra_proveedor_principal, 2076.92, "X: antes de aprobar, GET /productos sigue mostrando el costo vigente");
+      const stockAntes = prodAntesAprobar.stock;
+      const legacyAntesAprobar = (await allSql(dbPath, "SELECT precio_compra, costo_final FROM productos WHERE id = ?", [productoA]))[0];
+
+      const aprobar = await requestJson(baseUrl, "POST", `/productos/revisiones-pendientes/${revision.id}/aprobar`, {}, token);
+      if (!aprobar.response.ok) throw new Error(`aprobar revision fallo: ${aprobar.data?.message || aprobar.response.status}`);
+
+      const prodDespuesAprobar = await getProduct(baseUrl, token, productoA);
+      assertApprox(prodDespuesAprobar.precio_compra_proveedor_principal, 2708, "Y: despues de aprobar, GET /productos ya muestra el costo nuevo (estado persistido)");
+      const legacyDespuesAprobar = (await allSql(dbPath, "SELECT precio_compra, costo_final FROM productos WHERE id = ?", [productoA]))[0];
+      assertApprox(legacyDespuesAprobar.precio_compra, legacyAntesAprobar.precio_compra, "Aprobar no sincroniza productos.precio_compra");
+      assertApprox(legacyDespuesAprobar.costo_final, legacyAntesAprobar.costo_final, "Aprobar no sincroniza productos.costo_final");
+      assertApprox(prodDespuesAprobar.stock, stockAntes, "Aprobar no modifica el stock del producto");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3D-4bis (exponer costo normalizado de proveedor en *Stock, cobertura frontend): el
+// detail-box nuevo "Costo proveedor" debe leer precio_compra_proveedor_principal (NUNCA
+// p.precio_compra), con "Sin referencia" para costo <= 0, y la aprobacion/rechazo de una
+// revision debe refrescar productos + volver a renderizar antes de darse por resuelta -- sin
+// eso, el detalle de un producto seguiria mostrando el costo de proveedor viejo hasta un
+// Ctrl+F5 (bug que este mismo cambio corrige).
+async function testProductoCostoProveedorUiUsaCampoNormalizadoF3D4bis() {
+  const html = fs.readFileSync(path.join(ROOT, "frontend", "productos.html"), "utf8");
+
+  const srcCosto = extraerFuncionMinificada(html, "costoProveedorTexto");
+  if (!srcCosto.includes("p.precio_compra_proveedor_principal")) {
+    throw new Error("F3D4bis-UI: costoProveedorTexto debe leer p.precio_compra_proveedor_principal");
+  }
+  if (/costo\s*=\s*Number\(p\.precio_compra\|\|0\)/.test(srcCosto)) {
+    throw new Error("F3D4bis-UI: costoProveedorTexto no debe caer en p.precio_compra (legacy)");
+  }
+  const inicioMoney = html.indexOf("const money=");
+  if (inicioMoney === -1) throw new Error("F3D4bis-UI: no se encontro const money= en el HTML");
+  const srcMoney = html.slice(inicioMoney, html.indexOf(";", inicioMoney) + 1);
+  const fnCosto = new Function(`${srcMoney}\n${srcCosto}\nreturn costoProveedorTexto;`)();
+  assertSame(fnCosto({ precio_compra_proveedor_principal: 2708, proveedor_principal_nombre: "Coca Cola Company" }), "$2.708,00 / Coca Cola Company", "A: precio > 0 -> money (es-AR) + proveedor");
+  assertSame(fnCosto({ precio_compra_proveedor_principal: null }), "Sin referencia", "B/C: sin relacion principal -> Sin referencia");
+  assertSame(fnCosto({ precio_compra_proveedor_principal: 0 }), "Sin referencia", "D: precio 0/null -> Sin referencia (misma convencion que ccfCostoActualProducto)");
+
+  const inicioDetalle = html.indexOf("function abrirDetalle(");
+  if (inicioDetalle === -1) throw new Error("F3D4bis-UI: no se encontro abrirDetalle");
+  const cajaCosto = html.slice(inicioDetalle, inicioDetalle + 4000);
+  const idxCostoTeorico = cajaCosto.indexOf("Costo te&oacute;rico");
+  const idxCostoProveedor = cajaCosto.indexOf("Costo proveedor");
+  if (idxCostoTeorico === -1 || idxCostoProveedor === -1) {
+    throw new Error("F3D4bis-UI: abrirDetalle debe renderizar tanto 'Costo teorico' como 'Costo proveedor'");
+  }
+  if (idxCostoProveedor <= idxCostoTeorico) {
+    throw new Error("F3D4bis-UI: 'Costo proveedor' debe quedar inmediatamente despues de 'Costo teorico'");
+  }
+  if (!cajaCosto.slice(idxCostoTeorico, idxCostoProveedor + 200).includes("costoProveedorTexto(p)")) {
+    throw new Error("F3D4bis-UI: la caja 'Costo proveedor' debe usar costoProveedorTexto(p)");
+  }
+
+  // La aprobacion/rechazo debe refrescar productos ANTES de considerarse resuelta: sin esto el
+  // detalle de un producto seguiria mostrando el costo de proveedor viejo hasta un Ctrl+F5.
+  const srcResolver = extraerFuncionMinificada(html, "resolverRevisionPendienteCosto");
+  if (!srcResolver.includes("recargarProductosNormalizados()")) {
+    throw new Error("F3D4bis-UI: resolverRevisionPendienteCosto debe recargar productos (recargarProductosNormalizados) tras aprobar/rechazar");
+  }
+  if (!srcResolver.includes("renderProductos()")) {
+    throw new Error("F3D4bis-UI: resolverRevisionPendienteCosto debe volver a renderizar el listado (renderProductos) para refrescar el detalle sin Ctrl+F5");
+  }
+}
+
+// F3D-4bis (cierre UX final): money() en *Stock debe usar formato es-AR ($ + miles "." +
+// decimales "," + 2 decimales), de forma consistente en TODOS los importes visibles de
+// productos.html (es un cambio de PRESENTACION puro; no toca valores, calculos ni redondeos).
+async function testProductoStockFormatoMonetarioEsArF3D4bis() {
+  const html = fs.readFileSync(path.join(ROOT, "frontend", "productos.html"), "utf8");
+  const inicioMoney = html.indexOf("const money=");
+  if (inicioMoney === -1) throw new Error("F3D4bis-UI: no se encontro const money= en el HTML");
+  const srcMoney = html.slice(inicioMoney, html.indexOf(";", inicioMoney) + 1);
+  const { money } = new Function(`${srcMoney}\nreturn { money };`)();
+  assertSame(money(2708), "$2.708,00", "money(2708) debe mostrar formato es-AR");
+  assertSame(money(2513.07), "$2.513,07", "money(2513.07) debe mostrar formato es-AR");
+  assertSame(money(163349.55), "$163.349,55", "money(163349.55) debe mostrar formato es-AR (separador de miles)");
+  assertSame(money(0), "$0,00", "money(0) debe mostrar formato es-AR");
+}
+
+// F3D-4bis (cierre UX final): al volver a *Stock (foco de ventana o pestana visible de nuevo)
+// debe refrescar revisionesPendientesCosto + productos + el panel de Ajustes pendientes, sin
+// depender de Ctrl+F5. Guard de tiempo (debounce) evita refrescos duplicados ante foco y
+// visibilitychange casi simultaneos, y NO debe existir polling (setInterval).
+async function testProductoStockRefrescaPendientesAlVolverAFocoF3D4bis() {
+  const html = fs.readFileSync(path.join(ROOT, "frontend", "productos.html"), "utf8");
+
+  if (/setInterval\s*\(\s*refrescarPendientesAlVolverAStock/.test(html)) {
+    throw new Error("F3D4bis-UI: no debe haber polling (setInterval) para refrescar pendientes");
+  }
+  if (!html.includes('window.addEventListener("focus",refrescarPendientesAlVolverAStock)')) {
+    throw new Error("F3D4bis-UI: falta el listener de window focus para refrescar pendientes al volver a Stock");
+  }
+  if (!html.includes('document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")refrescarPendientesAlVolverAStock()})')) {
+    throw new Error("F3D4bis-UI: falta el listener de visibilitychange para refrescar pendientes al volver a Stock");
+  }
+
+  const inicioLet = html.indexOf("let refrescandoPendientesStock=");
+  if (inicioLet === -1) throw new Error("F3D4bis-UI: no se encontro el estado de debounce refrescandoPendientesStock");
+  const srcLet = html.slice(inicioLet, html.indexOf(";", inicioLet) + 1);
+  const srcFuncion = "async " + extraerFuncionMinificada(html, "refrescarPendientesAlVolverAStock");
+
+  const contador = { cargar: 0, recargar: 0, renderProductos: 0, renderPanel: 0 };
+  const fn = new Function(
+    "cargarComprasPendientesStock", "recargarProductosNormalizados", "renderProductos", "renderPanelAjustesPendientes",
+    `${srcLet}\n${srcFuncion}\nreturn refrescarPendientesAlVolverAStock;`
+  )(
+    async () => { contador.cargar++; },
+    async () => { contador.recargar++; },
+    () => { contador.renderProductos++; },
+    () => { contador.renderPanel++; }
+  );
+
+  const originalNow = Date.now;
+  try {
+    Date.now = () => 1000000;
+    await fn();
+    assertEqual(contador.cargar, 1, "Primer foco: debe refrescar comprasPendientesStock (propuestas de compra pendientes)");
+    assertEqual(contador.recargar, 1, "Primer foco: debe recargar productos normalizados");
+    assertEqual(contador.renderProductos, 1, "Primer foco: debe re-renderizar productos");
+    assertEqual(contador.renderPanel, 1, "Primer foco: debe re-renderizar el panel de ajustes pendientes");
+
+    await fn();
+    assertEqual(contador.cargar, 1, "Segundo foco inmediato (<3s): el debounce debe evitar el refresco duplicado");
+
+    Date.now = () => 1000000 + 3500;
+    await fn();
+    assertEqual(contador.cargar, 2, "Foco pasado el debounce (>3s): debe volver a refrescar");
+  } finally {
+    Date.now = originalNow;
+  }
+}
+
+// F3E-3B (cantidad): GET /stock/compras-pendientes deriva cantidad_comprada/recibida/pendiente
+// y estado_recepcion SIN persistencia nueva (reutiliza buildResumenRecepcionItem). Un
+// compra_item sin ningun comprobante activo todavia NO es propuesta (factura huerfana). El GET
+// nunca tiene efectos laterales sobre stock ni costo. Caja/Pago quedan totalmente fuera.
+async function testStockComprasPendientesCantidadF3E3B() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3E3B Cant ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E3B Cant Cat ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `F3E3B Cant Producto ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "F3E3B", stock: 0, maneja_stock: true
+      });
+
+      const compra = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-01", concepto: "Compra F3E3B Cant",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 61200
+      }, token);
+      if (!compra.response.ok) throw new Error(`crear compra fallo: ${compra.data?.message || compra.response.status}`);
+      const compraId = compra.data.compra.id;
+
+      const itemsRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ producto_id: productoId, cantidad_comprada: 36, costo_unitario: 1700, afecta_stock: 1 }]
+      }, token);
+      if (!itemsRes.response.ok) throw new Error(`crear item fallo: ${itemsRes.data?.message || itemsRes.response.status}`);
+      const item = itemsRes.data.items.find((i) => Number(i.producto_id) === Number(productoId));
+
+      // C: sin comprobante activo todavia -> no debe aparecer como propuesta para Stock.
+      const sinComprobante = await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token);
+      if (!sinComprobante.response.ok) throw new Error(`GET sin comprobante fallo: ${sinComprobante.response.status}`);
+      assertSame(sinComprobante.data.some((p) => Number(p.compra_item_id) === Number(item.id)), false, "C: sin comprobante activo no debe aparecer como propuesta");
+
+      const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a", total_comprobante: 74052,
+        alicuotas: [{ alicuota: 21, neto_gravado: 61200, iva_monto: 12852 }]
+      }, token);
+      if (!comprobante.response.ok) throw new Error(`comprobante fallo: ${comprobante.data?.message || comprobante.response.status}`);
+
+      const productoAntes = await getProduct(baseUrl, token, productoId);
+      const legacyAntes = (await allSql(dbPath, "SELECT precio_compra, costo_final FROM productos WHERE id = ?", [productoId]))[0];
+
+      // A: 36 compradas, 0 recibidas -> 36 pendientes, estado pendiente.
+      const propuestas1 = await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token);
+      if (!propuestas1.response.ok) throw new Error(`GET propuestas fallo: ${propuestas1.response.status}`);
+      const propuesta1 = propuestas1.data.find((p) => Number(p.compra_item_id) === Number(item.id));
+      if (!propuesta1) throw new Error("A: deberia existir una propuesta para el item recien facturado");
+      assertEqual(propuesta1.cantidad_comprada, 36, "A: cantidad_comprada = 36");
+      assertEqual(propuesta1.cantidad_recibida, 0, "A: cantidad_recibida = 0");
+      assertEqual(propuesta1.cantidad_pendiente, 36, "A: cantidad_pendiente = 36");
+      assertSame(propuesta1.estado_recepcion, "pendiente", "A: estado_recepcion = pendiente");
+      assertSame(propuesta1.estado_revision_costo, "sin_revision", "A: sin relacion producto_proveedores -> sin_revision");
+      assertSame(propuesta1.costo_proveedor_actual, null, "A: sin relacion producto_proveedores -> costo_proveedor_actual = null");
+
+      // El GET no debe tener efectos laterales: stock y costo legacy iguales antes/despues.
+      const productoDespues1 = await getProduct(baseUrl, token, productoId);
+      assertApprox(productoDespues1.stock, productoAntes.stock, "GET no debe modificar stock");
+      const legacyDespues1 = (await allSql(dbPath, "SELECT precio_compra, costo_final FROM productos WHERE id = ?", [productoId]))[0];
+      assertApprox(legacyDespues1.precio_compra, legacyAntes.precio_compra, "GET no debe modificar productos.precio_compra");
+      assertApprox(legacyDespues1.costo_final, legacyAntes.costo_final, "GET no debe modificar productos.costo_final");
+
+      // B: recibir 30 de las 36 -> 6 pendientes, estado parcial (recepcion parcial ya soportada).
+      const recepcion = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+        idempotency_key: "f3e3b-cant-30",
+        fecha: "2026-06-02",
+        items: [{ compra_item_id: item.id, cantidad_recibida: 30 }]
+      }, token);
+      if (!recepcion.response.ok) throw new Error(`recepcion parcial fallo: ${recepcion.data?.message || recepcion.response.status}`);
+
+      const propuestas2 = await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token);
+      const propuesta2 = propuestas2.data.find((p) => Number(p.compra_item_id) === Number(item.id));
+      if (!propuesta2) throw new Error("B: la propuesta debe seguir existiendo con 6 pendientes");
+      assertEqual(propuesta2.cantidad_recibida, 30, "B: cantidad_recibida = 30");
+      assertEqual(propuesta2.cantidad_pendiente, 6, "B: cantidad_pendiente = 6");
+      assertSame(propuesta2.estado_recepcion, "parcial", "B: estado_recepcion = parcial");
+
+      // Caja/Pago quedan completamente fuera de este slice: la cantidad pendiente no genera
+      // ni bloquea ningun pago.
+      const pagos = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos WHERE compra_id = ?", [compraId]))[0].total;
+      assertEqual(pagos, 0, "Este slice no crea pagos: Caja/Pago quedan fuera");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3E-3B (costo, proveedor eventual): el costo vigente mostrado debe salir de la relacion
+// EXACTA (producto_id, proveedor_id) de la Compra, nunca del proveedor PRINCIPAL del producto.
+// Una Compra a un proveedor eventual sin relacion producto_proveedores no debe crearla ni
+// tocar es_principal -- este es un GET, cero escritura.
+async function testStockComprasPendientesCostoProveedorEventualF3E3B() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedorPrincipal = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3E3B Principal ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const proveedorEventual = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3E3B Eventual ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E3B Evt Cat ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `F3E3B Evt Producto ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "F3E3B", stock: 0, maneja_stock: true
+      });
+      await runSql(dbPath, `
+        INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+        VALUES (?, ?, 1000, '2026-06-01', 1)
+      `, [productoId, proveedorPrincipal.id]);
+
+      const compra = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedorEventual.id, fecha_compra: "2026-06-05", concepto: "Compra F3E3B proveedor eventual",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 1700
+      }, token);
+      if (!compra.response.ok) throw new Error(`crear compra fallo: ${compra.data?.message || compra.response.status}`);
+      const compraId = compra.data.compra.id;
+      const itemsRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ producto_id: productoId, cantidad_comprada: 1, costo_unitario: 1700, afecta_stock: 1 }]
+      }, token);
+      if (!itemsRes.response.ok) throw new Error(`crear item fallo: ${itemsRes.data?.message || itemsRes.response.status}`);
+      const item = itemsRes.data.items.find((i) => Number(i.producto_id) === Number(productoId));
+      const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a", total_comprobante: 2057,
+        alicuotas: [{ alicuota: 21, neto_gravado: 1700, iva_monto: 357 }]
+      }, token);
+      if (!comprobante.response.ok) throw new Error(`comprobante fallo: ${comprobante.data?.message || comprobante.response.status}`);
+
+      const propuestas = await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token);
+      if (!propuestas.response.ok) throw new Error(`GET propuestas fallo: ${propuestas.response.status}`);
+      const propuesta = propuestas.data.find((p) => Number(p.compra_item_id) === Number(item.id));
+      if (!propuesta) throw new Error("Deberia existir una propuesta para el item del proveedor eventual");
+      assertEqual(propuesta.proveedor_id, proveedorEventual.id, "El proveedor mostrado es el de la Compra (eventual), no el principal");
+      assertSame(propuesta.proveedor_nombre, proveedorEventual.nombre, "proveedor_nombre corresponde al proveedor eventual");
+      assertApprox(propuesta.costo_factura, 1700, "costo_factura = costo_unitario del item");
+      assertSame(propuesta.costo_proveedor_actual, null, "Sin relacion con el proveedor eventual: costo_proveedor_actual = null (nunca el del principal)");
+
+      const relacionEventual = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoId, proveedorEventual.id]))[0].total;
+      assertEqual(relacionEventual, 0, "El GET no debe crear producto_proveedores para el proveedor eventual");
+
+      const principal = (await allSql(dbPath, "SELECT precio_compra, es_principal FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoId, proveedorPrincipal.id]))[0];
+      assertApprox(principal.precio_compra, 1000, "El proveedor principal no cambia de precio por una Compra a otro proveedor");
+      assertEqual(Number(principal.es_principal), 1, "El proveedor principal sigue siendo el principal (una Compra eventual no lo reemplaza)");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3E-3B (filtro combinado + permisos): un compra_item aparece si cantidad_pendiente > 0 O
+// existe una revision de costo pendiente -- ambas condiciones son independientes. Solo cuando
+// AMBAS estan resueltas (recepcion completa Y sin revision pendiente) el item deja de
+// proponerse. El endpoint depende EXCLUSIVAMENTE de Stock=completa, igual que el resto de
+// *Stock -- nunca de un nombre de rol.
+async function testStockComprasPendientesFiltroCombinadoYPermisosF3E3B() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3E3B Filtro ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E3B Filtro Cat ${Date.now()}`, { maneja_stock: true });
+
+      const crearConRelacion = async (sufijo, precioVigente) => {
+        const id = await crearProducto(baseUrl, token, {
+          nombre: `F3E3B Filtro ${sufijo} ${Date.now()}`,
+          categoria_id: categoriaId, categoria: "F3E3B", stock: 0, maneja_stock: true
+        });
+        await runSql(dbPath, `
+          INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+          VALUES (?, ?, ?, '2026-06-01', 1)
+        `, [id, proveedor.id, precioVigente]);
+        return id;
+      };
+
+      const facturar = async (productoId, cantidad, costoUnitario) => {
+        const compra = await requestJson(baseUrl, "POST", "/compras", {
+          proveedor_id: proveedor.id, fecha_compra: "2026-06-10", concepto: `Compra F3E3B ${productoId}`,
+          tipo_impacto: "costo_variable_mercaderia", total_compra: cantidad * costoUnitario
+        }, token);
+        if (!compra.response.ok) throw new Error(`crear compra fallo: ${compra.data?.message || compra.response.status}`);
+        const compraId = compra.data.compra.id;
+        const itemsRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+          items: [{ producto_id: productoId, cantidad_comprada: cantidad, costo_unitario: costoUnitario, afecta_stock: 1 }]
+        }, token);
+        if (!itemsRes.response.ok) throw new Error(`crear item fallo: ${itemsRes.data?.message || itemsRes.response.status}`);
+        const item = itemsRes.data.items.find((i) => Number(i.producto_id) === Number(productoId));
+        const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+          tipo_comprobante: "factura_a", total_comprobante: cantidad * costoUnitario * 1.21,
+          alicuotas: [{ alicuota: 21, neto_gravado: cantidad * costoUnitario, iva_monto: cantidad * costoUnitario * 0.21 }]
+        }, token);
+        if (!comprobante.response.ok) throw new Error(`comprobante fallo: ${comprobante.data?.message || comprobante.response.status}`);
+        return { compraId, item };
+      };
+
+      const recibirCompleto = async (compraId, item) => {
+        const recepcion = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+          idempotency_key: `f3e3b-filtro-${item.id}`,
+          items: [{ compra_item_id: item.id, cantidad_recibida: item.cantidad_comprada }]
+        }, token);
+        if (!recepcion.response.ok) throw new Error(`recepcion fallo: ${recepcion.data?.message || recepcion.response.status}`);
+      };
+
+      // Caso 1: recepcion completa + costo pendiente -> debe seguir apareciendo.
+      const productoCostoPendiente = await crearConRelacion("CostoPendiente", 1000);
+      const { compraId: compraCosto, item: itemCosto } = await facturar(productoCostoPendiente, 5, 1200);
+      await recibirCompleto(compraCosto, itemCosto);
+      const revisionCosto = (await allSql(dbPath, "SELECT id FROM producto_revisiones_pendientes WHERE compra_item_id = ?", [itemCosto.id]))[0];
+      if (!revisionCosto) throw new Error("Deberia haberse generado una revision de costo para productoCostoPendiente");
+
+      // Caso 2: recepcion pendiente + costo ya resuelto (aprobado) -> debe seguir apareciendo.
+      const productoCostoResuelto = await crearConRelacion("CostoResuelto", 1000);
+      const { item: itemResuelto } = await facturar(productoCostoResuelto, 4, 1200);
+      const revisionResuelta = (await allSql(dbPath, "SELECT id FROM producto_revisiones_pendientes WHERE compra_item_id = ?", [itemResuelto.id]))[0];
+      if (!revisionResuelta) throw new Error("Deberia haberse generado una revision de costo para productoCostoResuelto");
+      const aprobar = await requestJson(baseUrl, "POST", `/productos/revisiones-pendientes/${revisionResuelta.id}/aprobar`, {}, token);
+      if (!aprobar.response.ok) throw new Error(`aprobar revision fallo: ${aprobar.data?.message || aprobar.response.status}`);
+
+      // Caso 3: ambos resueltos (recepcion completa + sin diferencia de costo) -> NO debe aparecer.
+      const productoAmbosResueltos = await crearConRelacion("AmbosResueltos", 1000);
+      const { compraId: compraAmbos, item: itemAmbos } = await facturar(productoAmbosResueltos, 3, 1000);
+      await recibirCompleto(compraAmbos, itemAmbos);
+
+      const propuestas = await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token);
+      if (!propuestas.response.ok) throw new Error(`GET propuestas fallo: ${propuestas.response.status}`);
+
+      const p1 = propuestas.data.find((p) => Number(p.compra_item_id) === Number(itemCosto.id));
+      if (!p1) throw new Error("Caso 1: recepcion completa + costo pendiente debe seguir apareciendo");
+      assertEqual(p1.cantidad_pendiente, 0, "Caso 1: recepcion completa -> cantidad_pendiente = 0");
+      assertSame(p1.estado_revision_costo, "pendiente", "Caso 1: revision de costo sigue pendiente");
+
+      const p2 = propuestas.data.find((p) => Number(p.compra_item_id) === Number(itemResuelto.id));
+      if (!p2) throw new Error("Caso 2: recepcion pendiente + costo ya resuelto debe seguir apareciendo");
+      assertEqual(p2.cantidad_pendiente, 4, "Caso 2: sin recepcion -> cantidad_pendiente = 4");
+      assertSame(p2.estado_revision_costo, "aprobada", "Caso 2: la revision de costo ya esta aprobada, no pendiente");
+
+      const p3 = propuestas.data.find((p) => Number(p.compra_item_id) === Number(itemAmbos.id));
+      assertSame(p3, undefined, "Caso 3: ambos resueltos (sin cantidad pendiente, sin revision) no debe aparecer en la cola");
+
+      // Permisos: el mismo patron ya usado para revisiones de costo -- exclusivamente Stock=completa.
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador F3E3B", usuario: "colaborador_f3e3b", password: "colaborador123",
+        confirmar_password: "colaborador123", rol: "colaborador", activo: true
+      }, token);
+      const colaboradorToken = await login(baseUrl, "colaborador_f3e3b", "colaborador123");
+      const setVista = (modulo, valor) => prepareDb(dbPath, [setVistaOperativaStatement(modulo, "colaborador", valor)]);
+      await setVista("stock", "reducida");
+      const reducido = await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, colaboradorToken);
+      assertEqual(reducido.response.status, 403, "Stock reducida no puede ver propuestas de compra pendientes");
+
+      await setVista("stock", "completa");
+      const completo = await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, colaboradorToken);
+      assertEqual(completo.response.status, 200, "Stock completa (aunque sea colaborador) puede ver propuestas de compra pendientes");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3E-3C (caso A): "Aceptar" desde *Stock reutiliza el motor F3 de recepcion (registrarRecepcionCompra,
+// compartido con *Pagos) -- el backend determina la cantidad pendiente REAL al momento de
+// ejecutar, nunca confia en lo que vio el frontend. Confirma ademas que la recepcion queda
+// correctamente estructurada: compra_recepciones + compra_recepcion_items + movimientos_stock,
+// con movimiento_stock_id vinculado.
+async function testStockRecepcionAceptarCompletoF3E3C() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3E3C Aceptar ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E3C Aceptar Cat ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `F3E3C Aceptar Producto ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "F3E3C", stock: 10, maneja_stock: true
+      });
+
+      const compra = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-01", concepto: "Compra F3E3C Aceptar",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 61200
+      }, token);
+      if (!compra.response.ok) throw new Error(`crear compra fallo: ${compra.data?.message || compra.response.status}`);
+      const compraId = compra.data.compra.id;
+      const itemsRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ producto_id: productoId, cantidad_comprada: 36, costo_unitario: 1700, afecta_stock: 1 }]
+      }, token);
+      if (!itemsRes.response.ok) throw new Error(`crear item fallo: ${itemsRes.data?.message || itemsRes.response.status}`);
+      const item = itemsRes.data.items.find((i) => Number(i.producto_id) === Number(productoId));
+      const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a", total_comprobante: 74052,
+        alicuotas: [{ alicuota: 21, neto_gravado: 61200, iva_monto: 12852 }]
+      }, token);
+      if (!comprobante.response.ok) throw new Error(`comprobante fallo: ${comprobante.data?.message || comprobante.response.status}`);
+
+      const propuestasAntes = await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token);
+      const propuestaAntes = propuestasAntes.data.find((p) => Number(p.compra_item_id) === Number(item.id));
+      if (!propuestaAntes) throw new Error("Deberia existir una propuesta de recepcion pendiente");
+      assertEqual(propuestaAntes.cantidad_pendiente, 36, "Antes de aceptar: cantidad_pendiente = 36");
+
+      const movimientosAntes = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock"))[0].total;
+      const aceptar = await requestJson(baseUrl, "POST", `/stock/compras-pendientes/${item.id}/recibir`, {
+        modo: "aceptar", idempotency_key: "f3e3c-aceptar-completo"
+      }, token);
+      if (!aceptar.response.ok) throw new Error(`aceptar recepcion fallo: ${aceptar.data?.message || aceptar.response.status}`);
+      assertEqual(aceptar.response.status, 201, "Aceptar completo responde 201");
+
+      const producto = await getProduct(baseUrl, token, productoId);
+      assertApprox(producto.stock, 46, "Stock 10 + 36 aceptadas = 46");
+
+      const propuestasDespues = await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token);
+      const propuestaDespues = propuestasDespues.data.find((p) => Number(p.compra_item_id) === Number(item.id));
+      assertSame(propuestaDespues, undefined, "Recepcion completa sin costo pendiente: el item ya no debe proponerse");
+
+      const recepcionDb = (await allSql(dbPath, "SELECT * FROM compra_recepciones WHERE compra_id = ?", [compraId]))[0];
+      if (!recepcionDb) throw new Error("Deberia haberse creado una fila en compra_recepciones");
+      const recepcionItemDb = (await allSql(dbPath, "SELECT * FROM compra_recepcion_items WHERE recepcion_id = ?", [recepcionDb.id]))[0];
+      if (!recepcionItemDb) throw new Error("Deberia haberse creado una fila en compra_recepcion_items");
+      assertApprox(recepcionItemDb.cantidad_recibida, 36, "compra_recepcion_items.cantidad_recibida = 36");
+      assertEqual(Number(recepcionItemDb.movimiento_stock_id) > 0 ? 1 : 0, 1, "compra_recepcion_items.movimiento_stock_id debe estar vinculado");
+
+      const movimientosDespues = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock"))[0].total;
+      assertEqual(movimientosDespues, movimientosAntes + 1, "Se creo exactamente 1 movimiento_stock nuevo");
+      const movimiento = (await allSql(dbPath, "SELECT * FROM movimientos_stock WHERE id = ?", [recepcionItemDb.movimiento_stock_id]))[0];
+      assertSame(movimiento.tipo_movimiento, "ingreso", "El movimiento vinculado es de tipo ingreso");
+      assertApprox(movimiento.cantidad, 36, "El movimiento registra la cantidad aceptada");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3E-3C (casos B/C/D): "Modificar" registra una recepcion parcial (cantidad menor a la
+// pendiente); el compra_item sigue proponiendose con la nueva cantidad_pendiente. "Aceptar"
+// sobre el remanente completa la recepcion. Una sobre-recepcion (modificar por mas de lo
+// pendiente) se rechaza en el backend sin tocar el stock.
+async function testStockRecepcionModificarParcialLuegoAceptarRestoF3E3C() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3E3C Parcial ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E3C Parcial Cat ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `F3E3C Parcial Producto ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "F3E3C", stock: 10, maneja_stock: true
+      });
+
+      const compra = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-01", concepto: "Compra F3E3C Parcial",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 61200
+      }, token);
+      if (!compra.response.ok) throw new Error(`crear compra fallo: ${compra.data?.message || compra.response.status}`);
+      const compraId = compra.data.compra.id;
+      const itemsRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ producto_id: productoId, cantidad_comprada: 36, costo_unitario: 1700, afecta_stock: 1 }]
+      }, token);
+      if (!itemsRes.response.ok) throw new Error(`crear item fallo: ${itemsRes.data?.message || itemsRes.response.status}`);
+      const item = itemsRes.data.items.find((i) => Number(i.producto_id) === Number(productoId));
+      const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a", total_comprobante: 74052,
+        alicuotas: [{ alicuota: 21, neto_gravado: 61200, iva_monto: 12852 }]
+      }, token);
+      if (!comprobante.response.ok) throw new Error(`comprobante fallo: ${comprobante.data?.message || comprobante.response.status}`);
+
+      // B: modificar -> 30.
+      const modificar = await requestJson(baseUrl, "POST", `/stock/compras-pendientes/${item.id}/recibir`, {
+        modo: "modificar", cantidad_recibida: 30, idempotency_key: "f3e3c-modificar-30"
+      }, token);
+      if (!modificar.response.ok) throw new Error(`modificar recepcion fallo: ${modificar.data?.message || modificar.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 40, "B: stock 10 + 30 = 40");
+      const propuestaTrasParcial = (await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token))
+        .data.find((p) => Number(p.compra_item_id) === Number(item.id));
+      if (!propuestaTrasParcial) throw new Error("B: el item debe seguir proponiendose (queda pendiente)");
+      assertEqual(propuestaTrasParcial.cantidad_recibida, 30, "B: cantidad_recibida = 30");
+      assertEqual(propuestaTrasParcial.cantidad_pendiente, 6, "B: cantidad_pendiente = 6");
+      assertSame(propuestaTrasParcial.estado_recepcion, "parcial", "B: estado_recepcion = parcial");
+
+      // D: sobre-recepcion sobre el pendiente (6) -> rechazo, sin tocar stock.
+      const sobreRecepcion = await requestJson(baseUrl, "POST", `/stock/compras-pendientes/${item.id}/recibir`, {
+        modo: "modificar", cantidad_recibida: 7, idempotency_key: "f3e3c-sobre-recepcion"
+      }, token);
+      assertEqual(sobreRecepcion.response.status, 400, "D: modificar por mas del pendiente debe rechazarse");
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 40, "D: stock no cambia tras el rechazo");
+
+      // C: aceptar el resto (backend determina 6, no el frontend).
+      const aceptarResto = await requestJson(baseUrl, "POST", `/stock/compras-pendientes/${item.id}/recibir`, {
+        modo: "aceptar", idempotency_key: "f3e3c-aceptar-resto"
+      }, token);
+      if (!aceptarResto.response.ok) throw new Error(`aceptar resto fallo: ${aceptarResto.data?.message || aceptarResto.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 46, "C: stock 40 + 6 = 46");
+      const propuestaFinal = (await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token))
+        .data.find((p) => Number(p.compra_item_id) === Number(item.id));
+      assertSame(propuestaFinal, undefined, "C: recepcion completa, el item ya no debe proponerse");
+      const resumenFinal = (await allSql(dbPath,
+        `SELECT ci.cantidad_comprada, (SELECT COALESCE(SUM(cri.cantidad_recibida),0) FROM compra_recepcion_items cri JOIN compra_recepciones cr ON cr.id=cri.recepcion_id WHERE cri.compra_item_id=ci.id AND cr.estado!='anulada') AS recibida
+         FROM compra_items ci WHERE ci.id = ?`, [item.id]))[0];
+      assertApprox(resumenFinal.recibida, 36, "C: recibido acumulado = 36 (30 + 6)");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3E-3C (caso E): idempotencia obligatoria del motor de recepcion, ahora tambien desde Stock.
+// Reenviar la MISMA idempotency_key (mismo modo) nunca debe duplicar stock, movimiento_stock ni
+// compra_recepciones -- incluso en modo "aceptar", cuya cantidad se recalcula en el backend (el
+// replay debe reusar la cantidad YA registrada la primera vez, no recalcular "pendiente ahora").
+async function testStockRecepcionIdempotenciaF3E3C() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3E3C Idemp ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E3C Idemp Cat ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `F3E3C Idemp Producto ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "F3E3C", stock: 10, maneja_stock: true
+      });
+      const compra = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-01", concepto: "Compra F3E3C Idemp",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 61200
+      }, token);
+      if (!compra.response.ok) throw new Error(`crear compra fallo: ${compra.data?.message || compra.response.status}`);
+      const compraId = compra.data.compra.id;
+      const itemsRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ producto_id: productoId, cantidad_comprada: 36, costo_unitario: 1700, afecta_stock: 1 }]
+      }, token);
+      if (!itemsRes.response.ok) throw new Error(`crear item fallo: ${itemsRes.data?.message || itemsRes.response.status}`);
+      const item = itemsRes.data.items.find((i) => Number(i.producto_id) === Number(productoId));
+      const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a", total_comprobante: 74052,
+        alicuotas: [{ alicuota: 21, neto_gravado: 61200, iva_monto: 12852 }]
+      }, token);
+      if (!comprobante.response.ok) throw new Error(`comprobante fallo: ${comprobante.data?.message || comprobante.response.status}`);
+
+      const primera = await requestJson(baseUrl, "POST", `/stock/compras-pendientes/${item.id}/recibir`, {
+        modo: "aceptar", idempotency_key: "f3e3c-idempotencia-key"
+      }, token);
+      if (!primera.response.ok) throw new Error(`primera recepcion fallo: ${primera.data?.message || primera.response.status}`);
+      assertEqual(primera.response.status, 201, "Primera vez: 201");
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 46, "Primera vez: stock 10 + 36 = 46");
+
+      const movimientosTrasPrimera = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock"))[0].total;
+      const recepcionesTrasPrimera = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM compra_recepciones WHERE compra_id = ?", [compraId]))[0].total;
+
+      const replay = await requestJson(baseUrl, "POST", `/stock/compras-pendientes/${item.id}/recibir`, {
+        modo: "aceptar", idempotency_key: "f3e3c-idempotencia-key"
+      }, token);
+      assertEqual(replay.response.status, 200, "Replay: 200 (idempotente)");
+      assertEqual(replay.data.idempotent_replay, true, "Replay: idempotent_replay=true");
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 46, "Replay: stock sigue en 46, no se duplica");
+
+      const movimientosTrasReplay = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock"))[0].total;
+      assertEqual(movimientosTrasReplay, movimientosTrasPrimera, "Replay no crea un movimiento_stock nuevo");
+      const recepcionesTrasReplay = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM compra_recepciones WHERE compra_id = ?", [compraId]))[0].total;
+      assertEqual(recepcionesTrasReplay, recepcionesTrasPrimera, "Replay no crea una compra_recepciones nueva");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3E-3C (caso F + estados invalidos): la recepcion desde *Stock depende EXCLUSIVAMENTE de
+// Stock=completa (nunca de un nombre de rol), a diferencia del endpoint historico de *Pagos que
+// sigue exigiendo Pagos=completa sin cambios -- confirma que ninguno de los dos "hereda" el
+// gating del otro. Tambien cubre compra sin comprobante activo y compra anulada.
+async function testStockRecepcionPermisosYEstadosInvalidosF3E3C() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor F3E3C Permisos ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E3C Permisos Cat ${Date.now()}`, { maneja_stock: true });
+
+      // Caso: compra sin comprobante activo -> 409 (no accionable desde Stock).
+      const productoSinComprobante = await crearProducto(baseUrl, token, {
+        nombre: `F3E3C SinComprobante ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "F3E3C", stock: 0, maneja_stock: true
+      });
+      const compraSinComprobante = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-01", concepto: "Compra F3E3C sin comprobante",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 1000
+      }, token);
+      if (!compraSinComprobante.response.ok) throw new Error("crear compra sin comprobante fallo");
+      const itemSinComprobanteRes = await requestJson(baseUrl, "POST", `/compras/${compraSinComprobante.data.compra.id}/items`, {
+        items: [{ producto_id: productoSinComprobante, cantidad_comprada: 10, costo_unitario: 100, afecta_stock: 1 }]
+      }, token);
+      const itemSinComprobante = itemSinComprobanteRes.data.items.find((i) => Number(i.producto_id) === Number(productoSinComprobante));
+      const sinComprobante = await requestJson(baseUrl, "POST", `/stock/compras-pendientes/${itemSinComprobante.id}/recibir`, {
+        modo: "aceptar", idempotency_key: "f3e3c-sin-comprobante"
+      }, token);
+      assertEqual(sinComprobante.response.status, 409, "Sin comprobante activo: 409, no accionable desde Stock");
+
+      // Caso: compra anulada -> 400.
+      const productoAnulado = await crearProducto(baseUrl, token, {
+        nombre: `F3E3C CompraAnulada ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "F3E3C", stock: 0, maneja_stock: true
+      });
+      const compraAnulada = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-01", concepto: "Compra F3E3C anulada",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 1000
+      }, token);
+      const itemAnuladaRes = await requestJson(baseUrl, "POST", `/compras/${compraAnulada.data.compra.id}/items`, {
+        items: [{ producto_id: productoAnulado, cantidad_comprada: 10, costo_unitario: 100, afecta_stock: 1 }]
+      }, token);
+      const itemAnulada = itemAnuladaRes.data.items.find((i) => Number(i.producto_id) === Number(productoAnulado));
+      await requestJson(baseUrl, "POST", `/compras/${compraAnulada.data.compra.id}/comprobantes`, {
+        tipo_comprobante: "factura_a", total_comprobante: 1210, alicuotas: [{ alicuota: 21, neto_gravado: 1000, iva_monto: 210 }]
+      }, token);
+      const anularCompra = await requestJson(baseUrl, "POST", `/compras/${compraAnulada.data.compra.id}/comprobantes/${(await requestJson(baseUrl, "GET", `/compras/${compraAnulada.data.compra.id}`, null, token)).data.comprobantes[0].id}/anular`, { motivo: "test" }, token);
+      if (!anularCompra.response.ok) throw new Error("anular comprobante fallo");
+      const anularCompraFinal = await requestJson(baseUrl, "POST", `/compras/${compraAnulada.data.compra.id}/anular`, { motivo: "test F3E3C" }, token);
+      if (!anularCompraFinal.response.ok) throw new Error(`anular compra fallo: ${anularCompraFinal.data?.message || anularCompraFinal.response.status}`);
+      const sobreAnulada = await requestJson(baseUrl, "POST", `/stock/compras-pendientes/${itemAnulada.id}/recibir`, {
+        modo: "aceptar", idempotency_key: "f3e3c-compra-anulada"
+      }, token);
+      assertEqual(sobreAnulada.response.status, 400, "Compra anulada: 400, no admite recepciones");
+
+      // Caso F: permisos -- producto normal, con comprobante activo.
+      const productoPermisos = await crearProducto(baseUrl, token, {
+        nombre: `F3E3C Permisos Producto ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "F3E3C", stock: 0, maneja_stock: true
+      });
+      const compraPermisos = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-01", concepto: "Compra F3E3C permisos",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 1000
+      }, token);
+      const itemPermisosRes = await requestJson(baseUrl, "POST", `/compras/${compraPermisos.data.compra.id}/items`, {
+        items: [{ producto_id: productoPermisos, cantidad_comprada: 10, costo_unitario: 100, afecta_stock: 1 }]
+      }, token);
+      const itemPermisos = itemPermisosRes.data.items.find((i) => Number(i.producto_id) === Number(productoPermisos));
+      await requestJson(baseUrl, "POST", `/compras/${compraPermisos.data.compra.id}/comprobantes`, {
+        tipo_comprobante: "factura_a", total_comprobante: 1210, alicuotas: [{ alicuota: 21, neto_gravado: 1000, iva_monto: 210 }]
+      }, token);
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador F3E3C", usuario: "colaborador_f3e3c", password: "colaborador123",
+        confirmar_password: "colaborador123", rol: "colaborador", activo: true
+      }, token);
+      const colaboradorToken = await login(baseUrl, "colaborador_f3e3c", "colaborador123");
+      const setVista = (modulo, valor) => prepareDb(dbPath, [setVistaOperativaStatement(modulo, "colaborador", valor)]);
+
+      await setVista("stock", "reducida");
+      await setVista("pagos", "completa");
+      const stockReducido = await requestJson(baseUrl, "POST", `/stock/compras-pendientes/${itemPermisos.id}/recibir`, {
+        modo: "aceptar", idempotency_key: "f3e3c-permiso-reducido"
+      }, colaboradorToken);
+      assertEqual(stockReducido.response.status, 403, "Stock reducida (aunque Pagos sea completa) no puede recibir desde Stock");
+
+      // El endpoint historico de Pagos NO debe heredar el nuevo gating de Stock: sigue
+      // exigiendo Pagos=completa, sin cambios respecto de su contrato previo.
+      const pagosViejoConStockReducida = await requestJson(baseUrl, "POST", `/compras/${compraPermisos.data.compra.id}/recepciones`, {
+        idempotency_key: "f3e3c-pagos-legacy-1", items: [{ compra_item_id: itemPermisos.id, cantidad_recibida: 5 }]
+      }, colaboradorToken);
+      if (!pagosViejoConStockReducida.response.ok) throw new Error(`Pagos=completa debe poder seguir recibiendo por su endpoint historico: ${pagosViejoConStockReducida.data?.message || pagosViejoConStockReducida.response.status}`);
+
+      await setVista("stock", "completa");
+      const stockCompleto = await requestJson(baseUrl, "POST", `/stock/compras-pendientes/${itemPermisos.id}/recibir`, {
+        modo: "aceptar", idempotency_key: "f3e3c-permiso-completo"
+      }, colaboradorToken);
+      // Ya se recibieron 5 de 10 via Pagos; con Stock=completa "aceptar" debe tomar el resto (5).
+      if (!stockCompleto.response.ok) throw new Error(`Stock completa deberia poder aceptar el resto: ${stockCompleto.data?.message || stockCompleto.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, productoPermisos)).stock, 10, "Stock completa acepto el resto: 0 + 5 (Pagos) + 5 (Stock) = 10");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// F3E-3C (caso H, UI): un compra_item con AMBAS dimensiones pendientes (recepcion parcial +
+// costo pendiente) debe renderizar UN SOLO card -- nunca un card de recepcion y otro de costo
+// por separado. El card usa "Aceptar"/"Modificar" (nunca "No", nunca "Aceptar +cantidad") para
+// recepcion, y "Mantener"/"Actualizar" (mecanismo F3D-4bis sin cambios) para costo.
+async function testStockCardComprasPendientesUnicoPorItemF3E3C() {
+  const html = fs.readFileSync(path.join(ROOT, "frontend", "productos.html"), "utf8");
+
+  const inicioHelpers = html.indexOf("const money=");
+  if (inicioHelpers === -1) throw new Error("F3E3C-UI: no se encontro const money= en el HTML");
+  const finHelpers = html.indexOf("\n", inicioHelpers);
+  const srcHelpers = html.slice(inicioHelpers, finHelpers);
+  const srcInyectar = extraerFuncionMinificada(html, "inyectarComprasPendientesEnColaAjustes");
+
+  function crearContenedorMock() {
+    const hijos = [];
+    return {
+      _hijos: hijos,
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+      appendChild(item) { hijos.push(item); }
+    };
+  }
+  const mockDocument = { createElement(tag) { return { tagName: tag, className: "", dataset: {}, innerHTML: "" }; } };
+
+  const propuestaAmbasDimensiones = {
+    compra_item_id: 42, producto_id: 11, producto_nombre: "Coca Cola 1250",
+    proveedor_id: 1, proveedor_nombre: "Coca Cola Company",
+    cantidad_comprada: 36, cantidad_recibida: 30, cantidad_pendiente: 6, estado_recepcion: "parcial",
+    estado_revision_costo: "pendiente", revision_costo_id: 99, revision_valor_actual: 1500, revision_valor_propuesto: 1700
+  };
+
+  const fn = new Function(
+    "document", "puedeGestionarAjustesPendientes", "comprasPendientesStock",
+    "resolverRecepcionCompraPendiente", "abrirModalRecepcionCompra", "resolverRevisionPendienteCosto",
+    "fmtCantidad",
+    `${srcHelpers}\n${srcInyectar}\nreturn inyectarComprasPendientesEnColaAjustes;`
+  )(mockDocument, () => true, [propuestaAmbasDimensiones], () => {}, () => {}, () => {}, (v) => String(v));
+
+  const cont = crearContenedorMock();
+  fn(cont);
+
+  assertEqual(cont._hijos.length, 1, "Un compra_item con ambas dimensiones pendientes debe generar UN SOLO card");
+  const html_ = cont._hijos[0].innerHTML;
+
+  if (!/>Aceptar</.test(html_)) throw new Error("F3E3C-UI: falta el boton 'Aceptar'");
+  if (!/>Modificar</.test(html_)) throw new Error("F3E3C-UI: falta el boton 'Modificar'");
+  if (!/>Mantener</.test(html_)) throw new Error("F3E3C-UI: falta el boton 'Mantener' (costo)");
+  if (!/>Actualizar</.test(html_)) throw new Error("F3E3C-UI: falta el boton 'Actualizar' (costo)");
+  if (/>No</.test(html_)) throw new Error("F3E3C-UI: no debe existir un boton 'No' para esta propuesta");
+  if (/Aceptar\s*\+/.test(html_)) throw new Error("F3E3C-UI: el boton no debe mostrar 'Aceptar +cantidad'");
+
+  const ocurrenciasHeader = (html_.match(/stock-(?:pending-product|compra-pendiente-header)/g) || []).length;
+  assertEqual(ocurrenciasHeader, 1, "El encabezado Producto/Proveedor no debe duplicarse: un solo card, un solo header");
+}
+
+async function crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, overrides = {}) {
+  const suffix = `${Date.now()}${Math.floor(Math.random() * 10000)}`;
+  const proveedor = overrides.proveedor || await crearProveedor(baseUrl, token, {
+    nombre: `Proveedor F3E3D1 ${suffix}`,
+    tipo_impacto: "costo_variable_mercaderia"
+  });
+  const categoriaId = overrides.categoriaId || await crearCategoria(baseUrl, token, `F3E3D1 Cat ${suffix}`, { maneja_stock: true });
+  const productoId = overrides.productoId || await crearProducto(baseUrl, token, {
+    nombre: `F3E3D1 Producto ${suffix}`,
+    categoria_id: categoriaId,
+    categoria: "F3E3D1",
+    stock: overrides.stockInicial ?? 0,
+    maneja_stock: true
+  });
+  const cantidadComprada = overrides.cantidadComprada ?? 10;
+  const costoUnitario = overrides.costoUnitario ?? 100;
+  const neto = cantidadComprada * costoUnitario;
+
+  const compra = await requestJson(baseUrl, "POST", "/compras", {
+    proveedor_id: proveedor.id,
+    fecha_compra: overrides.fechaCompra || "2026-07-01",
+    concepto: overrides.concepto || `Compra F3E3D1 ${suffix}`,
+    tipo_impacto: "costo_variable_mercaderia",
+    total_compra: overrides.totalCompra ?? neto
+  }, token);
+  if (!compra.response.ok) throw new Error(`F3E3D1 crear compra fallo: ${compra.data?.message || compra.response.status}`);
+  const compraId = compra.data.compra.id;
+
+  const itemsRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+    items: [{ producto_id: productoId, cantidad_comprada: cantidadComprada, costo_unitario: costoUnitario, afecta_stock: 1 }]
+  }, token);
+  if (!itemsRes.response.ok) throw new Error(`F3E3D1 crear item fallo: ${itemsRes.data?.message || itemsRes.response.status}`);
+  const item = itemsRes.data.items.find((i) => Number(i.producto_id) === Number(productoId));
+  if (!item) throw new Error("F3E3D1 no se encontro el item creado");
+
+  const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+    tipo_comprobante: "factura_a",
+    total_comprobante: overrides.totalComprobante ?? neto * 1.21,
+    alicuotas: [{ alicuota: 21, neto_gravado: neto, iva_monto: neto * 0.21 }]
+  }, token);
+  if (!comprobante.response.ok) throw new Error(`F3E3D1 comprobante fallo: ${comprobante.data?.message || comprobante.response.status}`);
+
+  const recibir = async (cantidad, idempotencyKey) => {
+    const recepcion = await requestJson(baseUrl, "POST", `/compras/${compraId}/recepciones`, {
+      idempotency_key: idempotencyKey || `f3e3d1-recepcion-${suffix}-${cantidad}-${Date.now()}`,
+      fecha: "2026-07-02",
+      items: [{ compra_item_id: item.id, cantidad_recibida: cantidad }]
+    }, token);
+    if (!recepcion.response.ok) throw new Error(`F3E3D1 recepcion fallo: ${recepcion.data?.message || recepcion.response.status}`);
+    return recepcion.data.recepcion;
+  };
+
+  const revertirDesdeStock = (recepcionId, tokenReversa = token) => requestJson(baseUrl, "POST", `/stock/recepciones/${recepcionId}/revertir`, {
+    motivo: `Reversion F3E3D1 recepcion #${recepcionId}`
+  }, tokenReversa);
+
+  const movimientosProducto = async () => {
+    const res = await requestJson(baseUrl, "GET", `/productos/${productoId}/movimientos-stock`, null, token);
+    if (!res.response.ok) throw new Error(`F3E3D1 movimientos fallo: ${res.response.status}`);
+    return res.data;
+  };
+
+  return { proveedor, categoriaId, productoId, compraId, item, comprobante, recibir, revertirDesdeStock, movimientosProducto, dbPath };
+}
+
+async function snapshotFinancieroCompraF3E3D1(baseUrl, token, dbPath, compraId) {
+  const compra = (await allSql(dbPath, "SELECT total_compra, saldo_pendiente, estado FROM compras WHERE id = ?", [compraId]))[0];
+  const comprobantes = await allSql(dbPath, "SELECT id, estado, total_comprobante, iva_total FROM compra_comprobantes WHERE compra_id = ? ORDER BY id", [compraId]);
+  const pagos = await allSql(dbPath, "SELECT id, monto_total, estado, compra_id, caja_id, cuenta_cobro_id FROM pagos WHERE compra_id = ? ORDER BY id", [compraId]);
+  const pagosResumen = (await allSql(dbPath, "SELECT COUNT(*) AS cantidad, COALESCE(SUM(monto_total),0) AS total FROM pagos WHERE compra_id = ?", [compraId]))[0];
+  const caja = await getCajaResumen(baseUrl, token);
+  return {
+    compra,
+    comprobantes: JSON.stringify(comprobantes),
+    pagos: JSON.stringify(pagos),
+    pagosCantidad: Number(pagosResumen.cantidad || 0),
+    pagosTotal: Number(pagosResumen.total || 0),
+    cajaTotalPagos: Number(caja.resumen?.total_pagos_general || 0),
+    cajaTotalVentas: Number(caja.resumen?.total_ventas_general || 0),
+    cajaBalance: Number(caja.resumen?.balance_general || 0)
+  };
+}
+
+async function testStockReversaRecepcionDtoIdempotenciaF3E3D1() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 10, costoUnitario: 100, stockInicial: 0 });
+      const recepcion = await fx.recibir(10, "f3e3d1-dto-idempotencia");
+      const movimientosAntes = await fx.movimientosProducto();
+      const originalAntes = movimientosAntes.find((m) => Number(m.recepcion_id) === Number(recepcion.id) && m.tipo_movimiento === "ingreso");
+      if (!originalAntes) throw new Error("F3E3D1 DTO: no se encontro movimiento original con recepcion_id");
+
+      assertEqual(Number(originalAntes.compra_id), fx.compraId, "DTO expone compra_id estructurado");
+      assertEqual(Number(originalAntes.compra_item_id), Number(fx.item.id), "DTO expone compra_item_id estructurado");
+      assertSame(originalAntes.recepcion_estado, "registrada", "DTO expone estado de recepcion activa");
+      assertSame(originalAntes.movimiento_stock_reversa_id, null, "DTO original activo no tiene reversa");
+      assertEqual(Number(originalAntes.recepcion_revertida || 0), 0, "DTO original activo no figura revertido");
+      assertEqual(Number(originalAntes.es_reversa_recepcion || 0), 0, "DTO original no es compensatorio");
+
+      const primera = await fx.revertirDesdeStock(recepcion.id);
+      if (!primera.response.ok) throw new Error(`F3E3D1 reversa Stock fallo: ${primera.data?.message || primera.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 0, "Reversa Stock descuenta exactamente lo recibido");
+
+      const movimientosTrasReversa = await fx.movimientosProducto();
+      const originalDespues = movimientosTrasReversa.find((m) => Number(m.id) === Number(originalAntes.id));
+      if (!originalDespues) throw new Error("F3E3D1 DTO: no se encontro movimiento original tras reversa");
+      assertEqual(Number(originalDespues.recepcion_revertida || 0), 1, "DTO marca original como revertido");
+      if (!originalDespues.movimiento_stock_reversa_id) throw new Error("DTO original debe vincular movimiento_stock_reversa_id");
+      const compensatorios = movimientosTrasReversa.filter((m) => Number(m.es_reversa_recepcion || 0) === 1);
+      assertEqual(compensatorios.length, 1, "DTO identifica un unico movimiento compensatorio");
+      assertSame(compensatorios[0].tipo_movimiento, "egreso", "Movimiento compensatorio usa tipo egreso compatible");
+
+      const replay = await fx.revertirDesdeStock(recepcion.id);
+      assertEqual(replay.response.status, 200, "Replay de reversa responde 200");
+      assertEqual(replay.data.idempotent_replay, true, "Replay de reversa marca idempotent_replay");
+      const compensatoriosTrasReplay = (await fx.movimientosProducto())
+        .filter((m) => Number(m.es_reversa_recepcion || 0) === 1);
+      assertEqual(compensatoriosTrasReplay.length, 1, "Replay no duplica movimiento compensatorio");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockReversaRecepcionParcialPendientesF3E3D1() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 16, costoUnitario: 100 });
+      const recepcion10 = await fx.recibir(10, "f3e3d1-parcial-10");
+      const recepcion6 = await fx.recibir(6, "f3e3d1-parcial-6");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 16, "Parcial: stock inicial tras 10 + 6");
+
+      const pendientesAntes = await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token);
+      if (!pendientesAntes.response.ok) throw new Error(`GET pendientes antes fallo: ${pendientesAntes.response.status}`);
+      assertSame(pendientesAntes.data.find((p) => Number(p.compra_item_id) === Number(fx.item.id)), undefined, "Parcial: compra completa no aparece pendiente");
+
+      const revertir6 = await fx.revertirDesdeStock(recepcion6.id);
+      if (!revertir6.response.ok) throw new Error(`Revertir 6 fallo: ${revertir6.data?.message || revertir6.response.status}`);
+      const pendientesTras6 = await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token);
+      const pendiente6 = pendientesTras6.data.find((p) => Number(p.compra_item_id) === Number(fx.item.id));
+      if (!pendiente6) throw new Error("Parcial: al revertir 6 debe reaparecer el item pendiente");
+      assertApprox(pendiente6.cantidad_recibida, 10, "Parcial: recibido queda en 10");
+      assertApprox(pendiente6.cantidad_pendiente, 6, "Parcial: pendiente queda en 6");
+
+      const revertir10 = await fx.revertirDesdeStock(recepcion10.id);
+      if (!revertir10.response.ok) throw new Error(`Revertir 10 fallo: ${revertir10.data?.message || revertir10.response.status}`);
+      const pendientesTras10 = await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token);
+      const pendiente16 = pendientesTras10.data.find((p) => Number(p.compra_item_id) === Number(fx.item.id));
+      if (!pendiente16) throw new Error("Parcial: al revertir todo debe quedar pendiente la factura completa");
+      assertApprox(pendiente16.cantidad_recibida, 0, "Parcial: recibido queda en 0");
+      assertApprox(pendiente16.cantidad_pendiente, 16, "Parcial: pendiente queda en 16");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockReversaRecepcionStockActualEInsuficienteF3E3D1() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fxActual = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 10, stockInicial: 50 });
+      const recepcionActual = await fxActual.recibir(10, "f3e3d1-stock-actual");
+      const egresoPosterior = await requestJson(baseUrl, "POST", `/productos/${fxActual.productoId}/movimientos-stock`, {
+        tipo_movimiento: "egreso",
+        cantidad: 3,
+        motivo: "Egreso posterior F3E3D1"
+      }, token);
+      if (!egresoPosterior.response.ok) throw new Error(`Egreso posterior fallo: ${egresoPosterior.data?.message || egresoPosterior.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fxActual.productoId)).stock, 57, "Stock actual antes de reversa = 57");
+      const reversaActual = await fxActual.revertirDesdeStock(recepcionActual.id);
+      if (!reversaActual.response.ok) throw new Error(`Reversa stock actual fallo: ${reversaActual.data?.message || reversaActual.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fxActual.productoId)).stock, 47, "Reversa usa stock actual: 57 - 10 = 47");
+
+      const fxInsuf = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 10, stockInicial: 0 });
+      const recepcionInsuf = await fxInsuf.recibir(10, "f3e3d1-stock-insuficiente");
+      const egreso7 = await requestJson(baseUrl, "POST", `/productos/${fxInsuf.productoId}/movimientos-stock`, {
+        tipo_movimiento: "egreso",
+        cantidad: 7,
+        motivo: "Egreso deja stock insuficiente F3E3D1"
+      }, token);
+      if (!egreso7.response.ok) throw new Error(`Egreso insuficiente fallo: ${egreso7.data?.message || egreso7.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fxInsuf.productoId)).stock, 3, "Stock insuficiente queda en 3");
+      const movimientosAntes = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock WHERE producto_id = ?", [fxInsuf.productoId]))[0].total;
+      const reversaInsuf = await fxInsuf.revertirDesdeStock(recepcionInsuf.id);
+      assertEqual(reversaInsuf.response.status, 409, "Stock insuficiente responde 409");
+      assertApprox((await getProduct(baseUrl, token, fxInsuf.productoId)).stock, 3, "Stock insuficiente no cambia stock");
+      const recepcionDb = (await allSql(dbPath, "SELECT estado FROM compra_recepciones WHERE id = ?", [recepcionInsuf.id]))[0];
+      assertSame(recepcionDb.estado, "registrada", "Stock insuficiente deja la recepcion activa");
+      const movimientosDespues = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock WHERE producto_id = ?", [fxInsuf.productoId]))[0].total;
+      assertEqual(movimientosDespues, movimientosAntes, "Stock insuficiente no crea movimiento de reversa");
+      const reversaLink = (await allSql(dbPath, "SELECT movimiento_stock_reversa_id FROM compra_recepcion_items WHERE recepcion_id = ?", [recepcionInsuf.id]))[0];
+      assertSame(reversaLink.movimiento_stock_reversa_id, null, "Stock insuficiente no vincula reversa parcial");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockReversaRecepcionPermisosFinanzasYCostoF3E3D1() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, adminToken, 200000);
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Reversa F3E3D1",
+        usuario: "colaborador_reversa_f3e3d1",
+        password: "colaborador123",
+        confirmar_password: "colaborador123",
+        rol: "colaborador",
+        activo: true
+      }, adminToken);
+      const colaboradorToken = await login(baseUrl, "colaborador_reversa_f3e3d1", "colaborador123");
+      const setVista = (modulo, valor) => prepareDb(dbPath, [setVistaOperativaStatement(modulo, "colaborador", valor)]);
+
+      const fxPermisos = await crearCompraRecepcionFixtureF3E3D1(baseUrl, adminToken, dbPath, { cantidadComprada: 4 });
+      const recepcionPermisos = await fxPermisos.recibir(4, "f3e3d1-permisos");
+
+      await setVista("stock", "completa");
+      await setVista("pagos", "reducida");
+      const stockCompletaPagosReducida = await fxPermisos.revertirDesdeStock(recepcionPermisos.id, colaboradorToken);
+      if (!stockCompletaPagosReducida.response.ok) {
+        throw new Error(`Stock completa + Pagos reducida debe poder revertir desde Stock: ${stockCompletaPagosReducida.data?.message || stockCompletaPagosReducida.response.status}`);
+      }
+
+      const fxPermisos2 = await crearCompraRecepcionFixtureF3E3D1(baseUrl, adminToken, dbPath, { cantidadComprada: 4 });
+      const recepcionPermisos2 = await fxPermisos2.recibir(4, "f3e3d1-permisos-2");
+      await setVista("stock", "reducida");
+      await setVista("pagos", "completa");
+      const stockReducidaPagosCompleta = await fxPermisos2.revertirDesdeStock(recepcionPermisos2.id, colaboradorToken);
+      assertEqual(stockReducidaPagosCompleta.response.status, 403, "Stock reducida + Pagos completa no puede revertir desde Stock");
+
+      await setVista("stock", "completa");
+      const stockCompleta = await fxPermisos2.revertirDesdeStock(recepcionPermisos2.id, colaboradorToken);
+      if (!stockCompleta.response.ok) throw new Error(`Stock completa debe revertir desde Stock: ${stockCompleta.data?.message || stockCompleta.response.status}`);
+
+      const fxPermisos3 = await crearCompraRecepcionFixtureF3E3D1(baseUrl, adminToken, dbPath, { cantidadComprada: 4 });
+      const recepcionPermisos3 = await fxPermisos3.recibir(4, "f3e3d1-permisos-3");
+      await setVista("stock", "reducida");
+      const stockReducida = await fxPermisos3.revertirDesdeStock(recepcionPermisos3.id, colaboradorToken);
+      assertEqual(stockReducida.response.status, 403, "Stock reducida no puede revertir desde Stock");
+
+      const fxFinanzas = await crearCompraRecepcionFixtureF3E3D1(baseUrl, adminToken, dbPath, {
+        cantidadComprada: 8,
+        costoUnitario: 1000,
+        totalCompra: 8000,
+        totalComprobante: 9680
+      });
+      const pagoParcial = await requestJson(baseUrl, "POST", `/compras/${fxFinanzas.compraId}/pagos`, {
+        monto_total: 3000,
+        tipo_pago: "efectivo",
+        concepto: "Pago parcial F3E3D1"
+      }, adminToken);
+      if (!pagoParcial.response.ok) throw new Error(`Pago parcial F3E3D1 fallo: ${pagoParcial.data?.message || pagoParcial.response.status}`);
+      const recepcionFinanzas = await fxFinanzas.recibir(8, "f3e3d1-finanzas");
+
+      const productoAntes = await getProduct(baseUrl, adminToken, fxFinanzas.productoId);
+      const recepcionAntes = (await allSql(dbPath, "SELECT estado FROM compra_recepciones WHERE id = ?", [recepcionFinanzas.id]))[0];
+      const financieroAntes = await snapshotFinancieroCompraF3E3D1(baseUrl, adminToken, dbPath, fxFinanzas.compraId);
+      const revisionAntes = (await allSql(dbPath, "SELECT id, estado FROM producto_revisiones_pendientes WHERE compra_item_id = ? ORDER BY id", [fxFinanzas.item.id]));
+      const relacionesProveedorAntes = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [fxFinanzas.productoId, fxFinanzas.proveedor.id]))[0].total;
+      const proveedorPrincipalAntes = (await allSql(dbPath, "SELECT proveedor_id, proveedor_principal FROM productos WHERE id = ?", [fxFinanzas.productoId]))[0];
+
+      const reversaFinanzas = await fxFinanzas.revertirDesdeStock(recepcionFinanzas.id, adminToken);
+      if (!reversaFinanzas.response.ok) throw new Error(`Reversa finanzas F3E3D1 fallo: ${reversaFinanzas.data?.message || reversaFinanzas.response.status}`);
+
+      const financieroDespues = await snapshotFinancieroCompraF3E3D1(baseUrl, adminToken, dbPath, fxFinanzas.compraId);
+      assertApprox(financieroDespues.compra.total_compra, financieroAntes.compra.total_compra, "Finanzas: total_compra no cambia");
+      assertApprox(financieroDespues.pagosTotal, financieroAntes.pagosTotal, "Finanzas: total_pagado derivado de pagos no cambia");
+      assertApprox(financieroDespues.compra.saldo_pendiente, financieroAntes.compra.saldo_pendiente, "Finanzas: saldo_pendiente no cambia");
+      assertSame(financieroDespues.compra.estado, financieroAntes.compra.estado, "Finanzas: estado financiero no cambia");
+      assertSame(financieroDespues.comprobantes, financieroAntes.comprobantes, "Finanzas: comprobante no cambia");
+      assertSame(financieroDespues.pagos, financieroAntes.pagos, "Finanzas: pagos asociados no cambian");
+      assertEqual(financieroDespues.pagosCantidad, financieroAntes.pagosCantidad, "Finanzas: cantidad pagos no cambia");
+      assertApprox(financieroDespues.pagosTotal, financieroAntes.pagosTotal, "Finanzas: importe pagos no cambia");
+      assertApprox(financieroDespues.cajaTotalPagos, financieroAntes.cajaTotalPagos, "Finanzas: Caja total pagos no cambia");
+      assertApprox(financieroDespues.cajaTotalVentas, financieroAntes.cajaTotalVentas, "Finanzas: Caja ventas no cambia");
+      assertApprox(financieroDespues.cajaBalance, financieroAntes.cajaBalance, "Finanzas: Caja balance no cambia");
+
+      const productoDespues = await getProduct(baseUrl, adminToken, fxFinanzas.productoId);
+      assertApprox(productoDespues.stock, Number(productoAntes.stock) - 8, "Finanzas: Stock si cambia por la reversa");
+      const recepcionDespues = (await allSql(dbPath, "SELECT estado FROM compra_recepciones WHERE id = ?", [recepcionFinanzas.id]))[0];
+      assertSame(recepcionAntes.estado, "registrada", "Finanzas: recepcion inicia activa");
+      assertSame(recepcionDespues.estado, "anulada", "Finanzas: recepcion cambia a anulada");
+
+      const revisionDespues = (await allSql(dbPath, "SELECT id, estado FROM producto_revisiones_pendientes WHERE compra_item_id = ? ORDER BY id", [fxFinanzas.item.id]));
+      assertSame(JSON.stringify(revisionDespues), JSON.stringify(revisionAntes), "Costo: la reversa nueva no aprueba/rechaza revisiones pendientes");
+      const relacionesProveedorDespues = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [fxFinanzas.productoId, fxFinanzas.proveedor.id]))[0].total;
+      assertEqual(relacionesProveedorDespues, relacionesProveedorAntes, "Costo: no crea relacion producto_proveedores");
+      const proveedorPrincipalDespues = (await allSql(dbPath, "SELECT proveedor_id, proveedor_principal FROM productos WHERE id = ?", [fxFinanzas.productoId]))[0];
+      assertSame(JSON.stringify(proveedorPrincipalDespues), JSON.stringify(proveedorPrincipalAntes), "Costo: no cambia proveedor principal del producto");
+      const cri = (await allSql(dbPath, "SELECT costo_referencial_actualizado FROM compra_recepcion_items WHERE recepcion_id = ?", [recepcionFinanzas.id]))[0];
+      assertEqual(Number(cri.costo_referencial_actualizado), 0, "Costo: recepcion nueva conserva costo_referencial_actualizado=0");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockReversaRecepcionUiRefrescaMovimientosF3E3D1() {
+  const html = fs.readFileSync(path.join(ROOT, "frontend", "productos.html"), "utf8");
+  const inicioConfirmar = html.indexOf('$("confirmarRevertirRecepcion").onclick');
+  if (inicioConfirmar === -1) throw new Error("F3E3D1-UI: no se encontro confirmarRevertirRecepcion");
+  const srcConfirmar = html.slice(inicioConfirmar, inicioConfirmar + 1800);
+  if (!/\/stock\/recepciones\/\$\{m\.recepcion_id\}\/revertir/.test(srcConfirmar)) {
+    throw new Error("F3E3D1-UI: la confirmacion debe usar el endpoint Stock de reversa");
+  }
+  if (!/\/productos\/\$\{productoId\}\/movimientos-stock/.test(srcConfirmar)) {
+    throw new Error("F3E3D1-UI: tras revertir debe recargar movimientos desde backend");
+  }
+  if (!/cargarComprasPendientesStock\(\)/.test(srcConfirmar)) {
+    throw new Error("F3E3D1-UI: tras revertir debe refrescar /stock/compras-pendientes");
+  }
+  if (!/renderPanelAjustesPendientes\(\)/.test(srcConfirmar)) {
+    throw new Error("F3E3D1-UI: tras revertir debe refrescar panel Ajustes pendientes");
+  }
+
+  const srcDetalle = extraerFuncionMinificada(html, "abrirDetalle");
+  if (/motivo\.includes|motivo\.match|motivo\.indexOf/.test(srcDetalle)) {
+    throw new Error("F3E3D1-UI: gating de Revertir recepcion no debe parsear motivo");
+  }
+  for (const token of ["recepcion_id", "recepcion_revertida", "recepcion_estado", "es_reversa_recepcion", "tipo_movimiento"]) {
+    if (!srcDetalle.includes(token)) throw new Error(`F3E3D1-UI: gating debe usar metadata estructurada ${token}`);
+  }
+}
+
+// F3D-4bis (O/P/Q): resolver revisiones pendientes de costo_proveedor depende EXCLUSIVAMENTE
+// de la vista efectiva de *Stock (Completa/Reducida), nunca de un nombre de rol, nunca de
+// *Pagos, nunca del contrato de stock_ajustes_pendientes. Mismo rol, distinta configuracion,
+// distinto resultado.
+async function testProductoRevisionPendientePermisosStockF3D4bis() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const adminToken = await login(baseUrl, "admin", "admin123");
+      const proveedor = await crearProveedor(baseUrl, adminToken, {
+        nombre: `Proveedor F3D4bisPerm ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, adminToken, `F3D4bisPerm Cat ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, adminToken, {
+        nombre: `F3D4bisPerm Producto ${Date.now()}`,
+        categoria_id: categoriaId, categoria: "F3D4bisPerm", stock: 0, maneja_stock: true
+      });
+      await runSql(dbPath, `
+        INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+        VALUES (?, ?, 1000, '2026-06-01', 1)
+      `, [productoId, proveedor.id]);
+
+      const compra = await requestJson(baseUrl, "POST", "/compras", {
+        proveedor_id: proveedor.id, fecha_compra: "2026-06-10", concepto: "Compra F3D4bisPerm",
+        tipo_impacto: "costo_variable_mercaderia", total_compra: 1200
+      }, adminToken);
+      if (!compra.response.ok) throw new Error(`crear compra fallo: ${compra.data?.message || compra.response.status}`);
+      const compraId = compra.data.compra.id;
+      const itemsRes = await requestJson(baseUrl, "POST", `/compras/${compraId}/items`, {
+        items: [{ producto_id: productoId, cantidad_comprada: 1, costo_unitario: 1200, afecta_stock: 1 }]
+      }, adminToken);
+      if (!itemsRes.response.ok) throw new Error(`crear item fallo: ${itemsRes.data?.message || itemsRes.response.status}`);
+      const comprobante = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "factura_a", total_comprobante: 1452,
+        alicuotas: [{ alicuota: 21, neto_gravado: 1200, iva_monto: 252 }]
+      }, adminToken);
+      if (!comprobante.response.ok) throw new Error(`comprobante fallo: ${comprobante.data?.message || comprobante.response.status}`);
+      const revision = (await allSql(dbPath, "SELECT id FROM producto_revisiones_pendientes WHERE tipo_revision = 'costo_proveedor' AND compra_item_id = ?", [itemsRes.data.items.find((i) => Number(i.producto_id) === Number(productoId)).id]))[0];
+      if (!revision) throw new Error("No se genero la revision pendiente de costo para el test de permisos");
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador F3D4bisPerm", usuario: "colaborador_f3d4bis_perm", password: "colaborador123",
+        confirmar_password: "colaborador123", rol: "colaborador", activo: true
+      }, adminToken);
+      const colaboradorToken = await login(baseUrl, "colaborador_f3d4bis_perm", "colaborador123");
+      const setVista = (modulo, valor) => prepareDb(dbPath, [setVistaOperativaStatement(modulo, "colaborador", valor)]);
+
+      // P: Stock reducido -> el backend rechaza listar y resolver (403), sin importar Pagos.
+      await setVista("stock", "reducida");
+      await setVista("pagos", "reducida");
+      const listarReducido = await requestJson(baseUrl, "GET", "/productos/revisiones-pendientes", null, colaboradorToken);
+      assertEqual(listarReducido.response.status, 403, "P: Stock reducido no puede listar revisiones pendientes de costo");
+      const aprobarReducido = await requestJson(baseUrl, "POST", `/productos/revisiones-pendientes/${revision.id}/aprobar`, {}, colaboradorToken);
+      assertEqual(aprobarReducido.response.status, 403, "P: Stock reducido no puede aprobar revisiones pendientes de costo");
+      assertApprox((await allSql(dbPath, "SELECT precio_compra FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoId, proveedor.id]))[0].precio_compra, 1000, "P: intento rechazado no modifica el costo vigente");
+
+      // Q: Pagos completo + Stock reducido -> puede Cargar compra (crear comprobante), pero
+      // NO puede resolver la revision de costo (eso sigue siendo exclusivo de *Stock completo).
+      await setVista("stock", "reducida");
+      await setVista("pagos", "completa");
+      const comprobanteConPagosCompleto = await requestJson(baseUrl, "POST", `/compras/${compraId}/comprobantes`, {
+        tipo_comprobante: "nota_debito", total_comprobante: 5
+      }, colaboradorToken);
+      if (!comprobanteConPagosCompleto.response.ok) throw new Error(`Q: colaborador con Pagos completa debe poder registrar comprobante, dio ${comprobanteConPagosCompleto.response.status}`);
+      const aprobarConPagosCompleto = await requestJson(baseUrl, "POST", `/productos/revisiones-pendientes/${revision.id}/aprobar`, {}, colaboradorToken);
+      assertEqual(aprobarConPagosCompleto.response.status, 403, "Q: Pagos completo + Stock reducido no puede resolver revision de costo");
+
+      // O: Stock completo -> puede listar y resolver.
+      await setVista("stock", "completa");
+      const listarCompleto = await requestJson(baseUrl, "GET", "/productos/revisiones-pendientes", null, colaboradorToken);
+      if (!listarCompleto.response.ok) throw new Error(`O: Stock completo debe poder listar revisiones, dio ${listarCompleto.response.status}`);
+      const aprobarCompleto = await requestJson(baseUrl, "POST", `/productos/revisiones-pendientes/${revision.id}/aprobar`, {}, colaboradorToken);
+      if (!aprobarCompleto.response.ok) throw new Error(`O: Stock completo debe poder aprobar revision, dio ${aprobarCompleto.response.status}`);
+      assertApprox((await allSql(dbPath, "SELECT precio_compra FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoId, proveedor.id]))[0].precio_compra, 1200, "O: Stock completo aprueba y actualiza el costo vigente");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -17445,6 +19431,31 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCompraItemsRecepcionesF3D2Schema);
   await _run(testCompraRecepcionOperativaF3D3);
   await _run(testCompraRecepcionReversaCostoReferencialF3D4);
+  await _run(testCompraRecepcionNuevaNoActualizaCostoProveedorF3D4bis);
+  await _run(testProductoProveedorBackfillF3D4bis);
+  await _run(testProductoProveedorAltaEdicionSincronizaF3D4bis);
+  await _run(testF3D4bisSobreProductoMigradoGeneraRevisionF3D4bis);
+  await _run(testProductoRevisionPendienteCostoProveedorF3D4bis);
+  await _run(testProductoRevisionPendienteNoAccionableSiCompraOComprobanteAnuladoF3D4bis);
+  await _run(testProductoRevisionPendientePermisosStockF3D4bis);
+  await _run(testStockAjustesPendientesTabNoDesaparaceConSoloRevisionCostoF3D4bis);
+  await _run(testProductoCostoProveedorVisibleEnStockF3D4bis);
+  await _run(testProductoCostoProveedorUiUsaCampoNormalizadoF3D4bis);
+  await _run(testProductoStockFormatoMonetarioEsArF3D4bis);
+  await _run(testProductoStockRefrescaPendientesAlVolverAFocoF3D4bis);
+  await _run(testStockComprasPendientesCantidadF3E3B);
+  await _run(testStockComprasPendientesCostoProveedorEventualF3E3B);
+  await _run(testStockComprasPendientesFiltroCombinadoYPermisosF3E3B);
+  await _run(testStockRecepcionAceptarCompletoF3E3C);
+  await _run(testStockRecepcionModificarParcialLuegoAceptarRestoF3E3C);
+  await _run(testStockRecepcionIdempotenciaF3E3C);
+  await _run(testStockRecepcionPermisosYEstadosInvalidosF3E3C);
+  await _run(testStockCardComprasPendientesUnicoPorItemF3E3C);
+  await _run(testStockReversaRecepcionDtoIdempotenciaF3E3D1);
+  await _run(testStockReversaRecepcionParcialPendientesF3E3D1);
+  await _run(testStockReversaRecepcionStockActualEInsuficienteF3E3D1);
+  await _run(testStockReversaRecepcionPermisosFinanzasYCostoF3E3D1);
+  await _run(testStockReversaRecepcionUiRefrescaMovimientosF3E3D1);
   await _run(testCompraCierreEstadosF3E1);
   await _run(testCargarCompraUiF3E2CorregidoExiste);
   await _run(testCargarCompraUxSimpleOperativaF3E2);
