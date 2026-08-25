@@ -481,7 +481,9 @@ async function registrarMovimientoStockAprobado({
   cantidad,
   motivo,
   proveedorId,
-  usuario
+  usuario,
+  origenTipo = null,
+  origenId = null
 }) {
   const producto = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
   if (!producto) {
@@ -502,9 +504,9 @@ async function registrarMovimientoStockAprobado({
 
   const movimiento = await runQuery(
     `INSERT INTO movimientos_stock
-     (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, proveedor_id, usuario, fecha, hora)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [productoId, tipoMovimiento, cantidad, stockAnterior, stockFinal, motivo, proveedorId, usuario, fecha, hora]
+     (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, proveedor_id, usuario, fecha, hora, origen_tipo, origen_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [productoId, tipoMovimiento, cantidad, stockAnterior, stockFinal, motivo, proveedorId, usuario, fecha, hora, origenTipo, origenId]
   );
   await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockFinal, productoId]);
 
@@ -572,11 +574,13 @@ async function aprobarAjustePendiente(id, {
   usuario,
   cantidad_aprobada,
   tipo_movimiento_aprobado,
-  observaciones_admin
+  observaciones_admin,
+  confirmar_posible_duplicado = false,
+  buscarPosibleIngresoDuplicado = null
 } = {}) {
   await ensureStockAjustesPendientesSchema();
 
-  await runQuery("BEGIN TRANSACTION");
+  await runQuery("BEGIN IMMEDIATE");
   try {
     const ajuste = await getQuery("SELECT * FROM stock_ajustes_pendientes WHERE id = ?", [Number(id)]);
     if (!ajuste) throw crearError("Ajuste pendiente no encontrado", 404);
@@ -602,13 +606,29 @@ async function aprobarAjustePendiente(id, {
       ajuste.motivo,
       observaciones_admin
     ].map(normalizarTexto).filter(Boolean).join(" | ");
+    if (tipoAprobado === "ingreso" && !confirmar_posible_duplicado && typeof buscarPosibleIngresoDuplicado === "function") {
+      const candidato = await buscarPosibleIngresoDuplicado({
+        productoId: Number(ajuste.producto_id),
+        cantidad: cantidadAprobada,
+        proveedorId: normalizarId(ajuste.proveedor_id),
+        origenTipoActual: "ajuste_informado"
+      });
+      if (candidato) {
+        const error = crearError("Posible ingreso duplicado: existe otro ingreso fisico reciente compatible para este producto y cantidad.", 409);
+        error.code = "POSSIBLE_DUPLICATE_STOCK_INGRESS";
+        error.candidate = candidato;
+        throw error;
+      }
+    }
     const movimiento = await registrarMovimientoStockAprobado({
       productoId: Number(ajuste.producto_id),
       tipoMovimiento: tipoAprobado,
       cantidad: cantidadAprobada,
       motivo,
       proveedorId: normalizarId(ajuste.proveedor_id),
-      usuario: normalizarTexto(usuario) || "admin"
+      usuario: normalizarTexto(usuario) || "admin",
+      origenTipo: tipoAprobado === "ingreso" ? "ajuste_informado" : null,
+      origenId: tipoAprobado === "ingreso" ? Number(id) : null
     });
 
     await runQuery(

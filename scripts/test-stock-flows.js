@@ -1456,10 +1456,13 @@ async function testReconciliarAjustesPendientesStock() {
         motivo: "TEST reconciliar ajeno"
       });
 
-      await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${aprobado.id}/aprobar`, {}, adminToken);
+      await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${aprobado.id}/aprobar`, {
+        confirmar_posible_duplicado: true
+      }, adminToken);
       await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${corregido.id}/aprobar`, {
         cantidad_aprobada: 6,
-        observaciones_admin: "Corrijo para reconciliar"
+        observaciones_admin: "Corrijo para reconciliar",
+        confirmar_posible_duplicado: true
       }, adminToken);
       await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${rechazado.id}/rechazar`, {
         observaciones_admin: "No corresponde reconciliar"
@@ -5924,7 +5927,7 @@ async function testCompraItemsRecepcionesF3D2Schema() {
       ], "F3D-2 compra_recepciones schema");
       assertColumnasIncluidas(await allSql(dbPath, "PRAGMA table_info(compra_recepcion_items)"), [
         "id", "recepcion_id", "compra_item_id", "producto_id", "cantidad_recibida",
-        "unidad_snapshot", "movimiento_stock_id", "movimiento_stock_reversa_id",
+        "unidad_snapshot", "modo_stock", "movimiento_stock_id", "movimiento_stock_vinculado_id", "movimiento_stock_reversa_id",
         "precio_proveedor_anterior_snapshot", "fecha_precio_proveedor_anterior_snapshot",
         "costo_referencial_actualizado", "created_at"
       ], "F3D-2 compra_recepcion_items schema");
@@ -8472,6 +8475,1115 @@ async function testStockReversaRecepcionUiRefrescaMovimientosF3E3D1() {
   }
   for (const token of ["recepcion_id", "recepcion_revertida", "recepcion_estado", "es_reversa_recepcion", "tipo_movimiento"]) {
     if (!srcDetalle.includes(token)) throw new Error(`F3E3D1-UI: gating debe usar metadata estructurada ${token}`);
+  }
+}
+
+async function testStockProvenanceRecepcionReversaManualF3E3E1() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 10, stockInicial: 0 });
+      const recepcion = await fx.recibir(10, "f3e3e1-prov-recepcion");
+      const itemRecepcion = (await allSql(dbPath, "SELECT movimiento_stock_id FROM compra_recepcion_items WHERE recepcion_id = ?", [recepcion.id]))[0];
+      const movRecepcion = (await allSql(dbPath, "SELECT origen_tipo, origen_id FROM movimientos_stock WHERE id = ?", [itemRecepcion.movimiento_stock_id]))[0];
+      assertSame(movRecepcion.origen_tipo, "compra_recepcion", "F3E3E1 recepcion nueva guarda origen_tipo");
+      assertEqual(Number(movRecepcion.origen_id), Number(recepcion.id), "F3E3E1 recepcion nueva guarda origen_id=recepcion_id");
+
+      const reversa = await fx.revertirDesdeStock(recepcion.id);
+      if (!reversa.response.ok) throw new Error(`F3E3E1 reversa fallo: ${reversa.data?.message || reversa.response.status}`);
+      const itemRevertido = (await allSql(dbPath, "SELECT movimiento_stock_reversa_id FROM compra_recepcion_items WHERE recepcion_id = ?", [recepcion.id]))[0];
+      const movReversa = (await allSql(dbPath, "SELECT origen_tipo, origen_id FROM movimientos_stock WHERE id = ?", [itemRevertido.movimiento_stock_reversa_id]))[0];
+      assertSame(movReversa.origen_tipo, "reversa_recepcion", "F3E3E1 reversa guarda origen_tipo");
+      assertEqual(Number(movReversa.origen_id), Number(recepcion.id), "F3E3E1 reversa guarda origen_id=recepcion_id");
+
+      const manualKey = "f3e3e1-prov-manual";
+      const manual = await requestJson(baseUrl, "POST", `/productos/${fx.productoId}/movimientos-stock`, {
+        tipo_movimiento: "ingreso",
+        cantidad: 3,
+        motivo: "Manual provenance F3E3E1",
+        idempotency_key: manualKey
+      }, token);
+      if (!manual.response.ok) throw new Error(`F3E3E1 manual provenance fallo: ${manual.data?.message || manual.response.status}`);
+      const movManual = (await allSql(dbPath, "SELECT origen_tipo, origen_id FROM movimientos_stock WHERE idempotency_key = ?", [manualKey]))[0];
+      assertSame(movManual.origen_tipo, "manual", "F3E3E1 movimiento manual guarda origen_tipo");
+      assertSame(movManual.origen_id, null, "F3E3E1 movimiento manual no inventa origen_id");
+
+      const movimientosDto = await fx.movimientosProducto();
+      const dtoManual = movimientosDto.find((m) => m.idempotency_key === manualKey);
+      if (!dtoManual) throw new Error("F3E3E1 DTO no expone movimiento manual creado");
+      assertSame(dtoManual.origen_tipo, "manual", "F3E3E1 DTO expone origen_tipo");
+      assertSame(dtoManual.origen_id, null, "F3E3E1 DTO expone origen_id NULL");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockProvenanceBackfillDemostrableF3E3E1() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    const movRecepcion = await runSql(dbPath, `
+      INSERT INTO movimientos_stock
+        (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
+      VALUES (11, 'ingreso', 5, 0, 5, 'Recepcion demostrable F3E3E1', 'test', '2026-08-20', '10:00:00')
+    `);
+    const movReversa = await runSql(dbPath, `
+      INSERT INTO movimientos_stock
+        (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
+      VALUES (11, 'egreso', 5, 5, 0, 'Reversa demostrable F3E3E1', 'test', '2026-08-20', '11:00:00')
+    `);
+    const movSinVinculo = await runSql(dbPath, `
+      INSERT INTO movimientos_stock
+        (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
+      VALUES (11, 'ingreso', 5, 0, 5, 'Recepcion de compra #texto no basta', 'test', '2026-08-20', '12:00:00')
+    `);
+    const recepcion = await runSql(dbPath, `
+      INSERT INTO compra_recepciones
+        (compra_id, fecha, hora, usuario, estado, idempotency_key, created_at)
+      VALUES (999001, '2026-08-20', '10:00:00', 'test', 'registrada', 'f3e3e1-backfill', datetime('now'))
+    `);
+    await runSql(dbPath, `
+      INSERT INTO compra_recepcion_items
+        (recepcion_id, compra_item_id, producto_id, cantidad_recibida, unidad_snapshot, movimiento_stock_id, created_at)
+      VALUES (?, 999001, 11, 5, 'un', ?, datetime('now'))
+    `, [recepcion.lastID, movRecepcion.lastID]);
+    await runSql(dbPath, `
+      INSERT INTO compra_recepcion_items
+        (recepcion_id, compra_item_id, producto_id, cantidad_recibida, unidad_snapshot, movimiento_stock_reversa_id, created_at)
+      VALUES (?, 999002, 11, 5, 'un', ?, datetime('now'))
+    `, [recepcion.lastID, movReversa.lastID]);
+
+    await withServer(dbPath, async () => {
+      const rows = await allSql(dbPath, "SELECT id, origen_tipo, origen_id FROM movimientos_stock WHERE id IN (?, ?, ?) ORDER BY id", [movRecepcion.lastID, movReversa.lastID, movSinVinculo.lastID]);
+      const porId = new Map(rows.map((row) => [Number(row.id), row]));
+      assertSame(porId.get(movRecepcion.lastID).origen_tipo, "compra_recepcion", "F3E3E1 backfill marca recepcion demostrable");
+      assertEqual(Number(porId.get(movRecepcion.lastID).origen_id), Number(recepcion.lastID), "F3E3E1 backfill usa recepcion_id demostrable");
+      assertSame(porId.get(movReversa.lastID).origen_tipo, "reversa_recepcion", "F3E3E1 backfill marca reversa demostrable");
+      assertEqual(Number(porId.get(movReversa.lastID).origen_id), Number(recepcion.lastID), "F3E3E1 backfill reversa usa recepcion_id demostrable");
+      assertSame(porId.get(movSinVinculo.lastID).origen_tipo, null, "F3E3E1 backfill no inventa provenance por motivo");
+      assertSame(porId.get(movSinVinculo.lastID).origen_id, null, "F3E3E1 backfill no inventa origen_id");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockMovimientoManualIdempotenteF3E3E1() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E3E1 Manual Cat ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `F3E3E1 Manual Producto ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3E3E1",
+        stock: 0,
+        maneja_stock: true
+      });
+      const payload = {
+        tipo_movimiento: "ingreso",
+        cantidad: 10,
+        motivo: "Ingreso manual idempotente F3E3E1",
+        idempotency_key: "f3e3e1-manual-idempotente"
+      };
+      const primero = await requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, payload, token);
+      if (!primero.response.ok) throw new Error(`F3E3E1 manual primero fallo: ${primero.data?.message || primero.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 10, "F3E3E1 manual suma stock una vez");
+
+      const replay = await requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, payload, token);
+      assertEqual(replay.response.status, 200, "F3E3E1 replay manual responde 200");
+      assertEqual(replay.data.idempotent_replay, true, "F3E3E1 replay manual marca idempotent_replay");
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 10, "F3E3E1 replay no vuelve a sumar stock");
+      const movimientos = await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock WHERE idempotency_key = ?", [payload.idempotency_key]);
+      assertEqual(Number(movimientos[0].total), 1, "F3E3E1 replay no duplica movimiento");
+
+      const conflicto = await requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, { ...payload, cantidad: 11 }, token);
+      assertEqual(conflicto.response.status, 409, "F3E3E1 misma key con payload distinto responde 409");
+      assertSame(conflicto.data.code, "IDEMPOTENCY_KEY_CONFLICT", "F3E3E1 conflicto devuelve codigo estructurado");
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 10, "F3E3E1 conflicto no muta stock");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockMovimientoManualConcurrenteMismaKeyF3E3E1b() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E3E1b Concurrente Cat ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `F3E3E1b Concurrente Producto ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3E3E1b",
+        stock: 50,
+        maneja_stock: true
+      });
+      const payload = {
+        tipo_movimiento: "ingreso",
+        cantidad: 5,
+        motivo: "Ingreso concurrente misma key F3E3E1b",
+        idempotency_key: "f3e3e1b-concurrente-misma-key"
+      };
+
+      const [a, b] = await Promise.all([
+        requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, payload, token),
+        requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, payload, token)
+      ]);
+
+      assertEqual(a.response.status, 200, "F3E3E1b misma key concurrente A responde 200");
+      assertEqual(b.response.status, 200, "F3E3E1b misma key concurrente B responde 200");
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 55, "F3E3E1b misma key concurrente suma una sola vez");
+      const movimientos = await allSql(
+        dbPath,
+        "SELECT COUNT(*) AS total FROM movimientos_stock WHERE origen_tipo = 'manual' AND idempotency_key = ?",
+        [payload.idempotency_key]
+      );
+      assertEqual(Number(movimientos[0].total), 1, "F3E3E1b misma key concurrente crea un solo movimiento");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockMovimientoManualConcurrenteKeysDistintasF3E3E1b() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E3E1b Keys Cat ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `F3E3E1b Keys Producto ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3E3E1b",
+        stock: 50,
+        maneja_stock: true
+      });
+      const payloadA = {
+        tipo_movimiento: "ingreso",
+        cantidad: 5,
+        motivo: "Ingreso concurrente key A F3E3E1b",
+        idempotency_key: "f3e3e1b-concurrente-key-a"
+      };
+      const payloadB = {
+        tipo_movimiento: "ingreso",
+        cantidad: 7,
+        motivo: "Ingreso concurrente key B F3E3E1b",
+        idempotency_key: "f3e3e1b-concurrente-key-b"
+      };
+
+      const [a, b] = await Promise.all([
+        requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, payloadA, token),
+        requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, payloadB, token)
+      ]);
+
+      if (!a.response.ok) throw new Error(`F3E3E1b key A fallo: ${a.data?.message || a.response.status}`);
+      if (!b.response.ok) throw new Error(`F3E3E1b key B fallo: ${b.data?.message || b.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 62, "F3E3E1b keys distintas concurrentes preservan ambos ingresos");
+
+      const movimientos = await allSql(
+        dbPath,
+        `SELECT cantidad, stock_anterior, stock_nuevo
+         FROM movimientos_stock
+         WHERE origen_tipo = 'manual' AND idempotency_key IN (?, ?)
+         ORDER BY id ASC`,
+        [payloadA.idempotency_key, payloadB.idempotency_key]
+      );
+      assertEqual(movimientos.length, 2, "F3E3E1b keys distintas crean dos movimientos");
+      assertApprox(movimientos[0].stock_anterior, 50, "F3E3E1b primer movimiento parte del stock inicial");
+      assertApprox(movimientos[1].stock_anterior, movimientos[0].stock_nuevo, "F3E3E1b segundo movimiento ve stock actualizado");
+      assertApprox(movimientos[1].stock_nuevo, 62, "F3E3E1b secuencia serializada termina en 62");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockMovimientoManualConcurrenteMismaKeyPayloadDistintoF3E3E1b() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E3E1b Conflict Cat ${Date.now()}`, { maneja_stock: true });
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `F3E3E1b Conflict Producto ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3E3E1b",
+        stock: 50,
+        maneja_stock: true
+      });
+      const key = "f3e3e1b-concurrente-conflict";
+      const payloadA = {
+        tipo_movimiento: "ingreso",
+        cantidad: 5,
+        motivo: "Ingreso concurrente conflict F3E3E1b",
+        idempotency_key: key
+      };
+      const payloadB = {
+        ...payloadA,
+        cantidad: 7
+      };
+
+      const [a, b] = await Promise.all([
+        requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, payloadA, token),
+        requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, payloadB, token)
+      ]);
+      const statuses = [a.response.status, b.response.status].sort((x, y) => x - y).join(",");
+      assertSame(statuses, "200,409", "F3E3E1b payload distinto concurrente crea uno y rechaza otro");
+      const conflicto = [a, b].find((r) => r.response.status === 409);
+      assertSame(conflicto.data.code, "IDEMPOTENCY_KEY_CONFLICT", "F3E3E1b conflicto concurrente devuelve codigo estructurado");
+
+      const movimientos = await allSql(
+        dbPath,
+        "SELECT cantidad, stock_anterior, stock_nuevo FROM movimientos_stock WHERE origen_tipo = 'manual' AND idempotency_key = ?",
+        [key]
+      );
+      assertEqual(movimientos.length, 1, "F3E3E1b payload distinto concurrente crea un solo movimiento");
+      const cantidadGanadora = Number(movimientos[0].cantidad || 0);
+      if (![5, 7].includes(cantidadGanadora)) {
+        throw new Error(`F3E3E1b cantidad ganadora inesperada: ${cantidadGanadora}`);
+      }
+      assertApprox((await getProduct(baseUrl, token, productoId)).stock, 50 + cantidadGanadora, "F3E3E1b conflicto concurrente muta stock una sola vez");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockWarningDuplicadoManualConfirmadoF3E3E1() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 10, stockInicial: 50 });
+      const recepcion = await fx.recibir(10, "f3e3e1-warning-recepcion");
+      await runSql(dbPath, "UPDATE compra_recepciones SET fecha = date('now'), hora = time('now') WHERE id = ?", [recepcion.id]);
+      await runSql(dbPath, `UPDATE movimientos_stock
+        SET fecha = date('now'), hora = time('now')
+        WHERE id IN (SELECT movimiento_stock_id FROM compra_recepcion_items WHERE recepcion_id = ?)`, [recepcion.id]);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 60, "F3E3E1 warning: recepcion deja stock 60");
+
+      const payload = {
+        tipo_movimiento: "ingreso",
+        cantidad: 10,
+        motivo: "Ingreso posible duplicado F3E3E1",
+        proveedor_id: fx.proveedor.id,
+        idempotency_key: "f3e3e1-warning-manual"
+      };
+      const advertencia = await requestJson(baseUrl, "POST", `/productos/${fx.productoId}/movimientos-stock`, payload, token);
+      assertEqual(advertencia.response.status, 409, "F3E3E1 posible duplicado responde 409");
+      assertSame(advertencia.data.code, "POSSIBLE_DUPLICATE_STOCK_INGRESS", "F3E3E1 warning devuelve codigo estructurado");
+      assertEqual(Number(advertencia.data.candidate?.recepcion_id), Number(recepcion.id), "F3E3E1 warning identifica recepcion candidata");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 60, "F3E3E1 warning no muta stock");
+      const antesConfirmar = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock WHERE idempotency_key = ?", [payload.idempotency_key]))[0].total;
+      assertEqual(Number(antesConfirmar), 0, "F3E3E1 warning no crea movimiento");
+
+      const confirmado = await requestJson(baseUrl, "POST", `/productos/${fx.productoId}/movimientos-stock`, { ...payload, confirmar_posible_duplicado: true }, token);
+      if (!confirmado.response.ok) throw new Error(`F3E3E1 confirmacion fallo: ${confirmado.data?.message || confirmado.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 70, "F3E3E1 confirmacion registra ingreso manual legitimo");
+      const manual = (await allSql(dbPath, "SELECT origen_tipo, origen_id FROM movimientos_stock WHERE idempotency_key = ?", [payload.idempotency_key]))[0];
+      assertSame(manual.origen_tipo, "manual", "F3E3E1 confirmado queda como movimiento manual");
+      assertSame(manual.origen_id, null, "F3E3E1 confirmado no se convierte en recepcion");
+
+      const replayConfirmado = await requestJson(baseUrl, "POST", `/productos/${fx.productoId}/movimientos-stock`, { ...payload, confirmar_posible_duplicado: true }, token);
+      assertEqual(replayConfirmado.response.status, 200, "F3E3E1 replay confirmado responde 200");
+      assertEqual(replayConfirmado.data.idempotent_replay, true, "F3E3E1 replay confirmado no crea otra operacion");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 70, "F3E3E1 replay confirmado no vuelve a sumar");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockManualNoReducePendienteRecepcionF3E3E1() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 10, stockInicial: 0 });
+      const pendienteAntes = await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token);
+      const itemAntes = pendienteAntes.data.find((p) => Number(p.compra_item_id) === Number(fx.item.id));
+      if (!itemAntes) throw new Error("F3E3E1 pendiente inicial no encontrado");
+      assertApprox(itemAntes.cantidad_pendiente, 10, "F3E3E1 pendiente antes = 10");
+
+      const manual = await requestJson(baseUrl, "POST", `/productos/${fx.productoId}/movimientos-stock`, {
+        tipo_movimiento: "ingreso",
+        cantidad: 10,
+        motivo: "Ingreso manual no resuelve pendiente F3E3E1",
+        idempotency_key: "f3e3e1-pendiente-manual",
+        confirmar_posible_duplicado: true
+      }, token);
+      if (!manual.response.ok) throw new Error(`F3E3E1 manual pendiente fallo: ${manual.data?.message || manual.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 10, "F3E3E1 manual suma stock");
+
+      const pendienteDespues = await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token);
+      const itemDespues = pendienteDespues.data.find((p) => Number(p.compra_item_id) === Number(fx.item.id));
+      if (!itemDespues) throw new Error("F3E3E1 pendiente debe seguir visible tras movimiento manual");
+      assertApprox(itemDespues.cantidad_pendiente, 10, "F3E3E1 movimiento manual no reduce pendiente documental");
+
+      const recepcion = await fx.recibir(10, "f3e3e1-pendiente-recepcion");
+      if (!recepcion.id) throw new Error("F3E3E1 recepcion documental no registrada");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 20, "F3E3E1 recepcion posterior suma stock aparte");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockWarningDuplicadoNoCandidatosF3E3E1() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fxCantidad = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 10, stockInicial: 0 });
+      const recepcionCantidad = await fxCantidad.recibir(10, "f3e3e1-no-candidato-cantidad");
+      await runSql(dbPath, "UPDATE compra_recepciones SET fecha = date('now'), hora = time('now') WHERE id = ?", [recepcionCantidad.id]);
+      await runSql(dbPath, `UPDATE movimientos_stock
+        SET fecha = date('now'), hora = time('now')
+        WHERE id IN (SELECT movimiento_stock_id FROM compra_recepcion_items WHERE recepcion_id = ?)`, [recepcionCantidad.id]);
+      const cantidadDistinta = await requestJson(baseUrl, "POST", `/productos/${fxCantidad.productoId}/movimientos-stock`, {
+        tipo_movimiento: "ingreso",
+        cantidad: 9,
+        motivo: "Cantidad distinta F3E3E1",
+        idempotency_key: "f3e3e1-no-candidato-cantidad"
+      }, token);
+      if (!cantidadDistinta.response.ok) throw new Error(`F3E3E1 cantidad distinta no debe advertir: ${cantidadDistinta.data?.message || cantidadDistinta.response.status}`);
+
+      const fxVieja = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 10, stockInicial: 0 });
+      const recepcionVieja = await fxVieja.recibir(10, "f3e3e1-no-candidato-vieja");
+      await runSql(dbPath, "UPDATE compra_recepciones SET fecha = '2026-01-01', hora = '08:00:00' WHERE id = ?", [recepcionVieja.id]);
+      const vieja = await requestJson(baseUrl, "POST", `/productos/${fxVieja.productoId}/movimientos-stock`, {
+        tipo_movimiento: "ingreso",
+        cantidad: 10,
+        motivo: "Recepcion vieja F3E3E1",
+        idempotency_key: "f3e3e1-no-candidato-vieja"
+      }, token);
+      if (!vieja.response.ok) throw new Error(`F3E3E1 recepcion vieja no debe advertir: ${vieja.data?.message || vieja.response.status}`);
+
+      const fxRevertida = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 10, stockInicial: 0 });
+      const recepcionRevertida = await fxRevertida.recibir(10, "f3e3e1-no-candidato-revertida");
+      await runSql(dbPath, "UPDATE compra_recepciones SET fecha = date('now'), hora = time('now') WHERE id = ?", [recepcionRevertida.id]);
+      await runSql(dbPath, `UPDATE movimientos_stock
+        SET fecha = date('now'), hora = time('now')
+        WHERE id IN (SELECT movimiento_stock_id FROM compra_recepcion_items WHERE recepcion_id = ?)`, [recepcionRevertida.id]);
+      const reversa = await fxRevertida.revertirDesdeStock(recepcionRevertida.id);
+      if (!reversa.response.ok) throw new Error(`F3E3E1 reversa para no candidato fallo: ${reversa.data?.message || reversa.response.status}`);
+      const revertida = await requestJson(baseUrl, "POST", `/productos/${fxRevertida.productoId}/movimientos-stock`, {
+        tipo_movimiento: "ingreso",
+        cantidad: 10,
+        motivo: "Recepcion revertida F3E3E1",
+        idempotency_key: "f3e3e1-no-candidato-revertida"
+      }, token);
+      if (!revertida.response.ok) throw new Error(`F3E3E1 recepcion revertida no debe advertir: ${revertida.data?.message || revertida.response.status}`);
+
+      const fxOtro = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 10, stockInicial: 0 });
+      const recepcionOtro = await fxOtro.recibir(10, "f3e3e1-no-candidato-otro-producto");
+      await runSql(dbPath, "UPDATE compra_recepciones SET fecha = date('now'), hora = time('now') WHERE id = ?", [recepcionOtro.id]);
+      await runSql(dbPath, `UPDATE movimientos_stock
+        SET fecha = date('now'), hora = time('now')
+        WHERE id IN (SELECT movimiento_stock_id FROM compra_recepcion_items WHERE recepcion_id = ?)`, [recepcionOtro.id]);
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E3E1 Otro Cat ${Date.now()}`, { maneja_stock: true });
+      const otroProductoId = await crearProducto(baseUrl, token, {
+        nombre: `F3E3E1 Otro Producto ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3E3E1",
+        stock: 0,
+        maneja_stock: true
+      });
+      const otroProducto = await requestJson(baseUrl, "POST", `/productos/${otroProductoId}/movimientos-stock`, {
+        tipo_movimiento: "ingreso",
+        cantidad: 10,
+        motivo: "Otro producto F3E3E1",
+        idempotency_key: "f3e3e1-no-candidato-otro-producto"
+      }, token);
+      if (!otroProducto.response.ok) throw new Error(`F3E3E1 otro producto no debe advertir: ${otroProducto.data?.message || otroProducto.response.status}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function recibirCompraDesdeStockF3E3E3(baseUrl, token, itemId, cantidad, key, confirmar = false) {
+  return requestJson(baseUrl, "POST", `/stock/compras-pendientes/${itemId}/recibir`, {
+    modo: "modificar",
+    cantidad_recibida: cantidad,
+    idempotency_key: key,
+    ...(confirmar ? { confirmar_posible_duplicado: true } : {})
+  }, token);
+}
+
+async function crearAjusteIngresoF3E3E3(baseUrl, token, productoId, cantidad, suffix) {
+  return crearAjustePendienteStock(baseUrl, token, {
+    producto_id: productoId,
+    tipo_movimiento: "ingreso",
+    cantidad,
+    motivo: `Ingreso informado F3E3E3 ${suffix}`
+  });
+}
+
+async function aprobarAjusteIngresoF3E3E3(baseUrl, token, ajusteId, cantidad, confirmar = false) {
+  return requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajusteId}/aprobar`, {
+    cantidad_aprobada: cantidad,
+    tipo_movimiento_aprobado: "ingreso",
+    observaciones_admin: "Aprobacion F3E3E3",
+    ...(confirmar ? { confirmar_posible_duplicado: true } : {})
+  }, token);
+}
+
+async function registrarManualF3E3E3(baseUrl, token, productoId, cantidad, key, confirmar = false) {
+  return requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, {
+    tipo_movimiento: "ingreso",
+    cantidad,
+    motivo: `Ingreso manual F3E3E3 ${key}`,
+    idempotency_key: key,
+    ...(confirmar ? { confirmar_posible_duplicado: true } : {})
+  }, token);
+}
+
+function assertWarningIngresoDuplicado(result, message) {
+  assertEqual(result.response.status, 409, message);
+  assertSame(result.data?.code, "POSSIBLE_DUPLICATE_STOCK_INGRESS", `${message}: codigo`);
+}
+
+async function testStockDedupBidireccionalCasoUsuarioF3E3E3() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 4, stockInicial: 50 });
+
+      const manual = await registrarManualF3E3E3(baseUrl, token, fx.productoId, 4, "f3e3e3-caso-usuario-manual");
+      if (!manual.response.ok) throw new Error(`F3E3E3 caso usuario manual fallo: ${manual.data?.message || manual.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 54, "F3E3E3 caso usuario manual suma +4");
+
+      const ajuste = await crearAjusteIngresoF3E3E3(baseUrl, token, fx.productoId, 4, "caso-usuario");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 54, "F3E3E3 propuesta reducida no mueve stock");
+      const aprobarSinConfirmar = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajuste.id}/aprobar`, {
+        cantidad_aprobada: 4,
+        tipo_movimiento_aprobado: "ingreso",
+        observaciones_admin: ""
+      }, token);
+      assertWarningIngresoDuplicado(aprobarSinConfirmar, "F3E3E3 aprobar informado tras manual advierte");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 54, "F3E3E3 warning de ajuste no muta stock");
+      const ajustePendiente = (await allSql(dbPath, "SELECT estado FROM stock_ajustes_pendientes WHERE id = ?", [ajuste.id]))[0];
+      assertSame(ajustePendiente.estado, "pendiente", "F3E3E3 warning mantiene ajuste pendiente");
+
+      const aprobarConfirmado = await aprobarAjusteIngresoF3E3E3(baseUrl, token, ajuste.id, 4, true);
+      if (!aprobarConfirmado.response.ok) throw new Error(`F3E3E3 aprobar confirmado fallo: ${aprobarConfirmado.data?.message || aprobarConfirmado.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 58, "F3E3E3 confirmar ajuste suma +4");
+      const movAjuste = (await allSql(dbPath, "SELECT origen_tipo, origen_id FROM movimientos_stock WHERE id = ?", [aprobarConfirmado.data.ajuste.movimiento_stock_id]))[0];
+      assertSame(movAjuste.origen_tipo, "ajuste_informado", "F3E3E3 ajuste confirmado queda con provenance ajuste_informado");
+      assertEqual(Number(movAjuste.origen_id), Number(ajuste.id), "F3E3E3 ajuste confirmado guarda origen_id");
+
+      const recibirSinConfirmar = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 4, "f3e3e3-caso-usuario-recepcion", false);
+      assertWarningIngresoDuplicado(recibirSinConfirmar, "F3E3E3 recibir tras manual/ajuste advierte");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 58, "F3E3E3 warning de recepcion no muta stock");
+      let pendiente = (await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token)).data.find((p) => Number(p.compra_item_id) === Number(fx.item.id));
+      assertApprox(pendiente.cantidad_pendiente, 4, "F3E3E3 warning mantiene recepcion pendiente");
+
+      const recibirConfirmado = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 4, "f3e3e3-caso-usuario-recepcion", true);
+      if (!recibirConfirmado.response.ok) throw new Error(`F3E3E3 recepcion confirmada fallo: ${recibirConfirmado.data?.message || recibirConfirmado.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 62, "F3E3E3 stock final consciente X+12");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockDedupBidireccionalMatrizF3E3E3() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+
+      const escenario = async (nombre) => crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, {
+        cantidadComprada: 3,
+        stockInicial: 20,
+        concepto: `Compra matriz ${nombre} ${Date.now()}`
+      });
+
+      let fx = await escenario("recepcion-manual");
+      let r = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 3, "f3e3e3-matriz-rm-r", false);
+      if (!r.response.ok) throw new Error(`F3E3E3 matriz recepcion inicial fallo: ${r.data?.message || r.response.status}`);
+      let w = await registrarManualF3E3E3(baseUrl, token, fx.productoId, 3, "f3e3e3-matriz-rm-m");
+      assertWarningIngresoDuplicado(w, "F3E3E3 recepcion -> manual");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 23, "F3E3E3 recepcion -> manual no muta antes de confirmar");
+
+      fx = await escenario("manual-recepcion");
+      r = await registrarManualF3E3E3(baseUrl, token, fx.productoId, 3, "f3e3e3-matriz-mr-m");
+      if (!r.response.ok) throw new Error(`F3E3E3 matriz manual inicial fallo: ${r.data?.message || r.response.status}`);
+      w = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 3, "f3e3e3-matriz-mr-r", false);
+      assertWarningIngresoDuplicado(w, "F3E3E3 manual -> recepcion");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 23, "F3E3E3 manual -> recepcion no muta antes de confirmar");
+
+      fx = await escenario("recepcion-informado");
+      r = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 3, "f3e3e3-matriz-ri-r", false);
+      if (!r.response.ok) throw new Error(`F3E3E3 matriz recepcion inicial RI fallo: ${r.data?.message || r.response.status}`);
+      let ajuste = await crearAjusteIngresoF3E3E3(baseUrl, token, fx.productoId, 3, "matriz-ri");
+      w = await aprobarAjusteIngresoF3E3E3(baseUrl, token, ajuste.id, 3, false);
+      assertWarningIngresoDuplicado(w, "F3E3E3 recepcion -> informado");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 23, "F3E3E3 recepcion -> informado no muta antes de confirmar");
+
+      fx = await escenario("informado-recepcion");
+      ajuste = await crearAjusteIngresoF3E3E3(baseUrl, token, fx.productoId, 3, "matriz-ir");
+      r = await aprobarAjusteIngresoF3E3E3(baseUrl, token, ajuste.id, 3, false);
+      if (!r.response.ok) throw new Error(`F3E3E3 matriz informado inicial fallo: ${r.data?.message || r.response.status}`);
+      w = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 3, "f3e3e3-matriz-ir-r", false);
+      assertWarningIngresoDuplicado(w, "F3E3E3 informado -> recepcion");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 23, "F3E3E3 informado -> recepcion no muta antes de confirmar");
+
+      fx = await escenario("manual-informado");
+      r = await registrarManualF3E3E3(baseUrl, token, fx.productoId, 3, "f3e3e3-matriz-mi-m");
+      if (!r.response.ok) throw new Error(`F3E3E3 matriz manual MI fallo: ${r.data?.message || r.response.status}`);
+      ajuste = await crearAjusteIngresoF3E3E3(baseUrl, token, fx.productoId, 3, "matriz-mi");
+      w = await aprobarAjusteIngresoF3E3E3(baseUrl, token, ajuste.id, 3, false);
+      assertWarningIngresoDuplicado(w, "F3E3E3 manual -> informado");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 23, "F3E3E3 manual -> informado no muta antes de confirmar");
+
+      fx = await escenario("informado-manual");
+      ajuste = await crearAjusteIngresoF3E3E3(baseUrl, token, fx.productoId, 3, "matriz-im");
+      r = await aprobarAjusteIngresoF3E3E3(baseUrl, token, ajuste.id, 3, false);
+      if (!r.response.ok) throw new Error(`F3E3E3 matriz informado IM fallo: ${r.data?.message || r.response.status}`);
+      w = await registrarManualF3E3E3(baseUrl, token, fx.productoId, 3, "f3e3e3-matriz-im-m");
+      assertWarningIngresoDuplicado(w, "F3E3E3 informado -> manual");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 23, "F3E3E3 informado -> manual no muta antes de confirmar");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockDedupControlesF3E3E3() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+
+      const fxManual = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 99, stockInicial: 0 });
+      const manual1 = await registrarManualF3E3E3(baseUrl, token, fxManual.productoId, 3, "f3e3e3-control-manual-1");
+      const manual2 = await registrarManualF3E3E3(baseUrl, token, fxManual.productoId, 3, "f3e3e3-control-manual-2");
+      if (!manual1.response.ok || !manual2.response.ok) throw new Error("F3E3E3 manual -> manual no debe advertir por cross-origin");
+      assertApprox((await getProduct(baseUrl, token, fxManual.productoId)).stock, 6, "F3E3E3 manual -> manual suma ambos ingresos legitimos");
+
+      const fxCantidad = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 4, stockInicial: 0 });
+      let r = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fxCantidad.item.id, 4, "f3e3e3-control-cantidad-r", false);
+      if (!r.response.ok) throw new Error(`F3E3E3 control cantidad recepcion fallo: ${r.data?.message || r.response.status}`);
+      const distinta = await registrarManualF3E3E3(baseUrl, token, fxCantidad.productoId, 3, "f3e3e3-control-cantidad-m");
+      if (!distinta.response.ok) throw new Error(`F3E3E3 cantidad distinta no debe advertir: ${distinta.data?.message || distinta.response.status}`);
+
+      const fxVieja = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 3, stockInicial: 0 });
+      r = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fxVieja.item.id, 3, "f3e3e3-control-vieja-r", false);
+      if (!r.response.ok) throw new Error(`F3E3E3 control vieja recepcion fallo: ${r.data?.message || r.response.status}`);
+      await runSql(dbPath, "UPDATE movimientos_stock SET fecha = '2026-01-01', hora = '08:00:00' WHERE origen_tipo = 'compra_recepcion' AND producto_id = ?", [fxVieja.productoId]);
+      const vieja = await registrarManualF3E3E3(baseUrl, token, fxVieja.productoId, 3, "f3e3e3-control-vieja-m");
+      if (!vieja.response.ok) throw new Error(`F3E3E3 ventana vencida no debe advertir: ${vieja.data?.message || vieja.response.status}`);
+
+      const fxRevertida = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 3, stockInicial: 0 });
+      r = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fxRevertida.item.id, 3, "f3e3e3-control-revertida-r", false);
+      if (!r.response.ok) throw new Error(`F3E3E3 control revertida recepcion fallo: ${r.data?.message || r.response.status}`);
+      const reversa = await fxRevertida.revertirDesdeStock(r.data.recepcion.id);
+      if (!reversa.response.ok) throw new Error(`F3E3E3 control revertida reversa fallo: ${reversa.data?.message || reversa.response.status}`);
+      const trasReversa = await registrarManualF3E3E3(baseUrl, token, fxRevertida.productoId, 3, "f3e3e3-control-revertida-m");
+      if (!trasReversa.response.ok) throw new Error(`F3E3E3 recepcion revertida no debe advertir: ${trasReversa.data?.message || trasReversa.response.status}`);
+
+      const fxOtro = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 3, stockInicial: 0 });
+      r = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fxOtro.item.id, 3, "f3e3e3-control-otro-r", false);
+      if (!r.response.ok) throw new Error(`F3E3E3 control otro recepcion fallo: ${r.data?.message || r.response.status}`);
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E3E3 Otro ${Date.now()}`, { maneja_stock: true });
+      const otroProductoId = await crearProducto(baseUrl, token, {
+        nombre: `F3E3E3 Otro ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3E3E3",
+        stock: 0,
+        maneja_stock: true
+      });
+      const otro = await registrarManualF3E3E3(baseUrl, token, otroProductoId, 3, "f3e3e3-control-otro-m");
+      if (!otro.response.ok) throw new Error(`F3E3E3 otro producto no debe advertir: ${otro.data?.message || otro.response.status}`);
+
+      const fxPropuesta = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 3, stockInicial: 0 });
+      await crearAjusteIngresoF3E3E3(baseUrl, token, fxPropuesta.productoId, 3, "control-pendiente");
+      const manualConPropuestaPendiente = await registrarManualF3E3E3(baseUrl, token, fxPropuesta.productoId, 3, "f3e3e3-control-propuesta-pendiente");
+      if (!manualConPropuestaPendiente.response.ok) throw new Error(`F3E3E3 propuesta pendiente no debe advertir: ${manualConPropuestaPendiente.data?.message || manualConPropuestaPendiente.response.status}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockDedupConcurrenciaManualRecepcionF3E3E3() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 3, stockInicial: 50 });
+      const [manual, recepcion] = await Promise.all([
+        registrarManualF3E3E3(baseUrl, token, fx.productoId, 3, "f3e3e3-concurrente-manual"),
+        recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 3, "f3e3e3-concurrente-recepcion", false)
+      ]);
+      const statuses = [manual.response.status, recepcion.response.status].sort((a, b) => a - b).join(",");
+      assertSame(statuses, "200,409", "F3E3E3 concurrencia manual+recepcion aplica uno y advierte el otro");
+      const advertido = [manual, recepcion].find((r) => r.response.status === 409);
+      assertSame(advertido.data.code, "POSSIBLE_DUPLICATE_STOCK_INGRESS", "F3E3E3 concurrencia devuelve warning estructurado");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 53, "F3E3E3 concurrencia no aplica ambos silenciosamente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function recibirCompraYaIngresadoF3E3E4(baseUrl, token, itemId, cantidad, key, movimientoId) {
+  return requestJson(baseUrl, "POST", `/stock/compras-pendientes/${itemId}/recibir`, {
+    modo: "modificar",
+    cantidad_recibida: cantidad,
+    idempotency_key: key,
+    usar_ingreso_existente: true,
+    movimiento_stock_existente_id: movimientoId
+  }, token);
+}
+
+async function testStockRecepcionYaIngresadoManualF3E3E4() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 3, stockInicial: 10 });
+      const financieroAntes = await snapshotFinancieroCompraF3E3D1(baseUrl, token, dbPath, fx.compraId);
+      const manual = await registrarManualF3E3E3(baseUrl, token, fx.productoId, 3, "f3e3e4-manual-ya-ingresado");
+      if (!manual.response.ok) throw new Error(`F3E3E4 manual previo fallo: ${manual.data?.message || manual.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 13, "F3E3E4 manual suma +3");
+
+      const advertencia = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 3, "f3e3e4-manual-warning", false);
+      assertWarningIngresoDuplicado(advertencia, "F3E3E4 recepcion detecta manual previo");
+      const yaIngresado = await recibirCompraYaIngresadoF3E3E4(baseUrl, token, fx.item.id, 3, "f3e3e4-manual-ya-ingresado-recepcion", advertencia.data.candidate.movimiento_id);
+      if (!yaIngresado.response.ok) throw new Error(`F3E3E4 ya ingresado manual fallo: ${yaIngresado.data?.message || yaIngresado.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 13, "F3E3E4 ya ingresado no duplica stock");
+      const pendiente = (await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token)).data.find((p) => Number(p.compra_item_id) === Number(fx.item.id));
+      if (pendiente) assertApprox(pendiente.cantidad_pendiente, 0, "F3E3E4 ya ingresado cierra pendiente");
+      const cri = (await allSql(dbPath, "SELECT modo_stock, movimiento_stock_id, movimiento_stock_vinculado_id FROM compra_recepcion_items WHERE recepcion_id = ?", [yaIngresado.data.recepcion.id]))[0];
+      assertSame(cri.modo_stock, "vinculado_existente", "F3E3E4 recepcion queda como vinculada");
+      assertSame(cri.movimiento_stock_id, null, "F3E3E4 recepcion vinculada no genera movimiento_stock_id");
+      assertEqual(Number(cri.movimiento_stock_vinculado_id), Number(advertencia.data.candidate.movimiento_id), "F3E3E4 vincula movimiento manual existente");
+      const movManual = (await allSql(dbPath, "SELECT origen_tipo, origen_id FROM movimientos_stock WHERE id = ?", [cri.movimiento_stock_vinculado_id]))[0];
+      assertSame(movManual.origen_tipo, "manual", "F3E3E4 no reescribe provenance manual");
+      assertSame(movManual.origen_id, null, "F3E3E4 no inventa origen_id manual");
+      const financieroDespues = await snapshotFinancieroCompraF3E3D1(baseUrl, token, dbPath, fx.compraId);
+      assertSame(JSON.stringify(financieroDespues), JSON.stringify(financieroAntes), "F3E3E4 ya ingresado no toca finanzas de compra");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockRecepcionYaIngresadoAjusteYReversaF3E3E4() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 3, stockInicial: 10 });
+      const ajuste = await crearAjusteIngresoF3E3E3(baseUrl, token, fx.productoId, 3, "f3e3e4-ajuste");
+      const aprobado = await aprobarAjusteIngresoF3E3E3(baseUrl, token, ajuste.id, 3, false);
+      if (!aprobado.response.ok) throw new Error(`F3E3E4 ajuste previo fallo: ${aprobado.data?.message || aprobado.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 13, "F3E3E4 ajuste informado suma +3");
+
+      const advertencia = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 3, "f3e3e4-ajuste-warning", false);
+      assertWarningIngresoDuplicado(advertencia, "F3E3E4 recepcion detecta ajuste informado previo");
+      const yaIngresado = await recibirCompraYaIngresadoF3E3E4(baseUrl, token, fx.item.id, 3, "f3e3e4-ajuste-ya-ingresado", advertencia.data.candidate.movimiento_id);
+      if (!yaIngresado.response.ok) throw new Error(`F3E3E4 ya ingresado ajuste fallo: ${yaIngresado.data?.message || yaIngresado.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 13, "F3E3E4 ya ingresado con ajuste no mueve stock");
+      const cri = (await allSql(dbPath, "SELECT modo_stock, movimiento_stock_id, movimiento_stock_vinculado_id FROM compra_recepcion_items WHERE recepcion_id = ?", [yaIngresado.data.recepcion.id]))[0];
+      assertSame(cri.modo_stock, "vinculado_existente", "F3E3E4 ajuste vinculado queda documentado");
+      assertEqual(Number(cri.movimiento_stock_vinculado_id), Number(aprobado.data.ajuste.movimiento_stock_id), "F3E3E4 vincula movimiento de ajuste");
+      const reversa = await fx.revertirDesdeStock(yaIngresado.data.recepcion.id);
+      if (!reversa.response.ok) throw new Error(`F3E3E4 reversa vinculada fallo: ${reversa.data?.message || reversa.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 13, "F3E3E4 revertir recepcion vinculada no cambia stock");
+      const pendiente = (await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token)).data.find((p) => Number(p.compra_item_id) === Number(fx.item.id));
+      assertApprox(pendiente.cantidad_pendiente, 3, "F3E3E4 revertir vinculada reabre pendiente");
+      const ajusteDb = (await allSql(dbPath, "SELECT estado, movimiento_stock_id FROM stock_ajustes_pendientes WHERE id = ?", [ajuste.id]))[0];
+      assertSame(ajusteDb.estado, "aprobado", "F3E3E4 revertir recepcion no reabre ajuste informado");
+      assertEqual(Number(ajusteDb.movimiento_stock_id), Number(aprobado.data.ajuste.movimiento_stock_id), "F3E3E4 conserva movimiento original de ajuste");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockRecepcionYaIngresadoParcialEIdempotenciaF3E3E4() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 10, stockInicial: 10 });
+      const manual = await registrarManualF3E3E3(baseUrl, token, fx.productoId, 3, "f3e3e4-parcial-manual");
+      if (!manual.response.ok) throw new Error(`F3E3E4 parcial manual fallo: ${manual.data?.message || manual.response.status}`);
+      const advertencia = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 3, "f3e3e4-parcial-warning", false);
+      assertWarningIngresoDuplicado(advertencia, "F3E3E4 parcial detecta manual");
+      const key = "f3e3e4-parcial-ya-ingresado";
+      const parcial = await recibirCompraYaIngresadoF3E3E4(baseUrl, token, fx.item.id, 3, key, advertencia.data.candidate.movimiento_id);
+      if (!parcial.response.ok) throw new Error(`F3E3E4 parcial ya ingresado fallo: ${parcial.data?.message || parcial.response.status}`);
+      const replay = await recibirCompraYaIngresadoF3E3E4(baseUrl, token, fx.item.id, 3, key, advertencia.data.candidate.movimiento_id);
+      if (!replay.response.ok) throw new Error(`F3E3E4 replay ya ingresado fallo: ${replay.data?.message || replay.response.status}`);
+      if (!replay.data.idempotent_replay) throw new Error("F3E3E4 replay debe ser idempotente");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 13, "F3E3E4 parcial/replay no duplica stock");
+      let pendiente = (await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token)).data.find((p) => Number(p.compra_item_id) === Number(fx.item.id));
+      assertApprox(pendiente.cantidad_pendiente, 7, "F3E3E4 parcial deja pendiente 7");
+      const recibirResto = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 7, "f3e3e4-parcial-resto", false);
+      if (!recibirResto.response.ok) throw new Error(`F3E3E4 recibir resto fallo: ${recibirResto.data?.message || recibirResto.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 20, "F3E3E4 recibir resto suma solo 7");
+      pendiente = (await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token)).data.find((p) => Number(p.compra_item_id) === Number(fx.item.id));
+      if (pendiente) assertApprox(pendiente.cantidad_pendiente, 0, "F3E3E4 pendiente final cero");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockRecepcionYaIngresadoMovimientoInvalidoF3E3E4() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 3, stockInicial: 10 });
+      const categoriaId = await crearCategoria(baseUrl, token, `F3E3E4 Invalido ${Date.now()}`, { maneja_stock: true });
+      const otroProductoId = await crearProducto(baseUrl, token, {
+        nombre: `F3E3E4 Invalido ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "F3E3E4",
+        stock: 10,
+        maneja_stock: true
+      });
+      const otroManual = await registrarManualF3E3E3(baseUrl, token, otroProductoId, 3, "f3e3e4-otro-producto");
+      if (!otroManual.response.ok) throw new Error(`F3E3E4 otro manual fallo: ${otroManual.data?.message || otroManual.response.status}`);
+      const otro = await recibirCompraYaIngresadoF3E3E4(baseUrl, token, fx.item.id, 3, "f3e3e4-invalido-otro", otroManual.data.movimiento_id);
+      assertEqual(otro.response.status, 400, "F3E3E4 rechaza movimiento de otro producto");
+
+      const normal = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 3, "f3e3e4-invalido-recepcion-normal", true);
+      if (!normal.response.ok) throw new Error(`F3E3E4 recepcion normal fallo: ${normal.data?.message || normal.response.status}`);
+      const criNormal = (await allSql(dbPath, "SELECT movimiento_stock_id FROM compra_recepcion_items WHERE recepcion_id = ?", [normal.data.recepcion.id]))[0];
+      const fx2 = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 3, stockInicial: 10 });
+      const movimientoRecepcion = await recibirCompraYaIngresadoF3E3E4(baseUrl, token, fx2.item.id, 3, "f3e3e4-invalido-origen-recepcion", criNormal.movimiento_stock_id);
+      assertEqual(movimientoRecepcion.response.status, 400, "F3E3E4 rechaza movimiento de origen compra_recepcion");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockRecepcionYaIngresadoUiF3E3E4() {
+  const html = fs.readFileSync(path.join(ROOT, "frontend", "productos.html"), "utf8");
+  if (!html.includes('id="yaIngresadoDedupIngreso"')) throw new Error("F3E3E4 UI debe tener boton Ya ingresado");
+  const recepcion = extraerFuncionMinificada(html, "resolverRecepcionCompraPendiente");
+  if (!recepcion.includes("permitirYaIngresado:true")) throw new Error("F3E3E4 UI debe habilitar Ya ingresado solo en recepcion");
+  if (!recepcion.includes("usar_ingreso_existente:true")) throw new Error("F3E3E4 UI debe reenviar usar_ingreso_existente");
+  if (!recepcion.includes("movimiento_stock_existente_id:data?.candidate?.movimiento_id")) throw new Error("F3E3E4 UI debe usar movimiento candidato original");
+  const manual = extraerFuncionMinificada(html, "registrarMovimiento");
+  const informado = extraerFuncionMinificada(html, "confirmarRevisionAjustePendiente");
+  if (manual.includes("permitirYaIngresado:true")) throw new Error("F3E3E4 UI no debe mostrar Ya ingresado en manual");
+  if (informado.includes("permitirYaIngresado:true")) throw new Error("F3E3E4 UI no debe mostrar Ya ingresado en ajuste informado");
+  if (html.includes("Recepci&oacute;n de compra")) throw new Error("F3E3E4 UI no debe renderizar entidad HTML literal en origen");
+  if (!html.includes("#modalPosibleIngresoDuplicado{z-index:130")) throw new Error("F3E3E4 UI debe conservar stacking de modal dedup");
+}
+
+async function revertirMovimientoStockF3E3E5(baseUrl, token, movimientoId) {
+  return requestJson(baseUrl, "POST", `/stock/movimientos/${movimientoId}/revertir`, {
+    motivo: `F3E3E5 revertir movimiento ${movimientoId}`
+  }, token);
+}
+
+async function testStockRevertirMovimientoManualF3E3E5() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 3, stockInicial: 50 });
+      const manual = await registrarManualF3E3E3(baseUrl, token, fx.productoId, 3, "f3e3e5-manual-simple");
+      if (!manual.response.ok) throw new Error(`F3E3E5 manual fallo: ${manual.data?.message || manual.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 53, "F3E3E5 manual suma +3");
+
+      const reversa = await revertirMovimientoStockF3E3E5(baseUrl, token, manual.data.movimiento_id);
+      if (!reversa.response.ok) throw new Error(`F3E3E5 reversa manual fallo: ${reversa.data?.message || reversa.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 50, "F3E3E5 reversa manual compensa stock");
+      const original = (await allSql(dbPath, "SELECT movimiento_stock_reversa_id FROM movimientos_stock WHERE id = ?", [manual.data.movimiento_id]))[0];
+      if (!Number(original.movimiento_stock_reversa_id)) throw new Error("F3E3E5 original debe quedar marcado con movimiento_stock_reversa_id");
+      const movimientosDto = await fx.movimientosProducto();
+      const originalDto = movimientosDto.find((m) => Number(m.id) === Number(manual.data.movimiento_id));
+      if (!originalDto) throw new Error("F3E3E5 DTO debe exponer movimiento manual original");
+      assertSame(originalDto.movimiento_stock_reversa_id, null, "F3E3E5 DTO conserva movimiento_stock_reversa_id para recepcion");
+      assertEqual(Number(originalDto.movimiento_reversa_id), Number(original.movimiento_stock_reversa_id), "F3E3E5 DTO expone reversa generica separada");
+      const compensatorio = (await allSql(dbPath, "SELECT origen_tipo, origen_id, tipo_movimiento, stock_anterior, stock_nuevo FROM movimientos_stock WHERE id = ?", [original.movimiento_stock_reversa_id]))[0];
+      assertSame(compensatorio.origen_tipo, "reversa_movimiento", "F3E3E5 compensatorio usa provenance estructurada");
+      assertEqual(Number(compensatorio.origen_id), Number(manual.data.movimiento_id), "F3E3E5 compensatorio apunta al original");
+      assertSame(compensatorio.tipo_movimiento, "egreso", "F3E3E5 compensatorio es egreso");
+
+      const replay = await revertirMovimientoStockF3E3E5(baseUrl, token, manual.data.movimiento_id);
+      if (!replay.response.ok) throw new Error(`F3E3E5 replay reversa fallo: ${replay.data?.message || replay.response.status}`);
+      if (!replay.data.idempotent_replay) throw new Error("F3E3E5 doble reversa debe ser replay idempotente");
+      const totalCompensatorios = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock WHERE origen_tipo = 'reversa_movimiento' AND origen_id = ?", [manual.data.movimiento_id]))[0].total;
+      assertEqual(Number(totalCompensatorios), 1, "F3E3E5 replay no duplica compensatorio");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockRevertirMovimientoManualCompensatorioRealF3E3E5() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 10, stockInicial: 50 });
+      const manual = await registrarManualF3E3E3(baseUrl, token, fx.productoId, 10, "f3e3e5-manual-compensatorio");
+      if (!manual.response.ok) throw new Error(`F3E3E5 manual +10 fallo: ${manual.data?.message || manual.response.status}`);
+      const egreso = await requestJson(baseUrl, "POST", `/productos/${fx.productoId}/movimientos-stock`, {
+        tipo_movimiento: "egreso",
+        cantidad: 3,
+        motivo: "f3e3e5 egreso posterior",
+        idempotency_key: "f3e3e5-egreso-posterior"
+      }, token);
+      if (!egreso.response.ok) throw new Error(`F3E3E5 egreso posterior fallo: ${egreso.data?.message || egreso.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 57, "F3E3E5 stock previo a reversa es 57");
+      const reversa = await revertirMovimientoStockF3E3E5(baseUrl, token, manual.data.movimiento_id);
+      if (!reversa.response.ok) throw new Error(`F3E3E5 reversa compensatoria fallo: ${reversa.data?.message || reversa.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 47, "F3E3E5 reversa compensa desde stock actual, no restaura snapshot");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockRevertirMovimientoAjusteInformadoF3E3E5() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 3, stockInicial: 50 });
+      const ajuste = await crearAjusteIngresoF3E3E3(baseUrl, token, fx.productoId, 3, "f3e3e5-ajuste");
+      const aprobado = await aprobarAjusteIngresoF3E3E3(baseUrl, token, ajuste.id, 3, false);
+      if (!aprobado.response.ok) throw new Error(`F3E3E5 aprobar ajuste fallo: ${aprobado.data?.message || aprobado.response.status}`);
+      const reversa = await revertirMovimientoStockF3E3E5(baseUrl, token, aprobado.data.ajuste.movimiento_stock_id);
+      if (!reversa.response.ok) throw new Error(`F3E3E5 reversa ajuste fallo: ${reversa.data?.message || reversa.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 50, "F3E3E5 reversa ajuste compensa stock");
+      const ajusteDb = (await allSql(dbPath, "SELECT estado, movimiento_stock_id FROM stock_ajustes_pendientes WHERE id = ?", [ajuste.id]))[0];
+      assertSame(ajusteDb.estado, "aprobado", "F3E3E5 reversa ajuste no vuelve a pendiente");
+      assertEqual(Number(ajusteDb.movimiento_stock_id), Number(aprobado.data.ajuste.movimiento_stock_id), "F3E3E5 ajuste conserva movimiento original");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockRevertirMovimientoStockInsuficienteF3E3E5() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 10, stockInicial: 0 });
+      const manual = await registrarManualF3E3E3(baseUrl, token, fx.productoId, 10, "f3e3e5-insuficiente");
+      if (!manual.response.ok) throw new Error(`F3E3E5 manual insuficiente fallo: ${manual.data?.message || manual.response.status}`);
+      const egreso = await requestJson(baseUrl, "POST", `/productos/${fx.productoId}/movimientos-stock`, {
+        tipo_movimiento: "egreso",
+        cantidad: 8,
+        motivo: "f3e3e5 consume stock",
+        idempotency_key: "f3e3e5-insuficiente-egreso"
+      }, token);
+      if (!egreso.response.ok) throw new Error(`F3E3E5 egreso insuficiente fallo: ${egreso.data?.message || egreso.response.status}`);
+      const reversa = await revertirMovimientoStockF3E3E5(baseUrl, token, manual.data.movimiento_id);
+      assertEqual(reversa.response.status, 409, "F3E3E5 stock insuficiente rechaza reversa");
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 2, "F3E3E5 rechazo no muta stock");
+      const totalCompensatorios = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM movimientos_stock WHERE origen_tipo = 'reversa_movimiento' AND origen_id = ?", [manual.data.movimiento_id]))[0].total;
+      assertEqual(Number(totalCompensatorios), 0, "F3E3E5 stock insuficiente no deja compensatorio");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockRevertirMovimientoYaIngresadoReabreRecepcionF3E3E5() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 3, stockInicial: 50 });
+      const manual = await registrarManualF3E3E3(baseUrl, token, fx.productoId, 3, "f3e3e5-vinculado");
+      if (!manual.response.ok) throw new Error(`F3E3E5 manual vinculado fallo: ${manual.data?.message || manual.response.status}`);
+      const advertencia = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 3, "f3e3e5-vinculado-warning", false);
+      assertWarningIngresoDuplicado(advertencia, "F3E3E5 recepcion detecta manual");
+      const yaIngresado = await recibirCompraYaIngresadoF3E3E4(baseUrl, token, fx.item.id, 3, "f3e3e5-vinculado-ya", advertencia.data.candidate.movimiento_id);
+      if (!yaIngresado.response.ok) throw new Error(`F3E3E5 ya ingresado fallo: ${yaIngresado.data?.message || yaIngresado.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 53, "F3E3E5 ya ingresado no duplica stock");
+
+      const reversa = await revertirMovimientoStockF3E3E5(baseUrl, token, manual.data.movimiento_id);
+      if (!reversa.response.ok) throw new Error(`F3E3E5 reversa movimiento vinculado fallo: ${reversa.data?.message || reversa.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 50, "F3E3E5 revertir movimiento vinculado compensa stock");
+      const recepcion = (await allSql(dbPath, "SELECT estado, motivo_anulacion FROM compra_recepciones WHERE id = ?", [yaIngresado.data.recepcion.id]))[0];
+      assertSame(recepcion.estado, "anulada", "F3E3E5 recepcion vinculada queda anulada documentalmente");
+      const pendiente = (await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token)).data.find((p) => Number(p.compra_item_id) === Number(fx.item.id));
+      assertApprox(pendiente.cantidad_pendiente, 3, "F3E3E5 revertir movimiento vinculado reabre pendiente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockRevertirRecepcionVinculadaNoRevierteMovimientoF3E3E5() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 3, stockInicial: 50 });
+      const manual = await registrarManualF3E3E3(baseUrl, token, fx.productoId, 3, "f3e3e5-doc-vinculada");
+      if (!manual.response.ok) throw new Error(`F3E3E5 manual doc fallo: ${manual.data?.message || manual.response.status}`);
+      const advertencia = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 3, "f3e3e5-doc-warning", false);
+      const yaIngresado = await recibirCompraYaIngresadoF3E3E4(baseUrl, token, fx.item.id, 3, "f3e3e5-doc-ya", advertencia.data.candidate.movimiento_id);
+      if (!yaIngresado.response.ok) throw new Error(`F3E3E5 ya ingresado doc fallo: ${yaIngresado.data?.message || yaIngresado.response.status}`);
+      const reversaDocumental = await fx.revertirDesdeStock(yaIngresado.data.recepcion.id);
+      if (!reversaDocumental.response.ok) throw new Error(`F3E3E5 reversa documental fallo: ${reversaDocumental.data?.message || reversaDocumental.response.status}`);
+      assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 53, "F3E3E5 reversa documental vinculada no toca stock");
+      const original = (await allSql(dbPath, "SELECT movimiento_stock_reversa_id FROM movimientos_stock WHERE id = ?", [manual.data.movimiento_id]))[0];
+      assertSame(original.movimiento_stock_reversa_id, null, "F3E3E5 reversa documental no revierte movimiento manual");
+      const pendiente = (await requestJson(baseUrl, "GET", "/stock/compras-pendientes", null, token)).data.find((p) => Number(p.compra_item_id) === Number(fx.item.id));
+      assertApprox(pendiente.cantidad_pendiente, 3, "F3E3E5 reversa documental reabre pendiente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockRevertirMovimientoNoReversibleYPermisosF3E3E5() {
+  const dbPath = tempDbPath();
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  try {
+    await prepareDb(dbPath, resetOperationalDataStatements());
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const fx = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 3, stockInicial: 50 });
+      const recepcion = await recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 3, "f3e3e5-normal-recepcion", false);
+      if (!recepcion.response.ok) throw new Error(`F3E3E5 recepcion normal fallo: ${recepcion.data?.message || recepcion.response.status}`);
+      const cri = (await allSql(dbPath, "SELECT movimiento_stock_id FROM compra_recepcion_items WHERE recepcion_id = ?", [recepcion.data.recepcion.id]))[0];
+      const noReversible = await revertirMovimientoStockF3E3E5(baseUrl, token, cri.movimiento_stock_id);
+      assertEqual(noReversible.response.status, 400, "F3E3E5 compra_recepcion no usa reversa generica de movimiento");
+
+      await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador F3E3E5", usuario: "colaborador_f3e3e5", password: "colaborador123",
+        confirmar_password: "colaborador123", rol: "colaborador", activo: true
+      }, token);
+      const colaboradorToken = await login(baseUrl, "colaborador_f3e3e5", "colaborador123");
+      await prepareDb(dbPath, [setVistaOperativaStatement("stock", "colaborador", "reducida")]);
+      const fxPermiso = await crearCompraRecepcionFixtureF3E3D1(baseUrl, token, dbPath, { cantidadComprada: 3, stockInicial: 50 });
+      const manual = await registrarManualF3E3E3(baseUrl, token, fxPermiso.productoId, 3, "f3e3e5-permiso");
+      if (!manual.response.ok) throw new Error(`F3E3E5 manual permiso fallo: ${manual.data?.message || manual.response.status}`);
+      const reducido = await revertirMovimientoStockF3E3E5(baseUrl, colaboradorToken, manual.data.movimiento_id);
+      assertEqual(reducido.response.status, 403, "F3E3E5 Stock reducida no puede revertir movimiento");
+      await prepareDb(dbPath, [setVistaOperativaStatement("stock", "colaborador", "completa")]);
+      const completo = await revertirMovimientoStockF3E3E5(baseUrl, colaboradorToken, manual.data.movimiento_id);
+      if (!completo.response.ok) throw new Error(`F3E3E5 Stock completa debe revertir movimiento: ${completo.data?.message || completo.response.status}`);
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testStockRevertirMovimientoUiF3E3E5() {
+  const html = fs.readFileSync(path.join(ROOT, "frontend", "productos.html"), "utf8");
+  if (!html.includes('id="modalRevertirMovimientoStock"')) throw new Error("F3E3E5 UI debe tener modal de reversa de movimiento");
+  if (!html.includes("/stock/movimientos/${m.id}/revertir")) throw new Error("F3E3E5 UI debe llamar endpoint Stock de reversa de movimiento");
+  if (!html.includes("Revertir movimiento")) throw new Error("F3E3E5 UI debe mostrar etiqueta Revertir movimiento");
+  if (!html.includes("puedeRevertirMovimientoStock")) throw new Error("F3E3E5 UI debe filtrar movimientos reversibles");
+  if (!html.includes('["manual","ajuste_informado"].includes(origen)')) throw new Error("F3E3E5 UI debe limitar a manual/ajuste_informado");
+  if (!html.includes("!Number(m?.movimiento_reversa_id||0)")) throw new Error("F3E3E5 UI debe ocultar boton si ya fue revertido");
+  if (!html.includes("#modalRevertirRecepcion,#modalRevertirMovimientoStock{z-index:120")) throw new Error("F3E3E5 UI debe conservar stacking de modal de reversa");
+  const inicioConfirmar = html.indexOf('$("confirmarRevertirMovimientoStock").onclick');
+  if (inicioConfirmar === -1) throw new Error("F3E3E5 UI debe tener handler de confirmar reversa movimiento");
+  const srcConfirmar = html.slice(inicioConfirmar, inicioConfirmar + 1200);
+  if (srcConfirmar.includes("confirm(") || srcConfirmar.includes("alert(")) throw new Error("F3E3E5 UI no debe usar confirm/alert nativo para reversa de movimiento");
+}
+
+async function testStockProvenanceUiMovimientoManualF3E3E1() {
+  const html = fs.readFileSync(path.join(ROOT, "frontend", "productos.html"), "utf8");
+  const registrar = extraerFuncionMinificada(html, "registrarMovimiento");
+  if (!registrar.includes("idempotency_key:movimientoManualIdempotencyKey")) {
+    throw new Error("F3E3E1-UI: el movimiento manual debe enviar idempotency_key");
+  }
+  if (!registrar.includes("POSSIBLE_DUPLICATE_STOCK_INGRESS")) {
+    throw new Error("F3E3E1-UI: debe manejar el warning estructurado de posible duplicado");
+  }
+  if (!registrar.includes("confirmar_posible_duplicado:true")) {
+    throw new Error("F3E3E1-UI: la confirmacion debe reenviar confirmar_posible_duplicado=true");
+  }
+  if (!html.includes('id="modalPosibleIngresoDuplicado"')) {
+    throw new Error("F3E3E3a-UI: debe existir una modal global de dedup");
+  }
+  if (!html.includes("#modalPosibleIngresoDuplicado{z-index:130")) {
+    throw new Error("F3E3E3a-UI: la modal dedup debe tener stacking superior explicito");
+  }
+  if (!html.includes("solicitarConfirmacionIngresoDuplicado")) {
+    throw new Error("F3E3E3a-UI: los warnings dedup deben abrir la modal reusable");
+  }
+  const aprobar = extraerFuncionMinificada(html, "confirmarRevisionAjustePendiente");
+  if (!aprobar.includes("solicitarConfirmacionIngresoDuplicado") || !aprobar.includes("Aprobar igualmente")) {
+    throw new Error("F3E3E3a-UI: aprobar ajuste informado debe abrir modal dedup contextual");
+  }
+  const recibir = extraerFuncionMinificada(html, "resolverRecepcionCompraPendiente");
+  if (!recibir.includes("solicitarConfirmacionIngresoDuplicado") || !recibir.includes("Recibir igualmente")) {
+    throw new Error("F3E3E3a-UI: recepcion debe abrir modal dedup contextual");
+  }
+  if ([registrar, aprobar, recibir].some((fn) => /window\.confirm\s*\(|\bconfirm\s*\(/.test(fn))) {
+    throw new Error("F3E3E3a-UI: el warning dedup no debe usar confirm()/alert()");
+  }
+  const detalle = extraerFuncionMinificada(html, "abrirDetalle");
+  if (!detalle.includes("textoOrigenMovimiento")) {
+    throw new Error("F3E3E1-UI: movimientos debe renderizar provenance estructurada");
+  }
+  if (/motivo\.includes|motivo\.match|motivo\.indexOf/.test(detalle)) {
+    throw new Error("F3E3E1-UI: provenance no debe parsear motivo");
   }
 }
 
@@ -19345,9 +20457,20 @@ async function testRecetaSnapshotGuardadoEnVenta() {
 
 (async () => {
   const testFilter = String(process.env.TEST_FILTER || "").trim();
+  const testVerbose = String(process.env.TEST_VERBOSE || "").trim() === "1";
+  let testSequence = 0;
   const _run = async (fn) => {
     if (testFilter && !fn.name.includes(testFilter)) return;
-    await fn();
+    const sequence = ++testSequence;
+    const startedAt = Date.now();
+    if (testVerbose) console.log(`[TEST START] #${sequence} ${new Date(startedAt).toISOString()} ${fn.name}`);
+    try {
+      await fn();
+      if (testVerbose) console.log(`[TEST PASS] #${sequence} ${fn.name} ${Date.now() - startedAt}ms`);
+    } catch (error) {
+      if (testVerbose) console.error(`[TEST FAIL] #${sequence} ${fn.name} ${Date.now() - startedAt}ms`);
+      throw error;
+    }
   };
   await _run(testRecetaSinStockBloqueaMovimientoManual);
   await _run(testRecetaSinStockComoComponenteNoDescuentaDirecto);
@@ -19456,6 +20579,33 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testStockReversaRecepcionStockActualEInsuficienteF3E3D1);
   await _run(testStockReversaRecepcionPermisosFinanzasYCostoF3E3D1);
   await _run(testStockReversaRecepcionUiRefrescaMovimientosF3E3D1);
+  await _run(testStockProvenanceRecepcionReversaManualF3E3E1);
+  await _run(testStockProvenanceBackfillDemostrableF3E3E1);
+  await _run(testStockMovimientoManualIdempotenteF3E3E1);
+  await _run(testStockMovimientoManualConcurrenteMismaKeyF3E3E1b);
+  await _run(testStockMovimientoManualConcurrenteKeysDistintasF3E3E1b);
+  await _run(testStockMovimientoManualConcurrenteMismaKeyPayloadDistintoF3E3E1b);
+  await _run(testStockWarningDuplicadoManualConfirmadoF3E3E1);
+  await _run(testStockManualNoReducePendienteRecepcionF3E3E1);
+  await _run(testStockWarningDuplicadoNoCandidatosF3E3E1);
+  await _run(testStockDedupBidireccionalCasoUsuarioF3E3E3);
+  await _run(testStockDedupBidireccionalMatrizF3E3E3);
+  await _run(testStockDedupControlesF3E3E3);
+  await _run(testStockDedupConcurrenciaManualRecepcionF3E3E3);
+  await _run(testStockRecepcionYaIngresadoManualF3E3E4);
+  await _run(testStockRecepcionYaIngresadoAjusteYReversaF3E3E4);
+  await _run(testStockRecepcionYaIngresadoParcialEIdempotenciaF3E3E4);
+  await _run(testStockRecepcionYaIngresadoMovimientoInvalidoF3E3E4);
+  await _run(testStockRecepcionYaIngresadoUiF3E3E4);
+  await _run(testStockRevertirMovimientoManualF3E3E5);
+  await _run(testStockRevertirMovimientoManualCompensatorioRealF3E3E5);
+  await _run(testStockRevertirMovimientoAjusteInformadoF3E3E5);
+  await _run(testStockRevertirMovimientoStockInsuficienteF3E3E5);
+  await _run(testStockRevertirMovimientoYaIngresadoReabreRecepcionF3E3E5);
+  await _run(testStockRevertirRecepcionVinculadaNoRevierteMovimientoF3E3E5);
+  await _run(testStockRevertirMovimientoNoReversibleYPermisosF3E3E5);
+  await _run(testStockRevertirMovimientoUiF3E3E5);
+  await _run(testStockProvenanceUiMovimientoManualF3E3E1);
   await _run(testCompraCierreEstadosF3E1);
   await _run(testCargarCompraUiF3E2CorregidoExiste);
   await _run(testCargarCompraUxSimpleOperativaF3E2);

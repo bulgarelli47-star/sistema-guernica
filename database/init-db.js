@@ -133,10 +133,19 @@ async function initDatabase() {
         usuario TEXT,
         fecha TEXT NOT NULL,
         hora TEXT NOT NULL,
+        origen_tipo TEXT,
+        origen_id INTEGER,
+        idempotency_key TEXT,
+        movimiento_stock_reversa_id INTEGER,
         FOREIGN KEY (producto_id) REFERENCES productos(id),
-        FOREIGN KEY (proveedor_id) REFERENCES proveedores(id)
+        FOREIGN KEY (proveedor_id) REFERENCES proveedores(id),
+        FOREIGN KEY (movimiento_stock_reversa_id) REFERENCES movimientos_stock(id)
       )
     `);
+    await ensureColumn("movimientos_stock", "origen_tipo", "TEXT");
+    await ensureColumn("movimientos_stock", "origen_id", "INTEGER");
+    await ensureColumn("movimientos_stock", "idempotency_key", "TEXT");
+    await ensureColumn("movimientos_stock", "movimiento_stock_reversa_id", "INTEGER");
 
     await runQuery(`
       CREATE TABLE IF NOT EXISTS historial_productos (
@@ -565,7 +574,9 @@ async function initDatabase() {
         producto_id INTEGER NOT NULL,
         cantidad_recibida REAL NOT NULL,
         unidad_snapshot TEXT,
+        modo_stock TEXT NOT NULL DEFAULT 'generado',
         movimiento_stock_id INTEGER,
+        movimiento_stock_vinculado_id INTEGER,
         movimiento_stock_reversa_id INTEGER,
         precio_proveedor_anterior_snapshot REAL,
         fecha_precio_proveedor_anterior_snapshot TEXT,
@@ -575,9 +586,12 @@ async function initDatabase() {
         FOREIGN KEY (compra_item_id) REFERENCES compra_items(id),
         FOREIGN KEY (producto_id) REFERENCES productos(id),
         FOREIGN KEY (movimiento_stock_id) REFERENCES movimientos_stock(id),
+        FOREIGN KEY (movimiento_stock_vinculado_id) REFERENCES movimientos_stock(id),
         FOREIGN KEY (movimiento_stock_reversa_id) REFERENCES movimientos_stock(id)
       )
     `);
+    await ensureColumn("compra_recepcion_items", "modo_stock", "TEXT NOT NULL DEFAULT 'generado'");
+    await ensureColumn("compra_recepcion_items", "movimiento_stock_vinculado_id", "INTEGER");
     await ensureColumn("compra_recepcion_items", "movimiento_stock_reversa_id", "INTEGER");
     await ensureColumn("compra_recepcion_items", "precio_proveedor_anterior_snapshot", "REAL");
     await ensureColumn("compra_recepcion_items", "fecha_precio_proveedor_anterior_snapshot", "TEXT");
@@ -755,6 +769,13 @@ async function initDatabase() {
     await runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_caja ON ventas(caja_id)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_detalle_ventas_venta ON detalle_ventas(venta_id)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_producto ON movimientos_stock(producto_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_origen ON movimientos_stock(origen_tipo, origen_id)");
+    await runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_reversa ON movimientos_stock(movimiento_stock_reversa_id)");
+    await runQuery(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_movimientos_stock_manual_idempotency
+      ON movimientos_stock(origen_tipo, idempotency_key)
+      WHERE idempotency_key IS NOT NULL AND idempotency_key != ''
+    `);
     await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_movimientos_caja ON caja_movimientos(caja_id)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_traslados_caja ON caja_traslados_internos(caja_id)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_traslados_arqueo ON caja_traslados_internos(arqueo_id)");
@@ -792,6 +813,38 @@ async function initDatabase() {
     await runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_compra_recepciones_idempotency ON compra_recepciones(compra_id, idempotency_key)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_recepcion_items_recepcion ON compra_recepcion_items(recepcion_id)");
     await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_recepcion_items_item ON compra_recepcion_items(compra_item_id)");
+    await runQuery(`
+      UPDATE movimientos_stock
+      SET origen_tipo = 'compra_recepcion',
+          origen_id = (
+            SELECT cri.recepcion_id
+            FROM compra_recepcion_items cri
+            WHERE cri.movimiento_stock_id = movimientos_stock.id
+            LIMIT 1
+          )
+      WHERE origen_tipo IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM compra_recepcion_items cri
+          WHERE cri.movimiento_stock_id = movimientos_stock.id
+        )
+    `);
+    await runQuery(`
+      UPDATE movimientos_stock
+      SET origen_tipo = 'reversa_recepcion',
+          origen_id = (
+            SELECT cri.recepcion_id
+            FROM compra_recepcion_items cri
+            WHERE cri.movimiento_stock_reversa_id = movimientos_stock.id
+            LIMIT 1
+          )
+      WHERE origen_tipo IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM compra_recepcion_items cri
+          WHERE cri.movimiento_stock_reversa_id = movimientos_stock.id
+        )
+    `);
 
     for (const regla of CAJA_DENOMINACIONES_ARQUEO_DEFAULTS) {
       const existente = await getQuery(

@@ -577,7 +577,9 @@ async function ensureComprasSchema() {
       producto_id INTEGER NOT NULL,
       cantidad_recibida REAL NOT NULL,
       unidad_snapshot TEXT,
+      modo_stock TEXT NOT NULL DEFAULT 'generado',
       movimiento_stock_id INTEGER,
+      movimiento_stock_vinculado_id INTEGER,
       movimiento_stock_reversa_id INTEGER,
       precio_proveedor_anterior_snapshot REAL,
       fecha_precio_proveedor_anterior_snapshot TEXT,
@@ -587,9 +589,12 @@ async function ensureComprasSchema() {
       FOREIGN KEY (compra_item_id) REFERENCES compra_items(id),
       FOREIGN KEY (producto_id) REFERENCES productos(id),
       FOREIGN KEY (movimiento_stock_id) REFERENCES movimientos_stock(id),
+      FOREIGN KEY (movimiento_stock_vinculado_id) REFERENCES movimientos_stock(id),
       FOREIGN KEY (movimiento_stock_reversa_id) REFERENCES movimientos_stock(id)
     )
   `);
+  await ensureColumn("compra_recepcion_items", "modo_stock", "TEXT NOT NULL DEFAULT 'generado'");
+  await ensureColumn("compra_recepcion_items", "movimiento_stock_vinculado_id", "INTEGER");
   await ensureColumn("compra_recepcion_items", "movimiento_stock_reversa_id", "INTEGER");
   await ensureColumn("compra_recepcion_items", "precio_proveedor_anterior_snapshot", "REAL");
   await ensureColumn("compra_recepcion_items", "fecha_precio_proveedor_anterior_snapshot", "TEXT");
@@ -719,6 +724,52 @@ async function ensureVentaFiscalSnapshotSchema() {
   await ensureColumn("detalle_ventas", "iva_venta_alicuota_snapshot", "REAL");
   await ensureColumn("detalle_ventas", "subtotal_neto_snapshot", "REAL");
   await ensureColumn("detalle_ventas", "iva_monto_snapshot", "REAL");
+}
+
+async function ensureMovimientosStockProvenanceSchema() {
+  await ensureColumn("movimientos_stock", "origen_tipo", "TEXT");
+  await ensureColumn("movimientos_stock", "origen_id", "INTEGER");
+  await ensureColumn("movimientos_stock", "idempotency_key", "TEXT");
+  await ensureColumn("movimientos_stock", "movimiento_stock_reversa_id", "INTEGER");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_origen ON movimientos_stock(origen_tipo, origen_id)");
+  await runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_reversa ON movimientos_stock(movimiento_stock_reversa_id)");
+  await runQuery(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_movimientos_stock_manual_idempotency
+    ON movimientos_stock(origen_tipo, idempotency_key)
+    WHERE idempotency_key IS NOT NULL AND idempotency_key != ''
+  `);
+  await runQuery(`
+    UPDATE movimientos_stock
+    SET origen_tipo = 'compra_recepcion',
+        origen_id = (
+          SELECT cri.recepcion_id
+          FROM compra_recepcion_items cri
+          WHERE cri.movimiento_stock_id = movimientos_stock.id
+          LIMIT 1
+        )
+    WHERE origen_tipo IS NULL
+      AND EXISTS (
+        SELECT 1
+        FROM compra_recepcion_items cri
+        WHERE cri.movimiento_stock_id = movimientos_stock.id
+      )
+  `);
+  await runQuery(`
+    UPDATE movimientos_stock
+    SET origen_tipo = 'reversa_recepcion',
+        origen_id = (
+          SELECT cri.recepcion_id
+          FROM compra_recepcion_items cri
+          WHERE cri.movimiento_stock_reversa_id = movimientos_stock.id
+          LIMIT 1
+        )
+    WHERE origen_tipo IS NULL
+      AND EXISTS (
+        SELECT 1
+        FROM compra_recepcion_items cri
+        WHERE cri.movimiento_stock_reversa_id = movimientos_stock.id
+      )
+  `);
 }
 
 async function ensureProductosSchema() {
@@ -3401,12 +3452,194 @@ app.post("/productos/:id/proveedores", async (req, res) => {
   }
 });
 
+const TIPOS_STOCK_MANUAL_POSITIVOS = new Set(["ingreso", "ajuste positivo", "devolucion"]);
+const ORIGENES_INGRESO_FISICO_EXTERNO = new Set(["manual", "ajuste_informado", "compra_recepcion"]);
+const ORIGENES_MOVIMIENTO_STOCK_REVERSIBLES = new Set(["manual", "ajuste_informado"]);
+const CODIGO_POSIBLE_DUPLICADO_INGRESO_STOCK = "POSSIBLE_DUPLICATE_STOCK_INGRESS";
+const STOCK_DUPLICADO_RECEPCION_TOLERANCIA = 0.0001;
+const STOCK_DUPLICADO_INGRESO_VENTANA_HORAS = 24;
+
+function normalizarPayloadMovimientoStockManual({ productoId, tipoMovimiento, cantidad, motivo, proveedorId }) {
+  return {
+    producto_id: Number(productoId),
+    tipo_movimiento: String(tipoMovimiento || "").trim().toLowerCase(),
+    cantidad: roundCompra4(Number(cantidad || 0)),
+    motivo: String(motivo || "").trim(),
+    proveedor_id: proveedorId ? Number(proveedorId) : null
+  };
+}
+
+function movimientoStockManualPayloadIgual(movimiento, payload) {
+  const existente = normalizarPayloadMovimientoStockManual({
+    productoId: movimiento.producto_id,
+    tipoMovimiento: movimiento.tipo_movimiento,
+    cantidad: movimiento.cantidad,
+    motivo: movimiento.motivo,
+    proveedorId: movimiento.proveedor_id
+  });
+  return existente.producto_id === payload.producto_id
+    && existente.tipo_movimiento === payload.tipo_movimiento
+    && Math.abs(existente.cantidad - payload.cantidad) < STOCK_DUPLICADO_RECEPCION_TOLERANCIA
+    && existente.motivo === payload.motivo
+    && Number(existente.proveedor_id || 0) === Number(payload.proveedor_id || 0);
+}
+
+function respuestaReplayMovimientoManual(movimiento) {
+  return {
+    message: "Movimiento ya registrado",
+    idempotent_replay: true,
+    movimiento_id: movimiento.id,
+    stock_nuevo: Number(movimiento.stock_nuevo || 0)
+  };
+}
+
+function serializarCandidatoIngresoDuplicado(row) {
+  if (!row) return null;
+  return {
+    movimiento_id: row.movimiento_id,
+    origen_tipo: row.origen_tipo,
+    origen_id: row.origen_id,
+    producto_id: row.producto_id,
+    cantidad: Number(row.cantidad || 0),
+    proveedor_id: row.proveedor_id,
+    fecha: row.fecha,
+    hora: row.hora,
+    recepcion_id: row.recepcion_id,
+    compra_id: row.compra_id,
+    compra_item_id: row.compra_item_id
+  };
+}
+
+async function buscarPosibleIngresoDuplicado({
+  productoId,
+  cantidad,
+  proveedorId = null,
+  origenTipoActual,
+  ventanaHoras = STOCK_DUPLICADO_INGRESO_VENTANA_HORAS
+}) {
+  const origen = String(origenTipoActual || "").trim();
+  if (!ORIGENES_INGRESO_FISICO_EXTERNO.has(origen)) return null;
+  const candidato = await getQuery(
+    `SELECT ms.id AS movimiento_id,
+            ms.origen_tipo,
+            ms.origen_id,
+            ms.producto_id,
+            ms.cantidad,
+            ms.proveedor_id,
+            ms.fecha,
+            ms.hora,
+            cri_orig.recepcion_id,
+            cri_orig.compra_item_id,
+            cr_orig.compra_id
+     FROM movimientos_stock ms
+     LEFT JOIN compra_recepcion_items cri_orig ON cri_orig.movimiento_stock_id = ms.id
+     LEFT JOIN compra_recepciones cr_orig ON cr_orig.id = cri_orig.recepcion_id
+     WHERE ms.producto_id = ?
+       AND ms.origen_tipo IN ('manual', 'ajuste_informado', 'compra_recepcion')
+       AND ms.origen_tipo != ?
+       AND ms.movimiento_stock_reversa_id IS NULL
+       AND COALESCE(ms.stock_nuevo, 0) > COALESCE(ms.stock_anterior, 0)
+       AND ABS(COALESCE(ms.cantidad, 0) - ?) <= ?
+       AND datetime(COALESCE(ms.fecha, date('now')) || ' ' || COALESCE(NULLIF(ms.hora, ''), '00:00:00')) >= datetime('now', ?)
+       AND (
+         ? IS NULL
+         OR ms.proveedor_id IS NULL
+         OR ms.proveedor_id = ?
+       )
+       AND (
+         ms.origen_tipo != 'compra_recepcion'
+         OR (
+           cri_orig.id IS NOT NULL
+           AND COALESCE(cr_orig.estado, 'registrada') != 'anulada'
+           AND cri_orig.movimiento_stock_reversa_id IS NULL
+         )
+       )
+     ORDER BY datetime(COALESCE(ms.fecha, date('now')) || ' ' || COALESCE(NULLIF(ms.hora, ''), '00:00:00')) DESC,
+              ms.id DESC
+     LIMIT 1`,
+    [
+      productoId,
+      origen,
+      cantidad,
+      STOCK_DUPLICADO_RECEPCION_TOLERANCIA,
+      `-${Number(ventanaHoras) || STOCK_DUPLICADO_INGRESO_VENTANA_HORAS} hours`,
+      proveedorId || null,
+      proveedorId || null
+    ]
+  );
+  return serializarCandidatoIngresoDuplicado(candidato);
+}
+
+function crearPayloadDuplicadoIngresoStock(candidato, message = "Posible ingreso duplicado: existe otro ingreso fisico reciente compatible para este producto y cantidad.") {
+  return {
+    code: CODIGO_POSIBLE_DUPLICADO_INGRESO_STOCK,
+    message,
+    candidate: serializarCandidatoIngresoDuplicado(candidato)
+  };
+}
+
+async function validarMovimientoStockVinculableARecepcion({ movimientoId, productoId, cantidad, proveedorId = null }) {
+  const movimiento = await getQuery(
+    `SELECT id, producto_id, cantidad, proveedor_id, fecha, hora, origen_tipo, origen_id,
+            stock_anterior, stock_nuevo
+     FROM movimientos_stock
+     WHERE id = ?`,
+    [Number(movimientoId || 0)]
+  );
+  if (!movimiento) throw crearErrorHttp("Movimiento de stock existente no encontrado", 404);
+  const origen = String(movimiento.origen_tipo || "").trim();
+  if (!["manual", "ajuste_informado"].includes(origen)) {
+    throw crearErrorHttp("El movimiento existente no es vinculable a una recepcion", 400);
+  }
+  if (Number(movimiento.producto_id) !== Number(productoId)) {
+    throw crearErrorHttp("El movimiento existente corresponde a otro producto", 400);
+  }
+  if (Math.abs(Number(movimiento.cantidad || 0) - Number(cantidad || 0)) > STOCK_DUPLICADO_RECEPCION_TOLERANCIA) {
+    throw crearErrorHttp("El movimiento existente no coincide con la cantidad a recibir", 400);
+  }
+  if (Number(movimiento.stock_nuevo || 0) <= Number(movimiento.stock_anterior || 0)) {
+    throw crearErrorHttp("El movimiento existente no representa un ingreso fisico", 400);
+  }
+  if (proveedorId && movimiento.proveedor_id && Number(proveedorId) !== Number(movimiento.proveedor_id)) {
+    throw crearErrorHttp("El proveedor del movimiento existente no coincide con la compra", 400);
+  }
+  const dentroVentana = await getQuery(
+    `SELECT CASE WHEN datetime(COALESCE(?, date('now')) || ' ' || COALESCE(NULLIF(?, ''), '00:00:00')) >= datetime('now', ?) THEN 1 ELSE 0 END AS ok`,
+    [movimiento.fecha, movimiento.hora, `-${STOCK_DUPLICADO_INGRESO_VENTANA_HORAS} hours`]
+  );
+  if (Number(dentroVentana?.ok || 0) !== 1) {
+    throw crearErrorHttp("El movimiento existente esta fuera de la ventana de vinculacion", 400);
+  }
+  const vinculoActivo = await getQuery(
+    `SELECT cri.id
+     FROM compra_recepcion_items cri
+     JOIN compra_recepciones cr ON cr.id = cri.recepcion_id
+     WHERE cri.movimiento_stock_vinculado_id = ?
+       AND COALESCE(cr.estado, 'registrada') != 'anulada'
+     LIMIT 1`,
+    [movimiento.id]
+  );
+  if (vinculoActivo) {
+    throw crearErrorHttp("El movimiento existente ya esta vinculado a una recepcion activa", 409);
+  }
+  return movimiento;
+}
+
+let stockIngresoFisicoQueue = Promise.resolve();
+
+function encolarIngresoFisicoStock(fn) {
+  const ejecucion = stockIngresoFisicoQueue.then(fn, fn);
+  stockIngresoFisicoQueue = ejecucion.catch(() => {});
+  return ejecucion;
+}
+
 app.post("/productos/:id/movimientos-stock", async (req, res) => {
   // F(x) Ingreso/Egreso pertenece al contrato Completo/Reducido de *Stock: la vista efectiva
   // ya se exige en el middleware global (requireServerPermissions, prefijo /productos), que
   // corre antes de llegar aca. No se repite una segunda condicion basada en
   // permisos_acciones_roles.stock_ajustar: esa doble autorizacion podia rechazar a un usuario
   // con Stock=completa configurado solo porque stock_ajustar quedo en false.
+  return encolarIngresoFisicoStock(async () => {
 
   const productoId = Number(req.params.id);
   const tipoMovimiento = String(req.body.tipo_movimiento || "").trim();
@@ -3414,40 +3647,80 @@ app.post("/productos/:id/movimientos-stock", async (req, res) => {
   const motivo = String(req.body.motivo || "").trim();
   const proveedorId = req.body.proveedor_id ? Number(req.body.proveedor_id) : null;
   const usuario = String(req.body.usuario || "admin").trim() || "admin";
+  const idempotencyKey = String(req.body.idempotency_key || "").trim();
+  const confirmarPosibleDuplicado = req.body.confirmar_posible_duplicado === true;
   const { fecha, hora } = getNowParts();
+  let transactionStarted = false;
 
   if (!tipoMovimiento || cantidad <= 0) {
     return res.status(400).json({ message: "Movimiento de stock invalido" });
   }
 
   try {
+    const payloadIdempotente = normalizarPayloadMovimientoStockManual({ productoId, tipoMovimiento, cantidad, motivo, proveedorId });
+    const esIngreso = TIPOS_STOCK_MANUAL_POSITIVOS.has(tipoMovimiento.toLowerCase());
+
+    await runQuery("BEGIN IMMEDIATE");
+    transactionStarted = true;
+
+    if (idempotencyKey) {
+      const movimientoExistente = await getQuery(
+        "SELECT * FROM movimientos_stock WHERE origen_tipo = 'manual' AND idempotency_key = ?",
+        [idempotencyKey]
+      );
+      if (movimientoExistente) {
+        await runQuery("ROLLBACK");
+        transactionStarted = false;
+        if (!movimientoStockManualPayloadIgual(movimientoExistente, payloadIdempotente)) {
+          return res.status(409).json({ code: "IDEMPOTENCY_KEY_CONFLICT", message: "La idempotency_key ya fue usada con otro payload" });
+        }
+        return res.json(respuestaReplayMovimientoManual(movimientoExistente));
+      }
+    }
+
     const producto = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
 
     if (!producto) {
+      await runQuery("ROLLBACK");
+      transactionStarted = false;
       return res.status(404).json({ message: "Producto no encontrado" });
     }
     if (Number(producto.eliminado) === 1) {
+      await runQuery("ROLLBACK");
+      transactionStarted = false;
       return res.status(400).json({ message: "No se puede registrar movimientos de stock sobre un producto archivado. Restauralo primero." });
     }
     const esCompuesto = normalizarTipoProducto(producto.tipo) === "compuesto";
     const esRecetaSinStockFisico = esCompuesto && !Number(producto.maneja_stock);
     if (esRecetaSinStockFisico) {
+      await runQuery("ROLLBACK");
+      transactionStarted = false;
       return res.status(400).json({ message: "Este producto no posee stock propio. Ajusta sus ingredientes." });
     }
 
     const stockAnterior = Number(producto.stock || 0);
-    const tiposPositivos = ["ingreso", "ajuste positivo", "devolucion"];
-    const esIngreso = tiposPositivos.includes(tipoMovimiento.toLowerCase());
+    if (esIngreso && !confirmarPosibleDuplicado) {
+      const candidato = await buscarPosibleIngresoDuplicado({
+        productoId,
+        cantidad,
+        proveedorId,
+        origenTipoActual: "manual"
+      });
+      if (candidato) {
+        await runQuery("ROLLBACK");
+        transactionStarted = false;
+        return res.status(409).json(crearPayloadDuplicadoIngresoStock(candidato));
+      }
+    }
     const stockNuevo = esIngreso ? stockAnterior + cantidad : stockAnterior - cantidad;
 
     const stockFinal = stockNuevo;
 
-    await runQuery("BEGIN TRANSACTION");
-    await runQuery(
+    const movimientoResult = await runQuery(
       `INSERT INTO movimientos_stock
-      (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, proveedor_id, usuario, fecha, hora)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [productoId, tipoMovimiento, cantidad, stockAnterior, stockFinal, motivo, proveedorId, usuario, fecha, hora]
+      (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, proveedor_id, usuario, fecha, hora, origen_tipo, origen_id, idempotency_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', NULL, ?)`,
+      [productoId, tipoMovimiento, cantidad, stockAnterior, stockFinal, motivo, proveedorId, usuario, fecha, hora, idempotencyKey || null]
     );
     await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockFinal, productoId]);
 
@@ -3472,8 +3745,8 @@ app.post("/productos/:id/movimientos-stock", async (req, res) => {
             const nuevoStockIng = Math.max(0, Number(ing.stock || 0) - consumo);
             await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [nuevoStockIng, comp.producto_id]);
             await runQuery(
-              `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
-               VALUES (?, 'egreso', ?, ?, ?, ?, ?, ?, ?)`,
+              `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora, origen_tipo, origen_id)
+               VALUES (?, 'egreso', ?, ?, ?, ?, ?, ?, ?, 'manual', NULL)`,
               [comp.producto_id, consumo, Number(ing.stock || 0), nuevoStockIng, `Consumo receta: ${producto.nombre}`, usuario, fecha, hora]
             );
           }
@@ -3506,15 +3779,33 @@ app.post("/productos/:id/movimientos-stock", async (req, res) => {
     }
     await logHistorialProducto(productoId, "stock", stockAnterior, stockNuevo, motivo || tipoMovimiento, usuario);
     await runQuery("COMMIT");
+    transactionStarted = false;
 
-    return res.json({ message: "Movimiento registrado correctamente", stock_nuevo: stockNuevo });
+    return res.json({ message: "Movimiento registrado correctamente", idempotent_replay: false, movimiento_id: movimientoResult.lastID, stock_nuevo: stockNuevo });
   } catch (error) {
-    try {
-      await runQuery("ROLLBACK");
-    } catch {}
+    if (transactionStarted) {
+      try {
+        await runQuery("ROLLBACK");
+      } catch {}
+      transactionStarted = false;
+    }
+    if (idempotencyKey && error?.code === "SQLITE_CONSTRAINT") {
+      const movimientoExistente = await getQuery(
+        "SELECT * FROM movimientos_stock WHERE origen_tipo = 'manual' AND idempotency_key = ?",
+        [idempotencyKey]
+      );
+      if (movimientoExistente) {
+        const payloadIdempotente = normalizarPayloadMovimientoStockManual({ productoId, tipoMovimiento, cantidad, motivo, proveedorId });
+        if (!movimientoStockManualPayloadIgual(movimientoExistente, payloadIdempotente)) {
+          return res.status(409).json({ code: "IDEMPOTENCY_KEY_CONFLICT", message: "La idempotency_key ya fue usada con otro payload" });
+        }
+        return res.json(respuestaReplayMovimientoManual(movimientoExistente));
+      }
+    }
     logError("Error al registrar movimiento de stock:", error);
     return res.status(500).json({ message: "Error al registrar movimiento de stock" });
   }
+  });
 });
 
 app.get("/productos/:id/movimientos-stock", async (req, res) => {
@@ -3527,19 +3818,29 @@ app.get("/productos/:id/movimientos-stock", async (req, res) => {
     // nunca es referenciado por mas de una fila de compra_recepcion_items en cada columna), asi
     // que no hay riesgo de duplicar filas del resultado.
     const movimientos = await allQuery(
-      `SELECT ms.*, p.nombre AS proveedor_nombre,
+      `SELECT ms.id, ms.producto_id, ms.tipo_movimiento, ms.cantidad, ms.stock_anterior,
+              ms.stock_nuevo, ms.motivo, ms.proveedor_id, ms.usuario, ms.fecha, ms.hora,
+              ms.origen_tipo, ms.origen_id, ms.idempotency_key,
+              ms.movimiento_stock_reversa_id AS movimiento_reversa_id,
+              p.nombre AS proveedor_nombre,
               cri_orig.recepcion_id AS recepcion_id,
               cr_orig.compra_id AS compra_id,
               cri_orig.compra_item_id AS compra_item_id,
               cr_orig.estado AS recepcion_estado,
               cri_orig.movimiento_stock_reversa_id AS movimiento_stock_reversa_id,
+              cri_orig.movimiento_stock_reversa_id AS recepcion_movimiento_stock_reversa_id,
               CASE WHEN cri_orig.id IS NOT NULL AND cri_orig.movimiento_stock_reversa_id IS NOT NULL THEN 1 ELSE 0 END AS recepcion_revertida,
+              cri_vinc.recepcion_id AS recepcion_vinculada_id,
+              cr_vinc.compra_id AS compra_vinculada_id,
+              cr_vinc.estado AS recepcion_vinculada_estado,
               CASE WHEN cri_rev.id IS NOT NULL THEN 1 ELSE 0 END AS es_reversa_recepcion
        FROM movimientos_stock ms
        LEFT JOIN proveedores p ON p.id = ms.proveedor_id
        LEFT JOIN compra_recepcion_items cri_orig ON cri_orig.movimiento_stock_id = ms.id
        LEFT JOIN compra_recepciones cr_orig ON cr_orig.id = cri_orig.recepcion_id
        LEFT JOIN compra_recepcion_items cri_rev ON cri_rev.movimiento_stock_reversa_id = ms.id
+       LEFT JOIN compra_recepcion_items cri_vinc ON cri_vinc.movimiento_stock_vinculado_id = ms.id
+       LEFT JOIN compra_recepciones cr_vinc ON cr_vinc.id = cri_vinc.recepcion_id AND COALESCE(cr_vinc.estado, 'registrada') != 'anulada'
        WHERE ms.producto_id = ?
        ORDER BY ms.id DESC`,
       [productoId]
@@ -3904,9 +4205,13 @@ app.get("/stock/compras-pendientes", async (req, res) => {
 app.post("/stock/compras-pendientes/:compraItemId/recibir", async (req, res) => {
   if (!(await requireVistaCompleta(req, res, "stock", "No tenes permisos para confirmar recepciones de compra"))) return;
 
+  return encolarIngresoFisicoStock(async () => {
   const compraItemId = Number(req.params.compraItemId);
   const modo = String(req.body.modo || "").trim().toLowerCase();
   const idempotencyKey = String(req.body.idempotency_key || "").trim();
+  const confirmarPosibleDuplicado = req.body.confirmar_posible_duplicado === true;
+  const usarIngresoExistente = req.body.usar_ingreso_existente === true || req.body.resolver_con_ingreso_existente === true;
+  const movimientoStockExistenteId = Number(req.body.movimiento_stock_existente_id || 0);
 
   if (!["aceptar", "modificar"].includes(modo)) {
     return res.status(400).json({ message: "modo invalido: debe ser 'aceptar' o 'modificar'" });
@@ -3966,20 +4271,43 @@ app.post("/stock/compras-pendientes/:compraItemId/recibir", async (req, res) => 
     }
 
     const usuario = req.usuario?.nombre || req.usuario?.usuario || "admin";
+    if (usarIngresoExistente && !movimientoStockExistenteId) {
+      return res.status(400).json({ message: "movimiento_stock_existente_id es obligatorio para resolver como ya ingresado" });
+    }
+
+    const payloadRecepcion = {
+      compra_item_id: compraItemId,
+      cantidad_recibida: cantidadRecibida
+    };
+    if (usarIngresoExistente) {
+      payloadRecepcion.usar_ingreso_existente = true;
+      payloadRecepcion.movimiento_stock_existente_id = movimientoStockExistenteId;
+    }
+
     const resultado = await registrarRecepcionCompra(
       item.compra_id,
       idempotencyKey,
-      [{ compra_item_id: compraItemId, cantidad_recibida: cantidadRecibida }],
-      { usuario }
+      [payloadRecepcion],
+      {
+        usuario,
+        protegerDuplicadoFisico: true,
+        confirmar_posible_duplicado: confirmarPosibleDuplicado,
+        buscarPosibleIngresoDuplicado
+      }
     );
     return res.status(resultado.status).json(resultado.body);
   } catch (error) {
     if (error.statusCode) {
-      return res.status(error.statusCode).json({ message: error.message });
+      return res.status(error.statusCode).json({
+        message: error.message,
+        ...(error.code ? { code: error.code } : {}),
+        ...(error.candidate ? { candidate: error.candidate } : {})
+      });
     }
     logError("Error al registrar recepcion desde Stock:", error);
     return res.status(500).json({ message: "Error al registrar recepcion desde Stock" });
   }
+  });
 });
 
 app.get("/stock/ajustes-pendientes/resumen", async (req, res) => {
@@ -4037,21 +4365,29 @@ app.post("/stock/ajustes-pendientes/:id/aprobar", async (req, res) => {
     return res.status(403).json({ message: "No tenes permisos para aprobar ajustes pendientes de stock" });
   }
 
+  return encolarIngresoFisicoStock(async () => {
   try {
     const ajuste = await aprobarAjustePendiente(req.params.id, {
       usuario: req.usuario?.nombre || req.body.usuario || "admin",
       cantidad_aprobada: req.body.cantidad_aprobada,
       tipo_movimiento_aprobado: req.body.tipo_movimiento_aprobado,
-      observaciones_admin: req.body.observaciones_admin
+      observaciones_admin: req.body.observaciones_admin,
+      confirmar_posible_duplicado: req.body.confirmar_posible_duplicado === true,
+      buscarPosibleIngresoDuplicado
     });
     return res.json({ message: "Ajuste aprobado", ajuste });
   } catch (error) {
     if (error.statusCode) {
-      return res.status(error.statusCode).json({ message: error.message });
+      return res.status(error.statusCode).json({
+        message: error.message,
+        ...(error.code ? { code: error.code } : {}),
+        ...(error.candidate ? { candidate: error.candidate } : {})
+      });
     }
     logError("Error al aprobar ajuste pendiente de stock:", error);
     return res.status(500).json({ message: "Error al aprobar ajuste pendiente de stock" });
   }
+  });
 });
 
 app.post("/stock/ajustes-pendientes/:id/rechazar", async (req, res) => {
@@ -4601,7 +4937,9 @@ async function getCompraDetalle(compraId) {
       producto_id: row.producto_id,
       cantidad_recibida: row.cantidad_recibida,
       unidad_snapshot: row.unidad_snapshot,
+      modo_stock: row.modo_stock || "generado",
       movimiento_stock_id: row.movimiento_stock_id,
+      movimiento_stock_vinculado_id: row.movimiento_stock_vinculado_id,
       movimiento_stock_reversa_id: row.movimiento_stock_reversa_id,
       precio_proveedor_anterior_snapshot: row.precio_proveedor_anterior_snapshot,
       fecha_precio_proveedor_anterior_snapshot: row.fecha_precio_proveedor_anterior_snapshot,
@@ -4635,7 +4973,11 @@ function normalizarPayloadRecepcion(items) {
   return (Array.isArray(items) ? items : [])
     .map((item) => ({
       compra_item_id: Number(item.compra_item_id),
-      cantidad_recibida: roundCompra4(Number(item.cantidad_recibida))
+      cantidad_recibida: roundCompra4(Number(item.cantidad_recibida)),
+      modo_stock: item.usar_ingreso_existente || item.modo_stock === "vinculado_existente" ? "vinculado_existente" : "generado",
+      movimiento_stock_vinculado_id: item.usar_ingreso_existente || item.modo_stock === "vinculado_existente"
+        ? Number(item.movimiento_stock_existente_id ?? item.movimiento_stock_vinculado_id ?? 0)
+        : 0
     }))
     .sort((a, b) => a.compra_item_id - b.compra_item_id);
 }
@@ -4649,7 +4991,7 @@ async function getRecepcionCompraConItems(recepcionId) {
   if (!recepcion) return null;
   const items = await allQuery(
     `SELECT id, recepcion_id, compra_item_id, producto_id, cantidad_recibida, unidad_snapshot,
-            movimiento_stock_id, movimiento_stock_reversa_id, precio_proveedor_anterior_snapshot,
+            modo_stock, movimiento_stock_id, movimiento_stock_vinculado_id, movimiento_stock_reversa_id, precio_proveedor_anterior_snapshot,
             fecha_precio_proveedor_anterior_snapshot, costo_referencial_actualizado, created_at
      FROM compra_recepcion_items
      WHERE recepcion_id = ?
@@ -4858,7 +5200,7 @@ async function registrarRecepcionCompra(compraId, idempotencyKey, payloadItems, 
     );
     if (recepcionExistente) {
       const itemsExistentes = await allQuery(
-        "SELECT compra_item_id, cantidad_recibida FROM compra_recepcion_items WHERE recepcion_id = ? ORDER BY compra_item_id ASC",
+        "SELECT compra_item_id, cantidad_recibida, modo_stock, movimiento_stock_vinculado_id FROM compra_recepcion_items WHERE recepcion_id = ? ORDER BY compra_item_id ASC",
         [recepcionExistente.id]
       );
       await runQuery("ROLLBACK");
@@ -4899,13 +5241,38 @@ async function registrarRecepcionCompra(compraId, idempotencyKey, payloadItems, 
       }
       const validacion = validarCantidadRecepcion(item, recepcionesActuales, payload.cantidad_recibida, compra);
       if (!validacion.ok) throw crearErrorHttp(validacion.errores.join(". "), 400);
-      recepcionItems.push({ item, producto, cantidad: validacion.cantidad_nueva });
+      const usarIngresoExistente = payload.usar_ingreso_existente === true || payload.modo_stock === "vinculado_existente";
+      recepcionItems.push({
+        item,
+        producto,
+        cantidad: validacion.cantidad_nueva,
+        modo_stock: usarIngresoExistente ? "vinculado_existente" : "generado",
+        movimiento_stock_vinculado_id: usarIngresoExistente ? Number(payload.movimiento_stock_existente_id ?? payload.movimiento_stock_vinculado_id ?? 0) : null
+      });
     }
 
     const nowParts = getNowParts();
     const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(meta.fecha || "")) ? String(meta.fecha) : nowParts.fecha;
     const hora = meta.hora || nowParts.hora;
     const usuario = String(meta.usuario || "admin").trim() || "admin";
+    if (meta.protegerDuplicadoFisico && !meta.confirmar_posible_duplicado && typeof meta.buscarPosibleIngresoDuplicado === "function") {
+      for (const recepcionItem of recepcionItems) {
+        if (recepcionItem.modo_stock === "vinculado_existente") continue;
+        const candidato = await meta.buscarPosibleIngresoDuplicado({
+          productoId: Number(recepcionItem.producto.id),
+          cantidad: recepcionItem.cantidad,
+          proveedorId: compra.proveedor_id,
+          origenTipoActual: "compra_recepcion"
+        });
+        if (candidato) {
+          const payload = crearPayloadDuplicadoIngresoStock(candidato);
+          const error = crearErrorHttp(payload.message, 409);
+          error.code = payload.code;
+          error.candidate = payload.candidate;
+          throw error;
+        }
+      }
+    }
     const recepcionResult = await runQuery(
       `INSERT INTO compra_recepciones
        (compra_id, fecha, hora, observaciones, usuario, estado, idempotency_key, created_at)
@@ -4914,33 +5281,47 @@ async function registrarRecepcionCompra(compraId, idempotencyKey, payloadItems, 
     );
 
     for (const recepcionItem of recepcionItems) {
+      let movimientoVinculado = null;
+      if (recepcionItem.modo_stock === "vinculado_existente") {
+        movimientoVinculado = await validarMovimientoStockVinculableARecepcion({
+          movimientoId: recepcionItem.movimiento_stock_vinculado_id,
+          productoId: recepcionItem.producto.id,
+          cantidad: recepcionItem.cantidad,
+          proveedorId: compra.proveedor_id
+        });
+      }
       // F3D-4bis: las recepciones NUEVAS nunca actualizan producto_proveedores.precio_compra
       // (esa decision ahora es una revision pendiente de configuracion generada al registrar
       // el comprobante, resuelta desde *Stock). costo_referencial_actualizado queda siempre en
       // 0 -- el mecanismo de reversa historico (costo_referencial_actualizado=1) solo aplica a
       // recepciones anteriores a este cambio, y no se toca aqui.
-      const productoActual = await getQuery("SELECT stock FROM productos WHERE id = ?", [recepcionItem.producto.id]);
-      const stockAnterior = roundCompra4(Number(productoActual?.stock || 0));
-      const stockNuevo = roundCompra4(stockAnterior + recepcionItem.cantidad);
       const itemResult = await runQuery(
         `INSERT INTO compra_recepcion_items
          (recepcion_id, compra_item_id, producto_id, cantidad_recibida, unidad_snapshot,
-          movimiento_stock_id, precio_proveedor_anterior_snapshot,
+          modo_stock, movimiento_stock_id, movimiento_stock_vinculado_id, precio_proveedor_anterior_snapshot,
           fecha_precio_proveedor_anterior_snapshot, costo_referencial_actualizado, created_at)
-         VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, 0, datetime('now'))`,
+         VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, 0, datetime('now'))`,
         [
           recepcionResult.lastID,
           recepcionItem.item.id,
           recepcionItem.producto.id,
           recepcionItem.cantidad,
-          recepcionItem.item.unidad_snapshot
+          recepcionItem.item.unidad_snapshot,
+          recepcionItem.modo_stock,
+          movimientoVinculado ? movimientoVinculado.id : null
         ]
       );
+      if (recepcionItem.modo_stock === "vinculado_existente") {
+        continue;
+      }
+      const productoActual = await getQuery("SELECT stock FROM productos WHERE id = ?", [recepcionItem.producto.id]);
+      const stockAnterior = roundCompra4(Number(productoActual?.stock || 0));
+      const stockNuevo = roundCompra4(stockAnterior + recepcionItem.cantidad);
       await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockNuevo, recepcionItem.producto.id]);
       const movimientoResult = await runQuery(
         `INSERT INTO movimientos_stock
-         (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, proveedor_id, usuario, fecha, hora)
-         VALUES (?, 'ingreso', ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, proveedor_id, usuario, fecha, hora, origen_tipo, origen_id)
+         VALUES (?, 'ingreso', ?, ?, ?, ?, ?, ?, ?, ?, 'compra_recepcion', ?)`,
         [
           recepcionItem.producto.id,
           recepcionItem.cantidad,
@@ -4950,7 +5331,8 @@ async function registrarRecepcionCompra(compraId, idempotencyKey, payloadItems, 
           compra.proveedor_id,
           usuario,
           fecha,
-          hora
+          hora,
+          recepcionResult.lastID
         ]
       );
       await runQuery(
@@ -5054,6 +5436,7 @@ async function anularRecepcionCompra(compraId, recepcionId, motivo, meta = {}) {
     const cantidadPorProducto = new Map();
     const stockPorProducto = new Map();
     for (const item of items) {
+      if (String(item.modo_stock || "generado") === "vinculado_existente") continue;
       const productoId = Number(item.producto_id);
       const stockActual = roundCompra4(Number(item.stock || 0));
       const cantidad = roundCompra4(Number(item.cantidad_recibida || 0));
@@ -5071,6 +5454,9 @@ async function anularRecepcionCompra(compraId, recepcionId, motivo, meta = {}) {
     const usuario = String(meta.usuario || "admin").trim() || "admin";
     const productosAfectados = new Set();
     for (const item of items) {
+      if (String(item.modo_stock || "generado") === "vinculado_existente") {
+        continue;
+      }
       const cantidad = roundCompra4(Number(item.cantidad_recibida || 0));
       const productoActual = await getQuery("SELECT stock FROM productos WHERE id = ?", [item.producto_id]);
       const stockAnterior = roundCompra4(Number(productoActual?.stock || 0));
@@ -5078,8 +5464,8 @@ async function anularRecepcionCompra(compraId, recepcionId, motivo, meta = {}) {
       await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockNuevo, item.producto_id]);
       const movimientoResult = await runQuery(
         `INSERT INTO movimientos_stock
-         (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, proveedor_id, usuario, fecha, hora)
-         VALUES (?, 'egreso', ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, proveedor_id, usuario, fecha, hora, origen_tipo, origen_id)
+         VALUES (?, 'egreso', ?, ?, ?, ?, ?, ?, ?, ?, 'reversa_recepcion', ?)`,
         [
           item.producto_id,
           cantidad,
@@ -5089,7 +5475,8 @@ async function anularRecepcionCompra(compraId, recepcionId, motivo, meta = {}) {
           compra.proveedor_id,
           usuario,
           nowParts.fecha,
-          nowParts.hora
+          nowParts.hora,
+          recepcionId
         ]
       );
       await runQuery(
@@ -5183,6 +5570,153 @@ app.post("/stock/recepciones/:recepcionId/revertir", async (req, res) => {
     logError("Error al revertir recepcion de compra desde stock:", error);
     return res.status(500).json({ message: "Error al revertir la recepcion" });
   }
+});
+
+async function revertirMovimientoStockAplicado(movimientoId, meta = {}) {
+  await runQuery("BEGIN IMMEDIATE");
+  try {
+    const movimiento = await getQuery(
+      `SELECT ms.*, p.stock AS stock_actual, p.nombre AS producto_nombre
+       FROM movimientos_stock ms
+       JOIN productos p ON p.id = ms.producto_id
+       WHERE ms.id = ?`,
+      [movimientoId]
+    );
+    if (!movimiento) throw crearErrorHttp("Movimiento de stock no encontrado", 404);
+
+    const origenTipo = String(movimiento.origen_tipo || "").trim();
+    if (!ORIGENES_MOVIMIENTO_STOCK_REVERSIBLES.has(origenTipo)) {
+      throw crearErrorHttp("Este movimiento no admite reversa directa desde Stock", 400);
+    }
+    if (Number(movimiento.movimiento_stock_reversa_id || 0) > 0) {
+      await runQuery("ROLLBACK");
+      const reversa = await getQuery("SELECT * FROM movimientos_stock WHERE id = ?", [movimiento.movimiento_stock_reversa_id]);
+      return {
+        status: 200,
+        body: {
+          message: "Movimiento ya revertido",
+          idempotent_replay: true,
+          movimiento,
+          reversa
+        }
+      };
+    }
+    if (origenTipo === "reversa_movimiento" || Number(movimiento.origen_id || 0) === Number(movimientoId)) {
+      throw crearErrorHttp("No se puede revertir un movimiento compensatorio", 400);
+    }
+    const cantidad = roundCompra4(Number(movimiento.cantidad || 0));
+    const stockDelta = roundCompra4(Number(movimiento.stock_nuevo || 0) - Number(movimiento.stock_anterior || 0));
+    if (cantidad <= 0 || stockDelta <= 0) {
+      throw crearErrorHttp("Solo se pueden revertir ingresos positivos de stock", 400);
+    }
+
+    const productoActual = await getQuery("SELECT stock FROM productos WHERE id = ?", [movimiento.producto_id]);
+    const stockAnterior = roundCompra4(Number(productoActual?.stock || 0));
+    if (stockAnterior + STOCK_DUPLICADO_RECEPCION_TOLERANCIA < cantidad) {
+      throw crearErrorHttp("No se puede revertir el movimiento porque el stock actual no alcanza para compensarlo.", 409);
+    }
+
+    const recepcionesVinculadas = await allQuery(
+      `SELECT cr.id AS recepcion_id, cr.compra_id, cri.id AS item_id
+       FROM compra_recepcion_items cri
+       JOIN compra_recepciones cr ON cr.id = cri.recepcion_id
+       WHERE cri.movimiento_stock_vinculado_id = ?
+         AND COALESCE(cr.estado, 'registrada') != 'anulada'`,
+      [movimientoId]
+    );
+    for (const vinculada of recepcionesVinculadas) {
+      const conteo = await getQuery(
+        `SELECT
+           SUM(CASE WHEN COALESCE(modo_stock, 'generado') != 'vinculado_existente' THEN 1 ELSE 0 END) AS generados,
+           SUM(CASE WHEN movimiento_stock_vinculado_id != ? THEN 1 ELSE 0 END) AS otros_vinculos
+         FROM compra_recepcion_items
+         WHERE recepcion_id = ?`,
+        [movimientoId, vinculada.recepcion_id]
+      );
+      if (Number(conteo?.generados || 0) > 0 || Number(conteo?.otros_vinculos || 0) > 0) {
+        throw crearErrorHttp("La recepcion vinculada tiene items mixtos y requiere revision manual antes de revertir el movimiento.", 409);
+      }
+    }
+
+    const nowParts = getNowParts();
+    const usuario = String(meta.usuario || "admin").trim() || "admin";
+    const stockNuevo = roundCompra4(stockAnterior - cantidad);
+    await runQuery("UPDATE productos SET stock = ? WHERE id = ?", [stockNuevo, movimiento.producto_id]);
+    const reversaResult = await runQuery(
+      `INSERT INTO movimientos_stock
+       (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, proveedor_id, usuario, fecha, hora, origen_tipo, origen_id)
+       VALUES (?, 'egreso', ?, ?, ?, ?, ?, ?, ?, ?, 'reversa_movimiento', ?)`,
+      [
+        movimiento.producto_id,
+        cantidad,
+        stockAnterior,
+        stockNuevo,
+        String(meta.motivo || `Reversion movimiento de stock #${movimientoId}`).trim(),
+        movimiento.proveedor_id || null,
+        usuario,
+        nowParts.fecha,
+        nowParts.hora,
+        movimientoId
+      ]
+    );
+    await runQuery(
+      "UPDATE movimientos_stock SET movimiento_stock_reversa_id = ? WHERE id = ?",
+      [reversaResult.lastID, movimientoId]
+    );
+
+    for (const vinculada of recepcionesVinculadas) {
+      await runQuery(
+        `UPDATE compra_recepciones
+         SET estado = 'anulada',
+             anulada_at = datetime('now'),
+             anulada_por = ?,
+             motivo_anulacion = ?
+         WHERE id = ?`,
+        [usuario, `Movimiento vinculado #${movimientoId} revertido`, vinculada.recepcion_id]
+      );
+    }
+
+    await runQuery("COMMIT");
+    const reversa = await getQuery("SELECT * FROM movimientos_stock WHERE id = ?", [reversaResult.lastID]);
+    return {
+      status: 200,
+      body: {
+        message: "Movimiento revertido correctamente",
+        idempotent_replay: false,
+        movimiento_id: movimientoId,
+        reversa,
+        stock_nuevo: stockNuevo,
+        recepciones_vinculadas_revertidas: recepcionesVinculadas.map((r) => r.recepcion_id)
+      }
+    };
+  } catch (error) {
+    try { await runQuery("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
+app.post("/stock/movimientos/:movimientoId/revertir", async (req, res) => {
+  if (!(await requireVistaCompleta(req, res, "stock", "No tenes permisos para revertir movimientos de stock"))) return;
+
+  const movimientoId = Number(req.params.movimientoId);
+  if (!Number.isFinite(movimientoId) || movimientoId <= 0) {
+    return res.status(400).json({ message: "Movimiento invalido" });
+  }
+
+  return encolarIngresoFisicoStock(async () => {
+    try {
+      const usuario = req.usuario?.nombre || req.usuario?.usuario || "admin";
+      const motivo = String(req.body?.motivo || `Reversion movimiento de stock #${movimientoId}`).trim();
+      const resultado = await revertirMovimientoStockAplicado(movimientoId, { usuario, motivo });
+      return res.status(resultado.status).json(resultado.body);
+    } catch (error) {
+      if (error.statusCode) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+      logError("Error al revertir movimiento de stock:", error);
+      return res.status(500).json({ message: "Error al revertir movimiento de stock" });
+    }
+  });
 });
 
 app.post("/compras/:id/comprobantes", async (req, res) => {
@@ -11746,6 +12280,7 @@ Promise.all([
 ])
   .then(() => migrarVentaCobrosLegacy())
   .then(async () => {
+    await ensureMovimientosStockProvenanceSchema();
     await Promise.all([
       runQuery("CREATE INDEX IF NOT EXISTS idx_usuarios_usuario ON usuarios(usuario)"),
       runQuery("CREATE INDEX IF NOT EXISTS idx_productos_activo ON productos(activo)"),
