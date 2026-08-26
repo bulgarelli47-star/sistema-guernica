@@ -2,7 +2,7 @@ const fs = require("fs");
 const net = require("net");
 const os = require("os");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const sqlite3 = require("sqlite3").verbose();
 const { db: backendDb } = require("../backend/db");
 const { buildDetalleVentaSnapshotFiscal, buildResumenFiscalVenta } = require("../backend/services/ventaService");
@@ -21,6 +21,17 @@ const {
   calcularDistribucionArqueo,
   validarTrasladoInterno
 } = require("../backend/services/cajaService");
+const {
+  GUERNICA_SEED,
+  closeDb: closeControlDb,
+  runQuery: runControlQuery,
+  getQuery: getControlQuery,
+  allQuery: allControlQuery,
+  resolveEmpresaDbPath,
+  registrarEmpresa,
+  seedGuernica,
+  bootstrapControlDb
+} = require("../database/init-control-db");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -31,6 +42,36 @@ function closeBackendDb() {
 
 function tempDbPath() {
   return path.join(os.tmpdir(), `guernica-test-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+}
+
+// MT-1A.1: camino de bootstrap "desde cero" para tests -- nunca copia database/guernica.db.
+// Ejecuta database/init-db.js como proceso hijo (aislando conexion/lifecycle/module cache, igual
+// que withServer ya hace con backend/server.js), apuntandolo via GUERNICA_DB_PATH a una ruta que
+// SIEMPRE vive dentro de os.tmpdir().
+function bootstrapFreshTestDb() {
+  const dbPath = tempDbPath();
+  const tmpRoot = path.resolve(os.tmpdir());
+  const resuelto = path.resolve(dbPath);
+  if (resuelto !== tmpRoot && !resuelto.startsWith(tmpRoot + path.sep)) {
+    throw new Error(`bootstrapFreshTestDb: destino invalido (debe vivir en os.tmpdir()): ${resuelto}`);
+  }
+  if (fs.existsSync(dbPath)) fs.rmSync(dbPath, { force: true });
+
+  const resultado = spawnSync(process.execPath, ["database/init-db.js"], {
+    cwd: ROOT,
+    env: { ...process.env, GUERNICA_DB_PATH: dbPath },
+    encoding: "utf8"
+  });
+  if (resultado.error) {
+    throw new Error(`bootstrapFreshTestDb: no se pudo ejecutar database/init-db.js: ${resultado.error.message}`);
+  }
+  if (resultado.status !== 0) {
+    throw new Error(`bootstrapFreshTestDb: database/init-db.js termino con status=${resultado.status}\n${resultado.stderr || resultado.stdout}`);
+  }
+  if (!fs.existsSync(dbPath)) {
+    throw new Error("bootstrapFreshTestDb: database/init-db.js termino OK pero no se creo el archivo esperado");
+  }
+  return dbPath;
 }
 
 function runSql(dbPath, sql, params = []) {
@@ -20848,6 +20889,14 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testVentaCCDesdePostVentasAplicaReglas);
   await _run(testVentaNormalSigueOK);
   await _run(testUsuarioVentaNoEsAdmin);
+  await _run(testControlPlaneBootstrapDesdeCeroMT1A);
+  await _run(testControlPlaneTablaEmpresasCamposMT1A);
+  await _run(testControlPlaneRegistrarGuernicaMT1A);
+  await _run(testControlPlaneSeedIdempotenteMT1A);
+  await _run(testControlPlaneSlugUnicoMT1A);
+  await _run(testControlPlaneDbPathResolubleMT1A);
+  await _run(testControlPlaneNegocioFreshIndependienteMT1A);
+  await _run(testControlPlaneLoginLegacySinControlPlaneMT1A);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -21035,6 +21084,163 @@ async function testUsuarioVentaNoEsAdmin() {
       if (!rows[0] || rows[0].usuario === "admin") {
         throw new Error(`testUsuarioVentaNoEsAdmin: usuario en venta debe ser juan_enc, fue ${rows[0]?.usuario}`);
       }
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testControlPlaneBootstrapDesdeCeroMT1A() {
+  const dbPath = tempDbPath();
+  try {
+    const db = await bootstrapControlDb(dbPath, { seed: false });
+    try {
+      const tablas = await allControlQuery(
+        db,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='empresas'"
+      );
+      assertEqual(tablas.length, 1, "el bootstrap desde cero debe crear la tabla empresas");
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testControlPlaneTablaEmpresasCamposMT1A() {
+  const dbPath = tempDbPath();
+  try {
+    const db = await bootstrapControlDb(dbPath, { seed: false });
+    try {
+      const columnas = await allControlQuery(db, "PRAGMA table_info(empresas)");
+      const nombres = columnas.map((columna) => columna.name).sort().join(",");
+      const esperadas = ["activa", "creado_en", "db_path", "id", "nombre", "slug"].sort().join(",");
+      assertSame(nombres, esperadas, "la tabla empresas debe tener exactamente los campos previstos por MT-1A");
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testControlPlaneRegistrarGuernicaMT1A() {
+  const dbPath = tempDbPath();
+  try {
+    const db = await bootstrapControlDb(dbPath, { seed: false });
+    try {
+      const empresa = await seedGuernica(db);
+      if (!empresa) throw new Error("seedGuernica debe devolver la fila registrada");
+      assertSame(empresa.slug, "guernica", "el slug de Guernica debe ser 'guernica'");
+      assertSame(empresa.nombre, "Guernica", "el nombre de Guernica debe ser 'Guernica'");
+      assertSame(empresa.db_path, "guernica.db", "el db_path de Guernica debe ser 'guernica.db'");
+      assertEqual(empresa.activa, 1, "Guernica debe registrarse activa");
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testControlPlaneSeedIdempotenteMT1A() {
+  const dbPath = tempDbPath();
+  try {
+    const db1 = await bootstrapControlDb(dbPath);
+    await closeControlDb(db1);
+
+    const db2 = await bootstrapControlDb(dbPath);
+    try {
+      const filas = await allControlQuery(db2, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      assertEqual(filas.length, 1, "un segundo bootstrap sobre el mismo archivo no debe duplicar Guernica");
+
+      await registrarEmpresa(db2, GUERNICA_SEED);
+      const filasTrasReregistrar = await allControlQuery(db2, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      assertEqual(filasTrasReregistrar.length, 1, "reregistrar a Guernica explicitamente tampoco debe duplicarla");
+    } finally {
+      await closeControlDb(db2);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testControlPlaneSlugUnicoMT1A() {
+  const dbPath = tempDbPath();
+  try {
+    const db = await bootstrapControlDb(dbPath);
+    try {
+      let violoUnico = false;
+      try {
+        await runControlQuery(
+          db,
+          "INSERT INTO empresas (slug, nombre, db_path, activa) VALUES (?, ?, ?, ?)",
+          ["guernica", "Guernica Duplicada", "otra.db", 1]
+        );
+      } catch (error) {
+        violoUnico = /UNIQUE/i.test(error.message);
+      }
+      if (!violoUnico) throw new Error("insertar un slug duplicado debe violar la restriccion UNIQUE de empresas.slug");
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testControlPlaneDbPathResolubleMT1A() {
+  const dbPath = tempDbPath();
+  try {
+    const db = await bootstrapControlDb(dbPath);
+    try {
+      const empresa = await getControlQuery(db, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      const resuelto = resolveEmpresaDbPath(empresa.db_path);
+      assertSame(resuelto, SOURCE_DB, "el db_path de Guernica debe resolver exactamente a database/guernica.db dentro del directorio permitido");
+
+      assertThrows(
+        () => resolveEmpresaDbPath("../backend/server.js"),
+        "una ruta que escapa del directorio permitido (../) debe rechazarse"
+      );
+      assertThrows(
+        () => resolveEmpresaDbPath("../../etc/passwd"),
+        "un path traversal profundo fuera del directorio permitido debe rechazarse"
+      );
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testControlPlaneNegocioFreshIndependienteMT1A() {
+  const controlDbPath = tempDbPath();
+  let negocioDbPath;
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath);
+    await closeControlDb(controlDb);
+
+    negocioDbPath = bootstrapFreshTestDb();
+    await withServer(negocioDbPath, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/login`);
+      if (!response.ok) {
+        throw new Error("la DB de negocio fresh debe seguir arrancando y sirviendo /login sin depender del control plane");
+      }
+    });
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    if (negocioDbPath) fs.rmSync(negocioDbPath, { force: true });
+  }
+}
+
+async function testControlPlaneLoginLegacySinControlPlaneMT1A() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      if (!token) throw new Error("el login legacy debe seguir devolviendo token sin que exista control plane bootstrapeado");
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
