@@ -9900,25 +9900,25 @@ async function testCargarCompraUiF3E2CorregidoExiste() {
   if (!html.includes("Salida rápida")) {
     throw new Error("F3E2-corregido pagos.html debe exponer la accion 'Salida rapida'");
   }
-  if (!html.includes("Cargar compra")) {
-    throw new Error("F3E2-corregido pagos.html debe exponer la accion 'Cargar compra'");
+  if (!html.includes("Cargar factura")) {
+    throw new Error("F3E2-corregido pagos.html debe exponer la accion 'Cargar factura'");
   }
-  if (!html.includes("Compras abiertas")) {
-    throw new Error("F3E2-corregido pagos.html debe conservar un acceso a 'Compras abiertas'");
+  if (!html.includes("Facturas cargadas")) {
+    throw new Error("F3E2-corregido pagos.html debe conservar un acceso a 'Facturas cargadas'");
   }
 
-  // A/B (UX unica): "+ Cargar compra" abre DIRECTO la experiencia unica (ccfModal), nunca
+  // A/B (UX unica): "+ Cargar factura" abre DIRECTO la experiencia unica (ccfModal), nunca
   // el selector/administrador de compras abiertas. No debe existir un paso intermedio de
   // "Nueva compra" (modal -> modal -> compra).
   if (!html.includes('document.getElementById("abrirCargarCompraModal")?.addEventListener("click", ccfAbrirModal)')) {
-    throw new Error("F3E2-corregido 'Cargar compra' debe abrir directamente ccfAbrirModal (experiencia unica), sin administrador previo");
+    throw new Error("F3E2-corregido 'Cargar factura' debe abrir directamente ccfAbrirModal (experiencia unica), sin administrador previo");
   }
   if (html.includes("ccModalNueva") || html.includes("ccAbrirNuevaCompra") || html.includes("ccCrearCompra")) {
     throw new Error("F3E2-corregido el flujo 'modal -> modal -> compra' (Nueva compra como paso previo) debe haber sido eliminado");
   }
-  // "Compras abiertas" sigue abriendo el selector/detalle ya existente (gestion, no alta).
+  // "Facturas cargadas" sigue abriendo el selector/detalle ya existente (gestion, no alta).
   if (!html.includes('document.getElementById("abrirComprasAbiertasModal")?.addEventListener("click", ccAbrirPrincipal)')) {
-    throw new Error("F3E2-corregido 'Compras abiertas' debe seguir abriendo el selector/detalle existente para continuar una compra");
+    throw new Error("F3E2-corregido 'Facturas cargadas' debe seguir abriendo el selector/detalle existente");
   }
 
   // C: los items de la factura se acumulan en memoria (ccfItems) y NO se persisten uno
@@ -9936,7 +9936,7 @@ async function testCargarCompraUiF3E2CorregidoExiste() {
     throw new Error("F3E2-corregido agregar un producto a la factura no debe pegarle al backend todavia (debe quedar en memoria hasta 'Guardar factura')");
   }
 
-  // J: el guardado de "Cargar compra" (ccfGuardar) NO debe crear ninguna Recepcion.
+  // J: el guardado de "Cargar factura" (ccfGuardar) NO debe crear ninguna Recepcion.
   const marcaGuardar = html.indexOf("async function ccfGuardar()");
   const marcaFinGuardar = html.indexOf("function ccfMostrarResumenFinal(");
   if (marcaGuardar === -1 || marcaFinGuardar === -1 || marcaFinGuardar <= marcaGuardar) {
@@ -9944,7 +9944,7 @@ async function testCargarCompraUiF3E2CorregidoExiste() {
   }
   const cuerpoGuardar = html.slice(marcaGuardar, marcaFinGuardar);
   if (cuerpoGuardar.includes("/recepciones")) {
-    throw new Error("F3E2-corregido 'Cargar compra' no debe registrar Recepcion (Factura != Recepcion fisica): eso queda para Compras abiertas, despues");
+    throw new Error("F3E2-corregido 'Cargar factura' no debe registrar Recepcion (Factura != Recepcion fisica)");
   }
   // El guardado usa exclusivamente el modelo F3 real, en la secuencia correcta.
   const secuenciaEsperada = ['"/compras"', "/compras/${compraId}/items", "/compras/${compraId}/comprobantes", "/compras/${compraId}/pagos"];
@@ -9959,18 +9959,127 @@ async function testCargarCompraUiF3E2CorregidoExiste() {
     throw new Error("F3E2-corregido el pago de la factura no debe usar el endpoint legacy /pagos");
   }
 
-  // K/L: el boton de Cargar compra (y el de Compras abiertas) dependen EXCLUSIVAMENTE de la
+  // K/L: el boton de Cargar factura (y el de Facturas cargadas) dependen EXCLUSIVAMENTE de la
   // vista efectiva de *Pagos (Completa/Reducida), nunca de un nombre de rol ni de un permiso
   // de Stock. La proteccion de backend real (misma regla) se verifica aparte, con servidor,
   // en testCargarCompraSeguridadF3E2Corregido / testCargarCompraVistaPagosF3E2Corregido.
   if (!html.includes('function puedeCargarCompra(){return getVistaOperativa(rolActual(),configPagos,"pagos")==="completa"}')) {
-    throw new Error("F3E2-corregido 'Cargar compra' debe depender de la vista efectiva de Pagos (getVistaOperativa), no de un permiso o rol hardcodeado");
+    throw new Error("F3E2-corregido 'Cargar factura' debe depender de la vista efectiva de Pagos (getVistaOperativa), no de un permiso o rol hardcodeado");
   }
   if (html.includes("stock_ver_costos") || html.includes("stock_ajustar") || html.includes("stock_editar_producto")) {
-    throw new Error("F3E2-corregido 'Cargar compra' no debe depender de un permiso de Stock");
+    throw new Error("F3E2-corregido 'Cargar factura' no debe depender de un permiso de Stock");
   }
   if (!html.includes('btnCA.style.display=puedeCargarCompra()?"":"none"')) {
-    throw new Error("F3E2-corregido el acceso a 'Compras abiertas' debe ocultarse con la misma regla de vista completa que 'Cargar compra'");
+    throw new Error("F3E2-corregido el acceso a 'Facturas cargadas' debe ocultarse con la misma regla de vista completa que 'Cargar compra'");
+  }
+}
+
+async function testPagosSinRecepcionFisicaF3E41a() {
+  const html = fs.readFileSync(path.join(ROOT, "frontend", "pagos.html"), "utf8");
+
+  if (html.includes('id="ccBtnNuevaRecepcion"') || html.includes("+ Registrar recepción")) {
+    throw new Error("F3E4.1a Pagos no debe exponer boton operativo para registrar recepcion");
+  }
+  if (html.includes('id="ccModalRecepcion"') || html.includes("ccGuardarRecepcion") || html.includes("ccAbrirModalRecepcion")) {
+    throw new Error("F3E4.1a Pagos no debe conservar modal/handlers de registrar recepcion");
+  }
+  if (html.includes("data-cc-anular-recepcion") || html.includes("ccAnularRecepcion") || html.includes("Anular recepción")) {
+    throw new Error("F3E4.1a Pagos no debe exponer accion operativa para anular recepcion");
+  }
+  if (/ccRequestJson\("POST",\s*`\/compras\/\$\{ccCompraActualId\}\/recepciones/.test(html)) {
+    throw new Error("F3E4.1a Pagos no debe ejecutar POST de recepcion desde frontend");
+  }
+  if (/ccRequestJson\("POST",\s*`\/compras\/\$\{ccCompraActualId\}\/recepciones\/\$\{[^}]+\}\/anular/.test(html)) {
+    throw new Error("F3E4.1a Pagos no debe ejecutar POST de anulacion de recepcion desde frontend");
+  }
+
+  for (const fragmento of [
+    "ccListaRecepciones",
+    "ccRenderizarRecepciones",
+    "ccEstadoItemRecepcionPill",
+    "ccEstadoRecepcionPill",
+    "resumen_recepcion",
+    "cantidad_recibida",
+    "cantidad_pendiente",
+    "estado_recepcion",
+    "gestiona desde Stock",
+    "Recibido",
+    "Recepción",
+    "recepción",
+    "recibirse físicamente",
+    "Afecta stock",
+    "No afecta stock"
+  ]) {
+    if (!html.includes(fragmento)) {
+      continue;
+    }
+    throw new Error(`F3E4.1a Pagos no debe conservar UI/datos de recepcion fisica: ${fragmento}`);
+  }
+
+  for (const fragmento of [
+    "function ccRenderizarItems(items)",
+    "cantidad_comprada",
+    "costo_unitario",
+    "subtotal",
+    "ccListaComprobantes",
+    "ccRenderizarComprobantes",
+    "ccBtnNuevoPago",
+    "ccRenderizarPagos",
+    "ccResumenSaldo"
+  ]) {
+    if (!html.includes(fragmento)) {
+      throw new Error(`F3E4.1a Pagos debe conservar informacion documental/financiera: ${fragmento}`);
+    }
+  }
+}
+
+async function testPagosFacturaUnicaF3E41b() {
+  const html = fs.readFileSync(path.join(ROOT, "frontend", "pagos.html"), "utf8");
+  const inicio = html.indexOf('<section id="ccVistaDetalle"');
+  const fin = html.indexOf('<div class="modal-backdrop" id="ccfModal"', inicio);
+  if (inicio === -1 || fin === -1 || fin <= inicio) {
+    throw new Error("F3E4.1b no pudo aislar la vista de factura existente en pagos.html");
+  }
+  const vistaFactura = html.slice(inicio, fin);
+
+  for (const fragmento of [
+    "Facturas cargadas",
+    "Total factura",
+    "Pagado",
+    "Saldo",
+    "Detalle / items de factura",
+    "Datos fiscales",
+    "Estado de pago",
+    "ccBtnNuevoPago",
+    "cantidad_comprada",
+    "costo_unitario",
+    "subtotal",
+    "neto_gravado",
+    "iva_total"
+  ]) {
+    if (!html.includes(fragmento)) {
+      throw new Error(`F3E4.1b Pagos debe conservar factura/documento/pagos: ${fragmento}`);
+    }
+  }
+
+  for (const fragmento of [
+    "+ Agregar item",
+    "+ Registrar comprobante",
+    "Total comprobantes",
+    "Compra − comprobantes",
+    "ccBtnAgregarItem",
+    "ccBtnNuevoComprobante",
+    "ccResumenComprobantes",
+    "ccResumenDiferencia",
+    "data-cc-anular-comprobante"
+  ]) {
+    if (vistaFactura.includes(fragmento) || html.includes(fragmento)) {
+      throw new Error(`F3E4.1b Pagos no debe mostrar controles/KPIs legacy en factura cargada: ${fragmento}`);
+    }
+  }
+
+  if (vistaFactura.includes("<h4>Productos</h4>") || vistaFactura.includes("<h4>Comprobante</h4>")) {
+    throw new Error("F3E4.1b la factura cargada no debe presentarse como modulos Productos + Comprobante");
   }
 }
 
@@ -10119,8 +10228,8 @@ async function testCargarCompraHeaderIconografiaAtlasF3E2() {
   if (!botonCancelar.includes('aria-label="Cancelar"') || !botonCancelar.includes('title="Cancelar"')) {
     throw new Error("F3E2-header-icon: Cancelar debe conservar aria-label=\"Cancelar\" y title=\"Cancelar\"");
   }
-  if (!botonGuardar.includes('aria-label="Guardar compra"') || !botonGuardar.includes('title="Guardar compra"')) {
-    throw new Error("F3E2-header-icon: Guardar debe conservar aria-label=\"Guardar compra\" y title=\"Guardar compra\"");
+  if (!botonGuardar.includes('aria-label="Guardar factura"') || !botonGuardar.includes('title="Guardar factura"')) {
+    throw new Error("F3E2-header-icon: Guardar debe conservar aria-label=\"Guardar factura\" y title=\"Guardar factura\"");
   }
 
   // Nada de emoji ni de sustitutos unicode, y ningun SVG nuevo arbitrario dentro del header.
@@ -10151,7 +10260,7 @@ async function testCargarCompraHeaderIconografiaAtlasF3E2() {
   // Jerarquia visual intacta: dos botones de accion en el header, no un header saturado de
   // iconos -- el titulo sigue siendo el primer elemento del header.
   if (bloqueHeader.indexOf("ccfModalTitulo") > bloqueHeader.indexOf('id="ccfCancelar"')) {
-    throw new Error("F3E2-header: el titulo 'Cargar compra' debe seguir precediendo a las acciones del header");
+    throw new Error("F3E2-header: el titulo 'Cargar factura' debe seguir precediendo a las acciones del header");
   }
 }
 
@@ -20608,6 +20717,8 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testStockProvenanceUiMovimientoManualF3E3E1);
   await _run(testCompraCierreEstadosF3E1);
   await _run(testCargarCompraUiF3E2CorregidoExiste);
+  await _run(testPagosSinRecepcionFisicaF3E41a);
+  await _run(testPagosFacturaUnicaF3E41b);
   await _run(testCargarCompraUxSimpleOperativaF3E2);
   await _run(testCargarCompraHeaderIconografiaAtlasF3E2);
   await _run(testCargarCompraProveedorTipoComprobanteDefaultF3E2);

@@ -1266,13 +1266,13 @@
     .user-box .logout-btn:focus-visible{outline:none!important;box-shadow:0 0 0 3px rgba(248,113,113,.18)!important}
     @media(max-width:860px){.topbar{align-items:flex-start;flex-direction:column}.topbar-left{flex-wrap:wrap}.topbar-divider{display:none}}
 
-    /* ── Cargar compra (F3E-2 corregido) ──────────────────────── */
+    /* ── Cargar factura (F3E-2 corregido) ─────────────────────── */
     .button.compact { padding: 7px 10px; font-size: 12px; }
     .pill.off { background: rgba(224, 82, 82, 0.12); color: var(--danger); }
     .pill.warn { background: rgba(217, 154, 33, 0.14); color: var(--warning, #d99a21); }
     .pill.ok { background: rgba(34, 163, 90, 0.12); color: var(--success); }
     #ccModal, #ccfModal { z-index: 120; }
-    #ccModalItem, #ccModalComprobante, #ccModalRecepcion, #ccModalPago, #ccModalMotivo, #ccfModalObservacion { z-index: 130; }
+    #ccModalPago, #ccModalMotivo, #ccfModalObservacion { z-index: 130; }
     .cc-modal-card, .ccf-modal-card { width: min(880px, 100%); }
     .table-wrap { overflow: auto; }
     #ccfModal .ccf-modal-card { padding: 0; display: flex; flex-direction: column; max-height: calc(100vh - 56px); }
@@ -1308,7 +1308,7 @@
     .compra-detalle-head-top h3 { margin: 0; color: #fff; }
     .compra-detalle-head-top p { margin: 4px 0 0; color: rgba(255,255,255,.72); }
     .compra-detalle-head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-    .compra-resumen-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; background: #fff; padding: 14px 18px; }
+    .compra-resumen-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; background: #fff; padding: 14px 18px; }
     .compra-resumen-item { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; }
     .compra-resumen-item span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .03em; }
     .compra-resumen-item strong { font-size: 15px; }
@@ -1322,13 +1322,10 @@
     .item-card-metric strong, .doc-card-metric strong { font-size: 13px; }
     .doc-card-actions { display: flex; gap: 6px; flex-shrink: 0; }
     .doc-card-meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
-    .recepcion-item-row { display: grid; grid-template-columns: 1.4fr .8fr; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
-    .recepcion-item-row:last-child { border-bottom: none; }
     #ccTablaAbiertas td, #ccTablaAbiertas th { padding: 8px 7px; }
     .compra-hidden { display: none !important; }
     @media (max-width: 720px) {
       .compra-resumen-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .recepcion-item-row { grid-template-columns: 1fr; gap: 4px; }
     }
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=7" />
@@ -1431,8 +1428,8 @@
           <div class="toolbar-actions">
             <button type="button" class="button secondary" id="actualizarPagos">Actualizar</button>
             <button type="button" class="button success" id="abrirPagoModal" aria-label="Salida rapida — Registrar pago" title="Salida rapida">+ Salida rápida</button>
-            <button type="button" class="button" id="abrirCargarCompraModal" aria-label="Cargar compra" title="Cargar compra — disponible en vista completa de Pagos">+ Cargar compra 🔒</button>
-            <button type="button" class="button secondary compact" id="abrirComprasAbiertasModal" aria-label="Compras abiertas" title="Continuar una compra ya iniciada">Compras abiertas</button>
+            <button type="button" class="button" id="abrirCargarCompraModal" aria-label="Cargar factura" title="Cargar factura — disponible en vista completa de Pagos">+ Cargar factura 🔒</button>
+            <button type="button" class="button secondary compact" id="abrirComprasAbiertasModal" aria-label="Facturas cargadas" title="Ver facturas cargadas">Facturas cargadas</button>
           </div>
         </div>
         <div class="payment-history-table-wrap" style="overflow:auto;">
@@ -1654,16 +1651,16 @@
     </article>
   </div>
 
-  <!-- ══════════════ Cargar compra (F3E-2 corregido) ══════════════ -->
-  <!-- Modal secundario: Compras abiertas (gestion/reapertura de compras existentes).
-       NO es el punto de entrada de "Cargar compra" -- eso abre ccfModal, una unica
-       experiencia nueva. Esta modal sirve para continuar una compra ya iniciada. -->
+  <!-- ══════════════ Cargar factura (F3E-2 corregido) ═════════════ -->
+  <!-- Modal secundario: facturas cargadas (gestion de comprobantes ya cargados).
+       NO es el punto de entrada de "Cargar factura" -- eso abre ccfModal, una unica
+       experiencia nueva. Esta modal sirve para consultar y pagar facturas ya cargadas. -->
   <div class="modal-backdrop" id="ccModal" aria-hidden="true">
     <article class="modal-card cc-modal-card" role="dialog" aria-modal="true" aria-labelledby="ccModalTitulo">
       <div class="modal-header">
         <div>
-          <h2 id="ccModalTitulo">Compras abiertas</h2>
-          <p style="color:var(--muted);margin:4px 0 0;">Continuar una compra ya iniciada — comprobante, recepción y pago, cada cosa por separado.</p>
+          <h2 id="ccModalTitulo">Facturas cargadas</h2>
+          <p style="color:var(--muted);margin:4px 0 0;">Consultar comprobantes, pagos y deuda.</p>
           <p class="message" id="ccMensaje"></p>
         </div>
         <button type="button" class="close-button" id="ccCerrarModal" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
@@ -1674,7 +1671,7 @@
           <div class="table-toolbar">
             <label style="margin:0;">Mostrar
               <select id="ccFiltroEstado" class="field" style="display:inline-block;width:auto;margin-left:6px;">
-                <option value="abiertas">Compras abiertas</option>
+                <option value="abiertas">Facturas abiertas</option>
                 <option value="todas">Todas</option>
               </select>
             </label>
@@ -1688,7 +1685,7 @@
               <thead>
                 <tr><th>Proveedor</th><th>Fecha</th><th>Concepto</th><th>Total</th><th>Saldo</th><th>Estado</th><th>Acción</th></tr>
               </thead>
-              <tbody id="ccTablaAbiertas"><tr><td colspan="7">Cargando compras...</td></tr></tbody>
+              <tbody id="ccTablaAbiertas"><tr><td colspan="7">Cargando facturas...</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -1697,43 +1694,36 @@
           <div class="compra-detalle-header">
             <div class="compra-detalle-head-top">
               <div>
-                <button type="button" class="button secondary compact" id="ccBtnVolverSelector" style="margin-bottom:8px;">← Volver a compras abiertas</button>
+                <button type="button" class="button secondary compact" id="ccBtnVolverSelector" style="margin-bottom:8px;">← Volver a facturas</button>
                 <h3 id="ccDetalleProveedorNombre">-</h3>
                 <p id="ccDetalleCompraSubtitulo">-</p>
               </div>
               <div class="compra-detalle-head-actions">
                 <span class="pill" id="ccDetalleEstadoPill">-</span>
-                <button type="button" class="button secondary compact" id="ccBtnAnularCompra">Anular compra</button>
+                <button type="button" class="button secondary compact" id="ccBtnAnularCompra">Anular factura</button>
               </div>
             </div>
             <div class="compra-resumen-grid">
-              <div class="compra-resumen-item"><span>Total compra</span><strong id="ccResumenTotal">$0.00</strong></div>
-              <div class="compra-resumen-item"><span>Total pagado</span><strong id="ccResumenPagado">$0.00</strong></div>
-              <div class="compra-resumen-item"><span>Saldo pendiente</span><strong id="ccResumenSaldo">$0.00</strong></div>
-              <div class="compra-resumen-item"><span>Total comprobantes</span><strong id="ccResumenComprobantes">$0.00</strong></div>
-              <div class="compra-resumen-item"><span>Compra − comprobantes</span><strong id="ccResumenDiferencia">$0.00</strong></div>
+              <div class="compra-resumen-item"><span>Total factura</span><strong id="ccResumenTotal">$0.00</strong></div>
+              <div class="compra-resumen-item"><span>Pagado</span><strong id="ccResumenPagado">$0.00</strong></div>
+              <div class="compra-resumen-item"><span>Saldo</span><strong id="ccResumenSaldo">$0.00</strong></div>
             </div>
           </div>
 
           <p class="message" id="ccMensajeDetalle"></p>
 
           <section class="seccion-compra">
-            <div class="seccion-compra-head"><h4>Productos</h4><button type="button" class="button secondary compact" id="ccBtnAgregarItem">+ Agregar item</button></div>
-            <div id="ccListaItems"><div class="cc-empty-note">Esta compra todavía no tiene items cargados.</div></div>
+            <div class="seccion-compra-head"><h4>Detalle / items de factura</h4></div>
+            <div id="ccListaItems"><div class="cc-empty-note">Esta factura todavía no tiene items cargados.</div></div>
           </section>
 
           <section class="seccion-compra">
-            <div class="seccion-compra-head"><h4>Comprobante</h4><button type="button" class="button secondary compact" id="ccBtnNuevoComprobante">+ Registrar comprobante</button></div>
-            <div id="ccListaComprobantes"><div class="cc-empty-note">Sin comprobantes registrados.</div></div>
+            <div class="seccion-compra-head"><h4>Datos fiscales</h4></div>
+            <div id="ccListaComprobantes"><div class="cc-empty-note">Sin datos fiscales registrados.</div></div>
           </section>
 
           <section class="seccion-compra">
-            <div class="seccion-compra-head"><h4>Recepción</h4><button type="button" class="button secondary compact" id="ccBtnNuevaRecepcion">+ Registrar recepción</button></div>
-            <div id="ccListaRecepciones"><div class="cc-empty-note">Sin recepciones registradas.</div></div>
-          </section>
-
-          <section class="seccion-compra">
-            <div class="seccion-compra-head"><h4>Pagos asociados</h4><button type="button" class="button secondary compact" id="ccBtnNuevoPago">+ Registrar pago</button></div>
+            <div class="seccion-compra-head"><h4>Estado de pago</h4><button type="button" class="button secondary compact" id="ccBtnNuevoPago">+ Registrar pago</button></div>
             <div id="ccListaPagos"><div class="cc-empty-note">Sin pagos registrados.</div></div>
           </section>
         </section>
@@ -1742,17 +1732,17 @@
     </article>
   </div>
 
-  <!-- ══════════════ Cargar compra: experiencia unica (transcribir una factura) ══════════════ -->
+  <!-- ══════════════ Cargar factura: experiencia unica (transcribir una factura) ═════════════ -->
   <div class="modal-backdrop" id="ccfModal" aria-hidden="true">
     <article class="modal-card ccf-modal-card" role="dialog" aria-modal="true" aria-labelledby="ccfModalTitulo">
       <div class="modal-header ccf-header-sticky">
         <div>
-          <h2 id="ccfModalTitulo">Cargar compra</h2>
+          <h2 id="ccfModalTitulo">Cargar factura</h2>
           <p class="message" id="ccfMensaje"></p>
         </div>
         <div class="header-actions" id="ccfAccionesNormal">
           <button type="button" class="button secondary" id="ccfCancelar" aria-label="Cancelar" title="Cancelar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
-          <button type="button" class="button success" id="ccfBtnGuardar" aria-label="Guardar compra" title="Guardar compra"><span class="app-icon icon-save" aria-hidden="true"></span></button>
+          <button type="button" class="button success" id="ccfBtnGuardar" aria-label="Guardar factura" title="Guardar factura"><span class="app-icon icon-save" aria-hidden="true"></span></button>
         </div>
         <div class="header-actions compra-hidden" id="ccfAccionesFinal">
           <button type="button" class="button success" id="ccfCerrarFinal" aria-label="Cerrar" title="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
@@ -1843,7 +1833,7 @@
 
         <!-- Resumen final (se muestra tras guardar) -->
         <section class="seccion-compra compra-hidden" id="ccfResumenFinal">
-          <div class="seccion-compra-head"><h4>Compra cargada</h4></div>
+          <div class="seccion-compra-head"><h4>Factura cargada</h4></div>
           <div id="ccfResumenFinalContenido"></div>
         </section>
 
@@ -1851,11 +1841,11 @@
     </article>
   </div>
 
-  <!-- Modal pequeña: observación de la compra (opcional, en memoria hasta Guardar) -->
+  <!-- Modal pequeña: observación de la factura (opcional, en memoria hasta Guardar) -->
   <div class="modal-backdrop" id="ccfModalObservacion" aria-hidden="true">
     <article class="modal-card" role="dialog" aria-modal="true">
       <div class="modal-header">
-        <div><h2>Observación de la compra</h2></div>
+        <div><h2>Observación de la factura</h2></div>
         <button type="button" class="close-button" id="ccfCerrarModalObservacion" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
       </div>
       <div class="modal-body">
@@ -1868,87 +1858,7 @@
     </article>
   </div>
 
-  <!-- Modal: Agregar item -->
-  <div class="modal-backdrop" id="ccModalItem" aria-hidden="true">
-    <article class="modal-card" role="dialog" aria-modal="true">
-      <div class="modal-header">
-        <div><h2>Agregar item</h2><p style="color:var(--muted);margin:4px 0 0;">Se agrega a la compra actual. No modifica stock todavía.</p></div>
-        <button type="button" class="close-button" id="ccCerrarModalItem" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
-      </div>
-      <div class="modal-body">
-        <label>Producto
-          <select id="ccItemProducto" class="field"><option value="">Sin producto (solo descripción)</option></select>
-        </label>
-        <label>Descripción<input type="text" id="ccItemDescripcion" class="field" placeholder="Requerido si no elegís un producto" /></label>
-        <label>Cantidad comprada<input type="number" id="ccItemCantidad" class="field" min="0.0001" step="any" /></label>
-        <label>Costo unitario<input type="number" id="ccItemCosto" class="field" min="0" step="0.01" /></label>
-        <label style="display:flex;align-items:center;gap:8px;flex-direction:row;">
-          <input type="checkbox" id="ccItemAfectaStock" style="width:auto;" />
-          <span>Este item va a recibirse físicamente (afecta stock)</span>
-        </label>
-      </div>
-      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;">
-        <button type="button" class="button secondary" id="ccCancelarItem">Cancelar</button>
-        <button type="button" class="button success" id="ccGuardarItem">Agregar item</button>
-      </div>
-    </article>
-  </div>
-
-  <!-- Modal: Registrar comprobante -->
-  <div class="modal-backdrop" id="ccModalComprobante" aria-hidden="true">
-    <article class="modal-card" role="dialog" aria-modal="true">
-      <div class="modal-header">
-        <div><h2>Registrar comprobante</h2><p style="color:var(--muted);margin:4px 0 0;">Documenta la operación. No afecta stock ni pagos.</p></div>
-        <button type="button" class="close-button" id="ccCerrarModalComprobante" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
-      </div>
-      <div class="modal-body">
-        <label>Tipo de comprobante
-          <select id="ccCompTipo" class="field">
-            <option value="factura_a">Factura A</option>
-            <option value="factura_b">Factura B</option>
-            <option value="factura_c">Factura C</option>
-            <option value="ticket">Ticket</option>
-            <option value="recibo">Recibo</option>
-            <option value="nota_credito">Nota de crédito</option>
-            <option value="nota_debito">Nota de débito</option>
-            <option value="otro">Otro</option>
-          </select>
-        </label>
-        <label>Punto de venta<input type="text" id="ccCompPuntoVenta" class="field" /></label>
-        <label>Número de comprobante<input type="text" id="ccCompNumero" class="field" /></label>
-        <label>Fecha de emisión<input type="date" id="ccCompFechaEmision" class="field" /></label>
-        <label>Total del comprobante<input type="number" id="ccCompTotal" class="field" min="0.01" step="0.01" /></label>
-        <label>Neto gravado (opcional)<input type="number" id="ccCompNeto" class="field" min="0" step="0.01" /></label>
-        <label>IVA total (opcional)<input type="number" id="ccCompIva" class="field" min="0" step="0.01" /></label>
-        <label>Observaciones<textarea id="ccCompObservaciones" class="field"></textarea></label>
-      </div>
-      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;">
-        <button type="button" class="button secondary" id="ccCancelarComprobante">Cancelar</button>
-        <button type="button" class="button success" id="ccGuardarComprobante">Registrar comprobante</button>
-      </div>
-    </article>
-  </div>
-
-  <!-- Modal: Registrar recepción -->
-  <div class="modal-backdrop" id="ccModalRecepcion" aria-hidden="true">
-    <article class="modal-card" role="dialog" aria-modal="true">
-      <div class="modal-header">
-        <div><h2>Registrar recepción</h2><p style="color:var(--muted);margin:4px 0 0;">Solo cantidades pendientes. Se puede recibir en varias veces.</p></div>
-        <button type="button" class="close-button" id="ccCerrarModalRecepcion" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
-      </div>
-      <div class="modal-body">
-        <label>Fecha de recepción<input type="date" id="ccRecepcionFecha" class="field" /></label>
-        <div id="ccRecepcionItemsBody"></div>
-        <div class="cc-empty-note compra-hidden" id="ccRecepcionSinPendientes">Todos los items de esta compra ya fueron recibidos por completo.</div>
-      </div>
-      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;">
-        <button type="button" class="button secondary" id="ccCancelarRecepcion">Cancelar</button>
-        <button type="button" class="button success" id="ccGuardarRecepcion">Registrar recepción</button>
-      </div>
-    </article>
-  </div>
-
-  <!-- Modal: Registrar pago de la compra (reutiliza el lenguaje de Salida rapida) -->
+  <!-- Modal: Registrar pago de la factura (reutiliza el lenguaje de Salida rapida) -->
   <div class="modal-backdrop" id="ccModalPago" aria-hidden="true">
     <article class="modal-card" role="dialog" aria-modal="true">
       <div class="modal-header">
@@ -1982,7 +1892,7 @@
     </article>
   </div>
 
-  <!-- Modal genérico: motivo (anular comprobante / recepción / compra) -->
+  <!-- Modal genérico: motivo (anular comprobante / compra) -->
   <div class="modal-backdrop" id="ccModalMotivo" aria-hidden="true">
     <article class="modal-card" role="dialog" aria-modal="true">
       <div class="modal-header">
@@ -1998,7 +1908,7 @@
       </div>
     </article>
   </div>
-  <!-- ══════════════ fin Cargar compra ══════════════ -->
+  <!-- ══════════════ fin Cargar factura ═════════════ -->
 
   <script src="/kpi-visibility.js?v=2"></script>
   <script>
@@ -2403,7 +2313,7 @@
         row.innerHTML = `
           <td class="payment-cell-date" data-label="Fecha">${pago.fecha || "-"} ${pago.hora || ""}</td>
           <td class="payment-cell-type" data-label="Tipo de gasto">${impactoLabel(pago.categoria_pago || pago.proveedor_tipo_impacto)}</td>
-          <td class="payment-cell-provider" data-label="Proveedor">${pago.proveedor_nombre || "Sin proveedor"}${pago.compra_id ? ` <span class="pill" style="margin-left:4px;">Compra #${pago.compra_id}</span>` : ""}</td>
+          <td class="payment-cell-provider" data-label="Proveedor">${pago.proveedor_nombre || "Sin proveedor"}${pago.compra_id ? ` <span class="pill" style="margin-left:4px;">Factura #${pago.compra_id}</span>` : ""}</td>
           <td class="payment-cell-receipt" data-label="Comprobante">${pago.comprobante || "-"} ${pago.numero_comprobante || ""}</td>
           <td class="payment-cell-method" data-label="Forma">${pago.tipo_pago || "-"}</td>
           <td class="payment-cell-account" data-label="Cuenta">${pago.cuenta_cobro_nombre || pago.cuenta_destino || "-"}</td>
@@ -2941,7 +2851,7 @@
     document.getElementById("eliminarPagoClave").addEventListener("keydown",e=>{if(e.key==="Enter")submitEliminarPago()});
     eliminarPagoModalActual.addEventListener("click",e=>{if(e.target===eliminarPagoModalActual)cerrarEliminarPagoModal()});
 
-    // ══════════════ Cargar compra (F3E-2 corregido) ══════════════
+    // ══════════════ Cargar factura (F3E-2 corregido) ═════════════
     // Compra != Pago: comparte modulo *Pagos, no la entidad. Usa exclusivamente
     // el modelo F3 real (backend/server.js rutas /compras*). "Salida rapida"
     // (arriba) no se toca.
@@ -2963,10 +2873,6 @@
       if (!el) return;
       el.innerText = texto;
       el.style.color = esError ? "var(--danger)" : "var(--success)";
-    }
-    function ccGenerarIdempotencyKey() {
-      if (window.crypto?.randomUUID) return window.crypto.randomUUID();
-      return `cc-recepcion-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     }
     async function ccRequestJson(method, url, body) {
       const response = await fetch(url, {
@@ -2994,18 +2900,6 @@
     function ccEstadoComprobantePill(estado) {
       return estado === "anulado" ? '<span class="pill off">Anulado</span>' : '<span class="pill ok">Activo</span>';
     }
-    function ccEstadoRecepcionPill(estado) {
-      return estado === "anulada" ? '<span class="pill off">Anulada</span>' : '<span class="pill ok">Activa</span>';
-    }
-    function ccEstadoItemRecepcionPill(estado) {
-      const map = {
-        pendiente: { clase: "", texto: "Pendiente" },
-        parcial: { clase: "warn", texto: "Parcial" },
-        completa: { clase: "ok", texto: "Completa" }
-      };
-      const info = map[estado] || { clase: "", texto: estado || "-" };
-      return `<span class="pill ${info.clase}">${info.texto}</span>`;
-    }
     function ccNombreProveedor(id) {
       return ccProveedoresCache.find((p) => Number(p.id) === Number(id))?.nombre
         || proveedoresActuales.find((p) => Number(p.id) === Number(id))?.nombre
@@ -3022,17 +2916,17 @@
     }
     function ccCerrarPrincipal() { ccCerrarModal(document.getElementById("ccModal")); }
 
-    // ── Selector: compras abiertas ─────────────────────────────
+    // ── Selector: facturas cargadas ────────────────────────────
     async function ccCargarComprasAbiertas() {
       try {
         const res = await fetch("/compras");
-        if (!res.ok) throw new Error("No se pudo obtener el listado de compras");
+        if (!res.ok) throw new Error("No se pudo obtener el listado de facturas");
         ccComprasCache = await res.json();
         ccRenderizarSelector();
       } catch (error) {
-        console.error("Error al cargar compras:", error);
-        ccMostrarMensaje("No se pudo cargar el listado de compras", true);
-        document.getElementById("ccTablaAbiertas").innerHTML = '<tr><td colspan="7">Error al cargar compras.</td></tr>';
+        console.error("Error al cargar facturas:", error);
+        ccMostrarMensaje("No se pudo cargar el listado de facturas", true);
+        document.getElementById("ccTablaAbiertas").innerHTML = '<tr><td colspan="7">Error al cargar facturas.</td></tr>';
       }
     }
     function ccComprasFiltradas() {
@@ -3046,9 +2940,9 @@
     function ccRenderizarSelector() {
       const compras = ccComprasFiltradas();
       const tabla = document.getElementById("ccTablaAbiertas");
-      document.getElementById("ccContadorAbiertas").innerText = `${compras.length} de ${ccComprasCache.length} compras`;
+      document.getElementById("ccContadorAbiertas").innerText = `${compras.length} de ${ccComprasCache.length} facturas`;
       if (!compras.length) {
-        tabla.innerHTML = '<tr><td colspan="7">No hay compras que coincidan con el filtro.</td></tr>';
+        tabla.innerHTML = '<tr><td colspan="7">No hay facturas que coincidan con el filtro.</td></tr>';
         return;
       }
       tabla.innerHTML = compras.map((c) => {
@@ -3089,12 +2983,12 @@
       if (!ccCompraActualId) return;
       try {
         const res = await fetch(`/compras/${ccCompraActualId}`);
-        if (!res.ok) throw new Error("No se pudo obtener el detalle de la compra");
+        if (!res.ok) throw new Error("No se pudo obtener el detalle de la factura");
         ccCompraActualDetalle = await res.json();
         ccRenderizarDetalle();
       } catch (error) {
-        console.error("Error al cargar detalle de compra:", error);
-        ccMostrarMensajeDetalle("No se pudo cargar el detalle de esta compra", true);
+        console.error("Error al cargar detalle de factura:", error);
+        ccMostrarMensajeDetalle("No se pudo cargar el detalle de esta factura", true);
       }
     }
     function ccRenderizarDetalle() {
@@ -3105,50 +2999,40 @@
       const anulada = String(compra.estado || "").toLowerCase() === "anulada";
       const saldada = Number(resumen.saldo_pendiente || 0) <= 0.009;
 
-      document.getElementById("ccDetalleProveedorNombre").innerText = compra.proveedor_nombre || ccNombreProveedor(compra.proveedor_id);
-      document.getElementById("ccDetalleCompraSubtitulo").innerText = `${compra.fecha_compra || "-"} · ${compra.concepto || "Sin concepto"}`;
+      const comprobantePrincipal = (detalle.comprobantes || [])[0] || {};
+      const tipoNumero = comprobantePrincipal.tipo_comprobante
+        ? `${comprobantePrincipal.tipo_comprobante}${comprobantePrincipal.numero_comprobante ? " · " + comprobantePrincipal.numero_comprobante : ""}`
+        : "Factura";
+      document.getElementById("ccDetalleProveedorNombre").innerText = tipoNumero;
+      document.getElementById("ccDetalleCompraSubtitulo").innerText = `${compra.proveedor_nombre || ccNombreProveedor(compra.proveedor_id)} · ${comprobantePrincipal.fecha_emision || compra.fecha_compra || "-"}`;
       const pillEstado = document.getElementById("ccDetalleEstadoPill");
       pillEstado.outerHTML = ccEstadoCompraPill(compra.estado).replace("<span", '<span id="ccDetalleEstadoPill"');
 
       document.getElementById("ccResumenTotal").innerText = money(resumen.total_compra);
       document.getElementById("ccResumenPagado").innerText = money(resumen.total_pagado);
       document.getElementById("ccResumenSaldo").innerText = money(resumen.saldo_pendiente);
-      document.getElementById("ccResumenComprobantes").innerText = money(resumen.total_comprobantes);
-      document.getElementById("ccResumenDiferencia").innerText = money(resumen.diferencia_compra_comprobantes);
-
       document.getElementById("ccBtnAnularCompra").hidden = anulada;
-      document.getElementById("ccBtnAgregarItem").disabled = anulada;
-      document.getElementById("ccBtnNuevoComprobante").disabled = anulada;
-      document.getElementById("ccBtnNuevaRecepcion").disabled = anulada;
       document.getElementById("ccBtnNuevoPago").disabled = anulada || saldada;
 
       ccRenderizarItems(detalle.items || []);
       ccRenderizarComprobantes(detalle.comprobantes || []);
-      ccRenderizarRecepciones(detalle.recepciones || []);
       ccRenderizarPagos(detalle.pagos || []);
     }
     function ccRenderizarItems(items) {
       const cont = document.getElementById("ccListaItems");
-      if (!items.length) { cont.innerHTML = '<div class="cc-empty-note">Esta compra todavía no tiene items cargados.</div>'; return; }
-      cont.innerHTML = items.map((item) => {
-        const r = item.resumen_recepcion || {};
-        return `
+      if (!items.length) { cont.innerHTML = '<div class="cc-empty-note">Esta factura todavía no tiene items cargados.</div>'; return; }
+      cont.innerHTML = items.map((item) => `
           <div class="item-card">
             <div class="item-card-head">
               <strong>${item.descripcion_snapshot || "Item"}</strong>
-              ${ccEstadoItemRecepcionPill(r.estado_recepcion)}
             </div>
             <div class="item-card-metrics">
-              <div class="item-card-metric"><span>Comprado</span><strong>${Number(r.cantidad_comprada ?? item.cantidad_comprada).toFixed(2)} ${item.unidad_snapshot || ""}</strong></div>
-              <div class="item-card-metric"><span>Recibido</span><strong>${Number(r.cantidad_recibida || 0).toFixed(2)}</strong></div>
-              <div class="item-card-metric"><span>Pendiente</span><strong>${Number(r.cantidad_pendiente ?? item.cantidad_comprada).toFixed(2)}</strong></div>
+              <div class="item-card-metric"><span>Cantidad</span><strong>${Number(item.cantidad_comprada || 0).toFixed(2)} ${item.unidad_snapshot || ""}</strong></div>
               <div class="item-card-metric"><span>Costo unitario</span><strong>${money(item.costo_unitario)}</strong></div>
               <div class="item-card-metric"><span>Subtotal</span><strong>${money(item.subtotal)}</strong></div>
-              <div class="item-card-metric"><span>Afecta stock</span><strong>${Number(item.afecta_stock) === 1 ? "Sí" : "No"}</strong></div>
             </div>
           </div>
-        `;
-      }).join("");
+        `).join("");
     }
     function ccRenderizarComprobantes(comprobantes) {
       const cont = document.getElementById("ccListaComprobantes");
@@ -3164,7 +3048,6 @@
               </div>
               <div class="doc-card-actions">
                 ${ccEstadoComprobantePill(comp.estado)}
-                ${activo ? `<button type="button" class="button secondary compact" data-cc-anular-comprobante="${comp.id}">Anular</button>` : ""}
               </div>
             </div>
             <div class="doc-card-metrics">
@@ -3176,43 +3059,6 @@
           </div>
         `;
       }).join("");
-      cont.querySelectorAll("[data-cc-anular-comprobante]").forEach((btn) => {
-        btn.addEventListener("click", () => ccAbrirMotivo("Anular comprobante", (motivo) => ccAnularComprobante(Number(btn.dataset.ccAnularComprobante), motivo)));
-      });
-    }
-    function ccRenderizarRecepciones(recepciones) {
-      const cont = document.getElementById("ccListaRecepciones");
-      if (!recepciones.length) { cont.innerHTML = '<div class="cc-empty-note">Sin recepciones registradas.</div>'; return; }
-      const itemsPorId = new Map((ccCompraActualDetalle?.items || []).map((item) => [Number(item.id), item]));
-      cont.innerHTML = recepciones.map((rec) => {
-        const activa = String(rec.estado || "").toLowerCase() !== "anulada";
-        const itemsTexto = (rec.items || [])
-          .map((it) => {
-            const itemCompra = itemsPorId.get(Number(it.compra_item_id));
-            const nombre = itemCompra?.descripcion_snapshot || `producto #${it.producto_id}`;
-            return `${Number(it.cantidad_recibida).toFixed(2)} ${it.unidad_snapshot || ""} de ${nombre}`;
-          })
-          .join(" · ");
-        return `
-          <div class="doc-card">
-            <div class="doc-card-head">
-              <div>
-                <strong>Recepción del ${rec.fecha || "-"}</strong>
-                <div class="doc-card-meta">${itemsTexto || "Sin items"}</div>
-                ${rec.observaciones ? `<div class="doc-card-meta">${rec.observaciones}</div>` : ""}
-              </div>
-              <div class="doc-card-actions">
-                ${ccEstadoRecepcionPill(rec.estado)}
-                ${activa ? `<button type="button" class="button secondary compact" data-cc-anular-recepcion="${rec.id}">Anular recepción</button>` : ""}
-              </div>
-            </div>
-            ${!activa ? `<div class="doc-card-meta">Anulada ${rec.anulada_at || ""} por ${rec.anulada_por || "-"}${rec.motivo_anulacion ? " · " + rec.motivo_anulacion : ""}</div>` : ""}
-          </div>
-        `;
-      }).join("");
-      cont.querySelectorAll("[data-cc-anular-recepcion]").forEach((btn) => {
-        btn.addEventListener("click", () => ccAbrirMotivo("Anular recepción", (motivo) => ccAnularRecepcion(Number(btn.dataset.ccAnularRecepcion), motivo)));
-      });
     }
     function ccRenderizarPagos(pagos) {
       const cont = document.getElementById("ccListaPagos");
@@ -3230,158 +3076,7 @@
       `).join("");
     }
 
-    // ── Items ───────────────────────────────────────────────────
-    async function ccAbrirModalItem() {
-      if (!ccProductosCache.length) {
-        try {
-          const res = await fetch("/productos");
-          ccProductosCache = res.ok ? await res.json() : [];
-        } catch { ccProductosCache = []; }
-      }
-      const select = document.getElementById("ccItemProducto");
-      const opciones = ccProductosCache
-        .filter((p) => Number(p.eliminado || 0) === 0)
-        .map((p) => `<option value="${p.id}">${p.nombre}${Number(p.maneja_stock) !== 1 ? " (sin stock)" : ""}</option>`)
-        .join("");
-      select.innerHTML = '<option value="">Sin producto (solo descripción)</option>' + opciones;
-      document.getElementById("ccItemDescripcion").value = "";
-      document.getElementById("ccItemCantidad").value = "";
-      document.getElementById("ccItemCosto").value = "";
-      document.getElementById("ccItemAfectaStock").checked = false;
-      document.getElementById("ccItemAfectaStock").disabled = true;
-      ccAbrirModal(document.getElementById("ccModalItem"));
-    }
-    function ccOnCambioItemProducto() {
-      const productoId = Number(document.getElementById("ccItemProducto").value || 0);
-      const checkbox = document.getElementById("ccItemAfectaStock");
-      if (!productoId) { checkbox.checked = false; checkbox.disabled = true; return; }
-      const producto = ccProductosCache.find((p) => Number(p.id) === productoId);
-      const manejaStock = producto && Number(producto.maneja_stock) === 1;
-      checkbox.disabled = !manejaStock;
-      if (!manejaStock) checkbox.checked = false;
-    }
-    async function ccGuardarItem() {
-      const productoId = document.getElementById("ccItemProducto").value;
-      const descripcion = document.getElementById("ccItemDescripcion").value.trim();
-      const cantidad = Number(document.getElementById("ccItemCantidad").value || 0);
-      const costo = Number(document.getElementById("ccItemCosto").value || 0);
-      const afectaStock = document.getElementById("ccItemAfectaStock").checked;
-      if (!productoId && !descripcion) { ccMostrarMensajeDetalle("Elegí un producto o escribí una descripción", true); return; }
-      if (!(cantidad > 0)) { ccMostrarMensajeDetalle("La cantidad comprada debe ser mayor a cero", true); return; }
-      const payload = {
-        items: [{
-          producto_id: productoId || null,
-          descripcion_snapshot: descripcion || undefined,
-          cantidad_comprada: cantidad,
-          costo_unitario: costo,
-          afecta_stock: afectaStock ? 1 : 0
-        }]
-      };
-      const { response, data } = await ccRequestJson("POST", `/compras/${ccCompraActualId}/items`, payload);
-      if (!response.ok) { ccMostrarMensajeDetalle(data?.message || "No se pudo agregar el item", true); return; }
-      ccCerrarModal(document.getElementById("ccModalItem"));
-      ccMostrarMensajeDetalle("Item agregado correctamente");
-      await ccCargarDetalle();
-    }
-
-    // ── Comprobantes ────────────────────────────────────────────
-    function ccAbrirModalComprobante() {
-      document.getElementById("ccCompTipo").value = "factura_a";
-      document.getElementById("ccCompPuntoVenta").value = "";
-      document.getElementById("ccCompNumero").value = "";
-      document.getElementById("ccCompFechaEmision").value = hoyISO();
-      document.getElementById("ccCompTotal").value = "";
-      document.getElementById("ccCompNeto").value = "";
-      document.getElementById("ccCompIva").value = "";
-      document.getElementById("ccCompObservaciones").value = "";
-      ccAbrirModal(document.getElementById("ccModalComprobante"));
-    }
-    async function ccGuardarComprobante() {
-      const total = Number(document.getElementById("ccCompTotal").value || 0);
-      if (total <= 0) { ccMostrarMensajeDetalle("El total del comprobante debe ser mayor a cero", true); return; }
-      const neto = document.getElementById("ccCompNeto").value;
-      const iva = document.getElementById("ccCompIva").value;
-      const payload = {
-        tipo_comprobante: document.getElementById("ccCompTipo").value,
-        punto_venta: document.getElementById("ccCompPuntoVenta").value.trim(),
-        numero_comprobante: document.getElementById("ccCompNumero").value.trim(),
-        fecha_emision: document.getElementById("ccCompFechaEmision").value || hoyISO(),
-        total_comprobante: total,
-        neto_gravado: neto === "" ? null : Number(neto),
-        iva_total: iva === "" ? null : Number(iva),
-        observaciones: document.getElementById("ccCompObservaciones").value.trim()
-      };
-      const { response, data } = await ccRequestJson("POST", `/compras/${ccCompraActualId}/comprobantes`, payload);
-      if (!response.ok) { ccMostrarMensajeDetalle(data?.message || "No se pudo registrar el comprobante", true); return; }
-      ccCerrarModal(document.getElementById("ccModalComprobante"));
-      ccMostrarMensajeDetalle("Comprobante registrado correctamente");
-      await ccCargarDetalle();
-    }
-    async function ccAnularComprobante(comprobanteId, motivo) {
-      const { response, data } = await ccRequestJson("POST", `/compras/${ccCompraActualId}/comprobantes/${comprobanteId}/anular`, { motivo });
-      if (!response.ok) { ccMostrarMensajeDetalle(data?.message || "No se pudo anular el comprobante", true); return; }
-      ccMostrarMensajeDetalle(data.message || "Comprobante anulado");
-      await ccCargarDetalle();
-    }
-
-    // ── Recepciones ─────────────────────────────────────────────
-    function ccAbrirModalRecepcion() {
-      document.getElementById("ccRecepcionFecha").value = hoyISO();
-      const items = (ccCompraActualDetalle?.items || []).filter((item) => Number(item.resumen_recepcion?.cantidad_pendiente || 0) > 0);
-      const cont = document.getElementById("ccRecepcionItemsBody");
-      const sinPendientes = document.getElementById("ccRecepcionSinPendientes");
-      if (!items.length) {
-        cont.innerHTML = "";
-        sinPendientes.classList.remove("compra-hidden");
-        document.getElementById("ccGuardarRecepcion").disabled = true;
-      } else {
-        sinPendientes.classList.add("compra-hidden");
-        document.getElementById("ccGuardarRecepcion").disabled = false;
-        cont.innerHTML = items.map((item) => {
-          const pendiente = Number(item.resumen_recepcion.cantidad_pendiente || 0);
-          return `
-            <div class="recepcion-item-row">
-              <div>
-                <strong>${item.descripcion_snapshot}</strong>
-                <div style="font-size:12px;color:var(--muted);">Pendiente: ${pendiente.toFixed(2)} ${item.unidad_snapshot || ""}</div>
-              </div>
-              <label style="margin:0;">Recibir ahora
-                <input type="number" class="field" data-cc-recepcion-item="${item.id}" data-pendiente="${pendiente}" min="0" max="${pendiente}" step="any" value="0" />
-              </label>
-            </div>
-          `;
-        }).join("");
-      }
-      ccAbrirModal(document.getElementById("ccModalRecepcion"));
-    }
-    async function ccGuardarRecepcion() {
-      const inputs = [...document.querySelectorAll("[data-cc-recepcion-item]")];
-      const items = inputs
-        .map((input) => ({
-          compra_item_id: Number(input.dataset.ccRecepcionItem),
-          cantidad_recibida: Number(input.value || 0)
-        }))
-        .filter((item) => item.cantidad_recibida > 0);
-      if (!items.length) { ccMostrarMensajeDetalle("Indicá una cantidad a recibir en al menos un item", true); return; }
-      const payload = {
-        idempotency_key: ccGenerarIdempotencyKey(),
-        fecha: document.getElementById("ccRecepcionFecha").value || hoyISO(),
-        items
-      };
-      const { response, data } = await ccRequestJson("POST", `/compras/${ccCompraActualId}/recepciones`, payload);
-      if (!response.ok) { ccMostrarMensajeDetalle(data?.message || "No se pudo registrar la recepción", true); return; }
-      ccCerrarModal(document.getElementById("ccModalRecepcion"));
-      ccMostrarMensajeDetalle(data.message || "Recepción registrada correctamente");
-      await ccCargarDetalle();
-    }
-    async function ccAnularRecepcion(recepcionId, motivo) {
-      const { response, data } = await ccRequestJson("POST", `/compras/${ccCompraActualId}/recepciones/${recepcionId}/anular`, { motivo });
-      if (!response.ok) { ccMostrarMensajeDetalle(data?.message || "No se pudo anular la recepción", true); return; }
-      ccMostrarMensajeDetalle(data.message || "Recepción anulada");
-      await ccCargarDetalle();
-    }
-
-    // ── Pagos de la compra (reutiliza el lenguaje visual de Salida rapida) ──
+    // ── Pagos de la factura (reutiliza el lenguaje visual de Salida rapida) ──
     function ccSetMetodoPago(metodo) {
       document.getElementById("ccPagoTipo").value = metodo;
       document.querySelectorAll("[data-cc-metodo-pago]").forEach((btn) => {
@@ -3472,8 +3167,8 @@
     // ── Anular compra ───────────────────────────────────────────
     async function ccAnularCompra(motivo) {
       const { response, data } = await ccRequestJson("POST", `/compras/${ccCompraActualId}/anular`, { motivo });
-      if (!response.ok) { ccMostrarMensajeDetalle(data?.message || "No se pudo anular la compra", true); return; }
-      ccMostrarMensajeDetalle(data.message || "Compra anulada correctamente");
+      if (!response.ok) { ccMostrarMensajeDetalle(data?.message || "No se pudo anular la factura", true); return; }
+      ccMostrarMensajeDetalle(data.message || "Factura anulada correctamente");
       await ccCargarDetalle();
     }
 
@@ -3494,9 +3189,8 @@
     }
 
     // ── Wiring ──────────────────────────────────────────────────
-    // "+ Cargar compra" abre SIEMPRE la experiencia unica nueva (ccfModal). "Compras abiertas"
-    // (acceso secundario) abre el selector/detalle existente para continuar una compra ya
-    // iniciada -- misma vista efectiva de Pagos, sin gate nuevo.
+    // "+ Cargar factura" abre SIEMPRE la experiencia unica nueva (ccfModal).
+    // "Facturas cargadas" abre el selector/detalle financiero/documental existente.
     document.getElementById("abrirCargarCompraModal")?.addEventListener("click", ccfAbrirModal);
     document.getElementById("abrirComprasAbiertasModal")?.addEventListener("click", ccAbrirPrincipal);
     document.getElementById("ccCerrarModal")?.addEventListener("click", ccCerrarPrincipal);
@@ -3505,23 +3199,7 @@
     document.getElementById("ccFiltroEstado")?.addEventListener("change", ccRenderizarSelector);
 
     document.getElementById("ccBtnVolverSelector")?.addEventListener("click", ccVolverSelector);
-    document.getElementById("ccBtnAnularCompra")?.addEventListener("click", () => ccAbrirMotivo("Anular compra", ccAnularCompra));
-
-    document.getElementById("ccBtnAgregarItem")?.addEventListener("click", ccAbrirModalItem);
-    document.getElementById("ccCerrarModalItem")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalItem")));
-    document.getElementById("ccCancelarItem")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalItem")));
-    document.getElementById("ccItemProducto")?.addEventListener("change", ccOnCambioItemProducto);
-    document.getElementById("ccGuardarItem")?.addEventListener("click", ccGuardarItem);
-
-    document.getElementById("ccBtnNuevoComprobante")?.addEventListener("click", ccAbrirModalComprobante);
-    document.getElementById("ccCerrarModalComprobante")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalComprobante")));
-    document.getElementById("ccCancelarComprobante")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalComprobante")));
-    document.getElementById("ccGuardarComprobante")?.addEventListener("click", ccGuardarComprobante);
-
-    document.getElementById("ccBtnNuevaRecepcion")?.addEventListener("click", ccAbrirModalRecepcion);
-    document.getElementById("ccCerrarModalRecepcion")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalRecepcion")));
-    document.getElementById("ccCancelarRecepcion")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalRecepcion")));
-    document.getElementById("ccGuardarRecepcion")?.addEventListener("click", ccGuardarRecepcion);
+    document.getElementById("ccBtnAnularCompra")?.addEventListener("click", () => ccAbrirMotivo("Anular factura", ccAnularCompra));
 
     document.getElementById("ccBtnNuevoPago")?.addEventListener("click", ccAbrirModalPago);
     document.getElementById("ccCerrarModalPago")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalPago")));
@@ -3536,12 +3214,11 @@
     document.getElementById("ccCancelarMotivo")?.addEventListener("click", () => ccCerrarModal(document.getElementById("ccModalMotivo")));
     document.getElementById("ccConfirmarMotivo")?.addEventListener("click", ccConfirmarMotivo);
 
-    // ══════════════ Cargar compra: experiencia unica (F3E-2, ajustada) ══════════════
+    // ══════════════ Cargar factura: experiencia unica (F3E-2, ajustada) ═════════════
     // Una sola modal: transcribir una factura de arriba hacia abajo. Los items viven SOLO
     // en memoria (ccfItems) hasta "Guardar" -- recien ahi se llama a la secuencia real:
-    // POST /compras -> /items -> /comprobantes -> (si monto pagado > 0) /pagos. Recepcion
-    // queda fuera de esta modal a proposito (Compra != Comprobante != Pago != Recepcion):
-    // se hace despues desde "Compras abiertas". El operador NO carga neto/IVA a mano: elige
+    // POST /compras -> /items -> /comprobantes -> (si monto pagado > 0) /pagos.
+    // se hace despues desde "Facturas cargadas". El operador NO carga neto/IVA a mano: elige
     // una vez si los precios son Final/Neto y una alicuota por renglon, y Atlas deriva el
     // resto (ccfCalcularLinea) agrupando por alicuota para compra_comprobante_iva.
     let ccfItems = [];
@@ -3899,7 +3576,7 @@
           observaciones: ccfObservacionValor,
           total_compra: totalFactura
         });
-        if (!compra.response.ok) { ccfMostrarMensaje(compra.data?.message || "No se pudo registrar la compra", true); return; }
+        if (!compra.response.ok) { ccfMostrarMensaje(compra.data?.message || "No se pudo registrar la factura", true); return; }
         compraId = compra.data.compra.id;
 
         const items = await ccRequestJson("POST", `/compras/${compraId}/items`, {
@@ -3911,7 +3588,7 @@
           }))
         });
         if (!items.response.ok) {
-          ccfMostrarMensaje(`La compra quedó guardada parcialmente (sin productos: ${items.data?.message || "error"}). Podés continuarla desde Compras abiertas.`, true);
+          ccfMostrarMensaje(`La factura quedó guardada parcialmente (sin productos: ${items.data?.message || "error"}). Podés continuarla desde Facturas cargadas.`, true);
           await ccCargarComprasAbiertas();
           return;
         }
@@ -3931,7 +3608,7 @@
           alicuotas: grupos.map((g) => ({ alicuota: g.alicuota, neto_gravado: g.neto, iva_monto: g.iva }))
         });
         if (!comprobante.response.ok) {
-          ccfMostrarMensaje(`La compra y los productos quedaron guardados (sin comprobante: ${comprobante.data?.message || "error"}). Podés continuarla desde Compras abiertas.`, true);
+          ccfMostrarMensaje(`La factura y los productos quedaron guardados (sin comprobante: ${comprobante.data?.message || "error"}). Podés continuarla desde Facturas cargadas.`, true);
           await ccCargarComprasAbiertas();
           return;
         }
@@ -3948,7 +3625,7 @@
             cuenta_cobro_id: cuentaCobroId ? Number(cuentaCobroId) : null
           });
           if (!pago.response.ok) {
-            ccfMostrarMensaje(`La compra, los productos y el comprobante quedaron guardados (el pago no se pudo registrar: ${pago.data?.message || "error"}). Podés reintentar el pago desde Compras abiertas.`, true);
+            ccfMostrarMensaje(`La factura, los productos y el comprobante quedaron guardados (el pago no se pudo registrar: ${pago.data?.message || "error"}). Podés reintentar el pago desde Facturas cargadas.`, true);
             await ccCargarComprasAbiertas();
             return;
           }
@@ -3960,8 +3637,8 @@
         await ccCargarComprasAbiertas();
         ccfMostrarResumenFinal({ numeroComprobante, cantidadItems: ccfItems.length, totalFactura, montoPagado, saldo: Number((totalFactura - montoPagado).toFixed(2)) });
       } catch (error) {
-        console.error("Error al guardar la compra:", error);
-        ccfMostrarMensaje(compraId ? "La compra quedó guardada parcialmente. Podés continuarla desde Compras abiertas." : "Error al guardar la compra", true);
+        console.error("Error al guardar la factura:", error);
+        ccfMostrarMensaje(compraId ? "La factura quedó guardada parcialmente. Podés continuarla desde Facturas cargadas." : "Error al guardar la factura", true);
       } finally {
         ccfGuardando = false;
         btn.disabled = false;
