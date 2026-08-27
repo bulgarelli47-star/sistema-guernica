@@ -7,7 +7,9 @@ const {
   closeDb,
   getQuery,
   getMembershipPorEmpresaYLocal,
-  actualizarPasswordUsuarioCentral
+  actualizarPasswordUsuarioCentral,
+  actualizarAccesoMembership,
+  actualizarActivoMembership
 } = require("../database/init-control-db");
 
 // No reutiliza openDb() de init-control-db.js a proposito, por dos motivos:
@@ -55,6 +57,26 @@ function resolveEmpresaSlug() {
   return String(process.env.ATLAS_EMPRESA_SLUG || "").trim();
 }
 
+// Resolucion compartida empresa+membership: usada por password, rol y activo por igual. La
+// empresa debe existir y estar activa, y debe existir una membership real para ese
+// usuario_local_id -- el bridge nunca auto-crea ninguna de las dos cosas.
+async function resolverMembershipActiva(db, slug, usuarioLocalId) {
+  const empresa = await getQuery(db, "SELECT id, activa FROM empresas WHERE slug = ?", [slug]);
+  if (!empresa || Number(empresa.activa) !== 1) {
+    throw new Error(`resolverMembershipActiva: empresa '${slug}' no existe o no esta activa en el control plane`);
+  }
+
+  const membership = await getMembershipPorEmpresaYLocal(db, {
+    empresaId: empresa.id,
+    usuarioLocalId
+  });
+  if (!membership) {
+    throw new Error("resolverMembershipActiva: no existe membership para este usuario local en esta empresa");
+  }
+
+  return membership;
+}
+
 async function syncPasswordHash({ empresaSlug, usuarioLocalId, passwordHash, controlDbPath } = {}) {
   const slug = empresaSlug || resolveEmpresaSlug();
   if (!slug) {
@@ -64,20 +86,47 @@ async function syncPasswordHash({ empresaSlug, usuarioLocalId, passwordHash, con
   const dbPath = controlDbPath || resolveControlDbPath();
   const db = await abrirControlDbBridge(dbPath);
   try {
-    const empresa = await getQuery(db, "SELECT id, activa FROM empresas WHERE slug = ?", [slug]);
-    if (!empresa || Number(empresa.activa) !== 1) {
-      throw new Error(`syncPasswordHash: empresa '${slug}' no existe o no esta activa en el control plane`);
-    }
-
-    const membership = await getMembershipPorEmpresaYLocal(db, {
-      empresaId: empresa.id,
-      usuarioLocalId
-    });
-    if (!membership) {
-      throw new Error("syncPasswordHash: no existe membership para este usuario local en esta empresa");
-    }
-
+    const membership = await resolverMembershipActiva(db, slug, usuarioLocalId);
     await actualizarPasswordUsuarioCentral(db, membership.usuario_id, passwordHash);
+  } finally {
+    await closeDb(db);
+  }
+}
+
+// MT-1C.1B: rol y activo por empresa. Autoridad sigue siendo LOCAL en esta fase -- estas
+// funciones solo escriben el espejo en usuario_empresas, nunca en usuarios (central), y nunca
+// en ningun otro campo de la membership (por eso usan los updates angostos de un solo campo).
+async function syncMembershipActivo({ empresaSlug, usuarioLocalId, activo, controlDbPath } = {}) {
+  const slug = empresaSlug || resolveEmpresaSlug();
+  if (!slug) {
+    throw new Error("syncMembershipActivo: falta configurar ATLAS_EMPRESA_SLUG (o pasar empresaSlug explicito)");
+  }
+
+  const dbPath = controlDbPath || resolveControlDbPath();
+  const db = await abrirControlDbBridge(dbPath);
+  try {
+    const membership = await resolverMembershipActiva(db, slug, usuarioLocalId);
+    await actualizarActivoMembership(db, membership.id, activo);
+  } finally {
+    await closeDb(db);
+  }
+}
+
+// PUT /usuarios/:id puede cambiar rol Y activo en la misma request -- rol y activo se
+// sincronizan en UNA sola sentencia UPDATE (actualizarAccesoMembership), para que la membership
+// nunca pueda quedar en un estado intermedio (rol nuevo con activo viejo) entre dos escrituras
+// separadas.
+async function syncMembershipAccess({ empresaSlug, usuarioLocalId, rol, activo, controlDbPath } = {}) {
+  const slug = empresaSlug || resolveEmpresaSlug();
+  if (!slug) {
+    throw new Error("syncMembershipAccess: falta configurar ATLAS_EMPRESA_SLUG (o pasar empresaSlug explicito)");
+  }
+
+  const dbPath = controlDbPath || resolveControlDbPath();
+  const db = await abrirControlDbBridge(dbPath);
+  try {
+    const membership = await resolverMembershipActiva(db, slug, usuarioLocalId);
+    await actualizarAccesoMembership(db, membership.id, { rol, activo });
   } finally {
     await closeDb(db);
   }
@@ -88,5 +137,7 @@ module.exports = {
   resolveControlDbPath,
   resolveEmpresaSlug,
   syncPasswordHash,
+  syncMembershipActivo,
+  syncMembershipAccess,
   abrirControlDbBridge
 };

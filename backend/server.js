@@ -1957,7 +1957,22 @@ app.put("/usuarios/:id", async (req, res) => {
       [data.nombre, data.usuario, data.rol, data.email, data.telefono, data.activo, new Date().toISOString(), usuarioId]
     );
 
-    return res.json({ message: "Usuario actualizado correctamente", usuario: await getUsuarioById(usuarioId) });
+    const usuarioActualizado = await getUsuarioById(usuarioId);
+
+    if (userControlBridge.getBridgeMode() === "shadow") {
+      try {
+        await userControlBridge.syncMembershipAccess({
+          usuarioLocalId: usuarioId,
+          rol: usuarioActualizado.rol,
+          activo: usuarioActualizado.activo
+        });
+      } catch (bridgeError) {
+        logError("bridge role/active divergence", bridgeError);
+        return res.status(503).json({ message: "El usuario se actualizo pero no pudo sincronizarse completamente. Intenta nuevamente en unos minutos." });
+      }
+    }
+
+    return res.json({ message: "Usuario actualizado correctamente", usuario: usuarioActualizado });
   } catch (error) {
     logError("Error al actualizar usuario:", error);
     return res.status(500).json({ message: "Error al actualizar usuario" });
@@ -1978,6 +1993,16 @@ app.patch("/usuarios/:id/estado", async (req, res) => {
       "UPDATE usuarios SET activo = ?, actualizado_en = ? WHERE id = ?",
       [activo, new Date().toISOString(), usuarioId]
     );
+
+    if (userControlBridge.getBridgeMode() === "shadow") {
+      try {
+        await userControlBridge.syncMembershipActivo({ usuarioLocalId: usuarioId, activo });
+      } catch (bridgeError) {
+        logError("bridge active divergence", bridgeError);
+        return res.status(503).json({ message: "El estado se actualizo pero no pudo sincronizarse completamente. Intenta nuevamente en unos minutos." });
+      }
+    }
+
     return res.json({ message: activo ? "Usuario activado" : "Usuario desactivado", usuario: await getUsuarioById(usuarioId) });
   } catch (error) {
     logError("Error al cambiar estado del usuario:", error);

@@ -35,7 +35,9 @@ const {
   crearUsuarioCentral,
   crearMembership,
   getMembershipPorEmpresaYLocal,
-  actualizarPasswordUsuarioCentral
+  actualizarPasswordUsuarioCentral,
+  actualizarAccesoMembership,
+  actualizarActivoMembership
 } = require("../database/init-control-db");
 const {
   syncUsuariosShadowDesdeDbPath
@@ -20930,6 +20932,15 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1CBridgeControlPlaneAusenteNoLoCrea);
   await _run(testMT1CBridgeAperturaActivaForeignKeys);
   await _run(testMT1CBridgeActualizarPasswordCentralHelper);
+  await _run(testMT1CBridgeRoleActiveOffPreservaLegacy);
+  await _run(testMT1CBridgeShadowPutSincronizaRolYActivo);
+  await _run(testMT1CBridgeShadowEstadoDesactivaYReactivaSinTocarRolNiCentral);
+  await _run(testMT1CBridgeMultiempresaAislamiento);
+  await _run(testMT1CBridgePutPerfilNoCopiaCentral);
+  await _run(testMT1CBridgeRoleMembershipInexistente503);
+  await _run(testMT1CBridgeRoleActiveControlPlaneCaido503);
+  await _run(testMT1CBridgeRoleActiveEmpresaInactiva503);
+  await _run(testMT1CBridgeActualizarAccesoYActivoMembershipHelpers);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -22155,6 +22166,514 @@ async function testMT1CBridgeActualizarPasswordCentralHelper() {
         fallo = true;
       }
       if (!fallo) throw new Error("actualizarPasswordUsuarioCentral debe rechazar un usuarioId inexistente (0 filas afectadas), no reportar exito silencioso");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// MT-1C.1B: role + active bridge (dual-write local + usuario_empresas para rol/activo por
+// empresa, sin tocar central.activo global). Auth sigue 100% legacy.
+
+async function testMT1CBridgeRoleActiveOffPreservaLegacy() {
+  const businessDbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const usuarioLogin = `colaborador.roleoff.${Date.now()}`;
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Role Off TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorOff1",
+        confirmar_password: "ColaboradorOff1",
+        rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      const localId = creado.data.usuario.id;
+
+      const put = await requestJson(baseUrl, "PUT", `/usuarios/${localId}`, {
+        nombre: "Colaborador Role Off TEST",
+        usuario: usuarioLogin,
+        rol: "encargado",
+        email: "",
+        telefono: "",
+        activo: true
+      }, tokenAdmin);
+      if (!put.response.ok) throw new Error(`PUT rol (bridge off) fallo: ${put.data?.message || put.response.status}`);
+      assertSame(put.data.usuario.rol, "encargado", "bridge off debe seguir actualizando rol local normalmente");
+
+      const patchEstado = await requestJson(baseUrl, "PATCH", `/usuarios/${localId}/estado`, { activo: false }, tokenAdmin);
+      if (!patchEstado.response.ok) throw new Error(`PATCH estado (bridge off) fallo: ${patchEstado.data?.message || patchEstado.response.status}`);
+      assertEqual(patchEstado.data.usuario.activo ? 1 : 0, 0, "bridge off debe seguir desactivando localmente");
+    }, { ATLAS_USER_BRIDGE_MODE: "off" });
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeShadowPutSincronizaRolYActivo() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `bridge-rol-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Bridge Rol Test", dbPath: "guernica.db" });
+
+    let localId;
+    const usuarioLogin = `colaborador.rolshadow.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Rol Shadow TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorShadow1",
+        confirmar_password: "ColaboradorShadow1",
+        rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    const placeholderHash = await bcrypt.hash("PlaceholderRol1", 10);
+    const usuarioCentral = await crearUsuarioCentral(controlDb, {
+      nombre: "Colaborador Rol Shadow TEST", usuarioReferencia: usuarioLogin, passwordHash: placeholderHash, activo: 1
+    });
+    const membership = await crearMembership(controlDb, {
+      usuarioId: usuarioCentral.id, empresaId: empresa.id, usuarioLocalId: localId, rol: "colaborador", activo: 1
+    });
+    await closeControlDb(controlDb);
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const put = await requestJson(baseUrl, "PUT", `/usuarios/${localId}`, {
+        nombre: "Colaborador Rol Shadow TEST",
+        usuario: usuarioLogin,
+        rol: "encargado",
+        email: "",
+        telefono: "",
+        activo: false
+      }, tokenAdmin);
+      if (!put.response.ok) throw new Error(`PUT rol/activo (bridge shadow) fallo: ${put.data?.message || put.response.status}`);
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membershipDespues = await getControlQuery(controlDb, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespues.rol, "encargado", "membership.rol debe reflejar el nuevo rol tras PUT en shadow");
+      assertEqual(Number(membershipDespues.activo), 0, "membership.activo debe reflejar el nuevo activo tras PUT en shadow");
+      const centralDespues = await getControlQuery(controlDb, "SELECT activo FROM usuarios WHERE id = ?", [usuarioCentral.id]);
+      assertEqual(Number(centralDespues.activo), 1, "usuarios central.activo NUNCA debe tocarse por el bridge de rol/activo");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeShadowEstadoDesactivaYReactivaSinTocarRolNiCentral() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `bridge-estado-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Bridge Estado Test", dbPath: "guernica.db" });
+
+    let localId;
+    const usuarioLogin = `colaborador.estadoshadow.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Estado Shadow TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorEstado1",
+        confirmar_password: "ColaboradorEstado1",
+        rol: "admin"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    const placeholderHash = await bcrypt.hash("PlaceholderEstado1", 10);
+    const usuarioCentral = await crearUsuarioCentral(controlDb, {
+      nombre: "Colaborador Estado Shadow TEST", usuarioReferencia: usuarioLogin, passwordHash: placeholderHash, activo: 1
+    });
+    const membership = await crearMembership(controlDb, {
+      usuarioId: usuarioCentral.id, empresaId: empresa.id, usuarioLocalId: localId, rol: "admin", activo: 1
+    });
+    await closeControlDb(controlDb);
+
+    const extraEnv = {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    };
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+
+      const desactivar = await requestJson(baseUrl, "PATCH", `/usuarios/${localId}/estado`, { activo: false }, tokenAdmin);
+      if (!desactivar.response.ok) throw new Error(`PATCH estado desactivar (shadow) fallo: ${desactivar.data?.message || desactivar.response.status}`);
+
+      const controlTrasDesactivar = await bootstrapControlDb(controlDbPath, { seed: false });
+      try {
+        const membershipTrasDesactivar = await getControlQuery(controlTrasDesactivar, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+        assertEqual(Number(membershipTrasDesactivar.activo), 0, "membership.activo debe quedar en 0 tras desactivar");
+        assertSame(membershipTrasDesactivar.rol, "admin", "PATCH estado NUNCA debe tocar membership.rol");
+        const centralTrasDesactivar = await getControlQuery(controlTrasDesactivar, "SELECT activo FROM usuarios WHERE id = ?", [usuarioCentral.id]);
+        assertEqual(Number(centralTrasDesactivar.activo), 1, "usuarios central.activo debe permanecer intacto tras desactivar localmente");
+      } finally {
+        await closeControlDb(controlTrasDesactivar);
+      }
+
+      const localTrasDesactivar = (await allSql(businessDbPath, "SELECT activo FROM usuarios WHERE id = ?", [localId]))[0];
+      assertEqual(Number(localTrasDesactivar.activo), 0, "usuarios.activo local debe quedar en 0");
+
+      const reactivar = await requestJson(baseUrl, "PATCH", `/usuarios/${localId}/estado`, { activo: true }, tokenAdmin);
+      if (!reactivar.response.ok) throw new Error(`PATCH estado reactivar (shadow) fallo: ${reactivar.data?.message || reactivar.response.status}`);
+
+      const controlTrasReactivar = await bootstrapControlDb(controlDbPath, { seed: false });
+      try {
+        const membershipFinal = await getControlQuery(controlTrasReactivar, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+        assertEqual(Number(membershipFinal.activo), 1, "membership.activo debe quedar en 1 tras reactivar");
+        assertSame(membershipFinal.rol, "admin", "reactivar tampoco debe tocar membership.rol");
+        const centralFinal = await getControlQuery(controlTrasReactivar, "SELECT activo FROM usuarios WHERE id = ?", [usuarioCentral.id]);
+        assertEqual(Number(centralFinal.activo), 1, "usuarios central.activo sigue intacto tras reactivar");
+      } finally {
+        await closeControlDb(controlTrasReactivar);
+      }
+
+      const localTrasReactivar = (await allSql(businessDbPath, "SELECT activo FROM usuarios WHERE id = ?", [localId]))[0];
+      assertEqual(Number(localTrasReactivar.activo), 1, "usuarios.activo local debe quedar en 1 tras reactivar");
+    }, extraEnv);
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeMultiempresaAislamiento() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaASlug = `bridge-multi-a-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaBSlug = `bridge-multi-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaA = await registrarEmpresa(controlDb, { slug: empresaASlug, nombre: "Bridge Multi A", dbPath: "guernica.db" });
+    const empresaB = await registrarEmpresa(controlDb, { slug: empresaBSlug, nombre: "Bridge Multi B", dbPath: "guernica.db" });
+
+    let localId;
+    const usuarioLogin = `colaborador.multi.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Multi TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorMulti1",
+        confirmar_password: "ColaboradorMulti1",
+        rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    const placeholderHash = await bcrypt.hash("PlaceholderMulti1", 10);
+    const usuarioCentral = await crearUsuarioCentral(controlDb, {
+      nombre: "Colaborador Multi TEST", usuarioReferencia: usuarioLogin, passwordHash: placeholderHash, activo: 1
+    });
+    const membershipA = await crearMembership(controlDb, {
+      usuarioId: usuarioCentral.id, empresaId: empresaA.id, usuarioLocalId: localId, rol: "admin", activo: 1
+    });
+    // Membership B: misma identidad central, OTRA empresa, usuario_local_id ficticio -- nunca se
+    // abre el business DB de B en este test, solo interesa que la fila de B quede intacta.
+    const membershipB = await crearMembership(controlDb, {
+      usuarioId: usuarioCentral.id, empresaId: empresaB.id, usuarioLocalId: 999001, rol: "colaborador", activo: 1
+    });
+    await closeControlDb(controlDb);
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const put = await requestJson(baseUrl, "PUT", `/usuarios/${localId}`, {
+        nombre: "Colaborador Multi TEST",
+        usuario: usuarioLogin,
+        rol: "encargado",
+        email: "",
+        telefono: "",
+        activo: false
+      }, tokenAdmin);
+      if (!put.response.ok) throw new Error(`PUT rol/activo multiempresa (empresa A) fallo: ${put.data?.message || put.response.status}`);
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaASlug
+    });
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const aDespues = await getControlQuery(controlDb, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membershipA.id]);
+      assertSame(aDespues.rol, "encargado", "membership A debe reflejar el nuevo rol");
+      assertEqual(Number(aDespues.activo), 0, "membership A debe reflejar el nuevo activo");
+
+      const bDespues = await getControlQuery(controlDb, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membershipB.id]);
+      assertSame(bDespues.rol, "colaborador", "membership B NO debe cambiar de rol por una operacion en empresa A");
+      assertEqual(Number(bDespues.activo), 1, "membership B NO debe desactivarse por una operacion en empresa A");
+
+      const centralDespues = await getControlQuery(controlDb, "SELECT activo FROM usuarios WHERE id = ?", [usuarioCentral.id]);
+      assertEqual(Number(centralDespues.activo), 1, "usuarios central.activo no debe tocarse por ninguna operacion de empresa individual");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgePutPerfilNoCopiaCentral() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `bridge-perfil-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Bridge Perfil Test", dbPath: "guernica.db" });
+
+    let localId;
+    const usuarioLogin = `colaborador.perfil.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "LOCAL ORIGINAL",
+        usuario: usuarioLogin,
+        password: "ColaboradorPerfil1",
+        confirmar_password: "ColaboradorPerfil1",
+        rol: "colaborador",
+        email: "local@test.invalid"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    const placeholderHash = await bcrypt.hash("PlaceholderPerfil1", 10);
+    const usuarioCentral = await crearUsuarioCentral(controlDb, {
+      nombre: "CENTRAL ORIGINAL", usuarioReferencia: usuarioLogin, email: "central@test.invalid", passwordHash: placeholderHash, activo: 1
+    });
+    const membership = await crearMembership(controlDb, {
+      usuarioId: usuarioCentral.id, empresaId: empresa.id, usuarioLocalId: localId, rol: "colaborador", activo: 1
+    });
+    await closeControlDb(controlDb);
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const put = await requestJson(baseUrl, "PUT", `/usuarios/${localId}`, {
+        nombre: "LOCAL NUEVO",
+        usuario: usuarioLogin,
+        rol: "encargado",
+        email: "local-nuevo@test.invalid",
+        telefono: "",
+        activo: true
+      }, tokenAdmin);
+      if (!put.response.ok) throw new Error(`PUT perfil+rol fallo: ${put.data?.message || put.response.status}`);
+      assertSame(put.data.usuario.nombre, "LOCAL NUEVO", "el local debe reflejar el nuevo nombre");
+      assertSame(put.data.usuario.email, "local-nuevo@test.invalid", "el local debe reflejar el nuevo email");
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membershipDespues = await getControlQuery(controlDb, "SELECT rol FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespues.rol, "encargado", "membership.rol si debe sincronizarse");
+
+      const centralDespues = await getControlQuery(controlDb, "SELECT nombre, email FROM usuarios WHERE id = ?", [usuarioCentral.id]);
+      assertSame(centralDespues.nombre, "CENTRAL ORIGINAL", "el bridge de rol/activo NUNCA debe copiar nombre al central");
+      assertSame(centralDespues.email, "central@test.invalid", "el bridge de rol/activo NUNCA debe copiar email al central");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeRoleMembershipInexistente503() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `bridge-rolnomembership-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Bridge Rol No Membership", dbPath: "guernica.db" });
+    const usuariosCentralAntes = await allControlQuery(controlDb, "SELECT id FROM usuarios");
+    await closeControlDb(controlDb);
+
+    const localAdmin = (await allSql(businessDbPath, "SELECT id, rol FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const put = await requestJson(baseUrl, "PUT", `/usuarios/${localAdmin.id}`, {
+        nombre: "Admin Sin Membership",
+        usuario: "admin",
+        rol: "encargado",
+        email: "",
+        telefono: "",
+        activo: true
+      }, token);
+      if (put.response.ok) throw new Error("sin membership el PUT deberia fallar con 503");
+      assertEqual(put.response.status, 503, "sin membership el bridge de rol debe responder 503");
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    const localDespues = (await allSql(businessDbPath, "SELECT rol FROM usuarios WHERE id = ?", [localAdmin.id]))[0];
+    if (localDespues.rol === localAdmin.rol) {
+      throw new Error("por orden authority-first, el rol local deberia haber cambiado igual");
+    }
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const usuariosCentralDespues = await allControlQuery(controlDb, "SELECT id FROM usuarios");
+      assertEqual(usuariosCentralDespues.length, usuariosCentralAntes.length, "no debe crearse ninguna identidad central nueva (no auto-link, no auto-create)");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeRoleActiveControlPlaneCaido503() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPathInvalido = path.join(os.tmpdir(), `no-existe-rolactivo-${Date.now()}-${Math.random().toString(16).slice(2)}`, "atlas_control.db");
+  try {
+    const localAdmin = (await allSql(businessDbPath, "SELECT id, activo FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const patch = await requestJson(baseUrl, "PATCH", `/usuarios/${localAdmin.id}/estado`, { activo: false }, token);
+      if (patch.response.ok) throw new Error("control plane caido deberia fallar con 503");
+      assertEqual(patch.response.status, 503, "control plane caido debe responder 503 en el bridge de activo");
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPathInvalido,
+      ATLAS_EMPRESA_SLUG: "cualquier-slug-rolactivo-down"
+    });
+
+    const localDespues = (await allSql(businessDbPath, "SELECT activo FROM usuarios WHERE id = ?", [localAdmin.id]))[0];
+    if (Number(localDespues.activo) === Number(localAdmin.activo)) {
+      throw new Error("con control plane caido, el local deberia haber cambiado igual (autoridad local primero)");
+    }
+    if (fs.existsSync(controlDbPathInvalido)) {
+      throw new Error("el bridge de activo NO debe crear atlas_control.db cuando el control plane esta caido");
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeRoleActiveEmpresaInactiva503() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `bridge-empresainactiva-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Bridge Empresa Inactiva", dbPath: "guernica.db", activa: 0 });
+
+    const localAdmin = (await allSql(businessDbPath, "SELECT id, rol FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const placeholderHash = await bcrypt.hash("PlaceholderEmpresaInactiva1", 10);
+    const usuarioCentral = await crearUsuarioCentral(controlDb, {
+      nombre: "Admin Empresa Inactiva Test", usuarioReferencia: "admin", passwordHash: placeholderHash, activo: 1
+    });
+    const membership = await crearMembership(controlDb, {
+      usuarioId: usuarioCentral.id, empresaId: empresa.id, usuarioLocalId: localAdmin.id, rol: "admin", activo: 1
+    });
+    await closeControlDb(controlDb);
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const put = await requestJson(baseUrl, "PUT", `/usuarios/${localAdmin.id}`, {
+        nombre: "Admin Empresa Inactiva Test",
+        usuario: "admin",
+        rol: "encargado",
+        email: "",
+        telefono: "",
+        activo: true
+      }, token);
+      if (put.response.ok) throw new Error("empresa inactiva deberia fallar con 503");
+      assertEqual(put.response.status, 503, "empresa inactiva debe responder 503");
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membershipDespues = await getControlQuery(controlDb, "SELECT rol FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespues.rol, "admin", "empresa inactiva no debe permitir ninguna sincronizacion de membership");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeActualizarAccesoYActivoMembershipHelpers() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const empresa = await registrarEmpresa(controlDb, {
+        slug: `helper-acceso-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        nombre: "Helper Acceso Test",
+        dbPath: "guernica.db"
+      });
+      const placeholderHash = await bcrypt.hash("PlaceholderHelperAcceso1", 10);
+      const usuarioCentral = await crearUsuarioCentral(controlDb, {
+        nombre: "Helper Acceso Test", usuarioReferencia: "helper.acceso.test", passwordHash: placeholderHash, activo: 1
+      });
+      const membership = await crearMembership(controlDb, {
+        usuarioId: usuarioCentral.id, empresaId: empresa.id, usuarioLocalId: 1, rol: "colaborador", activo: 1
+      });
+
+      // A + atomicidad (MT-1C.1B-CLOSE seccion 9): rol y activo cambian juntos en UNA sola
+      // llamada al helper -- ambos valores provienen de la misma operacion, nunca de dos UPDATE
+      // separados que pudieran dejar un estado intermedio.
+      await actualizarAccesoMembership(controlDb, membership.id, { rol: "encargado", activo: 0 });
+      const despues = await getControlQuery(controlDb, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(despues.rol, "encargado", "actualizarAccesoMembership debe persistir el nuevo rol");
+      assertEqual(Number(despues.activo), 0, "actualizarAccesoMembership debe persistir el nuevo activo en la misma operacion");
+
+      // B: membership inexistente -> THROW (0 filas afectadas), nunca exito silencioso.
+      let falloAcceso = false;
+      try {
+        await actualizarAccesoMembership(controlDb, 999999, { rol: "admin", activo: 1 });
+      } catch (error) {
+        falloAcceso = true;
+      }
+      if (!falloAcceso) throw new Error("actualizarAccesoMembership debe rechazar un membershipId inexistente (0 filas afectadas)");
+
+      // C: el update de un solo campo que sigue usando PATCH estado mantiene el mismo contrato.
+      let falloActivo = false;
+      try {
+        await actualizarActivoMembership(controlDb, 999999, 0);
+      } catch (error) {
+        falloActivo = true;
+      }
+      if (!falloActivo) throw new Error("actualizarActivoMembership debe rechazar un membershipId inexistente (0 filas afectadas)");
     } finally {
       await closeControlDb(controlDb);
     }

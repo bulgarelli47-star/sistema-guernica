@@ -175,6 +175,34 @@ async function actualizarMembership(db, membershipId, { rol, activo }) {
   return getQuery(db, "SELECT * FROM usuario_empresas WHERE id = ?", [membershipId]);
 }
 
+// MT-1C.1B-CLOSE: update angosto para el bridge de PUT /usuarios/:id -- rol Y activo se
+// sincronizan en UNA sola sentencia, para que la membership nunca pueda quedar en un estado
+// intermedio (rol nuevo con activo viejo, o viceversa) si algo interrumpe al proceso entre dos
+// UPDATE separados. NO toca usuario_id/empresa_id/usuario_local_id/creado_en.
+async function actualizarAccesoMembership(db, membershipId, { rol, activo }) {
+  const result = await runQuery(
+    db,
+    `UPDATE usuario_empresas SET rol = ?, activo = ?, actualizado_en = datetime('now') WHERE id = ?`,
+    [rol, activo ? 1 : 0, membershipId]
+  );
+  if (result.changes !== 1) {
+    throw new Error(`actualizarAccesoMembership: se esperaba actualizar exactamente 1 fila (membershipId=${membershipId}), se actualizaron ${result.changes}`);
+  }
+}
+
+// MT-1C.1B: update angosto de un solo campo -- lo sigue usando PATCH /usuarios/:id/estado, que
+// SOLO debe tocar activo (nunca rol) para no pisar el rol vigente con un valor stale.
+async function actualizarActivoMembership(db, membershipId, activo) {
+  const result = await runQuery(
+    db,
+    `UPDATE usuario_empresas SET activo = ?, actualizado_en = datetime('now') WHERE id = ?`,
+    [activo ? 1 : 0, membershipId]
+  );
+  if (result.changes !== 1) {
+    throw new Error(`actualizarActivoMembership: se esperaba actualizar exactamente 1 fila (membershipId=${membershipId}), se actualizaron ${result.changes}`);
+  }
+}
+
 async function getMembershipPorEmpresaYLocal(db, { empresaId, usuarioLocalId }) {
   return getQuery(
     db,
@@ -243,6 +271,8 @@ module.exports = {
   actualizarPasswordUsuarioCentral,
   crearMembership,
   actualizarMembership,
+  actualizarAccesoMembership,
+  actualizarActivoMembership,
   getMembershipPorEmpresaYLocal
 };
 
