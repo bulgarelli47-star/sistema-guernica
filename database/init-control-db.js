@@ -12,7 +12,12 @@ const GUERNICA_SEED = {
 };
 
 function openDb(dbPath) {
-  return new sqlite3.Database(dbPath);
+  const db = new sqlite3.Database(dbPath);
+  // Ambas tablas nuevas (usuarios, usuario_empresas) viven en este mismo archivo, asi que sus
+  // FKs pueden ser reales -- pero sqlite3 no las aplica salvo que se active este pragma por
+  // conexion. No afecta a "empresas" (no tiene columnas FK).
+  db.run("PRAGMA foreign_keys = ON");
+  return db;
 }
 
 function closeDb(db) {
@@ -72,6 +77,110 @@ async function initControlSchema(db) {
       creado_en TEXT NOT NULL DEFAULT (datetime('now'))
     )`
   );
+
+  // MT-1B.1: identidad central en modo SHADOW. usuario_referencia/email NO son UNIQUE a
+  // proposito -- dos empresas distintas pueden tener hoy un usuario local "juan" sin evidencia
+  // de que sea la misma persona; nunca se fusiona por username/email en esta fase.
+  await runQuery(
+    db,
+    `CREATE TABLE IF NOT EXISTS usuarios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nombre TEXT NOT NULL,
+      usuario_referencia TEXT,
+      password_hash TEXT NOT NULL,
+      email TEXT,
+      telefono TEXT,
+      foto_url TEXT,
+      activo INTEGER NOT NULL DEFAULT 1,
+      ultimo_acceso TEXT,
+      intentos_fallidos INTEGER NOT NULL DEFAULT 0,
+      bloqueado_hasta TEXT,
+      creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+      actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+    )`
+  );
+
+  // rol vive aca (por empresa), no en usuarios central. usuario_local_id no tiene FK real
+  // porque referencia una fila en OTRO archivo SQLite (la DB de esa empresa); usuario_id y
+  // empresa_id si son FK reales, porque ambas tablas conviven en este mismo archivo.
+  await runQuery(
+    db,
+    `CREATE TABLE IF NOT EXISTS usuario_empresas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+      empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+      usuario_local_id INTEGER NOT NULL,
+      rol TEXT NOT NULL,
+      activo INTEGER NOT NULL DEFAULT 1,
+      creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+      actualizado_en TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (empresa_id, usuario_local_id),
+      UNIQUE (usuario_id, empresa_id)
+    )`
+  );
+}
+
+async function crearUsuarioCentral(db, {
+  nombre, usuarioReferencia, passwordHash, email, telefono, fotoUrl,
+  activo = 1, ultimoAcceso, intentosFallidos = 0, bloqueadoHasta, creadoEn
+}) {
+  const result = await runQuery(
+    db,
+    `INSERT INTO usuarios
+       (nombre, usuario_referencia, password_hash, email, telefono, foto_url,
+        activo, ultimo_acceso, intentos_fallidos, bloqueado_hasta, creado_en, actualizado_en)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))`,
+    [
+      nombre, usuarioReferencia || null, passwordHash, email || null, telefono || null, fotoUrl || null,
+      activo ? 1 : 0, ultimoAcceso || null, intentosFallidos || 0, bloqueadoHasta || null, creadoEn || null
+    ]
+  );
+  return getQuery(db, "SELECT * FROM usuarios WHERE id = ?", [result.lastID]);
+}
+
+async function actualizarUsuarioCentral(db, usuarioId, {
+  nombre, usuarioReferencia, passwordHash, email, telefono, fotoUrl,
+  activo, ultimoAcceso, intentosFallidos, bloqueadoHasta
+}) {
+  await runQuery(
+    db,
+    `UPDATE usuarios SET
+       nombre = ?, usuario_referencia = ?, password_hash = ?, email = ?, telefono = ?, foto_url = ?,
+       activo = ?, ultimo_acceso = ?, intentos_fallidos = ?, bloqueado_hasta = ?, actualizado_en = datetime('now')
+     WHERE id = ?`,
+    [
+      nombre, usuarioReferencia || null, passwordHash, email || null, telefono || null, fotoUrl || null,
+      activo ? 1 : 0, ultimoAcceso || null, intentosFallidos || 0, bloqueadoHasta || null, usuarioId
+    ]
+  );
+  return getQuery(db, "SELECT * FROM usuarios WHERE id = ?", [usuarioId]);
+}
+
+async function crearMembership(db, { usuarioId, empresaId, usuarioLocalId, rol, activo = 1 }) {
+  await runQuery(
+    db,
+    `INSERT INTO usuario_empresas (usuario_id, empresa_id, usuario_local_id, rol, activo)
+     VALUES (?, ?, ?, ?, ?)`,
+    [usuarioId, empresaId, usuarioLocalId, rol, activo ? 1 : 0]
+  );
+  return getQuery(db, "SELECT * FROM usuario_empresas WHERE empresa_id = ? AND usuario_local_id = ?", [empresaId, usuarioLocalId]);
+}
+
+async function actualizarMembership(db, membershipId, { rol, activo }) {
+  await runQuery(
+    db,
+    `UPDATE usuario_empresas SET rol = ?, activo = ?, actualizado_en = datetime('now') WHERE id = ?`,
+    [rol, activo ? 1 : 0, membershipId]
+  );
+  return getQuery(db, "SELECT * FROM usuario_empresas WHERE id = ?", [membershipId]);
+}
+
+async function getMembershipPorEmpresaYLocal(db, { empresaId, usuarioLocalId }) {
+  return getQuery(
+    db,
+    "SELECT * FROM usuario_empresas WHERE empresa_id = ? AND usuario_local_id = ?",
+    [empresaId, usuarioLocalId]
+  );
 }
 
 async function registrarEmpresa(db, { slug, nombre, dbPath, activa = 1 }) {
@@ -113,7 +222,12 @@ module.exports = {
   initControlSchema,
   registrarEmpresa,
   seedGuernica,
-  bootstrapControlDb
+  bootstrapControlDb,
+  crearUsuarioCentral,
+  actualizarUsuarioCentral,
+  crearMembership,
+  actualizarMembership,
+  getMembershipPorEmpresaYLocal
 };
 
 if (require.main === module) {

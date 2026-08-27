@@ -30,8 +30,14 @@ const {
   resolveEmpresaDbPath,
   registrarEmpresa,
   seedGuernica,
-  bootstrapControlDb
+  bootstrapControlDb,
+  crearUsuarioCentral,
+  crearMembership,
+  getMembershipPorEmpresaYLocal
 } = require("../database/init-control-db");
+const {
+  syncUsuariosShadowDesdeDbPath
+} = require("../database/sync-shadow-users");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -20897,6 +20903,21 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testControlPlaneDbPathResolubleMT1A);
   await _run(testControlPlaneNegocioFreshIndependienteMT1A);
   await _run(testControlPlaneLoginLegacySinControlPlaneMT1A);
+  await _run(testMT1BControlPlaneCreaUsuariosYMemberships);
+  await _run(testMT1BCopiaUsuarioEmpresaShadow);
+  await _run(testMT1BCopiaHashSinModificarlo);
+  await _run(testMT1BConservaUsuarioLocalId);
+  await _run(testMT1BRolQuedaEnMembership);
+  await _run(testMT1BImportIdempotente);
+  await _run(testMT1BShadowActualizaDesdeAutoridadLocal);
+  await _run(testMT1BUsernameDuplicadoNoFusiona);
+  await _run(testMT1BMismaIdentidadPuedeTenerDosEmpresas);
+  await _run(testMT1BUsuarioLocalNoSeModifica);
+  await _run(testMT1BNingunRuntimeUsaShadow);
+  await _run(testMT1BImportadorAbreDbEmpresaSoloLectura);
+  await _run(testMT1BUniqueEmpresaLocalAislado);
+  await _run(testMT1BUniqueUsuarioEmpresaAislado);
+  await _run(testMT1BActivoGlobalNoLoDecideUnaMembershipAislada);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -21244,5 +21265,512 @@ async function testControlPlaneLoginLegacySinControlPlaneMT1A() {
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1BControlPlaneCreaUsuariosYMemberships() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const tablas = await allControlQuery(
+        controlDb,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('usuarios','usuario_empresas')"
+      );
+      assertEqual(tablas.length, 2, "el control plane debe crear las tablas usuarios y usuario_empresas");
+
+      const colsUsuarios = await allControlQuery(controlDb, "PRAGMA table_info(usuarios)");
+      const nombresUsuarios = colsUsuarios.map((c) => c.name).sort().join(",");
+      const esperadosUsuarios = [
+        "id", "nombre", "usuario_referencia", "password_hash", "email", "telefono", "foto_url",
+        "activo", "ultimo_acceso", "intentos_fallidos", "bloqueado_hasta", "creado_en", "actualizado_en"
+      ].sort().join(",");
+      assertSame(nombresUsuarios, esperadosUsuarios, "usuarios central debe tener exactamente los campos previstos por MT-1B.1");
+
+      const colsMembership = await allControlQuery(controlDb, "PRAGMA table_info(usuario_empresas)");
+      const nombresMembership = colsMembership.map((c) => c.name).sort().join(",");
+      const esperadosMembership = [
+        "id", "usuario_id", "empresa_id", "usuario_local_id", "rol", "activo", "creado_en", "actualizado_en"
+      ].sort().join(",");
+      assertSame(nombresMembership, esperadosMembership, "usuario_empresas debe tener exactamente los campos previstos por MT-1B.1");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1BCopiaUsuarioEmpresaShadow() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    await withServer(businessDbPath, async () => {});
+    const controlDb = await bootstrapControlDb(controlDbPath);
+    try {
+      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      const localAdmin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+      await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
+
+      const usuariosCentral = await allControlQuery(controlDb, "SELECT * FROM usuarios");
+      const memberships = await allControlQuery(controlDb, "SELECT * FROM usuario_empresas");
+      assertEqual(usuariosCentral.length, 1, "debe crearse exactamente 1 identidad central");
+      assertEqual(memberships.length, 1, "debe crearse exactamente 1 membership");
+
+      const central = usuariosCentral[0];
+      const membership = memberships[0];
+      assertSame(central.nombre, localAdmin.nombre, "nombre copiado igual al local");
+      assertSame(central.usuario_referencia, localAdmin.usuario, "usuario_referencia copiado igual al login local");
+      assertSame(central.email || "", localAdmin.email || "", "email copiado igual al local");
+      assertEqual(Number(central.activo), Number(localAdmin.activo), "activo copiado igual al local");
+      assertEqual(membership.usuario_id, central.id, "membership apunta a la identidad central creada");
+      assertEqual(membership.empresa_id, guernica.id, "membership apunta a la empresa correcta");
+      assertEqual(membership.usuario_local_id, localAdmin.id, "membership conserva el id local real");
+      assertSame(membership.rol, localAdmin.rol, "rol copiado igual al local");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1BCopiaHashSinModificarlo() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    await withServer(businessDbPath, async () => {});
+    const controlDb = await bootstrapControlDb(controlDbPath);
+    try {
+      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      const localAdmin = (await allSql(businessDbPath, "SELECT password FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+      await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
+
+      const central = (await allControlQuery(controlDb, "SELECT password_hash FROM usuarios"))[0];
+      if (central.password_hash !== localAdmin.password) {
+        throw new Error("el hash bcrypt copiado no coincide exactamente con el local (comparacion sin exponer el valor)");
+      }
+      if (!/^\$2[aby]\$/.test(central.password_hash)) {
+        throw new Error("el hash copiado no tiene forma de hash bcrypt valido");
+      }
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1BConservaUsuarioLocalId() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    await withServer(businessDbPath, async () => {});
+    const controlDb = await bootstrapControlDb(controlDbPath);
+    try {
+      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      const localAdmin = (await allSql(businessDbPath, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+      await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
+
+      const membership = (await allControlQuery(controlDb, "SELECT * FROM usuario_empresas"))[0];
+      assertEqual(membership.usuario_local_id, localAdmin.id, "usuario_local_id debe ser el id real capturado de la fixture, no un valor asumido");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1BRolQuedaEnMembership() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    await withServer(businessDbPath, async () => {});
+    const controlDb = await bootstrapControlDb(controlDbPath);
+    try {
+      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      const localAdmin = (await allSql(businessDbPath, "SELECT rol FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+      await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
+
+      const membership = (await allControlQuery(controlDb, "SELECT * FROM usuario_empresas"))[0];
+      assertSame(membership.rol, localAdmin.rol, "el rol local debe quedar en la membership");
+
+      const columnasUsuarios = await allControlQuery(controlDb, "PRAGMA table_info(usuarios)");
+      const tieneRol = columnasUsuarios.some((c) => c.name === "rol");
+      if (tieneRol) throw new Error("la tabla usuarios central NO debe tener columna rol -- el rol es por empresa");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1BImportIdempotente() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    await withServer(businessDbPath, async () => {});
+    const controlDb = await bootstrapControlDb(controlDbPath);
+    try {
+      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+
+      await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
+      await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
+
+      const usuariosCentral = await allControlQuery(controlDb, "SELECT * FROM usuarios");
+      const memberships = await allControlQuery(controlDb, "SELECT * FROM usuario_empresas");
+      assertEqual(usuariosCentral.length, 1, "correr el sync dos veces no debe duplicar la identidad central");
+      assertEqual(memberships.length, 1, "correr el sync dos veces no debe duplicar la membership");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1BShadowActualizaDesdeAutoridadLocal() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    await withServer(businessDbPath, async () => {});
+    const controlDb = await bootstrapControlDb(controlDbPath);
+    try {
+      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+
+      await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
+
+      await runSql(businessDbPath, "UPDATE usuarios SET nombre = ?, rol = ? WHERE usuario = ?", ["Administrador Renombrado", "encargado", "admin"]);
+
+      await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
+
+      const usuariosCentral = await allControlQuery(controlDb, "SELECT * FROM usuarios");
+      const memberships = await allControlQuery(controlDb, "SELECT * FROM usuario_empresas");
+      assertEqual(usuariosCentral.length, 1, "el segundo sync no debe crear una segunda identidad");
+      assertEqual(memberships.length, 1, "el segundo sync no debe crear una segunda membership");
+      assertSame(usuariosCentral[0].nombre, "Administrador Renombrado", "el shadow debe reflejar el nombre actualizado localmente");
+      assertSame(memberships[0].rol, "encargado", "el shadow debe reflejar el rol actualizado localmente");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1BUsernameDuplicadoNoFusiona() {
+  const businessDbPathA = bootstrapFreshTestDb();
+  const businessDbPathB = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let idJuanA, idJuanB;
+    await withServer(businessDbPathA, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Juan de Empresa A", usuario: "juan", password: "juanA12345",
+        confirmar_password: "juanA12345", rol: "colaborador", activo: true
+      }, token);
+      idJuanA = creado.data.usuario.id;
+    });
+    await withServer(businessDbPathB, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Juan de Empresa B", usuario: "juan", password: "juanB12345",
+        confirmar_password: "juanB12345", rol: "encargado", activo: true
+      }, token);
+      idJuanB = creado.data.usuario.id;
+    });
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const empresaA = await registrarEmpresa(controlDb, { slug: "empresa-a-test-mt1b1", nombre: "Empresa A Test", dbPath: "guernica.db" });
+      const empresaB = await registrarEmpresa(controlDb, { slug: "empresa-b-test-mt1b1", nombre: "Empresa B Test", dbPath: "guernica.db" });
+
+      await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: empresaA.id, businessDbPath: businessDbPathA });
+      await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: empresaB.id, businessDbPath: businessDbPathB });
+
+      const usuariosCentral = await allControlQuery(controlDb, "SELECT * FROM usuarios WHERE usuario_referencia = ?", ["juan"]);
+      const memberships = await allControlQuery(controlDb, "SELECT * FROM usuario_empresas WHERE empresa_id IN (?, ?)", [empresaA.id, empresaB.id]);
+
+      assertEqual(usuariosCentral.length, 2, "dos personas reales distintas con el mismo username no deben fusionarse en una sola identidad central");
+      const idsCentrales = new Set(usuariosCentral.map((u) => u.id));
+      assertEqual(idsCentrales.size, 2, "deben ser 2 identidades centrales distintas");
+
+      const membershipA = memberships.find((m) => m.empresa_id === empresaA.id && idsCentrales.has(m.usuario_id));
+      const membershipB = memberships.find((m) => m.empresa_id === empresaB.id && idsCentrales.has(m.usuario_id));
+      if (!membershipA || !membershipB) throw new Error("deben existir 2 memberships, una por empresa");
+      if (membershipA.usuario_id === membershipB.usuario_id) {
+        throw new Error("las 2 membership no deben apuntar a la misma identidad central (nada de auto-merge por username)");
+      }
+      assertEqual(membershipA.usuario_local_id, idJuanA, "membership A conserva el id local real de Empresa A");
+      assertEqual(membershipB.usuario_local_id, idJuanB, "membership B conserva el id local real de Empresa B");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPathA, { force: true });
+    fs.rmSync(businessDbPathB, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1BMismaIdentidadPuedeTenerDosEmpresas() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const empresaX = await registrarEmpresa(controlDb, { slug: "empresa-x-test-mt1b1", nombre: "Empresa X Test", dbPath: "guernica.db" });
+      const empresaY = await registrarEmpresa(controlDb, { slug: "empresa-y-test-mt1b1", nombre: "Empresa Y Test", dbPath: "guernica.db" });
+
+      const identidad = await crearUsuarioCentral(controlDb, {
+        nombre: "Persona Multiempresa Test", usuarioReferencia: "persona_multiempresa",
+        passwordHash: "$2b$10$hashDeEjemploNoRealParaTest", activo: 1
+      });
+
+      const membershipX = await crearMembership(controlDb, { usuarioId: identidad.id, empresaId: empresaX.id, usuarioLocalId: 10, rol: "admin", activo: 1 });
+      const membershipY = await crearMembership(controlDb, { usuarioId: identidad.id, empresaId: empresaY.id, usuarioLocalId: 7, rol: "encargado", activo: 1 });
+
+      assertEqual(membershipX.usuario_id, identidad.id, "membership X pertenece a la misma identidad central");
+      assertEqual(membershipY.usuario_id, identidad.id, "membership Y pertenece a la misma identidad central");
+      if (membershipX.rol === membershipY.rol) throw new Error("el fixture debe demostrar roles distintos por empresa");
+      assertSame(membershipX.rol, "admin", "rol en Empresa X");
+      assertSame(membershipY.rol, "encargado", "rol en Empresa Y");
+      if (membershipX.usuario_local_id === membershipY.usuario_local_id) {
+        throw new Error("el fixture debe demostrar usuario_local_id distintos por empresa");
+      }
+      assertEqual(membershipX.usuario_local_id, 10, "usuario_local_id en Empresa X");
+      assertEqual(membershipY.usuario_local_id, 7, "usuario_local_id en Empresa Y");
+
+      const totalMemberships = await allControlQuery(controlDb, "SELECT * FROM usuario_empresas WHERE usuario_id = ?", [identidad.id]);
+      assertEqual(totalMemberships.length, 2, "una identidad central puede tener N memberships simultaneas (sin auto-link)");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1BUsuarioLocalNoSeModifica() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    await withServer(businessDbPath, async () => {});
+    const antes = await allSql(businessDbPath, "SELECT * FROM usuarios ORDER BY id ASC");
+
+    const controlDb = await bootstrapControlDb(controlDbPath);
+    try {
+      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
+    } finally {
+      await closeControlDb(controlDb);
+    }
+
+    const despues = await allSql(businessDbPath, "SELECT * FROM usuarios ORDER BY id ASC");
+    assertSame(JSON.stringify(antes), JSON.stringify(despues), "el sync no debe modificar ninguna fila de la tabla usuarios local");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1BNingunRuntimeUsaShadow() {
+  const businessDbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(businessDbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      if (!token) throw new Error("el login legacy debe seguir funcionando sin que exista ninguna control DB en este scope");
+    });
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+  }
+}
+
+// Seccion 20 de MT-1B.1: evidencia estructural (no solo inferencia) de que el importador no
+// necesita ni puede escribir sobre la DB de la empresa.
+async function testMT1BImportadorAbreDbEmpresaSoloLectura() {
+  const businessDbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(businessDbPath, async () => {});
+    const soloLectura = new sqlite3.Database(businessDbPath, sqlite3.OPEN_READONLY);
+    try {
+      let rechazado = false;
+      let codigo = "";
+      try {
+        await new Promise((resolve, reject) => {
+          soloLectura.run("UPDATE usuarios SET nombre = 'no deberia poder' WHERE usuario = 'admin'", (error) => {
+            if (error) reject(error); else resolve();
+          });
+        });
+      } catch (error) {
+        rechazado = true;
+        codigo = error.code || "";
+      }
+      if (!rechazado) throw new Error("una conexion OPEN_READONLY debe rechazar cualquier intento de escritura sobre la DB de la empresa");
+      assertSame(codigo, "SQLITE_READONLY", "el rechazo debe ser estructural (SQLITE_READONLY), no una convencion de codigo");
+    } finally {
+      await new Promise((resolve) => soloLectura.close(() => resolve()));
+    }
+
+    const admin = (await allSql(businessDbPath, "SELECT nombre FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    assertSame(admin.nombre, "Administrador", "el intento de escritura rechazado no debe haber alterado la fila real");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+  }
+}
+
+// MT-1B.1-CLOSE (seccion 2): aisla UNIQUE(empresa_id, usuario_local_id) de UNIQUE(usuario_id,
+// empresa_id). Dos identidades DISTINTAS no pueden compartir (empresaA, local=5) -- pero la
+// prueba de aislamiento real es que esa MISMA identidad2 SI puede quedar vinculada a empresaA
+// con un usuario_local_id distinto (6), demostrando que lo que bloqueo fue exclusivamente el
+// par (empresa_id, usuario_local_id), no (usuario_id, empresa_id).
+async function testMT1BUniqueEmpresaLocalAislado() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const empresaA = await registrarEmpresa(controlDb, { slug: "empresa-a-unique-local-test", nombre: "Empresa A Unique Local Test", dbPath: "guernica.db" });
+
+      const identidad1 = await crearUsuarioCentral(controlDb, {
+        nombre: "Identidad Uno", usuarioReferencia: "identidad_uno_local", passwordHash: "$2b$10$hashUnoNoRealParaTest", activo: 1
+      });
+      await crearMembership(controlDb, { usuarioId: identidad1.id, empresaId: empresaA.id, usuarioLocalId: 5, rol: "admin", activo: 1 });
+
+      const identidad2 = await crearUsuarioCentral(controlDb, {
+        nombre: "Identidad Dos", usuarioReferencia: "identidad_dos_local", passwordHash: "$2b$10$hashDosNoRealParaTest", activo: 1
+      });
+
+      let violoConstraint = false;
+      try {
+        await crearMembership(controlDb, { usuarioId: identidad2.id, empresaId: empresaA.id, usuarioLocalId: 5, rol: "encargado", activo: 1 });
+      } catch (error) {
+        violoConstraint = true;
+      }
+      if (!violoConstraint) {
+        throw new Error("dos identidades centrales distintas no deben poder compartir (empresa_id, usuario_local_id)");
+      }
+
+      const membershipsIdentidad2TrasRechazo = await allControlQuery(controlDb, "SELECT * FROM usuario_empresas WHERE usuario_id = ?", [identidad2.id]);
+      assertEqual(membershipsIdentidad2TrasRechazo.length, 0, "el intento rechazado no debe haber dejado ninguna fila a medias");
+
+      // Aislamiento: la MISMA identidad2, MISMA empresaA, pero local_id distinto (6) debe
+      // funcionar sin problema -- si (usuario_id, empresa_id) hubiera sido el bloqueo real,
+      // esto tambien fallaria.
+      const membershipConLocalDistinto = await crearMembership(controlDb, { usuarioId: identidad2.id, empresaId: empresaA.id, usuarioLocalId: 6, rol: "encargado", activo: 1 });
+      assertEqual(membershipConLocalDistinto.usuario_id, identidad2.id, "identidad2 SI debe poder vincularse a empresaA con un usuario_local_id distinto");
+      assertEqual(membershipConLocalDistinto.usuario_local_id, 6, "el usuario_local_id de la membership aislante debe ser el 6 usado en la prueba");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// MT-1B.1-CLOSE (seccion 3): aisla UNIQUE(usuario_id, empresa_id) de UNIQUE(empresa_id,
+// usuario_local_id). La MISMA identidad1 no puede tener una SEGUNDA membership en la MISMA
+// empresaA (aunque el usuario_local_id sea distinto, 99) -- pero la prueba de aislamiento real
+// es que una identidad3 DISTINTA SI puede usar ese mismo usuario_local_id=99 en empresaA,
+// demostrando que lo que bloqueo fue exclusivamente el par (usuario_id, empresa_id), no
+// (empresa_id, usuario_local_id).
+async function testMT1BUniqueUsuarioEmpresaAislado() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const empresaA = await registrarEmpresa(controlDb, { slug: "empresa-a-unique-usuario-test", nombre: "Empresa A Unique Usuario Test", dbPath: "guernica.db" });
+
+      const identidad1 = await crearUsuarioCentral(controlDb, {
+        nombre: "Identidad Uno", usuarioReferencia: "identidad_uno_usuario", passwordHash: "$2b$10$hashUnoNoRealParaTestB", activo: 1
+      });
+      await crearMembership(controlDb, { usuarioId: identidad1.id, empresaId: empresaA.id, usuarioLocalId: 5, rol: "admin", activo: 1 });
+
+      let violoConstraint = false;
+      try {
+        await crearMembership(controlDb, { usuarioId: identidad1.id, empresaId: empresaA.id, usuarioLocalId: 99, rol: "encargado", activo: 1 });
+      } catch (error) {
+        violoConstraint = true;
+      }
+      if (!violoConstraint) {
+        throw new Error("la misma identidad central no debe poder tener 2 memberships simultaneas en la misma empresa");
+      }
+
+      const membershipsIdentidad1TrasRechazo = await allControlQuery(controlDb, "SELECT * FROM usuario_empresas WHERE usuario_id = ?", [identidad1.id]);
+      assertEqual(membershipsIdentidad1TrasRechazo.length, 1, "el intento rechazado no debe haber agregado una segunda membership a identidad1");
+
+      // Aislamiento: una identidad DISTINTA (identidad3) SI puede usar ese mismo
+      // usuario_local_id=99 en empresaA -- si (empresa_id, usuario_local_id) hubiera sido el
+      // bloqueo real, esto tambien fallaria.
+      const identidad3 = await crearUsuarioCentral(controlDb, {
+        nombre: "Identidad Tres", usuarioReferencia: "identidad_tres_usuario", passwordHash: "$2b$10$hashTresNoRealParaTest", activo: 1
+      });
+      const membershipConIdentidadDistinta = await crearMembership(controlDb, { usuarioId: identidad3.id, empresaId: empresaA.id, usuarioLocalId: 99, rol: "colaborador", activo: 1 });
+      assertEqual(membershipConIdentidadDistinta.usuario_local_id, 99, "una identidad distinta SI debe poder usar el usuario_local_id 99 en empresaA");
+      assertEqual(membershipConIdentidadDistinta.usuario_id, identidad3.id, "la membership aislante debe pertenecer a identidad3");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// MT-1B.1-CLOSE (seccion 7): con >1 membership, sincronizar UNA empresa no debe apagar la
+// identidad Atlas global -- solo debe reflejarse en la membership de esa empresa puntual.
+async function testMT1BActivoGlobalNoLoDecideUnaMembershipAislada() {
+  const businessDbGuernica = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    await withServer(businessDbGuernica, async () => {});
+    const controlDb = await bootstrapControlDb(controlDbPath);
+    try {
+      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      const empresaB = await registrarEmpresa(controlDb, { slug: "comercio-b-activo-test", nombre: "Comercio B Activo Test", dbPath: "guernica.db" });
+
+      // Primer sync de Guernica: crea la identidad central (admin) con 1 sola membership.
+      await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath: businessDbGuernica });
+      const identidadCentral = (await allControlQuery(controlDb, "SELECT * FROM usuarios"))[0];
+
+      // Se agrega manualmente una segunda membership (Comercio B) para la MISMA identidad --
+      // simula que esta persona ya es multiempresa, sin implementar el flujo de vinculacion
+      // manual (fuera de alcance de MT-1B.1).
+      const membershipComercioB = await crearMembership(controlDb, {
+        usuarioId: identidadCentral.id, empresaId: empresaB.id, usuarioLocalId: 1, rol: "encargado", activo: 1
+      });
+
+      const totalMembershipsAntes = await allControlQuery(controlDb, "SELECT * FROM usuario_empresas WHERE usuario_id = ?", [identidadCentral.id]);
+      assertEqual(totalMembershipsAntes.length, 2, "la identidad debe tener 2 memberships antes de la prueba");
+
+      // Se desactiva el usuario SOLO en la DB local de Guernica.
+      await runSql(businessDbGuernica, "UPDATE usuarios SET activo = 0 WHERE usuario = ?", ["admin"]);
+
+      // Se sincroniza SOLO Guernica.
+      await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath: businessDbGuernica });
+
+      const membershipGuernicaTrasSync = await getControlQuery(controlDb, "SELECT * FROM usuario_empresas WHERE empresa_id = ? AND usuario_local_id = ?", [guernica.id, 1]);
+      const membershipComercioBTrasSync = await getControlQuery(controlDb, "SELECT * FROM usuario_empresas WHERE id = ?", [membershipComercioB.id]);
+      const identidadCentralTrasSync = await getControlQuery(controlDb, "SELECT * FROM usuarios WHERE id = ?", [identidadCentral.id]);
+
+      assertEqual(Number(membershipGuernicaTrasSync.activo), 0, "la membership de Guernica debe reflejar la desactivacion local");
+      assertEqual(Number(membershipComercioBTrasSync.activo), 1, "la membership de Comercio B no debe verse afectada por el sync de Guernica");
+      assertEqual(Number(identidadCentralTrasSync.activo), 1, "la identidad Atlas global NO debe apagarse por la desactivacion en una sola empresa cuando hay mas de una membership");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbGuernica, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
   }
 }
