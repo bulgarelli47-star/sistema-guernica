@@ -6,6 +6,7 @@ const fs = require("fs");
 const bcrypt = require("bcrypt");
 const crypto = require("crypto");
 const { runQuery, getQuery, allQuery } = require("./db");
+const userControlBridge = require("./userControlBridge");
 const {
   CONFIGURACION_DEFAULTS,
   getConfiguracionGlobal,
@@ -2015,6 +2016,16 @@ app.patch("/usuarios/:id/password", async (req, res) => {
       "UPDATE usuarios SET password = ?, actualizado_en = ? WHERE id = ?",
       [passwordHash, new Date().toISOString(), usuarioId]
     );
+
+    if (userControlBridge.getBridgeMode() === "shadow") {
+      try {
+        await userControlBridge.syncPasswordHash({ usuarioLocalId: usuarioId, passwordHash });
+      } catch (bridgeError) {
+        logError("bridge password divergence", bridgeError);
+        return res.status(503).json({ message: "La contrasena se actualizo pero no pudo sincronizarse completamente. Intenta nuevamente en unos minutos." });
+      }
+    }
+
     return res.json({ message: "Contrasena actualizada correctamente" });
   } catch (error) {
     logError("Error al cambiar contrasena:", error);

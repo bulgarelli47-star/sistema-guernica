@@ -202,6 +202,21 @@ async function seedGuernica(db) {
   return registrarEmpresa(db, GUERNICA_SEED);
 }
 
+// MT-1C.1A: update deliberadamente angosto para el bridge de password -- a diferencia de
+// actualizarUsuarioCentral (que reescribe nombre/email/telefono/foto/activo/lockout juntos),
+// esta funcion NUNCA debe poder vaciar ningun otro campo de la identidad central al sincronizar
+// solo el hash.
+async function actualizarPasswordUsuarioCentral(db, usuarioId, passwordHash) {
+  const result = await runQuery(
+    db,
+    `UPDATE usuarios SET password_hash = ?, actualizado_en = datetime('now') WHERE id = ?`,
+    [passwordHash, usuarioId]
+  );
+  if (result.changes !== 1) {
+    throw new Error(`actualizarPasswordUsuarioCentral: se esperaba actualizar exactamente 1 fila (usuarioId=${usuarioId}), se actualizaron ${result.changes}`);
+  }
+}
+
 async function bootstrapControlDb(dbPath = DEFAULT_DB_PATH, { seed = true } = {}) {
   const db = openDb(dbPath);
   await initControlSchema(db);
@@ -225,6 +240,7 @@ module.exports = {
   bootstrapControlDb,
   crearUsuarioCentral,
   actualizarUsuarioCentral,
+  actualizarPasswordUsuarioCentral,
   crearMembership,
   actualizarMembership,
   getMembershipPorEmpresaYLocal

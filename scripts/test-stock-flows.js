@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const sqlite3 = require("sqlite3").verbose();
+const bcrypt = require("bcrypt");
 const { db: backendDb } = require("../backend/db");
 const { buildDetalleVentaSnapshotFiscal, buildResumenFiscalVenta } = require("../backend/services/ventaService");
 const {
@@ -33,11 +34,13 @@ const {
   bootstrapControlDb,
   crearUsuarioCentral,
   crearMembership,
-  getMembershipPorEmpresaYLocal
+  getMembershipPorEmpresaYLocal,
+  actualizarPasswordUsuarioCentral
 } = require("../database/init-control-db");
 const {
   syncUsuariosShadowDesdeDbPath
 } = require("../database/sync-shadow-users");
+const userControlBridge = require("../backend/userControlBridge");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -180,12 +183,12 @@ async function waitForServer(baseUrl) {
   throw new Error("El servidor de prueba no arranco a tiempo");
 }
 
-async function withServer(dbPath, fn) {
+async function withServer(dbPath, fn, extraEnv = {}) {
   const port = await getFreePort();
   const baseUrl = `http://localhost:${port}`;
   const child = spawn(process.execPath, ["backend/server.js"], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(port), GUERNICA_DB_PATH: dbPath },
+    env: { ...process.env, PORT: String(port), GUERNICA_DB_PATH: dbPath, ...extraEnv },
     stdio: ["ignore", "pipe", "pipe"]
   });
 
@@ -20918,6 +20921,15 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1BUniqueEmpresaLocalAislado);
   await _run(testMT1BUniqueUsuarioEmpresaAislado);
   await _run(testMT1BActivoGlobalNoLoDecideUnaMembershipAislada);
+  await _run(testMT1CBridgeOffPreservaLegacy);
+  await _run(testMT1CBridgeShadowDualWriteMismoHash);
+  await _run(testMT1CBridgeShadowAdminCambiaOtroUsuario);
+  await _run(testMT1CBridgePasswordInvalidoNoModificaNada);
+  await _run(testMT1CBridgeMembershipInexistente503);
+  await _run(testMT1CBridgeControlPlaneCaido503);
+  await _run(testMT1CBridgeControlPlaneAusenteNoLoCrea);
+  await _run(testMT1CBridgeAperturaActivaForeignKeys);
+  await _run(testMT1CBridgeActualizarPasswordCentralHelper);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -21771,6 +21783,382 @@ async function testMT1BActivoGlobalNoLoDecideUnaMembershipAislada() {
     }
   } finally {
     fs.rmSync(businessDbGuernica, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// MT-1C.1A: password bridge (dual-write local + control plane, auth sigue 100% legacy).
+
+async function testMT1CBridgeOffPreservaLegacy() {
+  const businessDbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(businessDbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const localAdmin = (await allSql(businessDbPath, "SELECT id, password FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+      const cambio = await requestJson(baseUrl, "PATCH", `/usuarios/${localAdmin.id}/password`, {
+        password: "NuevaClaveOff1",
+        confirmar_password: "NuevaClaveOff1"
+      }, token);
+      if (!cambio.response.ok) throw new Error(`PATCH password (bridge off) fallo: ${cambio.data?.message || cambio.response.status}`);
+      assertSame(cambio.data.message, "Contrasena actualizada correctamente", "bridge off debe conservar exactamente el mensaje actual");
+
+      const localDespues = (await allSql(businessDbPath, "SELECT password FROM usuarios WHERE id = ?", [localAdmin.id]))[0];
+      if (localDespues.password === localAdmin.password) throw new Error("el password local deberia haber cambiado");
+      const compara = await bcrypt.compare("NuevaClaveOff1", localDespues.password);
+      if (!compara) throw new Error("el nuevo password local no es recuperable con bcrypt.compare");
+
+      const tokenNuevo = await login(baseUrl, "admin", "NuevaClaveOff1");
+      if (!tokenNuevo) throw new Error("login legacy con el password nuevo debe seguir funcionando con bridge off");
+    }, { ATLAS_USER_BRIDGE_MODE: "off" });
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeShadowDualWriteMismoHash() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `bridge-shadow-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Bridge Shadow Test", dbPath: "guernica.db" });
+    const localAdmin = (await allSql(businessDbPath, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const placeholderHash = await bcrypt.hash("PlaceholderInicial1", 10);
+    const usuarioCentral = await crearUsuarioCentral(controlDb, {
+      nombre: "Bridge Admin Test", usuarioReferencia: "admin", passwordHash: placeholderHash, activo: 1
+    });
+    await crearMembership(controlDb, {
+      usuarioId: usuarioCentral.id, empresaId: empresa.id, usuarioLocalId: localAdmin.id, rol: "admin", activo: 1
+    });
+    await closeControlDb(controlDb);
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const cambio = await requestJson(baseUrl, "PATCH", `/usuarios/${localAdmin.id}/password`, {
+        password: "NuevaClaveBridge1",
+        confirmar_password: "NuevaClaveBridge1"
+      }, token);
+      if (!cambio.response.ok) throw new Error(`PATCH password (bridge shadow, happy path) fallo: ${cambio.data?.message || cambio.response.status}`);
+      assertSame(cambio.data.message, "Contrasena actualizada correctamente", "bridge shadow exitoso debe conservar el mensaje actual de exito");
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    const localDespues = (await allSql(businessDbPath, "SELECT password FROM usuarios WHERE id = ?", [localAdmin.id]))[0];
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralDespues = await getControlQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [usuarioCentral.id]);
+      if (localDespues.password !== centralDespues.password_hash) {
+        throw new Error("local.password y central.password_hash deben ser EXACTAMENTE el mismo string tras el bridge shadow");
+      }
+      const compareLocal = await bcrypt.compare("NuevaClaveBridge1", localDespues.password);
+      const compareCentral = await bcrypt.compare("NuevaClaveBridge1", centralDespues.password_hash);
+      if (!compareLocal || !compareCentral) throw new Error("bcrypt.compare contra el password nuevo debe ser true tanto en local como en central");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeShadowAdminCambiaOtroUsuario() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `bridge-otro-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Bridge Otro Usuario", dbPath: "guernica.db" });
+    await closeControlDb(controlDb);
+
+    let otroLocalId;
+    const usuarioColaborador = `colaborador.bridge.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Bridge TEST",
+        usuario: usuarioColaborador,
+        password: "Colaborador123",
+        confirmar_password: "Colaborador123",
+        rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario colaborador fallo: ${creado.data?.message || creado.response.status}`);
+      otroLocalId = creado.data.usuario.id;
+    });
+
+    const placeholderHash = await bcrypt.hash("PlaceholderOtro1", 10);
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const usuarioCentral = await crearUsuarioCentral(controlDb, {
+      nombre: "Colaborador Bridge TEST", usuarioReferencia: usuarioColaborador, passwordHash: placeholderHash, activo: 1
+    });
+    await crearMembership(controlDb, {
+      usuarioId: usuarioCentral.id, empresaId: empresa.id, usuarioLocalId: otroLocalId, rol: "colaborador", activo: 1
+    });
+    await closeControlDb(controlDb);
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const cambio = await requestJson(baseUrl, "PATCH", `/usuarios/${otroLocalId}/password`, {
+        password: "NuevoColaborador1",
+        confirmar_password: "NuevoColaborador1"
+      }, tokenAdmin);
+      if (!cambio.response.ok) throw new Error(`admin cambiando password de otro usuario (bridge shadow) fallo: ${cambio.data?.message || cambio.response.status}`);
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    const localDespues = (await allSql(businessDbPath, "SELECT password FROM usuarios WHERE id = ?", [otroLocalId]))[0];
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralDespues = await getControlQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [usuarioCentral.id]);
+      if (localDespues.password !== centralDespues.password_hash) throw new Error("admin sobre otro usuario: local y central deben quedar identicos");
+      const compara = await bcrypt.compare("NuevoColaborador1", localDespues.password);
+      if (!compara) throw new Error("el nuevo password de 'otro usuario' debe ser recuperable con bcrypt.compare");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgePasswordInvalidoNoModificaNada() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `bridge-invalido-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Bridge Password Invalido", dbPath: "guernica.db" });
+    const localAdmin = (await allSql(businessDbPath, "SELECT id, password FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const placeholderHash = await bcrypt.hash("PlaceholderInvalido1", 10);
+    const usuarioCentral = await crearUsuarioCentral(controlDb, {
+      nombre: "Bridge Admin Invalido", usuarioReferencia: "admin", passwordHash: placeholderHash, activo: 1
+    });
+    await crearMembership(controlDb, {
+      usuarioId: usuarioCentral.id, empresaId: empresa.id, usuarioLocalId: localAdmin.id, rol: "admin", activo: 1
+    });
+    await closeControlDb(controlDb);
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+
+      const corto = await requestJson(baseUrl, "PATCH", `/usuarios/${localAdmin.id}/password`, {
+        password: "corto1", confirmar_password: "corto1"
+      }, token);
+      if (corto.response.ok) throw new Error("password de menos de 8 caracteres deberia fallar");
+      assertEqual(corto.response.status, 400, "password invalido (longitud) debe devolver 400");
+
+      const sinDigito = await requestJson(baseUrl, "PATCH", `/usuarios/${localAdmin.id}/password`, {
+        password: "sindigitos", confirmar_password: "sindigitos"
+      }, token);
+      if (sinDigito.response.ok) throw new Error("password sin digitos deberia fallar");
+      assertEqual(sinDigito.response.status, 400, "password invalido (sin digito) debe devolver 400");
+
+      const noCoincide = await requestJson(baseUrl, "PATCH", `/usuarios/${localAdmin.id}/password`, {
+        password: "ValidoPero1", confirmar_password: "OtroValor1"
+      }, token);
+      if (noCoincide.response.ok) throw new Error("confirmar_password que no coincide deberia fallar");
+      assertEqual(noCoincide.response.status, 400, "confirmacion que no coincide debe devolver 400");
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    const localDespues = (await allSql(businessDbPath, "SELECT password FROM usuarios WHERE id = ?", [localAdmin.id]))[0];
+    assertSame(localDespues.password, localAdmin.password, "ningun intento invalido debe modificar el password local");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralDespues = await getControlQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [usuarioCentral.id]);
+      assertSame(centralDespues.password_hash, placeholderHash, "ningun intento invalido debe modificar el password_hash central");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeMembershipInexistente503() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `bridge-sinmembership-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Bridge Sin Membership", dbPath: "guernica.db" });
+    const usuariosCentralAntes = await allControlQuery(controlDb, "SELECT id FROM usuarios");
+    await closeControlDb(controlDb);
+
+    const localAdmin = (await allSql(businessDbPath, "SELECT id, password FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const cambio = await requestJson(baseUrl, "PATCH", `/usuarios/${localAdmin.id}/password`, {
+        password: "SinMembership1", confirmar_password: "SinMembership1"
+      }, token);
+      if (cambio.response.ok) throw new Error("sin membership el endpoint deberia fallar con 503");
+      assertEqual(cambio.response.status, 503, "sin membership el bridge debe responder 503");
+      if (/ENOENT|SQLITE|sqlite3|\.db\b|atlas_control|stack/i.test(JSON.stringify(cambio.data))) {
+        throw new Error(`la respuesta 503 no debe filtrar detalles internos: ${JSON.stringify(cambio.data)}`);
+      }
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    const localDespues = (await allSql(businessDbPath, "SELECT password FROM usuarios WHERE id = ?", [localAdmin.id]))[0];
+    if (localDespues.password === localAdmin.password) {
+      throw new Error("segun el orden authority-first, el local deberia haber cambiado igual (la divergencia se registra, no se revierte)");
+    }
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const usuariosCentralDespues = await allControlQuery(controlDb, "SELECT id FROM usuarios");
+      assertEqual(usuariosCentralDespues.length, usuariosCentralAntes.length, "no debe crearse ninguna identidad central nueva (no auto-link, no auto-create)");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeControlPlaneCaido503() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPathInvalido = path.join(os.tmpdir(), `no-existe-${Date.now()}-${Math.random().toString(16).slice(2)}`, "atlas_control.db");
+  try {
+    const localAdmin = (await allSql(businessDbPath, "SELECT id, password FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const cambio = await requestJson(baseUrl, "PATCH", `/usuarios/${localAdmin.id}/password`, {
+        password: "ControlCaido1", confirmar_password: "ControlCaido1"
+      }, token);
+      if (cambio.response.ok) throw new Error("control plane caido deberia fallar con 503");
+      assertEqual(cambio.response.status, 503, "control plane caido debe responder 503");
+      if (/ENOENT|SQLITE|sqlite3|\.db\b|atlas_control|stack|CANTOPEN/i.test(JSON.stringify(cambio.data))) {
+        throw new Error(`la respuesta 503 no debe filtrar detalles internos: ${JSON.stringify(cambio.data)}`);
+      }
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPathInvalido,
+      ATLAS_EMPRESA_SLUG: "cualquier-slug-bridge-down"
+    });
+
+    const localDespues = (await allSql(businessDbPath, "SELECT password FROM usuarios WHERE id = ?", [localAdmin.id]))[0];
+    if (localDespues.password === localAdmin.password) {
+      throw new Error("con control plane caido, el local deberia haber cambiado igual (autoridad local primero)");
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+  }
+}
+
+// MT-1C.1A-CLOSE: hardening #1 -- el archivo de control plane NO debe autocrearse si esta
+// ausente (directorio existente, archivo inexistente): esto es distinto del caso anterior
+// (directorio inexistente), y exige OPEN_READWRITE sin OPEN_CREATE en la apertura runtime.
+async function testMT1CBridgeControlPlaneAusenteNoLoCrea() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-control-ausente-"));
+  const controlDbPathAusente = path.join(tmpDir, "atlas_control.db");
+  try {
+    if (!fs.existsSync(tmpDir)) throw new Error("el directorio temporal debe existir antes del test");
+    if (fs.existsSync(controlDbPathAusente)) throw new Error("el archivo de control plane no debe existir antes del test");
+
+    const localAdmin = (await allSql(businessDbPath, "SELECT id, password FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const cambio = await requestJson(baseUrl, "PATCH", `/usuarios/${localAdmin.id}/password`, {
+        password: "ArchivoAusente1", confirmar_password: "ArchivoAusente1"
+      }, token);
+      if (cambio.response.ok) throw new Error("archivo de control plane ausente deberia fallar con 503");
+      assertEqual(cambio.response.status, 503, "archivo de control plane ausente debe responder 503");
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPathAusente,
+      ATLAS_EMPRESA_SLUG: "guernica"
+    });
+
+    const localDespues = (await allSql(businessDbPath, "SELECT password FROM usuarios WHERE id = ?", [localAdmin.id]))[0];
+    if (localDespues.password === localAdmin.password) {
+      throw new Error("por orden authority-first, el local deberia haber cambiado igual");
+    }
+
+    if (fs.existsSync(controlDbPathAusente)) {
+      throw new Error("el bridge NO debe crear atlas_control.db cuando el archivo esta ausente -- se creo por error");
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// MT-1C.1A-CLOSE: hardening #4 -- la conexion runtime del bridge debe activar
+// PRAGMA foreign_keys=ON. Se prueba directamente contra el primitivo de apertura exportado
+// (abrirControlDbBridge), que es el mismo que usa syncPasswordHash -- no se crea una API nueva
+// solo para el test, se reutiliza la unica funcion de apertura que ya existe.
+async function testMT1CBridgeAperturaActivaForeignKeys() {
+  const controlDbPath = tempDbPath();
+  try {
+    const bootstrap = await bootstrapControlDb(controlDbPath, { seed: false });
+    await closeControlDb(bootstrap);
+
+    const db = await userControlBridge.abrirControlDbBridge(controlDbPath);
+    try {
+      const pragma = await getControlQuery(db, "PRAGMA foreign_keys");
+      assertEqual(pragma.foreign_keys, 1, "la apertura runtime del bridge debe activar PRAGMA foreign_keys = ON");
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// MT-1C.1A-CLOSE: hardening #6 -- actualizarPasswordUsuarioCentral debe verificar changes === 1
+// y nunca reportar exito silencioso si el usuario central no existia. Probado directamente sobre
+// el helper, sin servidor, para mantener el scope acotado (seccion 7).
+async function testMT1CBridgeActualizarPasswordCentralHelper() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const placeholderHash = await bcrypt.hash("PlaceholderHelperTest1", 10);
+      const usuarioCentral = await crearUsuarioCentral(controlDb, {
+        nombre: "Helper Central Test",
+        usuarioReferencia: "helper.central.test",
+        passwordHash: placeholderHash,
+        activo: 1
+      });
+
+      const nuevoHash = await bcrypt.hash("NuevoHashHelperTest1", 10);
+      await actualizarPasswordUsuarioCentral(controlDb, usuarioCentral.id, nuevoHash);
+      const despues = await getControlQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [usuarioCentral.id]);
+      assertSame(despues.password_hash, nuevoHash, "el helper debe persistir exactamente el hash recibido en el usuario existente");
+
+      let fallo = false;
+      try {
+        await actualizarPasswordUsuarioCentral(controlDb, usuarioCentral.id + 999999, await bcrypt.hash("NoDeberiaAplicarse1", 10));
+      } catch (error) {
+        fallo = true;
+      }
+      if (!fallo) throw new Error("actualizarPasswordUsuarioCentral debe rechazar un usuarioId inexistente (0 filas afectadas), no reportar exito silencioso");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
     fs.rmSync(controlDbPath, { force: true });
   }
 }
