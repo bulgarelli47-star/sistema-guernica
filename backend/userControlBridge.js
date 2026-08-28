@@ -5,8 +5,11 @@ const sqlite3 = require("sqlite3").verbose();
 const {
   DEFAULT_DB_PATH,
   closeDb,
+  runQuery,
   getQuery,
   getMembershipPorEmpresaYLocal,
+  crearUsuarioCentral,
+  crearMembership,
   actualizarPasswordUsuarioCentral,
   actualizarAccesoMembership,
   actualizarActivoMembership
@@ -57,14 +60,22 @@ function resolveEmpresaSlug() {
   return String(process.env.ATLAS_EMPRESA_SLUG || "").trim();
 }
 
+// Resolucion de empresa compartida por password/rol/activo/create por igual: la empresa debe
+// existir y estar activa. Extraida aparte porque Create la necesita SIN membership (todavia no
+// existe ninguna para ese usuario_local_id en el momento de crearla).
+async function resolverEmpresaActiva(db, slug) {
+  const empresa = await getQuery(db, "SELECT id, activa FROM empresas WHERE slug = ?", [slug]);
+  if (!empresa || Number(empresa.activa) !== 1) {
+    throw new Error(`resolverEmpresaActiva: empresa '${slug}' no existe o no esta activa en el control plane`);
+  }
+  return empresa;
+}
+
 // Resolucion compartida empresa+membership: usada por password, rol y activo por igual. La
 // empresa debe existir y estar activa, y debe existir una membership real para ese
 // usuario_local_id -- el bridge nunca auto-crea ninguna de las dos cosas.
 async function resolverMembershipActiva(db, slug, usuarioLocalId) {
-  const empresa = await getQuery(db, "SELECT id, activa FROM empresas WHERE slug = ?", [slug]);
-  if (!empresa || Number(empresa.activa) !== 1) {
-    throw new Error(`resolverMembershipActiva: empresa '${slug}' no existe o no esta activa en el control plane`);
-  }
+  const empresa = await resolverEmpresaActiva(db, slug);
 
   const membership = await getMembershipPorEmpresaYLocal(db, {
     empresaId: empresa.id,
@@ -132,6 +143,67 @@ async function syncMembershipAccess({ empresaSlug, usuarioLocalId, rol, activo, 
   }
 }
 
+// MT-1C.1C: crea identidad central NUEVA + membership para un usuario local recien insertado.
+// NUNCA reutiliza una identidad central preexistente (no auto-link por usuario/email/nombre --
+// no hay ninguna senal segura para eso, y fusionar por coincidencia seria arquitectonicamente
+// incorrecto). central.activo nace SIEMPRE en 1 (habilitacion global de la identidad Atlas);
+// unicamente membership.activo refleja el activo local de ESA empresa.
+//
+// crearUsuarioCentral + crearMembership se envuelven en una unica transaccion (BEGIN IMMEDIATE /
+// COMMIT / ROLLBACK) para que la identidad central nunca quede huerfana si la membership falla
+// (por ejemplo, por la constraint UNIQUE(empresa_id, usuario_local_id)).
+async function syncUserCreate({ empresaSlug, usuarioLocal, passwordHash, controlDbPath } = {}) {
+  const slug = empresaSlug || resolveEmpresaSlug();
+  if (!slug) {
+    throw new Error("syncUserCreate: falta configurar ATLAS_EMPRESA_SLUG (o pasar empresaSlug explicito)");
+  }
+
+  const dbPath = controlDbPath || resolveControlDbPath();
+  const db = await abrirControlDbBridge(dbPath);
+  let transactionStarted = false;
+  try {
+    await runQuery(db, "BEGIN IMMEDIATE");
+    transactionStarted = true;
+
+    const empresa = await resolverEmpresaActiva(db, slug);
+
+    const usuarioCentral = await crearUsuarioCentral(db, {
+      nombre: usuarioLocal.nombre,
+      usuarioReferencia: usuarioLocal.usuario,
+      passwordHash,
+      email: usuarioLocal.email,
+      telefono: usuarioLocal.telefono,
+      fotoUrl: null,
+      activo: 1
+    });
+
+    await crearMembership(db, {
+      usuarioId: usuarioCentral.id,
+      empresaId: empresa.id,
+      usuarioLocalId: usuarioLocal.id,
+      rol: usuarioLocal.rol,
+      activo: usuarioLocal.activo
+    });
+
+    await runQuery(db, "COMMIT");
+    transactionStarted = false;
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await runQuery(db, "ROLLBACK");
+      } catch (rollbackError) {
+        // No reemplazar el error original: se adjunta como contexto adicional, nunca se relanza
+        // en su lugar. Perder por que fallo la creacion original seria peor que un rollback
+        // fallido silencioso.
+        error.rollbackError = rollbackError;
+      }
+    }
+    throw error;
+  } finally {
+    await closeDb(db);
+  }
+}
+
 module.exports = {
   getBridgeMode,
   resolveControlDbPath,
@@ -139,5 +211,6 @@ module.exports = {
   syncPasswordHash,
   syncMembershipActivo,
   syncMembershipAccess,
+  syncUserCreate,
   abrirControlDbBridge
 };

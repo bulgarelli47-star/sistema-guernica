@@ -1919,7 +1919,30 @@ app.post("/usuarios", async (req, res) => {
       [data.nombre, data.usuario, passwordHash, data.rol, data.email, data.telefono, data.activo, now, now]
     );
 
-    return res.json({ message: "Usuario creado correctamente", usuario: await getUsuarioById(result.lastID) });
+    const usuarioLocalId = result.lastID;
+    const usuarioCreado = await getUsuarioById(usuarioLocalId);
+
+    if (userControlBridge.getBridgeMode() === "shadow") {
+      try {
+        await userControlBridge.syncUserCreate({
+          usuarioLocal: {
+            id: usuarioLocalId,
+            nombre: data.nombre,
+            usuario: data.usuario,
+            email: data.email,
+            telefono: data.telefono,
+            rol: data.rol,
+            activo: data.activo
+          },
+          passwordHash
+        });
+      } catch (bridgeError) {
+        logError("bridge create divergence", bridgeError, `usuario_local_id=${usuarioLocalId}`);
+        return res.status(503).json({ message: "El usuario se creo pero no pudo sincronizarse completamente. Intenta nuevamente en unos minutos." });
+      }
+    }
+
+    return res.json({ message: "Usuario creado correctamente", usuario: usuarioCreado });
   } catch (error) {
     logError("Error al crear usuario:", error);
     return res.status(500).json({ message: "Error al crear usuario" });

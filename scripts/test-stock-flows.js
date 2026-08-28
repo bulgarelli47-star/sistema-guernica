@@ -20941,6 +20941,13 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1CBridgeRoleActiveControlPlaneCaido503);
   await _run(testMT1CBridgeRoleActiveEmpresaInactiva503);
   await _run(testMT1CBridgeActualizarAccesoYActivoMembershipHelpers);
+  await _run(testMT1CBridgeCreateOffPreservaLegacy);
+  await _run(testMT1CBridgeCreateShadowHappyPath);
+  await _run(testMT1CBridgeCreateActivoCeroMembershipCeroCentralUno);
+  await _run(testMT1CBridgeCreateNoAutoLinkMultiempresa);
+  await _run(testMT1CBridgeCreateControlPlaneCaido503);
+  await _run(testMT1CBridgeCreateEmpresaInactiva503);
+  await _run(testMT1CBridgeCreateMembershipFailureRollbackSinCentralHuerfano);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -22674,6 +22681,345 @@ async function testMT1CBridgeActualizarAccesoYActivoMembershipHelpers() {
         falloActivo = true;
       }
       if (!falloActivo) throw new Error("actualizarActivoMembership debe rechazar un membershipId inexistente (0 filas afectadas)");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// MT-1C.1C: create user bridge (local FIRST + identidad central nueva + membership, atomicos
+// dentro de atlas_control.db). Auth sigue 100% legacy.
+
+async function testMT1CBridgeCreateOffPreservaLegacy() {
+  const businessDbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const usuarioLogin = `colaborador.createoff.${Date.now()}`;
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Create Off TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorOff1",
+        confirmar_password: "ColaboradorOff1",
+        rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario (bridge off) fallo: ${creado.data?.message || creado.response.status}`);
+      assertSame(creado.data.message, "Usuario creado correctamente", "bridge off debe conservar exactamente el mensaje actual");
+      assertSame(creado.data.usuario.usuario, usuarioLogin, "el local debe reflejar el usuario creado");
+
+      const tokenNuevo = await login(baseUrl, usuarioLogin, "ColaboradorOff1");
+      if (!tokenNuevo) throw new Error("login legacy con el usuario recien creado debe seguir funcionando con bridge off");
+    }, { ATLAS_USER_BRIDGE_MODE: "off" });
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeCreateShadowHappyPath() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `bridge-create-happy-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Bridge Create Happy Test", dbPath: "guernica.db" });
+    await closeControlDb(controlDb);
+
+    let localId;
+    const usuarioLogin = `colaborador.createhappy.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Create Happy TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorHappy1",
+        confirmar_password: "ColaboradorHappy1",
+        rol: "encargado",
+        email: "happy@test.invalid",
+        telefono: "111222333"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario (bridge shadow) fallo: ${creado.data?.message || creado.response.status}`);
+      assertSame(creado.data.message, "Usuario creado correctamente", "bridge shadow exitoso debe conservar el mensaje actual de exito");
+      localId = creado.data.usuario.id;
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    const localUsuario = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE id = ?", [localId]))[0];
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membership = await getControlQuery(controlDb, "SELECT * FROM usuario_empresas WHERE usuario_local_id = ?", [localId]);
+      if (!membership) throw new Error("debe existir una membership para el usuario local recien creado");
+      const usuarioCentral = await getControlQuery(controlDb, "SELECT * FROM usuarios WHERE id = ?", [membership.usuario_id]);
+      if (!usuarioCentral) throw new Error("debe existir una identidad central para la membership creada");
+
+      if (usuarioCentral.password_hash !== localUsuario.password) {
+        throw new Error("central.password_hash y local.password deben ser EXACTAMENTE el mismo string (comparacion sin exponer el valor)");
+      }
+      assertSame(membership.rol, "encargado", "membership.rol debe coincidir con el rol local");
+      assertEqual(Number(membership.activo), Number(localUsuario.activo), "membership.activo debe coincidir con el activo local");
+      assertEqual(Number(usuarioCentral.activo), 1, "central.activo debe nacer siempre en 1");
+
+      assertSame(usuarioCentral.nombre, "Colaborador Create Happy TEST", "central.nombre debe ser snapshot del nombre local inicial");
+      assertSame(usuarioCentral.usuario_referencia, usuarioLogin, "central.usuario_referencia debe ser snapshot del usuario local inicial");
+      assertSame(usuarioCentral.email, "happy@test.invalid", "central.email debe ser snapshot del email local inicial");
+      assertSame(usuarioCentral.telefono, "111222333", "central.telefono debe ser snapshot del telefono local inicial");
+      if (usuarioCentral.foto_url !== null) throw new Error("central.foto_url debe nacer null (POST /usuarios no maneja foto)");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeCreateActivoCeroMembershipCeroCentralUno() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `bridge-create-activo0-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Bridge Create Activo0 Test", dbPath: "guernica.db" });
+    await closeControlDb(controlDb);
+
+    let localId;
+    const usuarioLogin = `colaborador.createactivo0.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Create Activo0 TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorActivo01",
+        confirmar_password: "ColaboradorActivo01",
+        rol: "colaborador",
+        activo: false
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario activo=0 (bridge shadow) fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    const localUsuario = (await allSql(businessDbPath, "SELECT activo FROM usuarios WHERE id = ?", [localId]))[0];
+    assertEqual(Number(localUsuario.activo), 0, "local.activo debe quedar en 0");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membership = await getControlQuery(controlDb, "SELECT * FROM usuario_empresas WHERE usuario_local_id = ?", [localId]);
+      assertEqual(Number(membership.activo), 0, "membership.activo debe reflejar el activo=0 local");
+      const usuarioCentral = await getControlQuery(controlDb, "SELECT activo FROM usuarios WHERE id = ?", [membership.usuario_id]);
+      assertEqual(Number(usuarioCentral.activo), 1, "central.activo debe nacer en 1 incluso si el local nace en 0");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeCreateNoAutoLinkMultiempresa() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaASlug = `bridge-create-multi-a-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaBSlug = `bridge-create-multi-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaA = await registrarEmpresa(controlDb, { slug: empresaASlug, nombre: "Bridge Create Multi A", dbPath: "guernica.db" });
+    const empresaB = await registrarEmpresa(controlDb, { slug: empresaBSlug, nombre: "Bridge Create Multi B", dbPath: "guernica.db" });
+
+    const placeholderHash = await bcrypt.hash("PlaceholderDuplicado1", 10);
+    const usuarioCentralPreexistente = await crearUsuarioCentral(controlDb, {
+      nombre: "Identidad Preexistente TEST",
+      usuarioReferencia: "duplicado",
+      passwordHash: placeholderHash,
+      email: "duplicado@test.invalid",
+      activo: 1
+    });
+    const membershipB = await crearMembership(controlDb, {
+      usuarioId: usuarioCentralPreexistente.id, empresaId: empresaB.id, usuarioLocalId: 999001, rol: "colaborador", activo: 1
+    });
+    await closeControlDb(controlDb);
+
+    let localId;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Identidad Nueva Empresa A TEST",
+        usuario: "duplicado",
+        password: "NuevaIdentidadA1",
+        confirmar_password: "NuevaIdentidadA1",
+        rol: "colaborador",
+        email: "duplicado@test.invalid"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario con username/email duplicado (empresa A) fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaASlug
+    });
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membershipA = await getControlQuery(controlDb, "SELECT * FROM usuario_empresas WHERE empresa_id = ? AND usuario_local_id = ?", [empresaA.id, localId]);
+      if (!membershipA) throw new Error("debe existir membership nueva para empresa A");
+      if (Number(membershipA.usuario_id) === Number(usuarioCentralPreexistente.id)) {
+        throw new Error("NO debe fusionar: la membership de empresa A no debe apuntar a la identidad central preexistente");
+      }
+
+      const membershipBTrasCreate = await getControlQuery(controlDb, "SELECT * FROM usuario_empresas WHERE id = ?", [membershipB.id]);
+      assertEqual(Number(membershipBTrasCreate.usuario_id), Number(usuarioCentralPreexistente.id), "la membership preexistente de empresa B debe seguir intacta");
+
+      const totalCentral = await allControlQuery(controlDb, "SELECT id FROM usuarios");
+      assertEqual(totalCentral.length, 2, "debe haber exactamente 2 identidades centrales: la preexistente y la nueva");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeCreateControlPlaneCaido503() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPathInvalido = path.join(os.tmpdir(), `no-existe-create-${Date.now()}-${Math.random().toString(16).slice(2)}`, "atlas_control.db");
+  try {
+    const usuarioLogin = `colaborador.createdown.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Create Down TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorDown1",
+        confirmar_password: "ColaboradorDown1",
+        rol: "colaborador"
+      }, tokenAdmin);
+      if (creado.response.ok) throw new Error("control plane caido deberia fallar con 503");
+      assertEqual(creado.response.status, 503, "control plane caido debe responder 503 en create");
+      if (/ENOENT|SQLITE|sqlite3|\.db\b|atlas_control|stack|CANTOPEN/i.test(JSON.stringify(creado.data))) {
+        throw new Error(`la respuesta 503 no debe filtrar detalles internos: ${JSON.stringify(creado.data)}`);
+      }
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPathInvalido,
+      ATLAS_EMPRESA_SLUG: "cualquier-slug-create-down"
+    });
+
+    const localUsuario = (await allSql(businessDbPath, "SELECT id FROM usuarios WHERE usuario = ?", [usuarioLogin]))[0];
+    if (!localUsuario) throw new Error("por orden authority-first, el usuario local deberia haberse creado igual");
+    if (fs.existsSync(controlDbPathInvalido)) {
+      throw new Error("el bridge de create NO debe crear atlas_control.db cuando el control plane esta caido");
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeCreateEmpresaInactiva503() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `bridge-create-empresainactiva-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Bridge Create Empresa Inactiva", dbPath: "guernica.db", activa: 0 });
+    const usuariosCentralAntes = await allControlQuery(controlDb, "SELECT id FROM usuarios");
+    const membershipsAntes = await allControlQuery(controlDb, "SELECT id FROM usuario_empresas");
+    await closeControlDb(controlDb);
+
+    const usuarioLogin = `colaborador.createempresainactiva.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Create Empresa Inactiva TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorInactiva1",
+        confirmar_password: "ColaboradorInactiva1",
+        rol: "colaborador"
+      }, tokenAdmin);
+      if (creado.response.ok) throw new Error("empresa inactiva deberia fallar con 503");
+      assertEqual(creado.response.status, 503, "empresa inactiva debe responder 503 en create");
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    const localUsuario = (await allSql(businessDbPath, "SELECT id FROM usuarios WHERE usuario = ?", [usuarioLogin]))[0];
+    if (!localUsuario) throw new Error("el usuario local deberia existir (authority-first) aunque la empresa este inactiva");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const usuariosCentralDespues = await allControlQuery(controlDb, "SELECT id FROM usuarios");
+      const membershipsDespues = await allControlQuery(controlDb, "SELECT id FROM usuario_empresas");
+      assertEqual(usuariosCentralDespues.length, usuariosCentralAntes.length, "no debe crearse ninguna identidad central con empresa inactiva");
+      assertEqual(membershipsDespues.length, membershipsAntes.length, "no debe crearse ninguna membership con empresa inactiva");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1CBridgeCreateMembershipFailureRollbackSinCentralHuerfano() {
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `bridge-create-rollback-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Bridge Create Rollback Test", dbPath: "guernica.db" });
+
+    const ocupanteHash = await bcrypt.hash("PlaceholderOcupante1", 10);
+    const usuarioCentralOcupante = await crearUsuarioCentral(controlDb, {
+      nombre: "Ocupante Slot TEST", usuarioReferencia: "ocupante", passwordHash: ocupanteHash, activo: 1
+    });
+    const membershipOcupante = await crearMembership(controlDb, {
+      usuarioId: usuarioCentralOcupante.id, empresaId: empresa.id, usuarioLocalId: 555001, rol: "admin", activo: 1
+    });
+
+    const usuariosCentralAntes = await allControlQuery(controlDb, "SELECT id FROM usuarios");
+    await closeControlDb(controlDb);
+
+    const nuevoHash = await bcrypt.hash("NuevoIntentoRollback1", 10);
+    let fallo = false;
+    try {
+      await userControlBridge.syncUserCreate({
+        empresaSlug,
+        usuarioLocal: {
+          id: 555001,
+          nombre: "Intento Rollback TEST",
+          usuario: "intento.rollback",
+          email: null,
+          telefono: null,
+          rol: "colaborador",
+          activo: 1
+        },
+        passwordHash: nuevoHash,
+        controlDbPath
+      });
+    } catch (error) {
+      fallo = true;
+    }
+    if (!fallo) throw new Error("syncUserCreate deberia fallar cuando la membership choca con la constraint UNIQUE(empresa_id, usuario_local_id)");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const usuariosCentralDespues = await allControlQuery(controlDb, "SELECT id FROM usuarios");
+      assertEqual(usuariosCentralDespues.length, usuariosCentralAntes.length, "NO debe quedar ninguna identidad central huerfana tras el ROLLBACK");
+
+      const usuarioOcupanteTrasRollback = await getControlQuery(controlDb, "SELECT nombre FROM usuarios WHERE id = ?", [usuarioCentralOcupante.id]);
+      assertSame(usuarioOcupanteTrasRollback.nombre, "Ocupante Slot TEST", "la identidad central preexistente no debe verse afectada por el rollback");
+
+      const membershipOcupanteTrasRollback = await getControlQuery(controlDb, "SELECT rol FROM usuario_empresas WHERE id = ?", [membershipOcupante.id]);
+      assertSame(membershipOcupanteTrasRollback.rol, "admin", "la membership preexistente debe quedar intacta tras el rollback");
     } finally {
       await closeControlDb(controlDb);
     }
