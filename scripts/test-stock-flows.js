@@ -43,6 +43,7 @@ const {
   syncUsuariosShadowDesdeDbPath
 } = require("../database/sync-shadow-users");
 const userControlBridge = require("../backend/userControlBridge");
+const { reconcileShadowUsers } = require("../database/reconcile-shadow-users");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -20948,6 +20949,18 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1CBridgeCreateControlPlaneCaido503);
   await _run(testMT1CBridgeCreateEmpresaInactiva503);
   await _run(testMT1CBridgeCreateMembershipFailureRollbackSinCentralHuerfano);
+  await _run(testMT1DReconcileCheckAlignedSinDivergencias);
+  await _run(testMT1DReconcileMissingMembershipDetectaEnCheck);
+  await _run(testMT1DReconcileMissingMembershipApplyCreaCentralYMembership);
+  await _run(testMT1DReconcilePasswordMismatchDetectaYRepara);
+  await _run(testMT1DReconcileAccessMismatchDetectaYReparaRolYActivo);
+  await _run(testMT1DReconcileGlobalActiveReviewNuncaSeRepara);
+  await _run(testMT1DReconcileProfileDiffEsInformationalNoRepara);
+  await _run(testMT1DReconcileNoAutoLinkMultiempresa);
+  await _run(testMT1DReconcileIdempotenciaApplyDosVeces);
+  await _run(testMT1DReconcileControlDbAusenteNoLoCrea);
+  await _run(testMT1DReconcileEmpresaInactivaCheckReportaApplyNoEscribe);
+  await _run(testMT1DReconcileBrokenCentralRefYOrphanMembership);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -23024,6 +23037,435 @@ async function testMT1CBridgeCreateMembershipFailureRollbackSinCentralHuerfano()
       await closeControlDb(controlDb);
     }
   } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// MT-1C.1D: suite del reconciler operativo (database/reconcile-shadow-users.js). Distinta de
+// testMT1CBridge* -- esos prueban el bridge runtime (dual-write en caliente durante requests
+// HTTP); estos prueban la herramienta CLI/offline que compara una empresa completa y repara
+// divergencias seguras. Ningun test aca depende de un servidor HTTP: el reconciler lee/escribe
+// directamente los archivos SQLite.
+async function testMT1DReconcileCheckAlignedSinDivergencias() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `reconcile-aligned-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Reconcile Aligned Test", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: admin.password,
+      email: admin.email, telefono: admin.telefono, activo: 1
+    });
+    await crearMembership(controlDb, {
+      usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: admin.rol, activo: admin.activo
+    });
+    await closeControlDb(controlDb);
+
+    const resultado = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    if (!resultado.ok) throw new Error(`CHECK aligned fallo: ${resultado.message}`);
+    assertEqual(resultado.summary.critical, 0, "CHECK aligned no debe tener critical");
+    assertEqual(resultado.summary.review_blockers, 0, "CHECK aligned no debe tener review_blockers");
+    assertEqual(resultado.summary.errors, 0, "CHECK aligned no debe tener errores");
+    assertEqual(resultado.summary.aligned, 1, "CHECK aligned debe marcar el unico usuario como ALIGNED");
+    assertSame(resultado.usuarios[0].estados.join(","), "ALIGNED", "CHECK aligned debe reportar estado ALIGNED puro");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1DReconcileMissingMembershipDetectaEnCheck() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `reconcile-missing-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Reconcile Missing Test", dbPath: "guernica.db" });
+    await closeControlDb(controlDb);
+
+    const resultado = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    if (!resultado.ok) throw new Error(`CHECK missing membership fallo: ${resultado.message}`);
+    assertEqual(resultado.summary.critical, 1, "CHECK debe marcar 1 critical por membership faltante");
+    assertSame(resultado.usuarios[0].estados.join(","), "MISSING_MEMBERSHIP", "CHECK debe detectar MISSING_MEMBERSHIP");
+    assertEqual(resultado.usuarios[0].central_id, null, "CHECK no debe inventar un central_id");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const totalCentral = await allControlQuery(controlDb, "SELECT id FROM usuarios");
+      assertEqual(totalCentral.length, 0, "CHECK no debe escribir nada en modo check");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1DReconcileMissingMembershipApplyCreaCentralYMembership() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    await runSql(businessDbPath, "UPDATE usuarios SET activo = 0 WHERE usuario = ?", ["admin"]);
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    assertEqual(Number(admin.activo), 0, "fixture: local.activo debe quedar en 0 antes de reconciliar");
+
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `reconcile-missing-apply-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Reconcile Missing Apply Test", dbPath: "guernica.db" });
+    await closeControlDb(controlDb);
+
+    const resultado = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!resultado.ok) throw new Error(`APPLY missing membership fallo: ${resultado.message}`);
+    assertEqual(resultado.summary.repaired, 1, "APPLY debe reparar 1 usuario creando central+membership");
+    assertEqual(resultado.summary.critical, 0, "APPLY exitoso no debe dejar critical");
+    assertSame(resultado.usuarios[0].acciones.join(","), "CREAR_CENTRAL_Y_MEMBERSHIP", "APPLY debe registrar la accion de creacion");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membership = await getControlQuery(controlDb, "SELECT * FROM usuario_empresas WHERE usuario_local_id = ?", [admin.id]);
+      if (!membership) throw new Error("debe existir membership tras APPLY");
+      assertEqual(Number(membership.activo), 0, "membership.activo debe reflejar local.activo=0");
+      const central = await getControlQuery(controlDb, "SELECT * FROM usuarios WHERE id = ?", [membership.usuario_id]);
+      assertEqual(Number(central.activo), 1, "central.activo debe nacer en 1 aunque local.activo sea 0");
+      assertSame(central.password_hash, admin.password, "central.password_hash debe copiar el string exacto de local.password");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1DReconcilePasswordMismatchDetectaYRepara() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `reconcile-password-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Reconcile Password Test", dbPath: "guernica.db" });
+    const placeholderHash = await bcrypt.hash("PlaceholderViejo1", 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: placeholderHash, activo: 1
+    });
+    await crearMembership(controlDb, {
+      usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: admin.rol, activo: admin.activo
+    });
+    await closeControlDb(controlDb);
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    if (!check.ok) throw new Error(`CHECK password fallo: ${check.message}`);
+    assertSame(check.usuarios[0].estados.join(","), "PASSWORD_MISMATCH", "CHECK debe detectar PASSWORD_MISMATCH");
+    assertEqual(check.summary.critical, 1, "CHECK debe contar el mismatch como critical");
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`APPLY password fallo: ${apply.message}`);
+    assertEqual(apply.summary.repaired, 1, "APPLY debe reparar el password");
+    assertEqual(apply.summary.critical, 0, "APPLY exitoso no debe dejar critical");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralDespues = await getControlQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespues.password_hash, admin.password, "central.password_hash debe quedar EXACTAMENTE igual al string local (sin rehash)");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1DReconcileAccessMismatchDetectaYReparaRolYActivo() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `reconcile-access-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Reconcile Access Test", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: admin.password, activo: 1
+    });
+    const membership = await crearMembership(controlDb, {
+      usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "colaborador", activo: 0
+    });
+    await closeControlDb(controlDb);
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    if (!check.ok) throw new Error(`CHECK access fallo: ${check.message}`);
+    assertSame(check.usuarios[0].estados.join(","), "MEMBERSHIP_ACCESS_MISMATCH", "CHECK debe detectar rol+activo divergentes como un unico estado");
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`APPLY access fallo: ${apply.message}`);
+    assertEqual(apply.summary.repaired, 1, "APPLY debe reparar rol y activo juntos");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membershipDespues = await getControlQuery(controlDb, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespues.rol, admin.rol, "membership.rol debe quedar igual al local");
+      assertEqual(Number(membershipDespues.activo), Number(admin.activo), "membership.activo debe quedar igual al local");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1DReconcileGlobalActiveReviewNuncaSeRepara() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `reconcile-globalactive-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Reconcile Global Active Test", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: admin.password, activo: 0
+    });
+    await crearMembership(controlDb, {
+      usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: admin.rol, activo: admin.activo
+    });
+    await closeControlDb(controlDb);
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    if (!check.ok) throw new Error(`CHECK global active fallo: ${check.message}`);
+    assertSame(check.usuarios[0].estados.join(","), "GLOBAL_ACTIVE_REVIEW", "CHECK debe reportar GLOBAL_ACTIVE_REVIEW");
+    assertEqual(check.summary.review_blockers, 1, "CHECK debe contar review_blockers, no critical");
+    assertEqual(check.summary.critical, 0, "GLOBAL_ACTIVE_REVIEW no es critical");
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`APPLY global active fallo: ${apply.message}`);
+    assertEqual(apply.summary.repaired, 0, "APPLY nunca debe reparar GLOBAL_ACTIVE_REVIEW");
+    assertEqual(apply.summary.review_blockers, 1, "APPLY debe seguir reportando el review_blocker");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralDespues = await getControlQuery(controlDb, "SELECT activo FROM usuarios WHERE id = ?", [central.id]);
+      assertEqual(Number(centralDespues.activo), 0, "central.activo debe permanecer en 0 tras APPLY");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1DReconcileProfileDiffEsInformationalNoRepara() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `reconcile-profile-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Reconcile Profile Test", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Nombre Central Viejo TEST", usuarioReferencia: admin.usuario, passwordHash: admin.password,
+      email: "viejo@test.invalid", activo: 1
+    });
+    await crearMembership(controlDb, {
+      usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: admin.rol, activo: admin.activo
+    });
+    await closeControlDb(controlDb);
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    if (!check.ok) throw new Error(`CHECK profile fallo: ${check.message}`);
+    assertSame(check.usuarios[0].estados.join(","), "PROFILE_DIFF", "CHECK debe reportar PROFILE_DIFF cuando solo difiere el perfil");
+    assertEqual(check.summary.info, 1, "CHECK debe contar info, no critical ni review_blockers");
+    assertEqual(check.summary.critical, 0, "PROFILE_DIFF no es critical");
+    assertEqual(check.summary.review_blockers, 0, "PROFILE_DIFF no es review_blocker");
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`APPLY profile fallo: ${apply.message}`);
+    assertEqual(apply.summary.repaired, 0, "APPLY no debe reparar perfil");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralDespues = await getControlQuery(controlDb, "SELECT nombre, email FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespues.nombre, "Nombre Central Viejo TEST", "el perfil central debe permanecer distinto del local tras APPLY");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1DReconcileNoAutoLinkMultiempresa() {
+  const businessDbPathA = bootstrapFreshTestDb();
+  const businessDbPathB = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const adminA = (await allSql(businessDbPathA, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const adminB = (await allSql(businessDbPathB, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaASlug = `reconcile-multi-a-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaBSlug = `reconcile-multi-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaA = await registrarEmpresa(controlDb, { slug: empresaASlug, nombre: "Reconcile Multi A", dbPath: "guernica.db" });
+    const empresaB = await registrarEmpresa(controlDb, { slug: empresaBSlug, nombre: "Reconcile Multi B", dbPath: "guernica.db" });
+    const centralB = await crearUsuarioCentral(controlDb, {
+      nombre: adminB.nombre, usuarioReferencia: adminB.usuario, passwordHash: adminB.password, activo: 1
+    });
+    await crearMembership(controlDb, {
+      usuarioId: centralB.id, empresaId: empresaB.id, usuarioLocalId: adminB.id, rol: adminB.rol, activo: adminB.activo
+    });
+    await closeControlDb(controlDb);
+
+    const apply = await reconcileShadowUsers({ empresaSlug: empresaASlug, mode: "apply", controlDbPath, businessDbPath: businessDbPathA });
+    if (!apply.ok) throw new Error(`APPLY no-auto-link fallo: ${apply.message}`);
+    assertEqual(apply.summary.repaired, 1, "APPLY debe crear identidad nueva para empresa A");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membershipA = await getControlQuery(controlDb, "SELECT * FROM usuario_empresas WHERE empresa_id = ? AND usuario_local_id = ?", [empresaA.id, adminA.id]);
+      if (!membershipA) throw new Error("debe existir membership nueva para empresa A");
+      assertEqual(Number(membershipA.usuario_id) === Number(centralB.id), false, "NO debe fusionar con la identidad central de empresa B");
+      const totalCentral = await allControlQuery(controlDb, "SELECT id FROM usuarios");
+      assertEqual(totalCentral.length, 2, "debe haber exactamente 2 identidades centrales: la de B y la nueva de A");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPathA, { force: true });
+    fs.rmSync(businessDbPathB, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1DReconcileIdempotenciaApplyDosVeces() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `reconcile-idempotencia-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Reconcile Idempotencia Test", dbPath: "guernica.db" });
+    const placeholderHash = await bcrypt.hash("PlaceholderIdem1", 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: placeholderHash, activo: 1
+    });
+    await crearMembership(controlDb, {
+      usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "colaborador", activo: 0
+    });
+    await closeControlDb(controlDb);
+
+    const apply1 = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply1.ok) throw new Error(`APPLY #1 fallo: ${apply1.message}`);
+    assertEqual(apply1.summary.repaired, 1, "APPLY #1 debe reparar password+access en una sola unidad");
+
+    const apply2 = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply2.ok) throw new Error(`APPLY #2 fallo: ${apply2.message}`);
+    assertEqual(apply2.summary.repaired, 0, "APPLY #2 no debe reparar nada (idempotencia)");
+    assertEqual(apply2.summary.critical, 0, "APPLY #2 no debe dejar critical");
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    if (!check.ok) throw new Error(`CHECK final fallo: ${check.message}`);
+    assertEqual(check.summary.critical, 0, "CHECK final no debe tener divergencias reparables pendientes");
+    assertEqual(check.summary.aligned, 1, "CHECK final debe marcar el usuario como ALIGNED");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1DReconcileControlDbAusenteNoLoCrea() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPathInexistente = path.join(os.tmpdir(), `no-existe-reconcile-${Date.now()}-${Math.random().toString(16).slice(2)}`, "atlas_control.db");
+  try {
+    const check = await reconcileShadowUsers({ empresaSlug: "cualquier-slug", mode: "check", controlDbPath: controlDbPathInexistente, businessDbPath });
+    assertEqual(check.ok, false, "CHECK contra control plane ausente debe fallar");
+    assertSame(check.errorCode, "CONTROL_DB_AUSENTE", "CHECK debe reportar CONTROL_DB_AUSENTE");
+    assertEqual(fs.existsSync(controlDbPathInexistente), false, "CHECK no debe crear el archivo de control plane");
+
+    const apply = await reconcileShadowUsers({ empresaSlug: "cualquier-slug", mode: "apply", controlDbPath: controlDbPathInexistente, businessDbPath });
+    assertEqual(apply.ok, false, "APPLY contra control plane ausente debe fallar");
+    assertSame(apply.errorCode, "CONTROL_DB_AUSENTE", "APPLY debe reportar CONTROL_DB_AUSENTE");
+    assertEqual(fs.existsSync(controlDbPathInexistente), false, "APPLY no debe crear el archivo de control plane");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+  }
+}
+
+async function testMT1DReconcileEmpresaInactivaCheckReportaApplyNoEscribe() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `reconcile-inactiva-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Reconcile Inactiva Test", dbPath: "guernica.db", activa: 0 });
+    await closeControlDb(controlDb);
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    if (!check.ok) throw new Error(`CHECK empresa inactiva fallo: ${check.message}`);
+    assertEqual(check.empresa_activa, false, "CHECK debe reportar la empresa como inactiva");
+    assertEqual(check.summary.critical, 1, "CHECK debe seguir detectando MISSING_MEMBERSHIP aunque la empresa este inactiva");
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`APPLY empresa inactiva fallo: ${apply.message}`);
+    assertEqual(apply.escritura_bloqueada_por_empresa_inactiva, true, "APPLY debe marcar que la escritura quedo bloqueada por empresa inactiva");
+    assertEqual(apply.summary.repaired, 0, "APPLY no debe escribir nada si la empresa esta inactiva");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const totalCentral = await allControlQuery(controlDb, "SELECT id FROM usuarios");
+      assertEqual(totalCentral.length, 0, "no debe haberse creado ninguna identidad central con la empresa inactiva");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1DReconcileBrokenCentralRefYOrphanMembership() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `reconcile-broken-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Reconcile Broken Test", dbPath: "guernica.db" });
+
+    await runControlQuery(controlDb, "PRAGMA foreign_keys = OFF");
+    await runControlQuery(
+      controlDb,
+      "INSERT INTO usuario_empresas (usuario_id, empresa_id, usuario_local_id, rol, activo) VALUES (?, ?, ?, ?, ?)",
+      [999999, empresa.id, admin.id, admin.rol, admin.activo]
+    );
+    const centralHuerfano = await crearUsuarioCentral(controlDb, {
+      nombre: "Central Huerfano TEST", usuarioReferencia: "huerfano", passwordHash: await bcrypt.hash("Huerfano1", 10), activo: 1
+    });
+    await runControlQuery(
+      controlDb,
+      "INSERT INTO usuario_empresas (usuario_id, empresa_id, usuario_local_id, rol, activo) VALUES (?, ?, ?, ?, ?)",
+      [centralHuerfano.id, empresa.id, 888888, "colaborador", 1]
+    );
+    await runControlQuery(controlDb, "PRAGMA foreign_keys = ON");
+    await closeControlDb(controlDb);
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    if (!check.ok) throw new Error(`CHECK broken/orphan fallo: ${check.message}`);
+    const porLocalId = new Map(check.usuarios.map((u) => [u.usuario_local_id, u]));
+    assertSame(porLocalId.get(admin.id)?.estados.join(","), "BROKEN_CENTRAL_REF", "debe detectar membership con central inexistente");
+    assertSame(porLocalId.get(888888)?.estados.join(","), "ORPHAN_MEMBERSHIP", "debe detectar membership sin usuario local");
+    assertEqual(check.summary.critical, 2, "ambos casos deben contar como critical");
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`APPLY broken/orphan fallo: ${apply.message}`);
+    assertEqual(apply.summary.repaired, 0, "APPLY no debe intentar reparar automaticamente ninguno de los dos casos");
+    assertEqual(apply.summary.critical, 2, "APPLY debe seguir reportando ambos como critical sin tocarlos");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
     fs.rmSync(controlDbPath, { force: true });
   }
 }
