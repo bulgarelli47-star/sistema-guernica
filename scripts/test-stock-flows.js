@@ -20976,6 +20976,12 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1C2AResolverFailureNoExponePasswordHash);
   await _run(testMT1C2AResolverControlDbInaccesible);
   await _run(testMT1C2AResolverControlDbQueryFailure);
+  await _run(testMT1C2B1SesionesFreshTienenMetadataAuth);
+  await _run(testMT1C2B1MigraSesionLegacySinInvalidarla);
+  await _run(testMT1C2B1LoginLegacyCreaSesionLegacy);
+  await _run(testMT1C2B1RequireAuthLegacySigueCompatible);
+  await _run(testMT1C2B1LogoutLegacySigueCompatible);
+  await _run(testMT1C2B1SesionLegacyMigradaSigueAutenticando);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -23802,5 +23808,149 @@ async function testMT1C2AResolverControlDbQueryFailure() {
     assertSame(resultado.errorCode, "CONTROL_DB_QUERY_ERROR", "debe reportar CONTROL_DB_QUERY_ERROR, distinto de CONTROL_DB_INACCESIBLE");
   } finally {
     fs.rmSync(controlDbPathInvalida, { force: true });
+  }
+}
+
+async function testMT1C2B1SesionesFreshTienenMetadataAuth() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async () => {
+      const columnas = await allSql(dbPath, "PRAGMA table_info(sesiones)");
+      const porNombre = new Map(columnas.map((columna) => [columna.name, columna]));
+      ["auth_mode", "central_id", "membership_id", "empresa_id"].forEach((columna) => {
+        if (!porNombre.has(columna)) throw new Error(`sesiones deberia tener la columna ${columna}`);
+      });
+      const defaultAuthMode = String(porNombre.get("auth_mode").dflt_value || "").replace(/'/g, "");
+      assertSame(defaultAuthMode, "legacy", "auth_mode debe tener default 'legacy'");
+      assertEqual(Number(porNombre.get("auth_mode").notnull), 1, "auth_mode debe ser NOT NULL");
+      assertEqual(Number(porNombre.get("central_id").notnull), 0, "central_id debe ser nullable");
+      assertEqual(Number(porNombre.get("membership_id").notnull), 0, "membership_id debe ser nullable");
+      assertEqual(Number(porNombre.get("empresa_id").notnull), 0, "empresa_id debe ser nullable");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1C2B1MigraSesionLegacySinInvalidarla() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await runSql(dbPath, "DROP TABLE IF EXISTS sesiones");
+    await runSql(
+      dbPath,
+      `CREATE TABLE sesiones (
+        token TEXT PRIMARY KEY,
+        usuario_id INTEGER NOT NULL,
+        nombre TEXT NOT NULL,
+        rol TEXT NOT NULL,
+        expira TEXT NOT NULL
+      )`
+    );
+    const tokenLegacy = `legacy-token-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const expiraLegacy = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
+    await runSql(
+      dbPath,
+      "INSERT INTO sesiones (token, usuario_id, nombre, rol, expira) VALUES (?, ?, ?, ?, ?)",
+      [tokenLegacy, 1, "Admin Legacy TEST", "admin", expiraLegacy]
+    );
+
+    await withServer(dbPath, async () => {
+      // El solo arranque del servidor ya dispara ensureUsuariosSchema() -> ensureColumn(sesiones, ...)
+    });
+
+    const fila = (await allSql(dbPath, "SELECT * FROM sesiones WHERE token = ?", [tokenLegacy]))[0];
+    if (!fila) throw new Error("la migracion no debe eliminar la sesion legacy existente");
+    assertSame(fila.token, tokenLegacy, "token debe preservarse");
+    assertEqual(fila.usuario_id, 1, "usuario_id debe preservarse");
+    assertSame(fila.nombre, "Admin Legacy TEST", "nombre debe preservarse");
+    assertSame(fila.rol, "admin", "rol debe preservarse");
+    assertSame(fila.expira, expiraLegacy, "expira debe preservarse exacta");
+    assertSame(fila.auth_mode, "legacy", "auth_mode debe migrar a legacy por default");
+    if (fila.central_id !== null) throw new Error("central_id debe quedar NULL tras migrar una sesion legacy");
+    if (fila.membership_id !== null) throw new Error("membership_id debe quedar NULL tras migrar una sesion legacy");
+    if (fila.empresa_id !== null) throw new Error("empresa_id debe quedar NULL tras migrar una sesion legacy");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1C2B1LoginLegacyCreaSesionLegacy() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const loginResp = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "admin123" }, null);
+      if (!loginResp.response.ok) throw new Error(`login legacy fallo: ${loginResp.data?.message || loginResp.response.status}`);
+      assertSame(loginResp.data.message, "Login correcto", "response de login legacy debe seguir igual");
+      if (!loginResp.data.token) throw new Error("login legacy debe seguir devolviendo token");
+      const fila = (await allSql(dbPath, "SELECT * FROM sesiones WHERE token = ?", [loginResp.data.token]))[0];
+      if (!fila) throw new Error("debe existir una fila de sesion para el token devuelto por login");
+      assertSame(fila.auth_mode, "legacy", "login legacy debe crear la sesion con auth_mode='legacy'");
+      if (fila.central_id !== null) throw new Error("central_id debe ser NULL en una sesion creada por login legacy");
+      if (fila.membership_id !== null) throw new Error("membership_id debe ser NULL en una sesion creada por login legacy");
+      if (fila.empresa_id !== null) throw new Error("empresa_id debe ser NULL en una sesion creada por login legacy");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1C2B1RequireAuthLegacySigueCompatible() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const resp = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(resp.response.status, 200, "un request autenticado legacy ya existente debe seguir funcionando tras agregar metadata de sesion");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1C2B1LogoutLegacySigueCompatible() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const logoutResp = await requestJson(baseUrl, "POST", "/logout", null, token);
+      assertEqual(logoutResp.response.status, 200, "logout debe seguir respondiendo 200");
+      assertSame(logoutResp.data.message, "Sesión cerrada", "mensaje de logout debe seguir igual");
+      const fila = (await allSql(dbPath, "SELECT * FROM sesiones WHERE token = ?", [token]))[0];
+      if (fila) throw new Error("logout debe seguir eliminando la fila de sesion; la metadata nueva no debe impedirlo");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1C2B1SesionLegacyMigradaSigueAutenticando() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await runSql(dbPath, "DROP TABLE IF EXISTS sesiones");
+    await runSql(
+      dbPath,
+      `CREATE TABLE sesiones (
+        token TEXT PRIMARY KEY,
+        usuario_id INTEGER NOT NULL,
+        nombre TEXT NOT NULL,
+        rol TEXT NOT NULL,
+        expira TEXT NOT NULL
+      )`
+    );
+    const admin = (await allSql(dbPath, "SELECT id, nombre, rol FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const tokenLegacy = `legacy-auth-token-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const expiraLegacy = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
+    await runSql(
+      dbPath,
+      "INSERT INTO sesiones (token, usuario_id, nombre, rol, expira) VALUES (?, ?, ?, ?, ?)",
+      [tokenLegacy, admin.id, admin.nombre, admin.rol, expiraLegacy]
+    );
+
+    await withServer(dbPath, async (baseUrl) => {
+      const resp = await requestJson(baseUrl, "GET", "/configuracion", null, tokenLegacy);
+      assertEqual(resp.response.status, 200, "una sesion legacy migrada por ALTER TABLE debe seguir autenticando sin logout accidental");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
   }
 }

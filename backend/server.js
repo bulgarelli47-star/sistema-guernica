@@ -1029,9 +1029,22 @@ async function ensureUsuariosSchema() {
       usuario_id INTEGER NOT NULL,
       nombre TEXT NOT NULL,
       rol TEXT NOT NULL,
-      expira TEXT NOT NULL
+      expira TEXT NOT NULL,
+      auth_mode TEXT NOT NULL DEFAULT 'legacy',
+      central_id INTEGER,
+      membership_id INTEGER,
+      empresa_id INTEGER
     )
   `);
+  // MT-1C.2B.1: metadata minima de procedencia de la sesion -- no son FK reales (usuario_empresas
+  // y empresas viven en atlas_control.db, un archivo SQLite separado; SQLite no puede garantizar
+  // integridad referencial entre archivos distintos). auth_mode default 'legacy' preserva el
+  // contrato de sesiones ya emitidas y de todo login futuro que no pase explicitamente por el
+  // camino central (que todavia no existe -- ver MT-1C.2B.2).
+  await ensureColumn("sesiones", "auth_mode", "TEXT NOT NULL DEFAULT 'legacy'");
+  await ensureColumn("sesiones", "central_id", "INTEGER");
+  await ensureColumn("sesiones", "membership_id", "INTEGER");
+  await ensureColumn("sesiones", "empresa_id", "INTEGER");
   await runQuery("UPDATE usuarios SET rol = 'colaborador' WHERE rol IN ('operador', 'caja', 'cajero')");
   await runQuery("UPDATE sesiones SET rol = 'colaborador' WHERE rol IN ('operador', 'caja', 'cajero')");
 }
