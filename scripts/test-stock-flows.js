@@ -44,6 +44,7 @@ const {
 } = require("../database/sync-shadow-users");
 const userControlBridge = require("../backend/userControlBridge");
 const { reconcileShadowUsers } = require("../database/reconcile-shadow-users");
+const { resolverIdentidadCentralPorLocal, abrirControlDbSoloLectura } = require("../backend/centralAuthResolver");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -20961,6 +20962,20 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1DReconcileControlDbAusenteNoLoCrea);
   await _run(testMT1DReconcileEmpresaInactivaCheckReportaApplyNoEscribe);
   await _run(testMT1DReconcileBrokenCentralRefYOrphanMembership);
+  await _run(testMT1C2AResolverHappyPath);
+  await _run(testMT1C2AResolverEmpresaNoExiste);
+  await _run(testMT1C2AResolverEmpresaInactiva);
+  await _run(testMT1C2AResolverMembershipNoExiste);
+  await _run(testMT1C2AResolverMembershipInactiva);
+  await _run(testMT1C2AResolverCentralInactiva);
+  await _run(testMT1C2AResolverBrokenCentralRef);
+  await _run(testMT1C2AResolverControlDbAusenteNoLoCrea);
+  await _run(testMT1C2AResolverNoAutoLinkPorUsernameDuplicado);
+  await _run(testMT1C2AResolverMismaIdentidadCentralMultiempresa);
+  await _run(testMT1C2AResolverAperturaControlDbEsSoloLectura);
+  await _run(testMT1C2AResolverFailureNoExponePasswordHash);
+  await _run(testMT1C2AResolverControlDbInaccesible);
+  await _run(testMT1C2AResolverControlDbQueryFailure);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -23467,5 +23482,325 @@ async function testMT1DReconcileBrokenCentralRefYOrphanMembership() {
   } finally {
     fs.rmSync(businessDbPath, { force: true });
     fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2AResolverHappyPath() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `resolver-happy-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Resolver Happy Test", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: admin.password,
+      email: admin.email, telefono: admin.telefono, activo: 1
+    });
+    const membership = await crearMembership(controlDb, {
+      usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: admin.rol, activo: admin.activo
+    });
+    await closeControlDb(controlDb);
+
+    const resultado = await resolverIdentidadCentralPorLocal({ empresaSlug, usuarioLocalId: admin.id, controlDbPath });
+    assertEqual(resultado.ok, true, "happy path debe resolver ok");
+    assertEqual(resultado.empresa.id, empresa.id, "debe devolver la empresa correcta");
+    assertEqual(resultado.empresa.activa, true, "empresa debe estar activa");
+    assertEqual(resultado.membership.id, membership.id, "debe devolver la membership correcta");
+    assertEqual(resultado.membership.usuario_local_id, admin.id, "membership debe referenciar el local id correcto");
+    assertEqual(resultado.central.id, central.id, "debe devolver la identidad central correcta");
+    assertSame(resultado.central.password_hash, admin.password, "debe exponer password_hash central para consumo futuro");
+    assertSame(typeof resultado.central.intentos_fallidos, "number", "debe exponer intentos_fallidos central como numero");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2AResolverEmpresaNoExiste() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    await closeControlDb(controlDb);
+    const resultado = await resolverIdentidadCentralPorLocal({ empresaSlug: "no-existe-slug-xyz", usuarioLocalId: 1, controlDbPath });
+    assertEqual(resultado.ok, false, "empresa inexistente debe fallar");
+    assertSame(resultado.errorCode, "EMPRESA_NO_EXISTE", "debe reportar EMPRESA_NO_EXISTE");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2AResolverEmpresaInactiva() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `resolver-inactiva-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Resolver Empresa Inactiva Test", dbPath: "guernica.db", activa: 0 });
+    await closeControlDb(controlDb);
+
+    const resultado = await resolverIdentidadCentralPorLocal({ empresaSlug, usuarioLocalId: 1, controlDbPath });
+    assertEqual(resultado.ok, false, "empresa inactiva debe fallar");
+    assertSame(resultado.errorCode, "EMPRESA_INACTIVA", "debe reportar EMPRESA_INACTIVA");
+    assertEqual(resultado.empresa.activa, false, "debe exponer que la empresa esta inactiva");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2AResolverMembershipNoExiste() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `resolver-nomembership-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Resolver No Membership Test", dbPath: "guernica.db" });
+    await closeControlDb(controlDb);
+
+    const resultado = await resolverIdentidadCentralPorLocal({ empresaSlug, usuarioLocalId: 12345, controlDbPath });
+    assertEqual(resultado.ok, false, "membership inexistente debe fallar");
+    assertSame(resultado.errorCode, "MEMBERSHIP_NO_EXISTE", "debe reportar MEMBERSHIP_NO_EXISTE");
+    assertSame(resultado.empresa.slug, empresaSlug, "debe exponer la empresa ya resuelta pese a la membership faltante");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2AResolverMembershipInactiva() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `resolver-membership-inactiva-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Resolver Membership Inactiva Test", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: admin.password, activo: 1
+    });
+    await crearMembership(controlDb, {
+      usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: admin.rol, activo: 0
+    });
+    await closeControlDb(controlDb);
+
+    const resultado = await resolverIdentidadCentralPorLocal({ empresaSlug, usuarioLocalId: admin.id, controlDbPath });
+    assertEqual(resultado.ok, false, "membership inactiva debe fallar");
+    assertSame(resultado.errorCode, "MEMBERSHIP_INACTIVA", "debe reportar MEMBERSHIP_INACTIVA");
+    assertEqual(resultado.membership.activo, false, "debe exponer membership.activo=false");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2AResolverCentralInactiva() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `resolver-central-inactiva-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Resolver Central Inactiva Test", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: admin.password, activo: 0
+    });
+    await crearMembership(controlDb, {
+      usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: admin.rol, activo: 1
+    });
+    await closeControlDb(controlDb);
+
+    const resultado = await resolverIdentidadCentralPorLocal({ empresaSlug, usuarioLocalId: admin.id, controlDbPath });
+    assertEqual(resultado.ok, false, "central inactiva debe fallar");
+    assertSame(resultado.errorCode, "CENTRAL_INACTIVA", "debe reportar CENTRAL_INACTIVA");
+    assertEqual(resultado.central.activo, false, "debe exponer central.activo=false");
+    assertEqual(resultado.membership.activo, true, "membership sigue activa aunque la identidad central este deshabilitada globalmente");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2AResolverBrokenCentralRef() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `resolver-broken-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Resolver Broken Test", dbPath: "guernica.db" });
+
+    await runControlQuery(controlDb, "PRAGMA foreign_keys = OFF");
+    await runControlQuery(
+      controlDb,
+      "INSERT INTO usuario_empresas (usuario_id, empresa_id, usuario_local_id, rol, activo) VALUES (?, ?, ?, ?, ?)",
+      [999999, empresa.id, admin.id, admin.rol, admin.activo]
+    );
+    await runControlQuery(controlDb, "PRAGMA foreign_keys = ON");
+    await closeControlDb(controlDb);
+
+    const resultado = await resolverIdentidadCentralPorLocal({ empresaSlug, usuarioLocalId: admin.id, controlDbPath });
+    assertEqual(resultado.ok, false, "referencia central rota debe fallar");
+    assertSame(resultado.errorCode, "BROKEN_CENTRAL_REF", "debe reportar BROKEN_CENTRAL_REF");
+    assertEqual(resultado.membership.usuario_id, 999999, "debe exponer la membership rota tal cual esta, sin intentar repararla");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2AResolverControlDbAusenteNoLoCrea() {
+  const controlDbPathInexistente = path.join(os.tmpdir(), `no-existe-resolver-${Date.now()}-${Math.random().toString(16).slice(2)}`, "atlas_control.db");
+  const resultado = await resolverIdentidadCentralPorLocal({ empresaSlug: "cualquiera", usuarioLocalId: 1, controlDbPath: controlDbPathInexistente });
+  assertEqual(resultado.ok, false, "control DB ausente debe fallar");
+  assertSame(resultado.errorCode, "CONTROL_DB_AUSENTE", "debe reportar CONTROL_DB_AUSENTE");
+  assertEqual(fs.existsSync(controlDbPathInexistente), false, "el resolver NO debe crear el archivo de control plane");
+}
+
+async function testMT1C2AResolverNoAutoLinkPorUsernameDuplicado() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaASlug = `resolver-dup-a-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaBSlug = `resolver-dup-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaA = await registrarEmpresa(controlDb, { slug: empresaASlug, nombre: "Resolver Dup A", dbPath: "guernica.db" });
+    const empresaB = await registrarEmpresa(controlDb, { slug: empresaBSlug, nombre: "Resolver Dup B", dbPath: "guernica.db" });
+
+    const hashA = await bcrypt.hash("DuplicadoA1", 10);
+    const hashB = await bcrypt.hash("DuplicadoB1", 10);
+    const centralA = await crearUsuarioCentral(controlDb, {
+      nombre: "Identidad Duplicada A", usuarioReferencia: "duplicado", passwordHash: hashA, email: "duplicado@test.invalid", activo: 1
+    });
+    const centralB = await crearUsuarioCentral(controlDb, {
+      nombre: "Identidad Duplicada B", usuarioReferencia: "duplicado", passwordHash: hashB, email: "duplicado@test.invalid", activo: 1
+    });
+    await crearMembership(controlDb, { usuarioId: centralA.id, empresaId: empresaA.id, usuarioLocalId: 501, rol: "colaborador", activo: 1 });
+    await crearMembership(controlDb, { usuarioId: centralB.id, empresaId: empresaB.id, usuarioLocalId: 501, rol: "colaborador", activo: 1 });
+    await closeControlDb(controlDb);
+
+    const resultadoA = await resolverIdentidadCentralPorLocal({ empresaSlug: empresaASlug, usuarioLocalId: 501, controlDbPath });
+    const resultadoB = await resolverIdentidadCentralPorLocal({ empresaSlug: empresaBSlug, usuarioLocalId: 501, controlDbPath });
+    assertEqual(resultadoA.ok, true, "empresa A debe resolver correctamente");
+    assertEqual(resultadoB.ok, true, "empresa B debe resolver correctamente");
+    assertEqual(resultadoA.central.id, centralA.id, "empresa A debe resolver su propia identidad central, no la de B");
+    assertEqual(resultadoB.central.id, centralB.id, "empresa B debe resolver su propia identidad central, no la de A");
+    if (resultadoA.central.id === resultadoB.central.id) throw new Error("el resolver NO debe fusionar identidades por username/email duplicado");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2AResolverMismaIdentidadCentralMultiempresa() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaASlug = `resolver-multi-a-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaBSlug = `resolver-multi-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaA = await registrarEmpresa(controlDb, { slug: empresaASlug, nombre: "Resolver Multi A", dbPath: "guernica.db" });
+    const empresaB = await registrarEmpresa(controlDb, { slug: empresaBSlug, nombre: "Resolver Multi B", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Identidad Multiempresa", usuarioReferencia: "multiempresa", passwordHash: await bcrypt.hash("Multiempresa1", 10), activo: 1
+    });
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaA.id, usuarioLocalId: 701, rol: "admin", activo: 1 });
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaB.id, usuarioLocalId: 802, rol: "colaborador", activo: 1 });
+    await closeControlDb(controlDb);
+
+    const resultadoA = await resolverIdentidadCentralPorLocal({ empresaSlug: empresaASlug, usuarioLocalId: 701, controlDbPath });
+    const resultadoB = await resolverIdentidadCentralPorLocal({ empresaSlug: empresaBSlug, usuarioLocalId: 802, controlDbPath });
+    assertEqual(resultadoA.ok, true, "empresa A debe resolver");
+    assertEqual(resultadoB.ok, true, "empresa B debe resolver");
+    assertEqual(resultadoA.central.id, central.id, "empresa A debe apuntar a la identidad central compartida");
+    assertEqual(resultadoB.central.id, central.id, "empresa B debe apuntar a la misma identidad central compartida");
+    if (resultadoA.membership.id === resultadoB.membership.id) throw new Error("las memberships deben ser distintas aunque la identidad central sea la misma");
+    assertSame(resultadoA.membership.rol, "admin", "rol de empresa A debe ser el de su propia membership");
+    assertSame(resultadoB.membership.rol, "colaborador", "rol de empresa B debe ser el de su propia membership, no el de A");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2AResolverAperturaControlDbEsSoloLectura() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    await closeControlDb(controlDb);
+
+    const soloLecturaDb = await abrirControlDbSoloLectura(controlDbPath);
+    try {
+      let writeRechazado = false;
+      try {
+        await new Promise((resolve, reject) => {
+          soloLecturaDb.run(
+            "INSERT INTO empresas (slug, nombre, db_path, activa) VALUES ('readonly-test', 'ReadOnly Test', 'guernica.db', 1)",
+            (error) => { if (error) reject(error); else resolve(); }
+          );
+        });
+      } catch (error) {
+        writeRechazado = true;
+      }
+      assertEqual(writeRechazado, true, "una conexion abierta por el resolver debe rechazar escrituras reales (OPEN_READONLY)");
+    } finally {
+      await new Promise((resolve) => soloLecturaDb.close(() => resolve()));
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2AResolverFailureNoExponePasswordHash() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `resolver-no-leak-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Resolver No Leak Test", dbPath: "guernica.db" });
+    const hashConocido = await bcrypt.hash("SecretoQueNuncaDebeSalir1", 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: hashConocido, activo: 0
+    });
+    await crearMembership(controlDb, {
+      usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: admin.rol, activo: 1
+    });
+    await closeControlDb(controlDb);
+
+    const resultado = await resolverIdentidadCentralPorLocal({ empresaSlug, usuarioLocalId: admin.id, controlDbPath });
+    assertEqual(resultado.ok, false, "central inactiva debe fallar");
+    assertSame(resultado.errorCode, "CENTRAL_INACTIVA", "debe reportar CENTRAL_INACTIVA");
+    if (Object.prototype.hasOwnProperty.call(resultado.central || {}, "password_hash")) {
+      throw new Error("un resultado NO-OK jamas debe incluir la clave password_hash, ni siquiera undefined");
+    }
+    const serializado = JSON.stringify(resultado);
+    if (serializado.includes(hashConocido)) {
+      throw new Error("el hash real no debe aparecer en ninguna parte de la serializacion del resultado de error");
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2AResolverControlDbInaccesible() {
+  // Path que EXISTE (pasa fs.existsSync) pero no es un archivo SQLite abrible: un directorio real.
+  // sqlite3 con OPEN_READONLY falla consistentemente al intentar abrir un directorio como DB,
+  // sin depender de permisos de filesystem (inestables en Windows).
+  const controlDbPathDirectorio = path.join(os.tmpdir(), `resolver-inaccesible-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  fs.mkdirSync(controlDbPathDirectorio, { recursive: true });
+  try {
+    const resultado = await resolverIdentidadCentralPorLocal({ empresaSlug: "cualquiera", usuarioLocalId: 1, controlDbPath: controlDbPathDirectorio });
+    assertEqual(resultado.ok, false, "control DB inaccesible debe fallar");
+    assertSame(resultado.errorCode, "CONTROL_DB_INACCESIBLE", "debe reportar CONTROL_DB_INACCESIBLE, distinto de CONTROL_DB_AUSENTE y de CONTROL_DB_QUERY_ERROR");
+  } finally {
+    fs.rmSync(controlDbPathDirectorio, { recursive: true, force: true });
+  }
+}
+
+async function testMT1C2AResolverControlDbQueryFailure() {
+  // DB SQLite real y abrible, pero estructuralmente invalida como control plane: no tiene la
+  // tabla `empresas`. El OPEN debe funcionar; la query es la que debe fallar de forma clasificada.
+  const controlDbPathInvalida = tempDbPath();
+  try {
+    await runSql(controlDbPathInvalida, "CREATE TABLE dummy_sin_empresas (id INTEGER)");
+    const resultado = await resolverIdentidadCentralPorLocal({ empresaSlug: "cualquiera", usuarioLocalId: 1, controlDbPath: controlDbPathInvalida });
+    assertEqual(resultado.ok, false, "control DB estructuralmente invalida debe fallar");
+    assertSame(resultado.errorCode, "CONTROL_DB_QUERY_ERROR", "debe reportar CONTROL_DB_QUERY_ERROR, distinto de CONTROL_DB_INACCESIBLE");
+  } finally {
+    fs.rmSync(controlDbPathInvalida, { force: true });
   }
 }
