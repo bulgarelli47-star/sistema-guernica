@@ -45,6 +45,7 @@ const {
 const userControlBridge = require("../backend/userControlBridge");
 const { reconcileShadowUsers } = require("../database/reconcile-shadow-users");
 const { resolverIdentidadCentralPorLocal, abrirControlDbSoloLectura } = require("../backend/centralAuthResolver");
+const { autenticarCredencialCentral } = require("../backend/centralAuthSecurity");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -20982,6 +20983,20 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1C2B1RequireAuthLegacySigueCompatible);
   await _run(testMT1C2B1LogoutLegacySigueCompatible);
   await _run(testMT1C2B1SesionLegacyMigradaSigueAutenticando);
+  await _run(testMT1C2B2ASecurityHappyPath);
+  await _run(testMT1C2B2AWrongPasswordIncrementaIntentos);
+  await _run(testMT1C2B2AThresholdBloqueaEnQuintoIntento);
+  await _run(testMT1C2B2ACentralYaBloqueadaRechazaInclusoPasswordCorrecta);
+  await _run(testMT1C2B2ABloqueoExpiradoReseteaYPermiteEvaluar);
+  await _run(testMT1C2B2ASuccessReseteaIntentosPrevios);
+  await _run(testMT1C2B2AMembershipInactivaNoAutentica);
+  await _run(testMT1C2B2ACentralInactivaNoAutentica);
+  await _run(testMT1C2B2AControlDbAusenteNoLoCrea);
+  await _run(testMT1C2B2ASeguridadGlobalMultiempresa);
+  await _run(testMT1C2B2AFailureNuncaExponePasswordHash);
+  await _run(testMT1C2B2AControlDbInaccesible);
+  await _run(testMT1C2B2AControlDbQueryError);
+  await _run(testMT1C2B2AControlDbWriteErrorRollback);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -23952,5 +23967,476 @@ async function testMT1C2B1SesionLegacyMigradaSigueAutenticando() {
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2ASecurityHappyPath() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `sec-happy-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Security Happy Test", dbPath: "guernica.db" });
+    const passwordReal = "ClaveCentralValida1";
+    const hash = await bcrypt.hash(passwordReal, 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Central Happy", usuarioReferencia: "central-happy", passwordHash: hash, activo: 1
+    });
+    const membership = await crearMembership(controlDb, {
+      usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 701, rol: "admin", activo: 1
+    });
+    const actualizadoEnAntes = (await getControlQuery(controlDb, "SELECT actualizado_en FROM usuarios WHERE id = ?", [central.id])).actualizado_en;
+    const membershipActualizadoEnAntes = (await getControlQuery(controlDb, "SELECT actualizado_en FROM usuario_empresas WHERE id = ?", [membership.id])).actualizado_en;
+    await closeControlDb(controlDb);
+    await esperarNuevoSegundo();
+
+    const resultado = await autenticarCredencialCentral({ empresaSlug, usuarioLocalId: 701, password: passwordReal, controlDbPath });
+    assertEqual(resultado.ok, true, "password correcta debe autenticar");
+    assertEqual(resultado.empresa.id, empresa.id, "debe devolver la empresa correcta");
+    assertEqual(resultado.membership.id, membership.id, "debe devolver la membership correcta");
+    assertSame(resultado.membership.rol, "admin", "debe exponer el rol de la membership");
+    assertEqual(resultado.central.id, central.id, "debe devolver la identidad central correcta");
+    if (Object.prototype.hasOwnProperty.call(resultado.central, "password_hash")) {
+      throw new Error("el resultado success no debe incluir la clave password_hash");
+    }
+    const serializado = JSON.stringify(resultado);
+    if (serializado.includes(hash)) throw new Error("el hash real no debe aparecer en la serializacion del resultado success");
+
+    const controlDbVerif = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralRow = await getControlQuery(
+        controlDbVerif, "SELECT intentos_fallidos, bloqueado_hasta, ultimo_acceso, password_hash, actualizado_en FROM usuarios WHERE id = ?", [central.id]
+      );
+      assertEqual(Number(centralRow.intentos_fallidos), 0, "success debe dejar intentos_fallidos en 0");
+      if (centralRow.bloqueado_hasta !== null) throw new Error("success debe dejar bloqueado_hasta en NULL");
+      if (!centralRow.ultimo_acceso) throw new Error("success debe actualizar ultimo_acceso");
+      assertSame(centralRow.password_hash, hash, "success no debe modificar password_hash");
+      if (centralRow.actualizado_en === actualizadoEnAntes) throw new Error("success debe refrescar actualizado_en (hubo un UPDATE real)");
+      const membershipRow = await getControlQuery(controlDbVerif, "SELECT rol, activo, actualizado_en FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipRow.rol, "admin", "membership.rol no debe modificarse por el login central");
+      assertEqual(Number(membershipRow.activo), 1, "membership.activo no debe modificarse por el login central");
+      assertSame(membershipRow.actualizado_en, membershipActualizadoEnAntes, "membership.actualizado_en no debe cambiar por autenticacion central (auth administra identidad, no membresia)");
+    } finally {
+      await closeControlDb(controlDbVerif);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2AWrongPasswordIncrementaIntentos() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `sec-wrong-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Security Wrong Test", dbPath: "guernica.db" });
+    const hash = await bcrypt.hash("ClaveCorrecta1", 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Central Wrong", usuarioReferencia: "central-wrong", passwordHash: hash, activo: 1
+    });
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 702, rol: "colaborador", activo: 1 });
+    const actualizadoEnAntes = (await getControlQuery(controlDb, "SELECT actualizado_en FROM usuarios WHERE id = ?", [central.id])).actualizado_en;
+    await closeControlDb(controlDb);
+    await esperarNuevoSegundo();
+
+    const resultado = await autenticarCredencialCentral({ empresaSlug, usuarioLocalId: 702, password: "ClaveIncorrectaX", controlDbPath });
+    assertEqual(resultado.ok, false, "password incorrecta debe fallar");
+    assertSame(resultado.errorCode, "CREDENCIAL_INVALIDA", "debe reportar CREDENCIAL_INVALIDA");
+    if (resultado.bloqueado_hasta) throw new Error("un unico intento fallido no debe bloquear todavia");
+
+    const controlDbVerif = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralRow = await getControlQuery(
+        controlDbVerif, "SELECT intentos_fallidos, bloqueado_hasta, ultimo_acceso, password_hash, actualizado_en FROM usuarios WHERE id = ?", [central.id]
+      );
+      assertEqual(Number(centralRow.intentos_fallidos), 1, "primer intento fallido debe dejar intentos_fallidos=1");
+      if (centralRow.bloqueado_hasta !== null) throw new Error("no debe bloquear con un unico intento fallido");
+      if (centralRow.ultimo_acceso !== null) throw new Error("password incorrecta no debe tocar ultimo_acceso");
+      assertSame(centralRow.password_hash, hash, "password incorrecta no debe modificar password_hash");
+      if (centralRow.actualizado_en === actualizadoEnAntes) throw new Error("password incorrecta debe refrescar actualizado_en (hubo un UPDATE real)");
+    } finally {
+      await closeControlDb(controlDbVerif);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2AThresholdBloqueaEnQuintoIntento() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `sec-threshold-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Security Threshold Test", dbPath: "guernica.db" });
+    const hash = await bcrypt.hash("ClaveCorrecta2", 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Central Threshold", usuarioReferencia: "central-threshold", passwordHash: hash, activo: 1
+    });
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 703, rol: "colaborador", activo: 1 });
+    await closeControlDb(controlDb);
+
+    for (let intento = 1; intento <= 4; intento++) {
+      const resultado = await autenticarCredencialCentral({ empresaSlug, usuarioLocalId: 703, password: "Incorrecta", controlDbPath });
+      assertSame(resultado.errorCode, "CREDENCIAL_INVALIDA", `intento ${intento} debe reportar CREDENCIAL_INVALIDA`);
+      if (resultado.bloqueado_hasta) throw new Error(`intento ${intento} no deberia bloquear todavia (threshold=5)`);
+    }
+    const quinto = await autenticarCredencialCentral({ empresaSlug, usuarioLocalId: 703, password: "Incorrecta", controlDbPath });
+    assertSame(quinto.errorCode, "CREDENCIAL_INVALIDA", "el quinto intento tambien reporta CREDENCIAL_INVALIDA");
+    if (!quinto.bloqueado_hasta) throw new Error("el quinto intento debe disparar el bloqueo (MAX_LOGIN_ATTEMPTS=5)");
+    if (new Date(quinto.bloqueado_hasta).getTime() <= Date.now()) throw new Error("bloqueado_hasta debe quedar en el futuro");
+
+    const controlDbVerif = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralRow = await getControlQuery(controlDbVerif, "SELECT intentos_fallidos FROM usuarios WHERE id = ?", [central.id]);
+      assertEqual(Number(centralRow.intentos_fallidos), 5, "deben acumularse exactamente 5 intentos fallidos");
+    } finally {
+      await closeControlDb(controlDbVerif);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2ACentralYaBloqueadaRechazaInclusoPasswordCorrecta() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `sec-blocked-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Security Blocked Test", dbPath: "guernica.db" });
+    const passwordReal = "ClaveCorrecta3";
+    const hash = await bcrypt.hash(passwordReal, 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Central Blocked", usuarioReferencia: "central-blocked", passwordHash: hash, activo: 1
+    });
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 704, rol: "colaborador", activo: 1 });
+    const bloqueadoHastaFuturo = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    await runControlQuery(controlDb, "UPDATE usuarios SET intentos_fallidos = 5, bloqueado_hasta = ? WHERE id = ?", [bloqueadoHastaFuturo, central.id]);
+    const actualizadoEnAntes = (await getControlQuery(controlDb, "SELECT actualizado_en FROM usuarios WHERE id = ?", [central.id])).actualizado_en;
+    await closeControlDb(controlDb);
+    await esperarNuevoSegundo();
+
+    const resultado = await autenticarCredencialCentral({ empresaSlug, usuarioLocalId: 704, password: passwordReal, controlDbPath });
+    assertEqual(resultado.ok, false, "una identidad bloqueada no debe autenticar ni con password correcta");
+    assertSame(resultado.errorCode, "CENTRAL_BLOQUEADA", "debe reportar CENTRAL_BLOQUEADA");
+    assertSame(resultado.bloqueado_hasta, bloqueadoHastaFuturo, "debe exponer bloqueado_hasta");
+    if (Object.prototype.hasOwnProperty.call(resultado, "password_hash")) throw new Error("CENTRAL_BLOQUEADA no debe exponer password_hash");
+
+    const controlDbVerif = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralRow = await getControlQuery(
+        controlDbVerif, "SELECT intentos_fallidos, bloqueado_hasta, ultimo_acceso, actualizado_en FROM usuarios WHERE id = ?", [central.id]
+      );
+      assertEqual(Number(centralRow.intentos_fallidos), 5, "intentos_fallidos no debe cambiar mientras esta bloqueada");
+      assertSame(centralRow.bloqueado_hasta, bloqueadoHastaFuturo, "bloqueado_hasta no debe cambiar mientras sigue vigente");
+      if (centralRow.ultimo_acceso !== null) throw new Error("ultimo_acceso no debe tocarse mientras esta bloqueada");
+      assertSame(centralRow.actualizado_en, actualizadoEnAntes, "actualizado_en NO debe cambiar en el short-circuit de bloqueo vigente (no hay mutacion real)");
+    } finally {
+      await closeControlDb(controlDbVerif);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2ABloqueoExpiradoReseteaYPermiteEvaluar() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `sec-expired-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Security Expired Test", dbPath: "guernica.db" });
+    const hash = await bcrypt.hash("ClaveCorrecta4", 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Central Expired", usuarioReferencia: "central-expired", passwordHash: hash, activo: 1
+    });
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 705, rol: "colaborador", activo: 1 });
+    const bloqueadoHastaVencido = new Date(Date.now() - 60 * 1000).toISOString();
+    await runControlQuery(controlDb, "UPDATE usuarios SET intentos_fallidos = 5, bloqueado_hasta = ? WHERE id = ?", [bloqueadoHastaVencido, central.id]);
+    const actualizadoEnAntes = (await getControlQuery(controlDb, "SELECT actualizado_en FROM usuarios WHERE id = ?", [central.id])).actualizado_en;
+    await closeControlDb(controlDb);
+    await esperarNuevoSegundo();
+
+    const resultado = await autenticarCredencialCentral({ empresaSlug, usuarioLocalId: 705, password: "Incorrecta", controlDbPath });
+    assertSame(resultado.errorCode, "CREDENCIAL_INVALIDA", "un bloqueo ya vencido no debe devolver CENTRAL_BLOQUEADA, debe evaluar la password normalmente");
+    if (resultado.bloqueado_hasta) throw new Error("un unico intento tras la expiracion no debe volver a bloquear inmediatamente");
+
+    const controlDbVerif = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralRow = await getControlQuery(controlDbVerif, "SELECT intentos_fallidos, actualizado_en FROM usuarios WHERE id = ?", [central.id]);
+      assertEqual(Number(centralRow.intentos_fallidos), 1, "el conteo debe reiniciarse a 0 tras la expiracion y luego sumar este intento, no acumularse sobre el 5 viejo");
+      if (centralRow.actualizado_en === actualizadoEnAntes) throw new Error("el reset de bloqueo expirado + intento evaluado debe refrescar actualizado_en (hubo un UPDATE real)");
+    } finally {
+      await closeControlDb(controlDbVerif);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2ASuccessReseteaIntentosPrevios() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `sec-successreset-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Security Success Reset Test", dbPath: "guernica.db" });
+    const passwordReal = "ClaveCorrecta5";
+    const hash = await bcrypt.hash(passwordReal, 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Central Success Reset", usuarioReferencia: "central-successreset", passwordHash: hash, activo: 1
+    });
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 706, rol: "colaborador", activo: 1 });
+    await runControlQuery(controlDb, "UPDATE usuarios SET intentos_fallidos = 3, bloqueado_hasta = NULL WHERE id = ?", [central.id]);
+    await closeControlDb(controlDb);
+
+    const resultado = await autenticarCredencialCentral({ empresaSlug, usuarioLocalId: 706, password: passwordReal, controlDbPath });
+    assertEqual(resultado.ok, true, "password correcta debe autenticar aun con intentos previos por debajo del umbral");
+
+    const controlDbVerif = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralRow = await getControlQuery(
+        controlDbVerif, "SELECT intentos_fallidos, bloqueado_hasta, ultimo_acceso FROM usuarios WHERE id = ?", [central.id]
+      );
+      assertEqual(Number(centralRow.intentos_fallidos), 0, "success debe resetear intentos_fallidos previos a 0");
+      if (centralRow.bloqueado_hasta !== null) throw new Error("success debe dejar bloqueado_hasta en NULL");
+      if (!centralRow.ultimo_acceso) throw new Error("success debe actualizar ultimo_acceso");
+    } finally {
+      await closeControlDb(controlDbVerif);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2AMembershipInactivaNoAutentica() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `sec-membinact-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Security Membership Inactiva Test", dbPath: "guernica.db" });
+    const passwordReal = "ClaveCorrecta6";
+    const hash = await bcrypt.hash(passwordReal, 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Central Membership Inactiva", usuarioReferencia: "central-membinact", passwordHash: hash, activo: 1
+    });
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 707, rol: "colaborador", activo: 0 });
+    await closeControlDb(controlDb);
+
+    const resultado = await autenticarCredencialCentral({ empresaSlug, usuarioLocalId: 707, password: passwordReal, controlDbPath });
+    assertEqual(resultado.ok, false, "membership inactiva no debe autenticar aunque la password sea correcta");
+    assertSame(resultado.errorCode, "MEMBERSHIP_INACTIVA", "debe reportar MEMBERSHIP_INACTIVA");
+
+    const controlDbVerif = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralRow = await getControlQuery(
+        controlDbVerif, "SELECT intentos_fallidos, bloqueado_hasta, ultimo_acceso FROM usuarios WHERE id = ?", [central.id]
+      );
+      assertEqual(Number(centralRow.intentos_fallidos), 0, "membership inactiva no debe tocar intentos_fallidos");
+      if (centralRow.bloqueado_hasta !== null) throw new Error("membership inactiva no debe tocar bloqueado_hasta");
+      if (centralRow.ultimo_acceso !== null) throw new Error("membership inactiva no debe tocar ultimo_acceso");
+    } finally {
+      await closeControlDb(controlDbVerif);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2ACentralInactivaNoAutentica() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `sec-centralinact-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Security Central Inactiva Test", dbPath: "guernica.db" });
+    const passwordReal = "ClaveCorrecta7";
+    const hash = await bcrypt.hash(passwordReal, 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Central Inactiva", usuarioReferencia: "central-inactiva", passwordHash: hash, activo: 0
+    });
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 708, rol: "colaborador", activo: 1 });
+    await closeControlDb(controlDb);
+
+    const resultado = await autenticarCredencialCentral({ empresaSlug, usuarioLocalId: 708, password: passwordReal, controlDbPath });
+    assertEqual(resultado.ok, false, "central inactiva no debe autenticar aunque la password sea correcta");
+    assertSame(resultado.errorCode, "CENTRAL_INACTIVA", "debe reportar CENTRAL_INACTIVA");
+    if (resultado.central && Object.prototype.hasOwnProperty.call(resultado.central, "password_hash")) {
+      throw new Error("CENTRAL_INACTIVA no debe exponer password_hash");
+    }
+
+    const controlDbVerif = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralRow = await getControlQuery(
+        controlDbVerif, "SELECT intentos_fallidos, bloqueado_hasta, ultimo_acceso FROM usuarios WHERE id = ?", [central.id]
+      );
+      assertEqual(Number(centralRow.intentos_fallidos), 0, "central inactiva no debe tocar intentos_fallidos");
+      if (centralRow.bloqueado_hasta !== null) throw new Error("central inactiva no debe tocar bloqueado_hasta");
+      if (centralRow.ultimo_acceso !== null) throw new Error("central inactiva no debe tocar ultimo_acceso");
+    } finally {
+      await closeControlDb(controlDbVerif);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2AControlDbAusenteNoLoCrea() {
+  const controlDbPathInexistente = path.join(os.tmpdir(), `sec-ausente-${Date.now()}-${Math.random().toString(16).slice(2)}`, "atlas_control.db");
+  const resultado = await autenticarCredencialCentral({ empresaSlug: "cualquiera", usuarioLocalId: 1, password: "cualquiera", controlDbPath: controlDbPathInexistente });
+  assertEqual(resultado.ok, false, "control DB ausente debe fallar");
+  assertSame(resultado.errorCode, "CONTROL_DB_AUSENTE", "debe reportar CONTROL_DB_AUSENTE");
+  assertEqual(fs.existsSync(controlDbPathInexistente), false, "el servicio NO debe crear el archivo de control plane");
+}
+
+async function testMT1C2B2ASeguridadGlobalMultiempresa() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaASlug = `sec-global-a-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaBSlug = `sec-global-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaA = await registrarEmpresa(controlDb, { slug: empresaASlug, nombre: "Security Global A", dbPath: "guernica.db" });
+    const empresaB = await registrarEmpresa(controlDb, { slug: empresaBSlug, nombre: "Security Global B", dbPath: "guernica.db" });
+    const passwordReal = "ClaveGlobalUnica1";
+    const hash = await bcrypt.hash(passwordReal, 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Central Global", usuarioReferencia: "central-global", passwordHash: hash, activo: 1
+    });
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaA.id, usuarioLocalId: 801, rol: "admin", activo: 1 });
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaB.id, usuarioLocalId: 802, rol: "colaborador", activo: 1 });
+    await closeControlDb(controlDb);
+
+    const falloDesdeA = await autenticarCredencialCentral({ empresaSlug: empresaASlug, usuarioLocalId: 801, password: "Incorrecta", controlDbPath });
+    assertSame(falloDesdeA.errorCode, "CREDENCIAL_INVALIDA", "el intento fallido desde empresa A debe fallar");
+
+    const resolvidoDesdeB = await resolverIdentidadCentralPorLocal({ empresaSlug: empresaBSlug, usuarioLocalId: 802, controlDbPath });
+    assertEqual(resolvidoDesdeB.ok, true, "empresa B debe resolver la misma identidad central");
+    assertEqual(resolvidoDesdeB.central.id, central.id, "debe ser la misma identidad central compartida");
+    assertEqual(Number(resolvidoDesdeB.central.intentos_fallidos), 1, "el intento fallido en empresa A debe reflejarse globalmente al resolver desde empresa B");
+    assertSame(resolvidoDesdeB.membership.rol, "colaborador", "el rol observado desde empresa B sigue siendo el propio de esa membership");
+
+    const exitoDesdeB = await autenticarCredencialCentral({ empresaSlug: empresaBSlug, usuarioLocalId: 802, password: passwordReal, controlDbPath });
+    assertEqual(exitoDesdeB.ok, true, "empresa B debe poder autenticar con password correcta pese al intento fallido en A");
+    assertSame(exitoDesdeB.membership.rol, "colaborador", "debe usar el rol de la membership de empresa B");
+
+    const controlDbVerif = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralRow = await getControlQuery(controlDbVerif, "SELECT intentos_fallidos FROM usuarios WHERE id = ?", [central.id]);
+      assertEqual(Number(centralRow.intentos_fallidos), 0, "el exito desde empresa B debe resetear los intentos fallidos globales de la identidad compartida");
+      const membershipARow = await getControlQuery(
+        controlDbVerif, "SELECT rol, activo FROM usuario_empresas WHERE empresa_id = ? AND usuario_local_id = ?", [empresaA.id, 801]
+      );
+      assertSame(membershipARow.rol, "admin", "membership de empresa A no debe alterarse por el exito de login en empresa B");
+      assertEqual(Number(membershipARow.activo), 1, "membership de empresa A no debe alterarse por el exito de login en empresa B");
+    } finally {
+      await closeControlDb(controlDbVerif);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2AFailureNuncaExponePasswordHash() {
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `sec-noleak-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Security No Leak Test", dbPath: "guernica.db" });
+    const hashConocido = await bcrypt.hash("SecretoQueNuncaDebeSalirCentral1", 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Central No Leak", usuarioReferencia: "central-noleak", passwordHash: hashConocido, activo: 1
+    });
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 709, rol: "colaborador", activo: 1 });
+    await closeControlDb(controlDb);
+
+    const fallo = await autenticarCredencialCentral({ empresaSlug, usuarioLocalId: 709, password: "OtraCosaDistinta", controlDbPath });
+    assertSame(fallo.errorCode, "CREDENCIAL_INVALIDA", "debe fallar por password incorrecta");
+    const serializadoFallo = JSON.stringify(fallo);
+    if (serializadoFallo.includes(hashConocido)) throw new Error("CREDENCIAL_INVALIDA no debe exponer el hash real en ninguna parte de la serializacion");
+    if (Object.prototype.hasOwnProperty.call(fallo, "password_hash")) throw new Error("CREDENCIAL_INVALIDA no debe incluir la clave password_hash en el resultado");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2AControlDbInaccesible() {
+  // Mismo patron que testMT1C2AResolverControlDbInaccesible: un directorio real, existe pero no
+  // es abrible como SQLite. Como autenticarCredencialCentral llama primero al resolver, este
+  // fallo se propaga desde ahi -- certifica que el servicio de seguridad no lo reclasifica ni lo
+  // envuelve como CREDENCIAL_INVALIDA.
+  const controlDbPathDirectorio = path.join(os.tmpdir(), `sec-inaccesible-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  fs.mkdirSync(controlDbPathDirectorio, { recursive: true });
+  try {
+    const resultado = await autenticarCredencialCentral({ empresaSlug: "cualquiera", usuarioLocalId: 1, password: "cualquiera", controlDbPath: controlDbPathDirectorio });
+    assertEqual(resultado.ok, false, "control DB inaccesible debe fallar");
+    assertSame(resultado.errorCode, "CONTROL_DB_INACCESIBLE", "debe reportar CONTROL_DB_INACCESIBLE, distinto de CONTROL_DB_AUSENTE y de CONTROL_DB_QUERY_ERROR");
+    if (JSON.stringify(resultado).toLowerCase().includes("password")) throw new Error("CONTROL_DB_INACCESIBLE no debe mencionar password en su serializacion");
+  } finally {
+    fs.rmSync(controlDbPathDirectorio, { recursive: true, force: true });
+  }
+}
+
+async function testMT1C2B2AControlDbQueryError() {
+  // SQLite real y abrible, pero sin la tabla `empresas`: el OPEN funciona, la query del resolver
+  // es la que falla de forma clasificada. Certifica que autenticarCredencialCentral propaga
+  // CONTROL_DB_QUERY_ERROR del resolver sin convertirlo en CONTROL_DB_WRITE_ERROR.
+  const controlDbPathInvalida = tempDbPath();
+  try {
+    await runSql(controlDbPathInvalida, "CREATE TABLE dummy_sin_empresas (id INTEGER)");
+    const resultado = await autenticarCredencialCentral({ empresaSlug: "cualquiera", usuarioLocalId: 1, password: "cualquiera", controlDbPath: controlDbPathInvalida });
+    assertEqual(resultado.ok, false, "control DB estructuralmente invalida debe fallar");
+    assertSame(resultado.errorCode, "CONTROL_DB_QUERY_ERROR", "debe reportar CONTROL_DB_QUERY_ERROR, distinto de CONTROL_DB_INACCESIBLE y de CONTROL_DB_WRITE_ERROR");
+  } finally {
+    fs.rmSync(controlDbPathInvalida, { force: true });
+  }
+}
+
+async function testMT1C2B2AControlDbWriteErrorRollback() {
+  // Control plane temporal 100% valido (empresa+central+membership resuelven correctamente), con
+  // un TRIGGER temporal BEFORE UPDATE ON usuarios que aborta cualquier UPDATE real. Certifica que
+  // un fallo de escritura strictamente posterior a una resolucion exitosa se clasifica como
+  // CONTROL_DB_WRITE_ERROR (no CREDENCIAL_INVALIDA, no QUERY_ERROR) y que el ROLLBACK es real: la
+  // fila de usuarios queda byte-a-byte igual a como estaba antes del intento, incluido
+  // actualizado_en. El trigger vive unicamente en esta DB temporal.
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `sec-writeerr-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "Security Write Error Test", dbPath: "guernica.db" });
+    const passwordReal = "ClaveCorrectaWriteErr1";
+    const hash = await bcrypt.hash(passwordReal, 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Central Write Error", usuarioReferencia: "central-writeerr", passwordHash: hash, activo: 1
+    });
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 710, rol: "colaborador", activo: 1 });
+    const antes = await getControlQuery(
+      controlDb, "SELECT intentos_fallidos, bloqueado_hasta, ultimo_acceso, password_hash, actualizado_en FROM usuarios WHERE id = ?", [central.id]
+    );
+    await runControlQuery(
+      controlDb,
+      "CREATE TRIGGER trg_test_bloquea_update_usuarios BEFORE UPDATE ON usuarios BEGIN SELECT RAISE(ABORT, 'forzado por test HARDEN'); END"
+    );
+    await closeControlDb(controlDb);
+    await esperarNuevoSegundo();
+
+    const falloWrong = await autenticarCredencialCentral({ empresaSlug, usuarioLocalId: 710, password: "Incorrecta", controlDbPath });
+    assertEqual(falloWrong.ok, false, "un UPDATE bloqueado por trigger debe fallar");
+    assertSame(falloWrong.errorCode, "CONTROL_DB_WRITE_ERROR", "debe reportar CONTROL_DB_WRITE_ERROR, no CREDENCIAL_INVALIDA ni QUERY_ERROR");
+    if (Object.prototype.hasOwnProperty.call(falloWrong, "password_hash")) throw new Error("CONTROL_DB_WRITE_ERROR no debe exponer password_hash");
+
+    const falloSuccess = await autenticarCredencialCentral({ empresaSlug, usuarioLocalId: 710, password: passwordReal, controlDbPath });
+    assertEqual(falloSuccess.ok, false, "un UPDATE de exito bloqueado por trigger tambien debe fallar, nunca reportar autenticacion exitosa sin persistir");
+    assertSame(falloSuccess.errorCode, "CONTROL_DB_WRITE_ERROR", "debe reportar CONTROL_DB_WRITE_ERROR tambien en el camino de password correcta");
+
+    const controlDbVerif = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const despues = await getControlQuery(
+        controlDbVerif, "SELECT intentos_fallidos, bloqueado_hasta, ultimo_acceso, password_hash, actualizado_en FROM usuarios WHERE id = ?", [central.id]
+      );
+      assertEqual(Number(despues.intentos_fallidos), Number(antes.intentos_fallidos), "intentos_fallidos debe quedar SIN CAMBIOS tras rollback real");
+      assertSame(despues.bloqueado_hasta, antes.bloqueado_hasta, "bloqueado_hasta debe quedar SIN CAMBIOS tras rollback real");
+      assertSame(despues.ultimo_acceso, antes.ultimo_acceso, "ultimo_acceso debe quedar SIN CAMBIOS tras rollback real");
+      assertSame(despues.password_hash, antes.password_hash, "password_hash debe quedar SIN CAMBIOS tras rollback real");
+      assertSame(despues.actualizado_en, antes.actualizado_en, "actualizado_en debe quedar SIN CAMBIOS tras rollback real (el UPDATE nunca se confirmo)");
+    } finally {
+      await closeControlDb(controlDbVerif);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
   }
 }
