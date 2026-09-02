@@ -45,6 +45,7 @@ const {
 const userControlBridge = require("../backend/userControlBridge");
 const { reconcileShadowUsers } = require("../database/reconcile-shadow-users");
 const { resolverIdentidadCentralPorLocal, abrirControlDbSoloLectura, revalidarSesionCentral } = require("../backend/centralAuthResolver");
+const { resolverTenantDbRegistrado } = require("../backend/tenantDbRegistry");
 const { autenticarCredencialCentral } = require("../backend/centralAuthSecurity");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -21049,6 +21050,16 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1C2B3ControlDbQueryError503PreservaSesion);
   await _run(testMT1C2B3LogoutSinControlDb);
   await _run(testMT1C2B3LegacySinControlPlaneIntacto);
+  await _run(testMT1D1ARegistryEmpresaActivaExacta);
+  await _run(testMT1D1ARegistrySlugIncorrectoBindingInvalid);
+  await _run(testMT1D1ARegistryIdIncorrectoBindingInvalid);
+  await _run(testMT1D1ARegistryEmpresaInactiva);
+  await _run(testMT1D1ARegistryPathValidoResuelto);
+  await _run(testMT1D1ARegistryPathTraversalRechazado);
+  await _run(testMT1D1ARegistryControlDbAusente);
+  await _run(testMT1D1ARegistryControlDbInaccesible);
+  await _run(testMT1D1ARegistryQueryError);
+  await _run(testMT1D1ARegistryNoCreaBusinessDbInexistente);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -25599,5 +25610,251 @@ async function testMT1C2B3LegacySinControlPlaneIntacto() {
   } finally {
     fs.rmSync(dbPath, { force: true });
     fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function mt1d1aCrearControlDbConEmpresa({ slug, nombre, dbPath, activa = 1 }) {
+  const controlDbPath = tempDbPath();
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    const empresa = await registrarEmpresa(controlDb, { slug, nombre, dbPath, activa });
+    return { controlDbPath, empresa };
+  } finally {
+    await closeControlDb(controlDb);
+  }
+}
+
+async function testMT1D1ARegistryEmpresaActivaExacta() {
+  const slug = `mt1d1a-activa-${Date.now()}`;
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D1A Activa",
+      dbPath: "tenant-activa.db"
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    const result = await resolverTenantDbRegistrado({
+      empresaId: fixture.empresa.id,
+      empresaSlug: slug,
+      controlDbPath
+    });
+
+    assertSame(result.ok, true, "registry debe resolver empresa exacta activa");
+    assertEqual(result.empresa.id, fixture.empresa.id, "empresa_id debe ser exacto");
+    assertSame(result.empresa.slug, slug, "slug debe ser exacto");
+    assertSame(result.empresa.nombre, "MT1D1A Activa", "nombre registrado debe preservarse");
+    assertSame(result.empresa.activa, true, "empresa activa debe normalizar a true");
+    assertSame(result.db.registeredPath, "tenant-activa.db", "registeredPath debe venir del control plane");
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1D1ARegistrySlugIncorrectoBindingInvalid() {
+  const slug = `mt1d1a-slug-${Date.now()}`;
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D1A Slug",
+      dbPath: "tenant-slug.db"
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    const result = await resolverTenantDbRegistrado({
+      empresaId: fixture.empresa.id,
+      empresaSlug: `${slug}-otro`,
+      controlDbPath
+    });
+
+    assertSame(result.ok, false, "slug incorrecto no debe resolver por id solamente");
+    assertSame(result.errorCode, "TENANT_REGISTRY_BINDING_INVALID", "slug incorrecto debe clasificar binding invalid");
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1D1ARegistryIdIncorrectoBindingInvalid() {
+  const slug = `mt1d1a-id-${Date.now()}`;
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D1A Id",
+      dbPath: "tenant-id.db"
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    const result = await resolverTenantDbRegistrado({
+      empresaId: fixture.empresa.id + 1000,
+      empresaSlug: slug,
+      controlDbPath
+    });
+
+    assertSame(result.ok, false, "id incorrecto no debe resolver por slug solamente");
+    assertSame(result.errorCode, "TENANT_REGISTRY_BINDING_INVALID", "id incorrecto debe clasificar binding invalid");
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1D1ARegistryEmpresaInactiva() {
+  const slug = `mt1d1a-inactiva-${Date.now()}`;
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D1A Inactiva",
+      dbPath: "tenant-inactiva.db",
+      activa: 0
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    const result = await resolverTenantDbRegistrado({
+      empresaId: fixture.empresa.id,
+      empresaSlug: slug,
+      controlDbPath
+    });
+
+    assertSame(result.ok, false, "empresa inactiva no debe resolver registry operativo");
+    assertSame(result.errorCode, "EMPRESA_INACTIVA", "empresa inactiva debe conservar taxonomia");
+    assertEqual(result.empresa.id, fixture.empresa.id, "empresa inactiva debe devolver la ancla exacta");
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1D1ARegistryPathValidoResuelto() {
+  const slug = `mt1d1a-path-${Date.now()}`;
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D1A Path",
+      dbPath: "tenants/path-valido.db"
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    const result = await resolverTenantDbRegistrado({
+      empresaId: fixture.empresa.id,
+      empresaSlug: slug,
+      controlDbPath
+    });
+
+    assertSame(result.ok, true, "path valido bajo database debe resolver");
+    assertSame(result.db.registeredPath, "tenants/path-valido.db", "registeredPath debe preservarse sin normalizar");
+    assertSame(result.db.resolvedPath, resolveEmpresaDbPath("tenants/path-valido.db"), "resolvedPath debe reutilizar politica existente");
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1D1ARegistryPathTraversalRechazado() {
+  const casos = ["", "   ", ".", "./", "../otro.db", "../../otro.db"];
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    await closeControlDb(controlDb);
+    for (const [index, dbPathRegistrado] of casos.entries()) {
+      const slug = `mt1d1a-path-invalido-${index}-${Date.now()}`;
+      await runSql(
+        controlDbPath,
+        "INSERT INTO empresas (slug, nombre, db_path, activa) VALUES (?, ?, ?, 1)",
+        [slug, "MT1D1A Path Invalido", dbPathRegistrado]
+      );
+      const empresa = await allSql(controlDbPath, "SELECT id FROM empresas WHERE slug = ?", [slug]);
+
+      const result = await resolverTenantDbRegistrado({
+        empresaId: empresa[0].id,
+        empresaSlug: slug,
+        controlDbPath
+      });
+
+      assertSame(result.ok, false, `db_path '${dbPathRegistrado}' debe fallar cerrado`);
+      assertSame(result.errorCode, "TENANT_DB_PATH_INVALID", `db_path '${dbPathRegistrado}' debe clasificar path invalido`);
+      assertSame(result.db.registeredPath, dbPathRegistrado, "path registrado invalido debe quedar disponible solo como diagnostico");
+      assertSame(result.db.resolvedPath, null, "path invalido no debe devolver resolvedPath usable");
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1D1ARegistryControlDbAusente() {
+  const controlDbPath = tempDbPath();
+  if (fs.existsSync(controlDbPath)) fs.rmSync(controlDbPath, { force: true });
+
+  const result = await resolverTenantDbRegistrado({
+    empresaId: 1,
+    empresaSlug: "mt1d1a-ausente",
+    controlDbPath
+  });
+
+  assertSame(result.ok, false, "control DB ausente no debe resolver registry");
+  assertSame(result.errorCode, "TENANT_REGISTRY_CONTROL_DB_AUSENTE", "control DB ausente debe tener codigo operacional propio");
+  assertEqual(fs.existsSync(controlDbPath), false, "resolver registry readonly no debe crear control DB ausente");
+}
+
+async function testMT1D1ARegistryControlDbInaccesible() {
+  const controlDbPath = fs.mkdtempSync(path.join(os.tmpdir(), "mt1d1a-control-dir-"));
+  try {
+    const result = await resolverTenantDbRegistrado({
+      empresaId: 1,
+      empresaSlug: "mt1d1a-inaccesible",
+      controlDbPath
+    });
+
+    assertSame(result.ok, false, "directorio existente no debe abrirse como control DB");
+    assertSame(result.errorCode, "TENANT_REGISTRY_CONTROL_DB_INACCESIBLE", "fallo de apertura debe clasificarse como inaccesible");
+  } finally {
+    fs.rmSync(controlDbPath, { recursive: true, force: true });
+  }
+}
+
+async function testMT1D1ARegistryQueryError() {
+  const controlDbPath = tempDbPath();
+  try {
+    await runSql(controlDbPath, "CREATE TABLE roto (id INTEGER)");
+    const result = await resolverTenantDbRegistrado({
+      empresaId: 1,
+      empresaSlug: "mt1d1a-query-error",
+      controlDbPath
+    });
+
+    assertSame(result.ok, false, "schema roto no debe resolver registry");
+    assertSame(result.errorCode, "TENANT_REGISTRY_CONTROL_DB_QUERY_ERROR", "schema roto debe clasificarse como query error");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1D1ARegistryNoCreaBusinessDbInexistente() {
+  const slug = `mt1d1a-no-crea-${Date.now()}`;
+  const businessName = `tenant-no-existe-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  let controlDbPath;
+  if (fs.existsSync(businessPath)) fs.rmSync(businessPath, { force: true });
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D1A No Crea Business",
+      dbPath: businessName
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    const result = await resolverTenantDbRegistrado({
+      empresaId: fixture.empresa.id,
+      empresaSlug: slug,
+      controlDbPath
+    });
+
+    assertSame(result.ok, true, "business DB inexistente no impide resolver metadata");
+    assertSame(result.db.resolvedPath, businessPath, "resolvedPath debe apuntar al archivo registrado");
+    assertEqual(fs.existsSync(businessPath), false, "resolver registry no debe crear ni abrir business DB inexistente");
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(businessPath, { force: true });
   }
 }
