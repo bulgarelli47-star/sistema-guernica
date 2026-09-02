@@ -31,6 +31,11 @@ function resultadoError(errorCode, message, parcial = {}) {
   return { ok: false, errorCode, message, ...parcial };
 }
 
+function normalizarIdSesion(valor) {
+  const numero = Number(valor);
+  return Number.isInteger(numero) && numero > 0 ? numero : null;
+}
+
 // Punto de entrada unico del resolver. No compara password, no incrementa lockout, no toca
 // sesiones -- eso es responsabilidad de una fase posterior (MT-1C.2B) que consumira el
 // password_hash/intentos_fallidos/bloqueado_hasta ya expuestos aca. usuarioLocalId es la unica
@@ -120,7 +125,116 @@ async function resolverIdentidadCentralPorLocal({ empresaSlug, usuarioLocalId, c
   }
 }
 
+// MT-1C.2B.3: revalidador angosto para sesiones ya emitidas. No autentica, no lee secretos, no
+// toca lockout ni ultimo_acceso, y no conoce Express ni la tabla local `sesiones`; solo comprueba
+// que las anclas guardadas en la sesion siguen representando exactamente la autoridad central
+// vigente de este proceso.
+async function revalidarSesionCentral({
+  empresaSlug,
+  empresaId,
+  membershipId,
+  centralId,
+  usuarioLocalId,
+  controlDbPath
+} = {}) {
+  const slug = String(empresaSlug || "").trim();
+  const empresaIdNormalizado = normalizarIdSesion(empresaId);
+  const membershipIdNormalizado = normalizarIdSesion(membershipId);
+  const centralIdNormalizado = normalizarIdSesion(centralId);
+  const usuarioLocalIdNormalizado = normalizarIdSesion(usuarioLocalId);
+  if (!slug || !empresaIdNormalizado || !membershipIdNormalizado || !centralIdNormalizado || !usuarioLocalIdNormalizado) {
+    return resultadoError("CENTRAL_SESSION_BINDING_INVALID", "revalidarSesionCentral: anclas de sesion invalidas");
+  }
+
+  const resolvedControlDbPath = controlDbPath || DEFAULT_DB_PATH;
+  if (!fs.existsSync(resolvedControlDbPath)) {
+    return resultadoError("CONTROL_DB_AUSENTE", `Control plane no encontrado: ${resolvedControlDbPath}`);
+  }
+
+  let controlDb;
+  try {
+    controlDb = await abrirControlDbSoloLectura(resolvedControlDbPath);
+  } catch (error) {
+    return resultadoError("CONTROL_DB_INACCESIBLE", error.message);
+  }
+
+  try {
+    const row = await getQuery(
+      controlDb,
+      `SELECT
+         e.id AS empresa_id,
+         e.slug AS empresa_slug,
+         e.activa AS empresa_activa,
+         ue.id AS membership_id,
+         ue.empresa_id AS membership_empresa_id,
+         ue.usuario_id AS membership_usuario_id,
+         ue.usuario_local_id AS membership_usuario_local_id,
+         ue.rol AS membership_rol,
+         ue.activo AS membership_activo,
+         u.id AS central_id,
+         u.activo AS central_activo
+       FROM empresas e
+       JOIN usuario_empresas ue ON ue.empresa_id = e.id
+       JOIN usuarios u ON u.id = ue.usuario_id
+       WHERE e.id = ?
+         AND e.slug = ?
+         AND ue.id = ?
+         AND ue.empresa_id = e.id
+         AND ue.usuario_local_id = ?
+         AND ue.usuario_id = ?
+         AND u.id = ?`,
+      [
+        empresaIdNormalizado,
+        slug,
+        membershipIdNormalizado,
+        usuarioLocalIdNormalizado,
+        centralIdNormalizado,
+        centralIdNormalizado
+      ]
+    );
+
+    if (!row) {
+      return resultadoError("CENTRAL_SESSION_BINDING_INVALID", "La sesion central ya no coincide con la autoridad vigente");
+    }
+
+    const empresa = {
+      id: row.empresa_id,
+      slug: row.empresa_slug,
+      activa: Number(row.empresa_activa) === 1
+    };
+    const membership = {
+      id: row.membership_id,
+      empresa_id: row.membership_empresa_id,
+      usuario_id: row.membership_usuario_id,
+      usuario_local_id: Number(row.membership_usuario_local_id),
+      rol: row.membership_rol,
+      activo: Number(row.membership_activo) === 1
+    };
+    const central = {
+      id: row.central_id,
+      activo: Number(row.central_activo) === 1
+    };
+
+    if (!empresa.activa) {
+      return resultadoError("EMPRESA_INACTIVA", "La empresa de la sesion central esta inactiva", { empresa, membership, central });
+    }
+    if (!membership.activo) {
+      return resultadoError("MEMBERSHIP_INACTIVA", "La membership de la sesion central esta inactiva", { empresa, membership, central });
+    }
+    if (!central.activo) {
+      return resultadoError("CENTRAL_INACTIVA", "La identidad central de la sesion esta inactiva", { empresa, membership, central });
+    }
+
+    return { ok: true, empresa, membership, central };
+  } catch (error) {
+    return resultadoError("CONTROL_DB_QUERY_ERROR", error.message);
+  } finally {
+    await closeDb(controlDb);
+  }
+}
+
 module.exports = {
   resolverIdentidadCentralPorLocal,
-  abrirControlDbSoloLectura
+  abrirControlDbSoloLectura,
+  revalidarSesionCentral
 };

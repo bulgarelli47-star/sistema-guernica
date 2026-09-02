@@ -44,7 +44,7 @@ const {
 } = require("../database/sync-shadow-users");
 const userControlBridge = require("../backend/userControlBridge");
 const { reconcileShadowUsers } = require("../database/reconcile-shadow-users");
-const { resolverIdentidadCentralPorLocal, abrirControlDbSoloLectura } = require("../backend/centralAuthResolver");
+const { resolverIdentidadCentralPorLocal, abrirControlDbSoloLectura, revalidarSesionCentral } = require("../backend/centralAuthResolver");
 const { autenticarCredencialCentral } = require("../backend/centralAuthSecurity");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -21028,6 +21028,27 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1C2B2BCentralMembershipNoExiste403);
   await _run(testMT1C2B2BCentralEmpresaNoExiste503);
   await _run(testMT1C2B2BLogoutRevocaCrossMode);
+  await _run(testMT1C2B3RevalidadorSuccessBindingExacto);
+  await _run(testMT1C2B3RevalidadorEmpresaInactiva);
+  await _run(testMT1C2B3RevalidadorMembershipInactiva);
+  await _run(testMT1C2B3RevalidadorCentralInactiva);
+  await _run(testMT1C2B3RevalidadorBindingIncorrecto);
+  await _run(testMT1C2B3RevalidadorControlDbAusente);
+  await _run(testMT1C2B3RevalidadorQueryError);
+  await _run(testMT1C2B3CentralSesionVigentePreservaSesion);
+  await _run(testMT1C2B3RoleDowngradeInmediato);
+  await _run(testMT1C2B3RoleUpgradeInmediato);
+  await _run(testMT1C2B3MembershipInactivaRevocaSesion);
+  await _run(testMT1C2B3CentralInactivaRevocaSesion);
+  await _run(testMT1C2B3EmpresaInactivaRevocaSesion);
+  await _run(testMT1C2B3MembershipMissingRevocaSesion);
+  await _run(testMT1C2B3MembershipRecreadaNoRebind);
+  await _run(testMT1C2B3MembershipRelinkCentralNoRebind);
+  await _run(testMT1C2B3DeleteFailureDeniegaAcceso);
+  await _run(testMT1C2B3ControlDbAusente503PreservaSesion);
+  await _run(testMT1C2B3ControlDbQueryError503PreservaSesion);
+  await _run(testMT1C2B3LogoutSinControlDb);
+  await _run(testMT1C2B3LegacySinControlPlaneIntacto);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -25110,5 +25131,473 @@ async function testMT1C2B2BLogoutRevocaCrossMode() {
     fs.rmSync(dbPathA, { force: true });
     fs.rmSync(dbPathB, { force: true });
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+function mt1c2b3PayloadUsuario(sufijo) {
+  return {
+    nombre: `MT1C2B3 ${sufijo}`,
+    usuario: `mt1c2b3_${sufijo}_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    password: "UsuarioNuevo123",
+    confirmar_password: "UsuarioNuevo123",
+    rol: "colaborador",
+    email: "",
+    telefono: "",
+    activo: 1
+  };
+}
+
+async function mt1c2b3LoginCentral(baseUrl, fixture) {
+  const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword }, null);
+  assertEqual(response.status, 200, "login central debe emitir sesion para el fixture 2B.3");
+  if (!data?.token) throw new Error("login central 2B.3 no devolvio token");
+  return data.token;
+}
+
+async function mt1c2b3AssertSesionExiste(dbPath, token, mensaje) {
+  const row = (await allSql(dbPath, "SELECT * FROM sesiones WHERE token = ?", [token]))[0];
+  if (!row) throw new Error(mensaje);
+  return row;
+}
+
+async function mt1c2b3AssertSesionNoExiste(dbPath, token, mensaje) {
+  const row = (await allSql(dbPath, "SELECT * FROM sesiones WHERE token = ?", [token]))[0];
+  if (row) throw new Error(mensaje);
+}
+
+async function mt1c2b3AssertAuthorityRevocation(mutateControl, detalle) {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  let token;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      token = await mt1c2b3LoginCentral(baseUrl, fixture);
+      await mt1c2b3AssertSesionExiste(dbPath, token, "la sesion central debe existir antes de la invalidacion");
+    }, extraEnvCentral(fixture));
+
+    await mutateControl(fixture);
+
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(response.status, 401, `${detalle}: la request debe ser rechazada como sesion invalida`);
+      assertSame(data.message, "Sesión inválida. Iniciá sesión nuevamente.", `${detalle}: mensaje publico debe ser angosto`);
+    }, extraEnvCentral(fixture));
+
+    await mt1c2b3AssertSesionNoExiste(dbPath, token, `${detalle}: authority invalidation debe borrar la fila local`);
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B3RevalidadorSuccessBindingExacto() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath, membershipRol: "encargado" });
+    controlDbPath = fixture.controlDbPath;
+    const result = await revalidarSesionCentral({
+      empresaSlug: fixture.empresaSlug,
+      empresaId: fixture.empresa.id,
+      membershipId: fixture.membership.id,
+      centralId: fixture.central.id,
+      usuarioLocalId: fixture.localUserId,
+      controlDbPath
+    });
+    assertSame(result.ok, true, "revalidador debe aceptar binding exacto vigente");
+    assertEqual(result.empresa.id, fixture.empresa.id, "empresa debe ser la ancla exacta");
+    assertSame(result.empresa.slug, fixture.empresaSlug, "slug debe ser el process-bound exacto");
+    assertEqual(result.membership.id, fixture.membership.id, "membership debe ser la ancla exacta");
+    assertEqual(result.membership.usuario_id, fixture.central.id, "membership debe apuntar al central exacto");
+    assertEqual(result.membership.usuario_local_id, fixture.localUserId, "membership debe apuntar al usuario local exacto");
+    assertSame(result.membership.rol, "encargado", "rol vigente debe venir de membership");
+    assertEqual(result.central.id, fixture.central.id, "central debe ser la ancla exacta");
+    const serializado = JSON.stringify(result);
+    for (const clave of ["password_hash", "intentos_fallidos", "bloqueado_hasta", "ultimo_acceso"]) {
+      if (serializado.includes(`"${clave}"`)) throw new Error(`revalidador de sesion no debe exponer ${clave}`);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B3RevalidadorEmpresaInactiva() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath, empresaActiva: 0 });
+    controlDbPath = fixture.controlDbPath;
+    const result = await revalidarSesionCentral({
+      empresaSlug: fixture.empresaSlug,
+      empresaId: fixture.empresa.id,
+      membershipId: fixture.membership.id,
+      centralId: fixture.central.id,
+      usuarioLocalId: fixture.localUserId,
+      controlDbPath
+    });
+    assertSame(result.ok, false, "empresa inactiva no debe revalidar");
+    assertSame(result.errorCode, "EMPRESA_INACTIVA", "empresa inactiva debe clasificar autoridad");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B3RevalidadorMembershipInactiva() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath, membershipActivo: 0 });
+    controlDbPath = fixture.controlDbPath;
+    const result = await revalidarSesionCentral({
+      empresaSlug: fixture.empresaSlug,
+      empresaId: fixture.empresa.id,
+      membershipId: fixture.membership.id,
+      centralId: fixture.central.id,
+      usuarioLocalId: fixture.localUserId,
+      controlDbPath
+    });
+    assertSame(result.ok, false, "membership inactiva no debe revalidar");
+    assertSame(result.errorCode, "MEMBERSHIP_INACTIVA", "membership inactiva debe clasificar autoridad");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B3RevalidadorCentralInactiva() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath, centralActivo: 0 });
+    controlDbPath = fixture.controlDbPath;
+    const result = await revalidarSesionCentral({
+      empresaSlug: fixture.empresaSlug,
+      empresaId: fixture.empresa.id,
+      membershipId: fixture.membership.id,
+      centralId: fixture.central.id,
+      usuarioLocalId: fixture.localUserId,
+      controlDbPath
+    });
+    assertSame(result.ok, false, "central inactiva no debe revalidar");
+    assertSame(result.errorCode, "CENTRAL_INACTIVA", "central inactiva debe clasificar autoridad");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B3RevalidadorBindingIncorrecto() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const result = await revalidarSesionCentral({
+      empresaSlug: fixture.empresaSlug,
+      empresaId: fixture.empresa.id,
+      membershipId: fixture.membership.id + 1000,
+      centralId: fixture.central.id,
+      usuarioLocalId: fixture.localUserId,
+      controlDbPath
+    });
+    assertSame(result.ok, false, "membership distinta no debe hacer rebind automatico");
+    assertSame(result.errorCode, "CENTRAL_SESSION_BINDING_INVALID", "binding incorrecto debe clasificar invalidacion de autoridad");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B3RevalidadorControlDbAusente() {
+  const controlDbPath = tempDbPath();
+  if (fs.existsSync(controlDbPath)) fs.rmSync(controlDbPath, { force: true });
+  const result = await revalidarSesionCentral({
+    empresaSlug: "mt1c2b3-ausente",
+    empresaId: 1,
+    membershipId: 1,
+    centralId: 1,
+    usuarioLocalId: 1,
+    controlDbPath
+  });
+  assertSame(result.ok, false, "control DB ausente no debe revalidar");
+  assertSame(result.errorCode, "CONTROL_DB_AUSENTE", "control DB ausente debe clasificarse operacional");
+  assertEqual(fs.existsSync(controlDbPath), false, "revalidador readonly no debe crear control DB ausente");
+}
+
+async function testMT1C2B3RevalidadorQueryError() {
+  const controlDbPath = tempDbPath();
+  try {
+    await runSql(controlDbPath, "CREATE TABLE roto (id INTEGER)");
+    const result = await revalidarSesionCentral({
+      empresaSlug: "mt1c2b3-query-error",
+      empresaId: 1,
+      membershipId: 1,
+      centralId: 1,
+      usuarioLocalId: 1,
+      controlDbPath
+    });
+    assertSame(result.ok, false, "schema roto no debe revalidar");
+    assertSame(result.errorCode, "CONTROL_DB_QUERY_ERROR", "schema roto debe clasificarse como query error");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B3CentralSesionVigentePreservaSesion() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath, membershipRol: "admin" });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await mt1c2b3LoginCentral(baseUrl, fixture);
+      const protegido = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(protegido.response.status, 200, "sesion central vigente debe acceder a endpoint protegido");
+      const row = await mt1c2b3AssertSesionExiste(dbPath, token, "sesion vigente debe preservarse");
+      assertSame(row.rol, "admin", "snapshot de sesion emitida debe conservar rol original");
+    }, extraEnvCentral(fixture));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B3RoleDowngradeInmediato() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath, membershipRol: "admin" });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await mt1c2b3LoginCentral(baseUrl, fixture);
+      const rowAntes = await mt1c2b3AssertSesionExiste(dbPath, token, "sesion admin debe existir antes del downgrade");
+      assertSame(rowAntes.rol, "admin", "snapshot inicial debe quedar admin");
+      await runSql(controlDbPath, "UPDATE usuario_empresas SET rol = ? WHERE id = ?", ["colaborador", fixture.membership.id]);
+
+      const crear = await requestJson(baseUrl, "POST", "/usuarios", mt1c2b3PayloadUsuario("downgrade"), token);
+      assertEqual(crear.response.status, 403, "downgrade admin->colaborador debe perder acceso admin en la siguiente request");
+      const rowDespues = await mt1c2b3AssertSesionExiste(dbPath, token, "cambio de rol no debe revocar sesion");
+      assertSame(rowDespues.rol, "admin", "sesiones.rol no debe actualizarse por downgrade");
+      assertEqual(rowDespues.central_id, fixture.central.id, "downgrade no debe cambiar central_id de sesion");
+      assertEqual(rowDespues.membership_id, fixture.membership.id, "downgrade no debe cambiar membership_id de sesion");
+      assertEqual(rowDespues.empresa_id, fixture.empresa.id, "downgrade no debe cambiar empresa_id de sesion");
+    }, extraEnvCentral(fixture));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B3RoleUpgradeInmediato() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath, membershipRol: "colaborador" });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await mt1c2b3LoginCentral(baseUrl, fixture);
+      const rowAntes = await mt1c2b3AssertSesionExiste(dbPath, token, "sesion colaborador debe existir antes del upgrade");
+      assertSame(rowAntes.rol, "colaborador", "snapshot inicial debe quedar colaborador");
+      await runSql(controlDbPath, "UPDATE usuario_empresas SET rol = ? WHERE id = ?", ["admin", fixture.membership.id]);
+
+      const crear = await requestJson(baseUrl, "POST", "/usuarios", mt1c2b3PayloadUsuario("upgrade"), token);
+      assertEqual(crear.response.status, 200, "upgrade colaborador->admin debe ganar acceso admin en la siguiente request");
+      const rowDespues = await mt1c2b3AssertSesionExiste(dbPath, token, "cambio de rol no debe revocar sesion");
+      assertSame(rowDespues.rol, "colaborador", "sesiones.rol no debe actualizarse por upgrade");
+      assertEqual(rowDespues.central_id, fixture.central.id, "upgrade no debe cambiar central_id de sesion");
+      assertEqual(rowDespues.membership_id, fixture.membership.id, "upgrade no debe cambiar membership_id de sesion");
+      assertEqual(rowDespues.empresa_id, fixture.empresa.id, "upgrade no debe cambiar empresa_id de sesion");
+    }, extraEnvCentral(fixture));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B3MembershipInactivaRevocaSesion() {
+  await mt1c2b3AssertAuthorityRevocation(
+    (fixture) => runSql(fixture.controlDbPath, "UPDATE usuario_empresas SET activo = 0 WHERE id = ?", [fixture.membership.id]),
+    "membership inactiva"
+  );
+}
+
+async function testMT1C2B3CentralInactivaRevocaSesion() {
+  await mt1c2b3AssertAuthorityRevocation(
+    (fixture) => runSql(fixture.controlDbPath, "UPDATE usuarios SET activo = 0 WHERE id = ?", [fixture.central.id]),
+    "central inactiva"
+  );
+}
+
+async function testMT1C2B3EmpresaInactivaRevocaSesion() {
+  await mt1c2b3AssertAuthorityRevocation(
+    (fixture) => runSql(fixture.controlDbPath, "UPDATE empresas SET activa = 0 WHERE id = ?", [fixture.empresa.id]),
+    "empresa inactiva"
+  );
+}
+
+async function testMT1C2B3MembershipMissingRevocaSesion() {
+  await mt1c2b3AssertAuthorityRevocation(
+    (fixture) => runSql(fixture.controlDbPath, "DELETE FROM usuario_empresas WHERE id = ?", [fixture.membership.id]),
+    "membership eliminada"
+  );
+}
+
+async function testMT1C2B3MembershipRecreadaNoRebind() {
+  await mt1c2b3AssertAuthorityRevocation(async (fixture) => {
+    await runSql(fixture.controlDbPath, "DELETE FROM usuario_empresas WHERE id = ?", [fixture.membership.id]);
+    await runSql(
+      fixture.controlDbPath,
+      "INSERT INTO usuario_empresas (usuario_id, empresa_id, usuario_local_id, rol, activo) VALUES (?, ?, ?, ?, 1)",
+      [fixture.central.id, fixture.empresa.id, fixture.localUserId, "admin"]
+    );
+  }, "membership recreada con nuevo ID");
+}
+
+async function testMT1C2B3MembershipRelinkCentralNoRebind() {
+  await mt1c2b3AssertAuthorityRevocation(async (fixture) => {
+    const centralHash = await bcrypt.hash("CentralRelink123", 10);
+    const nuevoCentral = await runSql(
+      fixture.controlDbPath,
+      "INSERT INTO usuarios (nombre, usuario_referencia, password_hash, activo) VALUES (?, ?, ?, 1)",
+      ["MT1C2B3 Central Relink", `mt1c2b3-relink-${Date.now()}`, centralHash]
+    );
+    await runSql(fixture.controlDbPath, "UPDATE usuario_empresas SET usuario_id = ? WHERE id = ?", [nuevoCentral.lastID, fixture.membership.id]);
+  }, "membership relinkeada a otro central");
+}
+
+async function testMT1C2B3DeleteFailureDeniegaAcceso() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    let token;
+    await withServer(dbPath, async (baseUrl) => {
+      token = await mt1c2b3LoginCentral(baseUrl, fixture);
+      await mt1c2b3AssertSesionExiste(dbPath, token, "sesion central debe existir antes de bloquear DELETE");
+    }, extraEnvCentral(fixture));
+
+    await runSql(fixture.controlDbPath, "UPDATE usuario_empresas SET activo = 0 WHERE id = ?", [fixture.membership.id]);
+    await runSql(
+      dbPath,
+      `CREATE TRIGGER mt1c2b3_bloquea_delete_sesiones
+       BEFORE DELETE ON sesiones
+       BEGIN
+         SELECT RAISE(ABORT, 'mt1c2b3 delete sesiones bloqueado');
+       END`
+    );
+
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(response.status, 401, "fallo de DELETE tras invalidacion autoritativa no debe conceder acceso");
+      assertSame(data.message, "Sesión inválida. Iniciá sesión nuevamente.", "fallo de DELETE debe mantener respuesta 401 angosta");
+    }, extraEnvCentral(fixture));
+
+    await mt1c2b3AssertSesionExiste(dbPath, token, "si el trigger aborta DELETE la fila puede quedar preservada");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B3ControlDbAusente503PreservaSesion() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  let fixture;
+  let token;
+  try {
+    fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      token = await mt1c2b3LoginCentral(baseUrl, fixture);
+    }, extraEnvCentral(fixture));
+    fs.rmSync(controlDbPath, { force: true });
+
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(response.status, 503, "control DB ausente en request protegida central debe mapear a 503");
+      assertSame(data.message, "Servicio de autenticacion no disponible", "mensaje operacional debe ser generico");
+    }, extraEnvCentral(fixture));
+
+    await mt1c2b3AssertSesionExiste(dbPath, token, "error operacional debe preservar sesion central");
+    assertEqual(fs.existsSync(controlDbPath), false, "revalidacion readonly no debe recrear control DB ausente");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B3ControlDbQueryError503PreservaSesion() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  let fixture;
+  let token;
+  try {
+    fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      token = await mt1c2b3LoginCentral(baseUrl, fixture);
+    }, extraEnvCentral(fixture));
+    fs.rmSync(controlDbPath, { force: true });
+    await runSql(controlDbPath, "CREATE TABLE roto (id INTEGER)");
+
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(response.status, 503, "schema roto del control DB debe mapear a 503");
+      assertSame(data.message, "Servicio de autenticacion no disponible", "mensaje query error debe ser generico");
+    }, extraEnvCentral(fixture));
+
+    await mt1c2b3AssertSesionExiste(dbPath, token, "query error operacional debe preservar sesion central");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B3LogoutSinControlDb() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  let fixture;
+  let token;
+  try {
+    fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      token = await mt1c2b3LoginCentral(baseUrl, fixture);
+    }, extraEnvCentral(fixture));
+    fs.rmSync(controlDbPath, { force: true });
+
+    await withServer(dbPath, async (baseUrl) => {
+      const logout = await requestJson(baseUrl, "POST", "/logout", {}, token);
+      assertEqual(logout.response.status, 200, "logout central debe funcionar aunque el control plane este ausente");
+    }, extraEnvCentral(fixture));
+    await mt1c2b3AssertSesionNoExiste(dbPath, token, "logout sin control DB debe eliminar la fila local");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B3LegacySinControlPlaneIntacto() {
+  const dbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  if (fs.existsSync(controlDbPath)) fs.rmSync(controlDbPath, { force: true });
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const protegido = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(protegido.response.status, 200, "legacy debe aceptar endpoint protegido sin consultar control plane");
+      const logout = await requestJson(baseUrl, "POST", "/logout", {}, token);
+      assertEqual(logout.response.status, 200, "logout legacy debe seguir local");
+      await mt1c2b3AssertSesionNoExiste(dbPath, token, "logout legacy debe eliminar sesion local");
+    }, { ATLAS_CONTROL_DB_PATH: controlDbPath });
+    assertEqual(fs.existsSync(controlDbPath), false, "legacy no debe crear ni abrir control plane por request");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
   }
 }

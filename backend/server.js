@@ -8,6 +8,7 @@ const crypto = require("crypto");
 const { runQuery, getQuery, allQuery } = require("./db");
 const userControlBridge = require("./userControlBridge");
 const { autenticarCredencialCentral } = require("./centralAuthSecurity");
+const { revalidarSesionCentral } = require("./centralAuthResolver");
 const {
   CONFIGURACION_DEFAULTS,
   getConfiguracionGlobal,
@@ -329,6 +330,19 @@ app.use(express.static(path.join(__dirname, "../frontend"), {
 }));
 
 const RUTAS_PUBLICAS = new Set(["/", "/login", "/logout", "/tienda/publica", "/tienda/publica/productos", "/tienda/publica/pedidos"]);
+const CENTRAL_SESSION_AUTHORITY_ERRORS = new Set([
+  "EMPRESA_INACTIVA",
+  "MEMBERSHIP_INACTIVA",
+  "CENTRAL_INACTIVA",
+  "CENTRAL_SESSION_BINDING_INVALID"
+]);
+const CENTRAL_SESSION_OPERATIONAL_ERRORS = new Set([
+  "CONTROL_DB_AUSENTE",
+  "CONTROL_DB_INACCESIBLE",
+  "CONTROL_DB_QUERY_ERROR"
+]);
+const CENTRAL_SESSION_INVALID_MESSAGE = "Sesión inválida. Iniciá sesión nuevamente.";
+const CENTRAL_AUTH_UNAVAILABLE_MESSAGE = "Servicio de autenticacion no disponible";
 
 function logError(contexto, error, extra = "") {
   const msg = error instanceof Error ? error.message : String(error);
@@ -366,8 +380,38 @@ async function requireAuth(req, res, next) {
       return res.status(401).json({ message: "Sesión incompatible. Iniciá sesión nuevamente." });
     }
 
-    req.usuario = { id: sesion.usuario_id, nombre: sesion.nombre, rol: sesion.rol };
-    next();
+    if (sesionAuthMode === "legacy") {
+      req.usuario = { id: sesion.usuario_id, nombre: sesion.nombre, rol: sesion.rol };
+      return next();
+    }
+
+    const revalidacion = await revalidarSesionCentral({
+      empresaSlug: ATLAS_EMPRESA_SLUG,
+      empresaId: sesion.empresa_id,
+      membershipId: sesion.membership_id,
+      centralId: sesion.central_id,
+      usuarioLocalId: sesion.usuario_id,
+      controlDbPath: process.env.ATLAS_CONTROL_DB_PATH || undefined
+    });
+
+    if (!revalidacion.ok) {
+      const errorCode = revalidacion.errorCode || "UNKNOWN";
+      if (CENTRAL_SESSION_AUTHORITY_ERRORS.has(errorCode)) {
+        try {
+          await runQuery("DELETE FROM sesiones WHERE token = ?", [token]);
+        } catch (deleteError) {
+          logError("Error revocando sesion central invalida", deleteError, `errorCode=${errorCode}`);
+        }
+        return res.status(401).json({ message: CENTRAL_SESSION_INVALID_MESSAGE });
+      }
+      if (!CENTRAL_SESSION_OPERATIONAL_ERRORS.has(errorCode)) {
+        logError("Error desconocido revalidando sesion central", new Error(revalidacion.message || errorCode), `errorCode=${errorCode}`);
+      }
+      return res.status(503).json({ message: CENTRAL_AUTH_UNAVAILABLE_MESSAGE });
+    }
+
+    req.usuario = { id: sesion.usuario_id, nombre: sesion.nombre, rol: normalizarRol(revalidacion.membership.rol) };
+    return next();
   } catch (error) {
     console.error("Error validando sesión:", error.message);
     return res.status(500).json({ message: "Error de autenticación" });
