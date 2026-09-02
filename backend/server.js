@@ -7,6 +7,7 @@ const bcrypt = require("bcrypt");
 const crypto = require("crypto");
 const { runQuery, getQuery, allQuery } = require("./db");
 const userControlBridge = require("./userControlBridge");
+const { autenticarCredencialCentral } = require("./centralAuthSecurity");
 const {
   CONFIGURACION_DEFAULTS,
   getConfiguracionGlobal,
@@ -245,6 +246,27 @@ app.use((req, res, next) => {
 });
 
 const PORT = Number(process.env.PORT) || 3000;
+
+// MT-1C.2B.2B: modo de autenticacion del proceso, resuelto una unica vez al cargar el modulo --
+// nunca por request. Fail-closed deliberado: un valor invalido o "central" sin empresa declarada
+// deben tumbar el proceso ANTES de app.listen(), nunca degradar silenciosamente a legacy. La
+// empresa sigue siendo process-bound (nunca se acepta desde el body de /login ni desde el
+// frontend): este proceso representa una unica empresa central, declarada por env.
+const ATLAS_AUTH_MODE = (() => {
+  const raw = String(process.env.ATLAS_AUTH_MODE || "").trim().toLowerCase();
+  const modo = raw || "legacy";
+  if (modo !== "legacy" && modo !== "central") {
+    console.error(`[FATAL] ATLAS_AUTH_MODE invalido: "${process.env.ATLAS_AUTH_MODE}". Valores permitidos: legacy, central.`);
+    process.exit(1);
+  }
+  return modo;
+})();
+const ATLAS_EMPRESA_SLUG = String(process.env.ATLAS_EMPRESA_SLUG || "").trim();
+if (ATLAS_AUTH_MODE === "central" && !ATLAS_EMPRESA_SLUG) {
+  console.error("[FATAL] ATLAS_AUTH_MODE=central requiere ATLAS_EMPRESA_SLUG configurado.");
+  process.exit(1);
+}
+
 async function getClaveAutorizacion() {
   try {
     const row = await getQuery("SELECT valor FROM configuracion_global WHERE clave = 'autorizacion_clave_maestra'");
@@ -326,12 +348,24 @@ async function requireAuth(req, res, next) {
 
   try {
     const sesion = await getQuery(
-      "SELECT usuario_id, nombre, rol FROM sesiones WHERE token = ? AND expira > datetime('now')",
+      "SELECT usuario_id, nombre, rol, auth_mode, central_id, membership_id, empresa_id FROM sesiones WHERE token = ? AND expira > datetime('now')",
       [token]
     );
     if (!sesion) {
       return res.status(401).json({ message: "Sesión expirada. Iniciá sesión nuevamente." });
     }
+
+    // MT-1C.2B.2B: barrera de procedencia. Una sesion emitida bajo una autoridad (legacy/central)
+    // nunca se reinterpreta bajo la otra -- ni siquiera si el operador cambia ATLAS_AUTH_MODE en
+    // caliente entre requests. Rollback operacional real siempre pasa por re-login, nunca por
+    // aceptar la sesion vieja bajo el nuevo modo. Una sesion 'central' con algun ID central NULL
+    // (fila parcial/corrupta) se trata igual que una sesion de otra autoridad: rechazada.
+    const sesionAuthMode = String(sesion.auth_mode || "legacy").trim().toLowerCase();
+    const sesionCentralCompleta = sesion.central_id !== null && sesion.membership_id !== null && sesion.empresa_id !== null;
+    if (sesionAuthMode !== ATLAS_AUTH_MODE || (sesionAuthMode === "central" && !sesionCentralCompleta)) {
+      return res.status(401).json({ message: "Sesión incompatible. Iniciá sesión nuevamente." });
+    }
+
     req.usuario = { id: sesion.usuario_id, nombre: sesion.nombre, rol: sesion.rol };
     next();
   } catch (error) {
@@ -1729,6 +1763,10 @@ app.post("/login", rateLimitLogin, async (req, res) => {
     return res.status(400).json({ message: "Usuario y contrasena son obligatorios" });
   }
 
+  if (ATLAS_AUTH_MODE === "central") {
+    return loginCentral(req, res, { usuario, password, remember });
+  }
+
   try {
     const user = await getQuery("SELECT * FROM usuarios WHERE usuario = ?", [usuario]);
 
@@ -1803,6 +1841,97 @@ app.post("/login", rateLimitLogin, async (req, res) => {
     return res.status(500).json({ message: "Error en el servidor" });
   }
 });
+
+// MT-1C.2B.2B: rama central de /login. El lookup local es EXCLUSIVAMENTE para resolver
+// usuarioLocalId (la clave de negocio que autenticarCredencialCentral exige) y para el perfil
+// (nombre/usuario/email/telefono/foto_url) que sigue siendo de autoridad LOCAL -- nunca para
+// evaluar password/activo/intentos_fallidos/bloqueado_hasta/ultimo_acceso locales como seguridad.
+// autenticarCredencialCentral (2B.2A) ya es la unica autoridad de password/lockout central; esta
+// funcion no reimplementa bcrypt, transacciones ni revalidacion -- solo mapea su resultado a HTTP.
+async function loginCentral(req, res, { usuario, password, remember }) {
+  try {
+    const user = await getQuery("SELECT * FROM usuarios WHERE usuario = ?", [usuario]);
+    if (!user) {
+      return res.status(401).json({ message: "Usuario no encontrado" });
+    }
+
+    const resultado = await autenticarCredencialCentral({
+      empresaSlug: ATLAS_EMPRESA_SLUG,
+      usuarioLocalId: user.id,
+      password,
+      controlDbPath: process.env.ATLAS_CONTROL_DB_PATH || undefined
+    });
+
+    if (!resultado.ok) {
+      return responderFalloAuthCentral(res, resultado);
+    }
+
+    const expiresInMs = remember ? 7 * 24 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000;
+    const token = crypto.randomBytes(32).toString("hex");
+    const expiraISO = new Date(Date.now() + expiresInMs).toISOString();
+    const rolSesion = normalizarRol(resultado.membership.rol);
+
+    // usuario_id/nombre = perfil LOCAL (las rutas de negocio siguen operando con IDs locales).
+    // rol = MEMBERSHIP (autoridad de acceso por empresa), no el rol local -- ver 2B.2A test de
+    // "local role ignorado". central_id/membership_id/empresa_id provienen unicamente del
+    // resultado ya validado por autenticarCredencialCentral, nunca del cliente.
+    await runQuery(
+      `INSERT OR REPLACE INTO sesiones
+       (token, usuario_id, nombre, rol, expira, auth_mode, central_id, membership_id, empresa_id)
+       VALUES (?, ?, ?, ?, ?, 'central', ?, ?, ?)`,
+      [token, user.id, user.nombre, rolSesion, expiraISO, resultado.central.id, resultado.membership.id, resultado.empresa.id]
+    );
+    await runQuery("DELETE FROM sesiones WHERE expira < datetime('now')");
+
+    return res.json({
+      message: "Login correcto",
+      token,
+      expires_at: expiraISO,
+      remember,
+      user: {
+        id: user.id,
+        nombre: user.nombre,
+        usuario: user.usuario,
+        rol: rolSesion,
+        email: user.email || "",
+        telefono: user.telefono || "",
+        foto_url: user.foto_url || ""
+      }
+    });
+  } catch (error) {
+    console.error("Error en login central:", error.message);
+    return res.status(500).json({ message: "Error en el servidor" });
+  }
+}
+
+// Mapeo HTTP de los errorCode de autenticarCredencialCentral/resolverIdentidadCentralPorLocal.
+// Fail-closed por diseno: cualquier codigo no listado explicitamente (CONTROL_DB_*,
+// BROKEN_CENTRAL_REF, CENTRAL_AUTH_STATE_CHANGED, EMPRESA_NO_EXISTE, o cualquier otro futuro)
+// cae en el default 503 -- nunca fallback a legacy, nunca se vuelve a evaluar password local,
+// nunca se expone membership/central IDs ni hashes en el mensaje publico.
+function responderFalloAuthCentral(res, resultado) {
+  switch (resultado.errorCode) {
+    case "CREDENCIAL_INVALIDA":
+      if (resultado.bloqueado_hasta) {
+        return res.status(429).json({ message: "Demasiados intentos fallidos. Cuenta bloqueada por 10 min." });
+      }
+      return res.status(401).json({ message: "Contrasena incorrecta" });
+    case "CENTRAL_BLOQUEADA": {
+      const bloqueadoHastaMs = new Date(resultado.bloqueado_hasta).getTime();
+      const minutes = Math.ceil((bloqueadoHastaMs - Date.now()) / 60000);
+      return res.status(429).json({ message: `Demasiados intentos fallidos. Reintentar en ${minutes} min.` });
+    }
+    case "MEMBERSHIP_NO_EXISTE":
+    case "MEMBERSHIP_INACTIVA":
+      return res.status(403).json({ message: "Usuario sin acceso a esta empresa" });
+    case "CENTRAL_INACTIVA":
+      return res.status(403).json({ message: "Usuario inactivo" });
+    case "EMPRESA_INACTIVA":
+      return res.status(403).json({ message: "Empresa inactiva" });
+    default:
+      return res.status(503).json({ message: "Servicio de autenticacion no disponible" });
+  }
+}
 
 function parseUsuarioPayload(body, includePassword = false) {
   const data = {

@@ -191,9 +191,18 @@ async function waitForServer(baseUrl) {
 async function withServer(dbPath, fn, extraEnv = {}) {
   const port = await getFreePort();
   const baseUrl = `http://localhost:${port}`;
+  // MT-1C.2B.2B-HARDEN: hermetico respecto de ATLAS_*. Un test que no las pasa explicitamente por
+  // extraEnv debe correr en legacy puro -- nunca heredar lo que haya seteado el proceso padre (p.ej.
+  // un ATLAS_AUTH_MODE=central exportado en la shell del desarrollador que corre la suite). Se
+  // eliminan explicitamente ANTES de aplicar extraEnv, para que "no pasarla" siga significando
+  // "unset", nunca "lo que sea que traiga el ambiente".
+  const baseEnv = { ...process.env };
+  delete baseEnv.ATLAS_AUTH_MODE;
+  delete baseEnv.ATLAS_EMPRESA_SLUG;
+  delete baseEnv.ATLAS_CONTROL_DB_PATH;
   const child = spawn(process.execPath, ["backend/server.js"], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(port), GUERNICA_DB_PATH: dbPath, ...extraEnv },
+    env: { ...baseEnv, PORT: String(port), GUERNICA_DB_PATH: dbPath, ...extraEnv },
     stdio: ["ignore", "pipe", "pipe"]
   });
 
@@ -20997,6 +21006,28 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1C2B2AControlDbInaccesible);
   await _run(testMT1C2B2AControlDbQueryError);
   await _run(testMT1C2B2AControlDbWriteErrorRollback);
+  await _run(testMT1C2B2BLegacyDefaultSigueIdentico);
+  await _run(testMT1C2B2BCentralSuccessSesionYEndpoint);
+  await _run(testMT1C2B2BCentralPasswordActivoRolNoSonAutoridadLocal);
+  await _run(testMT1C2B2BCentralPasswordLocalCorrectaNoAutentica);
+  await _run(testMT1C2B2BCentralNoMutaSeguridadLocal);
+  await _run(testMT1C2B2BCentralHttpMappingPasswordYBloqueo);
+  await _run(testMT1C2B2BCentralMembershipInactiva403);
+  await _run(testMT1C2B2BCentralInactiva403);
+  await _run(testMT1C2B2BCentralControlDbFailCerrado503);
+  await _run(testMT1C2B2BCentralRechazaSesionLegacy);
+  await _run(testMT1C2B2BLegacyRechazaSesionCentral);
+  await _run(testMT1C2B2BSesionCentralMalformadaRechazada);
+  await _run(testMT1C2B2BLogoutFuncionaEnAmbosModos);
+  await _run(testMT1C2B2BAuthModeInvalidoNoLevanta);
+  await _run(testMT1C2B2BCentralSinSlugNoLevanta);
+  await _run(testMT1C2B2BCentralRememberExpiracion);
+  await _run(testMT1C2B2BWithServerEsHermeticoRespectoDeAtlasEnv);
+  await _run(testMT1C2B2BAuthModeNormalizacion);
+  await _run(testMT1C2B2BCentralEmpresaInactiva403);
+  await _run(testMT1C2B2BCentralMembershipNoExiste403);
+  await _run(testMT1C2B2BCentralEmpresaNoExiste503);
+  await _run(testMT1C2B2BLogoutRevocaCrossMode);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -24438,5 +24469,646 @@ async function testMT1C2B2AControlDbWriteErrorRollback() {
     }
   } finally {
     fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// ==================================================================================
+// MT-1C.2B.2B: CUTOVER ATOMICO DE AUTENTICACION -- fixtures y tests
+// ==================================================================================
+//
+// setupCentralFixture: composicion local de helpers ya existentes (registrarEmpresa,
+// crearUsuarioCentral, crearMembership) para dejar en UN llamado el escenario minimo que todos
+// estos tests necesitan: un control plane temporal con empresa+central+membership resolviendo
+// correctamente contra el usuario local "admin" YA sembrado por bootstrapFreshTestDb(). No
+// reemplaza ni envuelve autenticarCredencialCentral/resolverIdentidadCentralPorLocal -- solo arma
+// el estado sobre el que /login (rama central) los invoca de verdad via HTTP.
+async function setupCentralFixture({
+  businessDbPath,
+  localPassword = "LocalDefault123",
+  localActivo = 1,
+  localRol = "colaborador",
+  centralPassword = "CentralDefault123",
+  centralActivo = 1,
+  empresaActiva = 1,
+  membershipActivo = 1,
+  membershipRol = "admin",
+  sinMembership = false
+} = {}) {
+  const localHash = await bcrypt.hash(localPassword, 10);
+  await runSql(businessDbPath, "UPDATE usuarios SET password = ?, activo = ?, rol = ? WHERE usuario = ?", [localHash, localActivo, localRol, "admin"]);
+  const localUser = (await allSql(businessDbPath, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+  const controlDbPath = tempDbPath();
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  const empresaSlug = `mt1c2b2b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "MT1C2B2B Cutover Test", dbPath: "guernica.db", activa: empresaActiva });
+  const centralHash = await bcrypt.hash(centralPassword, 10);
+  const central = await crearUsuarioCentral(controlDb, {
+    nombre: "MT1C2B2B Central", usuarioReferencia: "mt1c2b2b-central", passwordHash: centralHash, activo: centralActivo
+  });
+  const membership = sinMembership ? null : await crearMembership(controlDb, {
+    usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: localUser.id, rol: membershipRol, activo: membershipActivo
+  });
+  await closeControlDb(controlDb);
+
+  return { controlDbPath, empresaSlug, empresa, central, membership, localUserId: localUser.id, localPassword, centralPassword };
+}
+
+function extraEnvCentral(fixture) {
+  return { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: fixture.empresaSlug, ATLAS_CONTROL_DB_PATH: fixture.controlDbPath };
+}
+
+// Deteccion deterministica de "el servidor no debe quedar operativo" (config invalida). No
+// reutiliza waitForServer (que espera hasta 12s asumiendo que el server DEBERIA arrancar) --
+// aca el contrato es el opuesto: process.exit(1) sincrono ANTES de app.listen(), asi que el
+// proceso hijo debe terminar casi de inmediato. Un timeout esperando el exit es en si mismo la
+// senal de que el fail-closed NO ocurrio.
+async function esperarStartupFallido(dbPath, extraEnv, timeoutMs = 8000) {
+  // Mismo criterio hermetico que withServer: no heredar ATLAS_* del proceso padre por defecto.
+  const baseEnv = { ...process.env };
+  delete baseEnv.ATLAS_AUTH_MODE;
+  delete baseEnv.ATLAS_EMPRESA_SLUG;
+  delete baseEnv.ATLAS_CONTROL_DB_PATH;
+  const child = spawn(process.execPath, ["backend/server.js"], {
+    cwd: ROOT,
+    env: { ...baseEnv, GUERNICA_DB_PATH: dbPath, ...extraEnv },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let logs = "";
+  child.stdout.on("data", (chunk) => { logs += chunk.toString(); });
+  child.stderr.on("data", (chunk) => { logs += chunk.toString(); });
+
+  const salida = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      resolve({ code });
+    });
+  });
+
+  if (!salida) {
+    if (!child.killed) child.kill("SIGKILL");
+    throw new Error(`El servidor deberia haber fallado el startup (fail-closed) pero sigue vivo tras ${timeoutMs}ms.\n${logs}`);
+  }
+  if (salida.code === 0) {
+    throw new Error(`El servidor deberia fallar el startup con exit code != 0, salio con 0 (no fail-closed).\n${logs}`);
+  }
+  return { code: salida.code, logs };
+}
+
+async function testMT1C2B2BLegacyDefaultSigueIdentico() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "admin123" }, null);
+      assertEqual(response.status, 200, "login legacy sin ATLAS_AUTH_MODE debe seguir funcionando identico");
+      const token = data.token;
+
+      const sesionRow = (await allSql(dbPath, "SELECT auth_mode, central_id, membership_id, empresa_id FROM sesiones WHERE token = ?", [token]))[0];
+      assertSame(sesionRow.auth_mode, "legacy", "sesion sin ATLAS_AUTH_MODE debe quedar auth_mode='legacy' (default)");
+      if (sesionRow.central_id !== null) throw new Error("sesion legacy no debe tener central_id");
+      if (sesionRow.membership_id !== null) throw new Error("sesion legacy no debe tener membership_id");
+      if (sesionRow.empresa_id !== null) throw new Error("sesion legacy no debe tener empresa_id");
+
+      const protegido = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(protegido.response.status, 200, "endpoint protegido debe aceptar sesion legacy en runtime legacy (default)");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BCentralSuccessSesionYEndpoint() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword }, null);
+      assertEqual(response.status, 200, "login central con password central correcta debe autenticar");
+      const token = data.token;
+
+      const sesionRow = (await allSql(dbPath, "SELECT usuario_id, auth_mode, central_id, membership_id, empresa_id, rol FROM sesiones WHERE token = ?", [token]))[0];
+      assertSame(sesionRow.auth_mode, "central", "sesion central debe quedar auth_mode='central'");
+      assertEqual(sesionRow.usuario_id, fixture.localUserId, "usuario_id de sesion debe ser el ID LOCAL");
+      assertEqual(sesionRow.central_id, fixture.central.id, "central_id debe ser el de la identidad central resuelta");
+      assertEqual(sesionRow.membership_id, fixture.membership.id, "membership_id debe ser el de la membership resuelta");
+      assertEqual(sesionRow.empresa_id, fixture.empresa.id, "empresa_id debe ser el de la empresa resuelta");
+      assertSame(sesionRow.rol, "admin", "rol de sesion debe venir de membership");
+
+      if (Object.prototype.hasOwnProperty.call(data, "central_id")) throw new Error("response no debe exponer central_id");
+      if (Object.prototype.hasOwnProperty.call(data, "membership_id")) throw new Error("response no debe exponer membership_id");
+      if (Object.prototype.hasOwnProperty.call(data, "empresa_id")) throw new Error("response no debe exponer empresa_id");
+      if (Object.prototype.hasOwnProperty.call(data, "auth_mode")) throw new Error("response no debe exponer auth_mode");
+      if (JSON.stringify(data).toLowerCase().includes("password")) throw new Error("response no debe mencionar password/hash");
+      // HARDEN: busqueda de nombres de clave en TODA la serializacion, no solo top-level -- si
+      // alguno de estos apareciera anidado dentro de `user` (o en cualquier otro lugar futuro),
+      // los hasOwnProperty de arriba no lo detectarian.
+      const serializado = JSON.stringify(data);
+      for (const clave of ["central_id", "membership_id", "empresa_id", "auth_mode"]) {
+        if (serializado.includes(`"${clave}"`)) throw new Error(`response no debe exponer "${clave}" en ninguna parte de la serializacion (top-level ni anidado)`);
+      }
+      assertEqual(data.user.id, fixture.localUserId, "user.id debe ser LOCAL");
+      const clavesUser = Object.keys(data.user).sort();
+      assertSame(JSON.stringify(clavesUser), JSON.stringify(["email", "foto_url", "id", "nombre", "rol", "telefono", "usuario"].sort()), "user debe exponer exactamente el shape esperado, sin campos extra");
+
+      const protegido = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(protegido.response.status, 200, "endpoint protegido debe aceptar sesion central en runtime central");
+    }, extraEnvCentral(fixture));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BCentralPasswordActivoRolNoSonAutoridadLocal() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({
+      businessDbPath: dbPath,
+      localPassword: "LocalPasswordA1", localActivo: 0, localRol: "colaborador",
+      centralPassword: "CentralPasswordB1", centralActivo: 1,
+      membershipActivo: 1, membershipRol: "admin"
+    });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "CentralPasswordB1" }, null);
+      assertEqual(response.status, 200, "activo=0/password/rol LOCAL no deben bloquear ni alterar un login central valido");
+      assertSame(data.user.rol, "admin", "rol de respuesta debe venir de membership (admin), no del rol local (colaborador)");
+      const sesionRow = (await allSql(dbPath, "SELECT rol FROM sesiones WHERE token = ?", [data.token]))[0];
+      assertSame(sesionRow.rol, "admin", "rol persistido en sesion debe venir de membership");
+    }, extraEnvCentral(fixture));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BCentralPasswordLocalCorrectaNoAutentica() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({
+      businessDbPath: dbPath,
+      localPassword: "LocalCorrectaXYZ1", centralPassword: "CentralDistintaXYZ1"
+    });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "LocalCorrectaXYZ1" }, null);
+      assertEqual(response.status, 401, "password local correcta no debe autenticar en modo central si no coincide con la password central");
+      assertSame(data.message, "Contrasena incorrecta", "mensaje debe ser el mapeo estandar de CREDENCIAL_INVALIDA");
+    }, extraEnvCentral(fixture));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BCentralNoMutaSeguridadLocal() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  let antes;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      // La columna intentos_fallidos/bloqueado_hasta la agrega ensureUsuariosSchema() al
+      // arrancar el server (ensureColumn), no bootstrapFreshTestDb() -- capturar "antes" tiene
+      // que ocurrir con el server ya arriba, nunca antes.
+      antes = (await allSql(dbPath, "SELECT activo, password, intentos_fallidos, bloqueado_hasta, ultimo_acceso FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+      await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "claveIncorrectaTotal1" }, null);
+      await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword }, null);
+    }, extraEnvCentral(fixture));
+    const despues = (await allSql(dbPath, "SELECT activo, password, intentos_fallidos, bloqueado_hasta, ultimo_acceso FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    assertEqual(despues.activo, antes.activo, "activo local no debe cambiar por login central");
+    assertSame(despues.password, antes.password, "password local (hash) no debe cambiar por login central");
+    assertEqual(Number(despues.intentos_fallidos), Number(antes.intentos_fallidos), "intentos_fallidos local no debe cambiar por login central");
+    assertSame(despues.bloqueado_hasta, antes.bloqueado_hasta, "bloqueado_hasta local no debe cambiar por login central");
+    assertSame(despues.ultimo_acceso, antes.ultimo_acceso, "ultimo_acceso local no debe cambiar por login central");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BCentralHttpMappingPasswordYBloqueo() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const primero = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "Incorrecta1" }, null);
+      assertEqual(primero.response.status, 401, "primer intento fallido debe mapear a 401");
+      assertSame(primero.data.message, "Contrasena incorrecta", "mensaje 401 debe ser el estandar");
+
+      for (let i = 2; i <= 4; i++) {
+        const intento = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: `Incorrecta${i}` }, null);
+        assertEqual(intento.response.status, 401, `intento ${i} aun bajo threshold debe mapear a 401`);
+      }
+
+      const quinto = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "Incorrecta5" }, null);
+      assertEqual(quinto.response.status, 429, "el intento que cruza el threshold (5) debe mapear a 429");
+      assertSame(quinto.data.message, "Demasiados intentos fallidos. Cuenta bloqueada por 10 min.", "mensaje de bloqueo recien alcanzado debe ser el estandar");
+
+      const sexto = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword }, null);
+      assertEqual(sexto.response.status, 429, "una identidad ya bloqueada debe mapear a 429 incluso con password correcta");
+      if (!/Reintentar en \d+ min\./.test(sexto.data.message)) throw new Error(`mensaje de bloqueo vigente no matchea formato esperado: ${sexto.data.message}`);
+    }, extraEnvCentral(fixture));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BCentralMembershipInactiva403() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath, membershipActivo: 0 });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword }, null);
+      assertEqual(response.status, 403, "membership inactiva debe mapear a 403");
+      assertSame(data.message, "Usuario sin acceso a esta empresa", "mensaje debe ser el angosto estandar");
+      if (/membership|central_id/i.test(JSON.stringify(data))) throw new Error("no debe exponer membership/central IDs en el mensaje publico");
+    }, extraEnvCentral(fixture));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BCentralInactiva403() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath, centralActivo: 0 });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword }, null);
+      assertEqual(response.status, 403, "central inactiva globalmente debe mapear a 403");
+      assertSame(data.message, "Usuario inactivo", "mensaje debe ser el estandar");
+    }, extraEnvCentral(fixture));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BCentralControlDbFailCerrado503() {
+  const dbPath = bootstrapFreshTestDb();
+  const controlDbPathInexistente = path.join(os.tmpdir(), `mt1c2b2b-ausente-${Date.now()}-${Math.random().toString(16).slice(2)}`, "atlas_control.db");
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "cualquiera" }, null);
+      assertEqual(response.status, 503, "control DB ausente debe fallar cerrado con 503");
+      assertSame(data.message, "Servicio de autenticacion no disponible", "mensaje debe ser el generico de fallo operacional");
+    }, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: "empresa-inexistente-mt1c2b2b", ATLAS_CONTROL_DB_PATH: controlDbPathInexistente });
+    assertEqual(fs.existsSync(controlDbPathInexistente), false, "el fallo de control DB ausente no debe crear el archivo");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BCentralRechazaSesionLegacy() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  let tokenLegacy;
+  let filaAntes;
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      tokenLegacy = await login(baseUrl, "admin", "admin123");
+    });
+    filaAntes = (await allSql(dbPath, "SELECT * FROM sesiones WHERE token = ?", [tokenLegacy]))[0];
+    if (!filaAntes) throw new Error("la fila de sesion legacy debe existir antes de intentar rechazarla");
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "GET", "/configuracion", null, tokenLegacy);
+      assertEqual(response.status, 401, "runtime central debe rechazar un token emitido bajo legacy");
+      assertSame(data.message, "Sesión incompatible. Iniciá sesión nuevamente.", "mensaje debe ser el de incompatibilidad de sesion");
+    }, extraEnvCentral(fixture));
+
+    // HARDEN: la barrera RECHAZA, nunca MIGRA ni BORRA. La fila legacy debe sobrevivir intacta.
+    const filaDespues = (await allSql(dbPath, "SELECT * FROM sesiones WHERE token = ?", [tokenLegacy]))[0];
+    if (!filaDespues) throw new Error("el rechazo por barrera de procedencia no debe borrar la fila de sesion legacy");
+    assertSame(JSON.stringify(filaDespues), JSON.stringify(filaAntes), "la fila de sesion legacy debe quedar byte-identica tras ser rechazada por runtime central (no se migra, no se muta)");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BLegacyRechazaSesionCentral() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  let tokenCentral;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const { data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword }, null);
+      tokenCentral = data.token;
+    }, extraEnvCentral(fixture));
+
+    const filaAntes = (await allSql(dbPath, "SELECT * FROM sesiones WHERE token = ?", [tokenCentral]))[0];
+    if (!filaAntes) throw new Error("la fila de sesion central debe existir antes de intentar rechazarla");
+
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "GET", "/configuracion", null, tokenCentral);
+      assertEqual(response.status, 401, "runtime legacy debe rechazar un token emitido bajo central");
+      assertSame(data.message, "Sesión incompatible. Iniciá sesión nuevamente.", "mensaje debe ser el de incompatibilidad de sesion");
+    });
+
+    // HARDEN: la barrera RECHAZA, nunca MIGRA ni BORRA. La fila central debe sobrevivir intacta.
+    const filaDespues = (await allSql(dbPath, "SELECT * FROM sesiones WHERE token = ?", [tokenCentral]))[0];
+    if (!filaDespues) throw new Error("el rechazo por barrera de procedencia no debe borrar la fila de sesion central");
+    assertSame(JSON.stringify(filaDespues), JSON.stringify(filaAntes), "la fila de sesion central debe quedar byte-identica tras ser rechazada por runtime legacy (no se migra, no se muta)");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BSesionCentralMalformadaRechazada() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  let tokenCentral;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const { data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword }, null);
+      tokenCentral = data.token;
+    }, extraEnvCentral(fixture));
+
+    await runSql(dbPath, "UPDATE sesiones SET membership_id = NULL WHERE token = ?", [tokenCentral]);
+
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "GET", "/configuracion", null, tokenCentral);
+      assertEqual(response.status, 401, "sesion central con membership_id NULL debe rechazarse aunque auth_mode diga central");
+      assertSame(data.message, "Sesión incompatible. Iniciá sesión nuevamente.", "mensaje debe ser el de incompatibilidad de sesion");
+    }, extraEnvCentral(fixture));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BLogoutFuncionaEnAmbosModos() {
+  const dbPathLegacy = bootstrapFreshTestDb();
+  const dbPathCentral = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    await withServer(dbPathLegacy, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const logout = await requestJson(baseUrl, "POST", "/logout", {}, token);
+      assertEqual(logout.response.status, 200, "logout de sesion legacy debe funcionar");
+      const row = (await allSql(dbPathLegacy, "SELECT * FROM sesiones WHERE token = ?", [token]))[0];
+      if (row) throw new Error("logout debe eliminar la fila de sesiones (legacy)");
+    });
+
+    const fixture = await setupCentralFixture({ businessDbPath: dbPathCentral });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPathCentral, async (baseUrl) => {
+      const { data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword }, null);
+      const logout = await requestJson(baseUrl, "POST", "/logout", {}, data.token);
+      assertEqual(logout.response.status, 200, "logout de sesion central debe funcionar");
+      const row = (await allSql(dbPathCentral, "SELECT * FROM sesiones WHERE token = ?", [data.token]))[0];
+      if (row) throw new Error("logout debe eliminar la fila de sesiones (central)");
+    }, extraEnvCentral(fixture));
+  } finally {
+    fs.rmSync(dbPathLegacy, { force: true });
+    fs.rmSync(dbPathCentral, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BAuthModeInvalidoNoLevanta() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "banana" });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BCentralSinSlugNoLevanta() {
+  // HARDEN: cubre tanto vacio literal como whitespace-only -- el trim() del propio server.js debe
+  // reducir ambos al mismo string vacio antes de la validacion fail-closed.
+  for (const slugInvalido of ["", "   "]) {
+    const dbPath = bootstrapFreshTestDb();
+    try {
+      await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slugInvalido });
+    } finally {
+      fs.rmSync(dbPath, { force: true });
+    }
+  }
+}
+
+async function testMT1C2B2BCentralRememberExpiracion() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const antesFalse = Date.now();
+      const respFalse = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword, remember: false }, null);
+      assertEqual(respFalse.response.status, 200, "login central remember=false debe autenticar");
+      const expiraFalseMs = new Date(respFalse.data.expires_at).getTime() - antesFalse;
+      assertApprox(expiraFalseMs, 8 * 60 * 60 * 1000, "remember=false debe expirar en ~8 horas", 5 * 60 * 1000);
+      assertEqual(respFalse.data.remember, false, "remember debe reflejarse en la respuesta (false)");
+
+      const antesTrue = Date.now();
+      const respTrue = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword, remember: true }, null);
+      assertEqual(respTrue.response.status, 200, "login central remember=true debe autenticar");
+      const expiraTrueMs = new Date(respTrue.data.expires_at).getTime() - antesTrue;
+      assertApprox(expiraTrueMs, 7 * 24 * 60 * 60 * 1000, "remember=true debe expirar en ~7 dias", 5 * 60 * 1000);
+      assertEqual(respTrue.data.remember, true, "remember debe reflejarse en la respuesta (true)");
+    }, extraEnvCentral(fixture));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// ==================================================================================
+// MT-1C.2B.2B-HARDEN: bordes restantes
+// ==================================================================================
+
+async function testMT1C2B2BWithServerEsHermeticoRespectoDeAtlasEnv() {
+  const dbPath = bootstrapFreshTestDb();
+  const originalMode = process.env.ATLAS_AUTH_MODE;
+  const originalSlug = process.env.ATLAS_EMPRESA_SLUG;
+  const originalControl = process.env.ATLAS_CONTROL_DB_PATH;
+  try {
+    // Simula una terminal padre "contaminada" con ATLAS_* -- withServer sin extraEnv debe
+    // ignorarla por completo y correr en legacy puro. Si withServer heredara estas variables
+    // (spread ciego de process.env), este login fallaria con 503 (control DB inexistente) en
+    // vez de autenticar legacy con 200.
+    process.env.ATLAS_AUTH_MODE = "central";
+    process.env.ATLAS_EMPRESA_SLUG = "empresa-contaminante-no-deberia-usarse-jamas";
+    process.env.ATLAS_CONTROL_DB_PATH = path.join(os.tmpdir(), "mt1c2b2b-control-que-nunca-existe.db");
+
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "admin123" }, null);
+      assertEqual(response.status, 200, "withServer sin extraEnv debe correr en legacy pese a ATLAS_AUTH_MODE=central en el proceso padre");
+      const sesionRow = (await allSql(dbPath, "SELECT auth_mode, central_id, membership_id, empresa_id FROM sesiones WHERE token = ?", [data.token]))[0];
+      assertSame(sesionRow.auth_mode, "legacy", "la sesion debe quedar legacy: el proceso hijo no debe heredar ATLAS_AUTH_MODE del proceso padre de la suite");
+      if (sesionRow.central_id !== null) throw new Error("sesion legacy no debe tener central_id aunque el padre tuviera ATLAS_* seteadas");
+      if (sesionRow.membership_id !== null) throw new Error("sesion legacy no debe tener membership_id aunque el padre tuviera ATLAS_* seteadas");
+      if (sesionRow.empresa_id !== null) throw new Error("sesion legacy no debe tener empresa_id aunque el padre tuviera ATLAS_* seteadas");
+    });
+  } finally {
+    if (originalMode === undefined) delete process.env.ATLAS_AUTH_MODE; else process.env.ATLAS_AUTH_MODE = originalMode;
+    if (originalSlug === undefined) delete process.env.ATLAS_EMPRESA_SLUG; else process.env.ATLAS_EMPRESA_SLUG = originalSlug;
+    if (originalControl === undefined) delete process.env.ATLAS_CONTROL_DB_PATH; else process.env.ATLAS_CONTROL_DB_PATH = originalControl;
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BAuthModeNormalizacion() {
+  // Compacto por diseno (seccion 5 del HARDEN): un unico test cubre los 6 casos de
+  // normalizacion (trim + lowercase), en vez de 6 tests separados.
+  const casosLegacy = [undefined, "", "  legacy  ", "LEGACY"];
+  for (const valor of casosLegacy) {
+    const dbPath = bootstrapFreshTestDb();
+    try {
+      const extraEnv = valor === undefined ? {} : { ATLAS_AUTH_MODE: valor };
+      await withServer(dbPath, async (baseUrl) => {
+        const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "admin123" }, null);
+        assertEqual(response.status, 200, `ATLAS_AUTH_MODE=${JSON.stringify(valor)} debe normalizar a legacy y permitir el login legacy normal`);
+        const sesionRow = (await allSql(dbPath, "SELECT auth_mode FROM sesiones WHERE token = ?", [data.token]))[0];
+        assertSame(sesionRow.auth_mode, "legacy", `ATLAS_AUTH_MODE=${JSON.stringify(valor)} debe resultar en sesion legacy`);
+      }, extraEnv);
+    } finally {
+      fs.rmSync(dbPath, { force: true });
+    }
+  }
+
+  const casosCentral = ["  central  ", "CENTRAL"];
+  for (const valor of casosCentral) {
+    const dbPath = bootstrapFreshTestDb();
+    let controlDbPath;
+    try {
+      const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+      controlDbPath = fixture.controlDbPath;
+      await withServer(dbPath, async (baseUrl) => {
+        const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword }, null);
+        assertEqual(response.status, 200, `ATLAS_AUTH_MODE=${JSON.stringify(valor)} debe normalizar a central y aceptar la password central`);
+        const sesionRow = (await allSql(dbPath, "SELECT auth_mode FROM sesiones WHERE token = ?", [data.token]))[0];
+        assertSame(sesionRow.auth_mode, "central", `ATLAS_AUTH_MODE=${JSON.stringify(valor)} debe resultar en sesion central`);
+      }, { ATLAS_AUTH_MODE: valor, ATLAS_EMPRESA_SLUG: fixture.empresaSlug, ATLAS_CONTROL_DB_PATH: fixture.controlDbPath });
+    } finally {
+      fs.rmSync(dbPath, { force: true });
+      if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    }
+  }
+}
+
+async function testMT1C2B2BCentralEmpresaInactiva403() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath, empresaActiva: 0 });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword }, null);
+      assertEqual(response.status, 403, "empresa inactiva debe mapear a 403");
+      assertSame(data.message, "Empresa inactiva", "mensaje debe ser el estandar");
+      const sesiones = await allSql(dbPath, "SELECT * FROM sesiones");
+      assertEqual(sesiones.length, 0, "empresa inactiva no debe emitir ninguna sesion");
+    }, extraEnvCentral(fixture));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BCentralMembershipNoExiste403() {
+  const dbPath = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath, sinMembership: true });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword }, null);
+      assertEqual(response.status, 403, "membership inexistente debe mapear a 403");
+      assertSame(data.message, "Usuario sin acceso a esta empresa", "mensaje debe ser el angosto estandar (identico al de membership inactiva, no debe distinguir existencia)");
+      const sesiones = await allSql(dbPath, "SELECT * FROM sesiones");
+      assertEqual(sesiones.length, 0, "membership inexistente no debe emitir ninguna sesion");
+    }, extraEnvCentral(fixture));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BCentralEmpresaNoExiste503() {
+  const dbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    // Control plane real, valido y abrible -- pero SIN la empresa que ATLAS_EMPRESA_SLUG declara.
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    await closeControlDb(controlDb);
+
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "cualquiera" }, null);
+      assertEqual(response.status, 503, "empresa inexistente en un control plane por lo demas valido debe fallar cerrado con 503");
+      assertSame(data.message, "Servicio de autenticacion no disponible", "mensaje debe ser el generico de fallo operacional, nunca un 404/403 que confirme o niegue la existencia del slug");
+      const sesiones = await allSql(dbPath, "SELECT * FROM sesiones");
+      assertEqual(sesiones.length, 0, "empresa inexistente no debe emitir ninguna sesion");
+    }, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: "slug-que-no-existe-mt1c2b2b", ATLAS_CONTROL_DB_PATH: controlDbPath });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1C2B2BLogoutRevocaCrossMode() {
+  // Contrato mas fuerte que el logout same-mode ya certificado: /logout debe poder revocar una
+  // credencial incompatible con el runtime actual SIN autenticarla -- no es RUTAS_PUBLICAS por
+  // accidente, es porque revocar no requiere validar procedencia, solo el token exacto.
+  const dbPathA = bootstrapFreshTestDb();
+  const dbPathB = bootstrapFreshTestDb();
+  let controlDbPath;
+  try {
+    // A: sesion legacy creada, luego revocada bajo runtime CENTRAL.
+    let tokenLegacy;
+    await withServer(dbPathA, async (baseUrl) => {
+      tokenLegacy = await login(baseUrl, "admin", "admin123");
+    });
+    const fixtureA = await setupCentralFixture({ businessDbPath: dbPathA });
+    controlDbPath = fixtureA.controlDbPath;
+    await withServer(dbPathA, async (baseUrl) => {
+      const logout = await requestJson(baseUrl, "POST", "/logout", {}, tokenLegacy);
+      assertEqual(logout.response.status, 200, "runtime central debe poder revocar (logout) un token legacy sin autenticarlo");
+    }, extraEnvCentral(fixtureA));
+    const filaA = (await allSql(dbPathA, "SELECT * FROM sesiones WHERE token = ?", [tokenLegacy]))[0];
+    if (filaA) throw new Error("logout bajo runtime central debe eliminar la fila de sesion legacy");
+
+    // B: sesion central creada, luego revocada bajo runtime LEGACY.
+    const fixtureB = await setupCentralFixture({ businessDbPath: dbPathB });
+    let tokenCentral;
+    await withServer(dbPathB, async (baseUrl) => {
+      const { data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixtureB.centralPassword }, null);
+      tokenCentral = data.token;
+    }, extraEnvCentral(fixtureB));
+    await withServer(dbPathB, async (baseUrl) => {
+      const logout = await requestJson(baseUrl, "POST", "/logout", {}, tokenCentral);
+      assertEqual(logout.response.status, 200, "runtime legacy debe poder revocar (logout) un token central sin autenticarlo");
+    });
+    const filaB = (await allSql(dbPathB, "SELECT * FROM sesiones WHERE token = ?", [tokenCentral]))[0];
+    if (filaB) throw new Error("logout bajo runtime legacy debe eliminar la fila de sesion central");
+
+    if (fixtureB.controlDbPath) fs.rmSync(fixtureB.controlDbPath, { force: true });
+  } finally {
+    fs.rmSync(dbPathA, { force: true });
+    fs.rmSync(dbPathB, { force: true });
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
