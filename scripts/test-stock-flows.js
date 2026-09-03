@@ -46,6 +46,7 @@ const userControlBridge = require("../backend/userControlBridge");
 const { reconcileShadowUsers } = require("../database/reconcile-shadow-users");
 const { resolverIdentidadCentralPorLocal, abrirControlDbSoloLectura, revalidarSesionCentral } = require("../backend/centralAuthResolver");
 const { resolverTenantDbRegistrado } = require("../backend/tenantDbRegistry");
+const { verificarTenantDbIdentity } = require("../backend/tenantDbIdentity");
 const { autenticarCredencialCentral } = require("../backend/centralAuthSecurity");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -21060,6 +21061,20 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1D1ARegistryControlDbInaccesible);
   await _run(testMT1D1ARegistryQueryError);
   await _run(testMT1D1ARegistryNoCreaBusinessDbInexistente);
+  await _run(testMT1D1BFreshSchemaTieneTenantIdentity);
+  await _run(testMT1D1BFreshSinIdentityFallaCerrado);
+  await _run(testMT1D1BIdentityExacta);
+  await _run(testMT1D1BIdentityIdMismatch);
+  await _run(testMT1D1BIdentitySlugMismatch);
+  await _run(testMT1D1BIdentityEmpresaRecreadaMismatch);
+  await _run(testMT1D1BIdentitySingletonRechazaSegundaFila);
+  await _run(testMT1D1BIdentityDbAusenteNoCreaArchivo);
+  await _run(testMT1D1BIdentityDbInaccesible);
+  await _run(testMT1D1BIdentityQueryError);
+  await _run(testMT1D1BIdentitySchemaRechazaEmpresaIdMalTipado);
+  await _run(testMT1D1BIdentitySchemaRechazaSlugNoCanonico);
+  await _run(testMT1D1BIdentityMalformedDbDevuelveInvalid);
+  await _run(testMT1D1BRegistryIdentityDobleGarantia);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -25624,6 +25639,14 @@ async function mt1d1aCrearControlDbConEmpresa({ slug, nombre, dbPath, activa = 1
   }
 }
 
+async function insertarTenantIdentityTest(dbPath, empresaId, slug, id = 1) {
+  return runSql(
+    dbPath,
+    "INSERT INTO tenant_identity (id, empresa_control_id, tenant_slug) VALUES (?, ?, ?)",
+    [id, empresaId, slug]
+  );
+}
+
 async function testMT1D1ARegistryEmpresaActivaExacta() {
   const slug = `mt1d1a-activa-${Date.now()}`;
   let controlDbPath;
@@ -25856,5 +25879,344 @@ async function testMT1D1ARegistryNoCreaBusinessDbInexistente() {
   } finally {
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
     fs.rmSync(businessPath, { force: true });
+  }
+}
+
+async function testMT1D1BFreshSchemaTieneTenantIdentity() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    const rows = await allSql(
+      dbPath,
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenant_identity'"
+    );
+    assertEqual(rows.length, 1, "fresh DB debe crear tabla tenant_identity");
+    const identityRows = await allSql(dbPath, "SELECT * FROM tenant_identity");
+    assertEqual(identityRows.length, 0, "fresh DB no debe auto-seedear tenant_identity");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1D1BFreshSinIdentityFallaCerrado() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    const result = await verificarTenantDbIdentity({
+      dbPath,
+      empresaId: 123,
+      empresaSlug: "tenant-a"
+    });
+
+    assertSame(result.ok, false, "fresh DB sin identity no debe pasar verificacion tenant");
+    assertSame(result.errorCode, "TENANT_DB_IDENTITY_MISSING", "identity ausente debe tener codigo fail-closed");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1D1BIdentityExacta() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await insertarTenantIdentityTest(dbPath, 123, "tenant-a");
+
+    const result = await verificarTenantDbIdentity({
+      dbPath,
+      empresaId: 123,
+      empresaSlug: " tenant-a "
+    });
+
+    assertSame(result.ok, true, "identity exacta debe verificar");
+    assertEqual(result.identity.empresaId, 123, "empresa_control_id debe ser exacto");
+    assertSame(result.identity.slug, "tenant-a", "tenant_slug debe normalizar trim");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1D1BIdentityIdMismatch() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await insertarTenantIdentityTest(dbPath, 123, "tenant-a");
+
+    const result = await verificarTenantDbIdentity({
+      dbPath,
+      empresaId: 999,
+      empresaSlug: "tenant-a"
+    });
+
+    assertSame(result.ok, false, "id incorrecto no debe pasar por slug correcto");
+    assertSame(result.errorCode, "TENANT_DB_IDENTITY_MISMATCH", "id incorrecto debe clasificar mismatch");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1D1BIdentitySlugMismatch() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await insertarTenantIdentityTest(dbPath, 123, "tenant-a");
+
+    const result = await verificarTenantDbIdentity({
+      dbPath,
+      empresaId: 123,
+      empresaSlug: "tenant-b"
+    });
+
+    assertSame(result.ok, false, "slug incorrecto no debe pasar por id correcto");
+    assertSame(result.errorCode, "TENANT_DB_IDENTITY_MISMATCH", "slug incorrecto debe clasificar mismatch");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1D1BIdentityEmpresaRecreadaMismatch() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await insertarTenantIdentityTest(dbPath, 1, "guernica");
+
+    const result = await verificarTenantDbIdentity({
+      dbPath,
+      empresaId: 2,
+      empresaSlug: "guernica"
+    });
+
+    assertSame(result.ok, false, "empresa recreada con mismo slug y nuevo id no debe rebindear");
+    assertSame(result.errorCode, "TENANT_DB_IDENTITY_MISMATCH", "empresa recreada debe clasificar mismatch");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1D1BIdentitySingletonRechazaSegundaFila() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await insertarTenantIdentityTest(dbPath, 123, "tenant-a");
+    let rechazo = null;
+    try {
+      await insertarTenantIdentityTest(dbPath, 456, "tenant-b", 2);
+    } catch (error) {
+      rechazo = error;
+    }
+
+    assertSame(Boolean(rechazo), true, "tenant_identity debe rechazar segunda fila por constraint real");
+    const rows = await allSql(dbPath, "SELECT id, empresa_control_id, tenant_slug FROM tenant_identity");
+    assertEqual(rows.length, 1, "tenant_identity debe conservar una sola fila");
+    assertEqual(rows[0].id, 1, "tenant_identity debe conservar id singleton 1");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1D1BIdentityDbAusenteNoCreaArchivo() {
+  const dbPath = tempDbPath();
+  if (fs.existsSync(dbPath)) fs.rmSync(dbPath, { force: true });
+
+  const result = await verificarTenantDbIdentity({
+    dbPath,
+    empresaId: 123,
+    empresaSlug: "tenant-a"
+  });
+
+  assertSame(result.ok, false, "business DB ausente debe fallar cerrado");
+  assertSame(result.errorCode, "TENANT_DB_AUSENTE", "business DB ausente debe tener codigo propio");
+  assertEqual(fs.existsSync(dbPath), false, "verificador readonly no debe crear business DB ausente");
+}
+
+async function testMT1D1BIdentityDbInaccesible() {
+  const dbPath = fs.mkdtempSync(path.join(os.tmpdir(), "mt1d1b-business-dir-"));
+  try {
+    const result = await verificarTenantDbIdentity({
+      dbPath,
+      empresaId: 123,
+      empresaSlug: "tenant-a"
+    });
+
+    assertSame(result.ok, false, "directorio existente no debe abrirse como business DB");
+    assertSame(result.errorCode, "TENANT_DB_INACCESIBLE", "fallo de apertura debe clasificarse como inaccesible");
+  } finally {
+    fs.rmSync(dbPath, { recursive: true, force: true });
+  }
+}
+
+async function testMT1D1BIdentityQueryError() {
+  const dbPath = tempDbPath();
+  try {
+    await runSql(dbPath, "CREATE TABLE roto (id INTEGER)");
+
+    const result = await verificarTenantDbIdentity({
+      dbPath,
+      empresaId: 123,
+      empresaSlug: "tenant-a"
+    });
+
+    assertSame(result.ok, false, "schema sin tenant_identity no debe verificar");
+    assertSame(result.errorCode, "TENANT_DB_IDENTITY_QUERY_ERROR", "schema/query error debe clasificarse sin parsing fragil");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1D1BIdentitySchemaRechazaEmpresaIdMalTipado() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    let rechazoTexto = null;
+    try {
+      await insertarTenantIdentityTest(dbPath, "abc", "tenant-a");
+    } catch (error) {
+      rechazoTexto = error;
+    }
+    assertSame(Boolean(rechazoTexto), true, "tenant_identity debe rechazar empresa_control_id texto no integer");
+
+    let rechazoReal = null;
+    try {
+      await insertarTenantIdentityTest(dbPath, 1.5, "tenant-a");
+    } catch (error) {
+      rechazoReal = error;
+    }
+    assertSame(Boolean(rechazoReal), true, "tenant_identity debe rechazar empresa_control_id real no integer");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1D1BIdentitySchemaRechazaSlugNoCanonico() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await insertarTenantIdentityTest(dbPath, 123, "tenant-a");
+    const rows = await allSql(dbPath, "SELECT tenant_slug FROM tenant_identity WHERE id = 1");
+    assertSame(rows[0].tenant_slug, "tenant-a", "tenant_slug canonico debe aceptarse");
+
+    await runSql(dbPath, "DELETE FROM tenant_identity WHERE id = 1");
+    let rechazo = null;
+    try {
+      await insertarTenantIdentityTest(dbPath, 123, " tenant-a ");
+    } catch (error) {
+      rechazo = error;
+    }
+    assertSame(Boolean(rechazo), true, "tenant_identity debe rechazar tenant_slug con whitespace exterior");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1D1BIdentityMalformedDbDevuelveInvalid() {
+  const dbPathId = tempDbPath();
+  const dbPathSlug = tempDbPath();
+  try {
+    await runSql(
+      dbPathId,
+      `CREATE TABLE tenant_identity (
+        id INTEGER PRIMARY KEY,
+        empresa_control_id,
+        tenant_slug
+      )`
+    );
+    await insertarTenantIdentityTest(dbPathId, "abc", "tenant-a");
+    const resultId = await verificarTenantDbIdentity({
+      dbPath: dbPathId,
+      empresaId: 123,
+      empresaSlug: "tenant-a"
+    });
+    assertSame(resultId.ok, false, "identity malformada no debe convertirse en mismatch");
+    assertSame(resultId.errorCode, "TENANT_DB_IDENTITY_INVALID", "empresa_control_id malformado debe clasificar invalid");
+
+    await runSql(
+      dbPathSlug,
+      `CREATE TABLE tenant_identity (
+        id INTEGER PRIMARY KEY,
+        empresa_control_id,
+        tenant_slug
+      )`
+    );
+    await insertarTenantIdentityTest(dbPathSlug, 123, " tenant-a ");
+    const resultSlug = await verificarTenantDbIdentity({
+      dbPath: dbPathSlug,
+      empresaId: 123,
+      empresaSlug: "tenant-a"
+    });
+    assertSame(resultSlug.ok, false, "tenant_slug malformado no debe convertirse en mismatch");
+    assertSame(resultSlug.errorCode, "TENANT_DB_IDENTITY_INVALID", "tenant_slug malformado debe clasificar invalid");
+  } finally {
+    fs.rmSync(dbPathId, { force: true });
+    fs.rmSync(dbPathSlug, { force: true });
+  }
+}
+
+async function mt1d1bCrearBusinessDbRegistrable(dbPath) {
+  if (fs.existsSync(dbPath)) fs.rmSync(dbPath, { force: true });
+  const resultado = spawnSync(process.execPath, ["database/init-db.js"], {
+    cwd: ROOT,
+    env: { ...process.env, GUERNICA_DB_PATH: dbPath },
+    encoding: "utf8"
+  });
+  if (resultado.error) {
+    throw new Error(`mt1d1bCrearBusinessDbRegistrable: no se pudo ejecutar init-db: ${resultado.error.message}`);
+  }
+  if (resultado.status !== 0) {
+    throw new Error(`mt1d1bCrearBusinessDbRegistrable: init-db fallo status=${resultado.status}\n${resultado.stderr || resultado.stdout}`);
+  }
+}
+
+async function testMT1D1BRegistryIdentityDobleGarantia() {
+  const slugA = `mt1d1b-tenant-a-${Date.now()}`;
+  const slugB = `mt1d1b-tenant-b-${Date.now()}`;
+  const businessNameA = `mt1d1b-a-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessNameB = `mt1d1b-b-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPathA = resolveEmpresaDbPath(businessNameA);
+  const businessPathB = resolveEmpresaDbPath(businessNameB);
+  let controlDbPathA;
+  let controlDbPathB;
+  try {
+    await mt1d1bCrearBusinessDbRegistrable(businessPathA);
+    await mt1d1bCrearBusinessDbRegistrable(businessPathB);
+
+    const fixtureA = await mt1d1aCrearControlDbConEmpresa({
+      slug: slugA,
+      nombre: "MT1D1B Tenant A",
+      dbPath: businessNameA
+    });
+    controlDbPathA = fixtureA.controlDbPath;
+    await insertarTenantIdentityTest(businessPathA, fixtureA.empresa.id, slugA);
+
+    const registryA = await resolverTenantDbRegistrado({
+      empresaId: fixtureA.empresa.id,
+      empresaSlug: slugA,
+      controlDbPath: controlDbPathA
+    });
+    assertSame(registryA.ok, true, "registry A debe resolver DB A registrada");
+
+    const identityA = await verificarTenantDbIdentity({
+      dbPath: registryA.db.resolvedPath,
+      empresaId: fixtureA.empresa.id,
+      empresaSlug: slugA
+    });
+    assertSame(identityA.ok, true, "identity A debe confirmar DB A");
+
+    const fixtureB = await mt1d1aCrearControlDbConEmpresa({
+      slug: slugA,
+      nombre: "MT1D1B Tenant A hacia DB B",
+      dbPath: businessNameB
+    });
+    controlDbPathB = fixtureB.controlDbPath;
+    await insertarTenantIdentityTest(businessPathB, fixtureB.empresa.id + 1000, slugB);
+
+    const registryHaciaB = await resolverTenantDbRegistrado({
+      empresaId: fixtureB.empresa.id,
+      empresaSlug: slugA,
+      controlDbPath: controlDbPathB
+    });
+    assertSame(registryHaciaB.ok, true, "registry puede resolver metadata aunque apunte a DB equivocada");
+
+    const identityMismatch = await verificarTenantDbIdentity({
+      dbPath: registryHaciaB.db.resolvedPath,
+      empresaId: fixtureB.empresa.id,
+      empresaSlug: slugA
+    });
+    assertSame(identityMismatch.ok, false, "identity debe bloquear registry A apuntando a DB B");
+    assertSame(identityMismatch.errorCode, "TENANT_DB_IDENTITY_MISMATCH", "DB B no debe pasar por empresa A");
+  } finally {
+    if (controlDbPathA) fs.rmSync(controlDbPathA, { force: true });
+    if (controlDbPathB) fs.rmSync(controlDbPathB, { force: true });
+    fs.rmSync(businessPathA, { force: true });
+    fs.rmSync(businessPathB, { force: true });
   }
 }

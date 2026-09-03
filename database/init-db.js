@@ -23,6 +23,15 @@ async function initDatabase() {
     console.log("Creando base de datos...");
 
     await runQuery(`
+      CREATE TABLE IF NOT EXISTS tenant_identity (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        empresa_control_id INTEGER NOT NULL CHECK(typeof(empresa_control_id) = 'integer' AND empresa_control_id > 0),
+        tenant_slug TEXT NOT NULL CHECK(typeof(tenant_slug) = 'text' AND length(tenant_slug) > 0 AND tenant_slug = trim(tenant_slug)),
+        creado_en TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+
+    await runQuery(`
       CREATE TABLE IF NOT EXISTS usuarios (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         nombre TEXT NOT NULL,
