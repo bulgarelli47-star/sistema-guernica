@@ -19499,42 +19499,35 @@ async function testBatchLegacyLimitadoAManeja0RendimientoMayor1() {
 }
 
 async function testProduccionExcluyeCombos() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const catId = await crearCategoria(baseUrl, token, "TEST ProdExcluyeCombo");
-      const ingId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Ing ProdExcluye", categoria: "TEST ProdExcluyeCombo", categoria_id: catId,
-        stock: 100, maneja_stock: true
-      });
-      // Compuesto normal con stock propio: debe aparecer en producibles
-      const compId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Comp Producible", categoria: "TEST ProdExcluyeCombo", categoria_id: catId,
-        tipo: "compuesto", maneja_stock: true, stock: 5, precio_venta: 300,
-        componentes: [{ producto_id: ingId, cantidad: 1 }], costos_extra: []
-      });
-      // Combo real: no debe aparecer en producibles
-      const comboId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Combo Promo", categoria: "TEST ProdExcluyeCombo", categoria_id: catId,
-        tipo: "simple", es_combo: true, maneja_stock: false, stock: 0, precio_venta: 200
-      });
-      const { response, data } = await requestJson(baseUrl, "GET", "/produccion/productos", null, token);
-      if (!response.ok) throw new Error(`GET /produccion/productos fallo: ${data?.message}`);
-      const ids = data.map((p) => Number(p.id));
-      if (!ids.includes(Number(compId))) throw new Error("Compuesto normal debe aparecer en producibles");
-      if (ids.includes(Number(comboId))) throw new Error("Combo (es_combo=1) NO debe aparecer en producibles");
-      // Intentar registrar produccion de combo: debe fallar 400
-      const { response: rProd } = await requestJson(baseUrl, "POST", "/produccion", {
-        producto_id: comboId, cantidad_producida: 1, responsable: "test"
-      }, token);
-      if (rProd.ok) throw new Error("POST /produccion de combo debio fallar con 400");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const catId = await crearCategoria(baseUrl, token, "TEST ProdExcluyeCombo");
+    const ingId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Ing ProdExcluye", categoria: "TEST ProdExcluyeCombo", categoria_id: catId,
+      stock: 100, maneja_stock: true
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    // Compuesto normal con stock propio: debe aparecer en producibles
+    const compId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Comp Producible", categoria: "TEST ProdExcluyeCombo", categoria_id: catId,
+      tipo: "compuesto", maneja_stock: true, stock: 5, precio_venta: 300,
+      componentes: [{ producto_id: ingId, cantidad: 1 }], costos_extra: []
+    });
+    // Combo real: no debe aparecer en producibles
+    const comboId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Combo Promo", categoria: "TEST ProdExcluyeCombo", categoria_id: catId,
+      tipo: "simple", es_combo: true, maneja_stock: false, stock: 0, precio_venta: 200
+    });
+    const { response, data } = await requestJson(baseUrl, "GET", "/produccion/productos", null, token);
+    if (!response.ok) throw new Error(`GET /produccion/productos fallo: ${data?.message}`);
+    const ids = data.map((p) => Number(p.id));
+    if (!ids.includes(Number(compId))) throw new Error("Compuesto normal debe aparecer en producibles");
+    if (ids.includes(Number(comboId))) throw new Error("Combo (es_combo=1) NO debe aparecer en producibles");
+    // Intentar registrar produccion de combo: debe fallar 400
+    const { response: rProd } = await requestJson(baseUrl, "POST", "/produccion", {
+      producto_id: comboId, cantidad_producida: 1, responsable: "test"
+    }, token);
+    if (rProd.ok) throw new Error("POST /produccion de combo debio fallar con 400");
+  });
 }
 
 function setConfigStockNegativo(valor) {
