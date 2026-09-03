@@ -2727,25 +2727,17 @@ async function testProductoCompuestoGeneraAjusteTeorico() {
 }
 
 async function testProveedorGuardaImpactoContable() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const proveedor = await crearProveedor(baseUrl, token, {
-        tipo_impacto: "costo_fijo_operativo"
-      });
-
-      assertEqual(proveedor.activo, 1, "El proveedor debe quedar activo");
-      if (proveedor.tipo_impacto !== "costo_fijo_operativo") {
-        throw new Error(`El proveedor debe guardar tipo_impacto costo_fijo_operativo. Actual=${proveedor.tipo_impacto}`);
-      }
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const proveedor = await crearProveedor(baseUrl, token, {
+      tipo_impacto: "costo_fijo_operativo"
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+
+    assertEqual(proveedor.activo, 1, "El proveedor debe quedar activo");
+    if (proveedor.tipo_impacto !== "costo_fijo_operativo") {
+      throw new Error(`El proveedor debe guardar tipo_impacto costo_fijo_operativo. Actual=${proveedor.tipo_impacto}`);
+    }
+  });
 }
 
 async function testPagoRegistradoImpactaCaja() {
