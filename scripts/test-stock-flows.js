@@ -90,6 +90,15 @@ function bootstrapFreshTestDb() {
   return dbPath;
 }
 
+async function withFreshTestDb(fn) {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, (baseUrl) => fn(baseUrl, dbPath));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
 function runSql(dbPath, sql, params = []) {
   return new Promise((resolve, reject) => {
     const db = new sqlite3.Database(dbPath);
