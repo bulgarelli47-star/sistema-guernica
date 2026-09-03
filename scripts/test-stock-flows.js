@@ -4468,89 +4468,81 @@ async function testProductoMotorFiscalNormalizadoF1B1() {
 }
 
 async function testAumentoMasivoProtegeProductosNormalizadosF1B2() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const sufijo = Date.now().toString().slice(-8);
-      const categoriaMixtaId = await crearCategoria(baseUrl, token, `TEST Aumento Mixto ${sufijo}`, {
-        margen_porcentaje: 50
-      });
-      const categoriaLegacyId = await crearCategoria(baseUrl, token, `TEST Aumento Legacy ${sufijo}`, {
-        margen_porcentaje: 50
-      });
-
-      const legacyMixto = await crearProductoFiscal(baseUrl, token, {
-        nombre: `TEST Aumento Legacy Mixto ${sufijo}`,
-        categoria: `TEST Aumento Mixto ${sufijo}`,
-        categoria_id: categoriaMixtaId,
-        precio_compra: 100,
-        costo_final: 121,
-        precio_venta: 200,
-        stock: 1,
-        activo: true
-      });
-      const normalizadoMixto = await crearProductoFiscal(baseUrl, token, {
-        nombre: `TEST Aumento Normalizado ${sufijo}`,
-        categoria: `TEST Aumento Mixto ${sufijo}`,
-        categoria_id: categoriaMixtaId,
-        precio_compra: 100,
-        precio_venta: 0,
-        costo_economico: 50,
-        modelo_fiscal: "normalizado",
-        iva_venta_tratamiento: "gravado",
-        iva_venta_alicuota: 21,
-        stock: 1,
-        activo: true
-      });
-
-      const rechazado = await requestJson(baseUrl, "PATCH", "/productos/aumento-masivo", {
-        categoria_id: categoriaMixtaId,
-        porcentaje: 10,
-        campo: "ambos"
-      }, token);
-      assertEqual(rechazado.response.status, 409, "Aumento masivo mixto con normalizados debe rechazarse");
-
-      const legacyMixtoDespues = await getProduct(baseUrl, token, legacyMixto.id);
-      const normalizadoMixtoDespues = await getProduct(baseUrl, token, normalizadoMixto.id);
-      assertApprox(legacyMixtoDespues.precio_compra, legacyMixto.precio_compra, "Aumento rechazado no debe cambiar precio_compra legacy");
-      assertApprox(legacyMixtoDespues.precio_venta, legacyMixto.precio_venta, "Aumento rechazado no debe cambiar precio_venta legacy");
-      assertApprox(normalizadoMixtoDespues.precio_venta, normalizadoMixto.precio_venta, "Aumento rechazado no debe cambiar precio_venta normalizado");
-      assertApprox(normalizadoMixtoDespues.costo_economico, 50, "Aumento rechazado no debe cambiar costo_economico normalizado");
-      if (normalizadoMixtoDespues.precio_venta_modo !== normalizadoMixto.precio_venta_modo) {
-        throw new Error(`Aumento rechazado no debe cambiar modo normalizado. Actual=${normalizadoMixtoDespues.precio_venta_modo}`);
-      }
-
-      const legacySolo = await crearProductoFiscal(baseUrl, token, {
-        nombre: `TEST Aumento Legacy Solo ${sufijo}`,
-        categoria: `TEST Aumento Legacy ${sufijo}`,
-        categoria_id: categoriaLegacyId,
-        precio_compra: 100,
-        precio_venta: 200,
-        iva_porcentaje: 21,
-        precio_compra_incluye_iva: false,
-        stock: 1,
-        activo: true
-      });
-      const aplicado = await requestJson(baseUrl, "PATCH", "/productos/aumento-masivo", {
-        categoria_id: categoriaLegacyId,
-        porcentaje: 10,
-        campo: "ambos"
-      }, token);
-      if (!aplicado.response.ok) {
-        throw new Error(`Aumento masivo legacy-only debe seguir funcionando: ${aplicado.data?.message || aplicado.response.status}`);
-      }
-      const legacySoloDespues = await getProduct(baseUrl, token, legacySolo.id);
-      assertApprox(legacySoloDespues.precio_compra, 110, "Aumento legacy-only debe actualizar precio_compra");
-      assertApprox(legacySoloDespues.precio_venta, 220, "Aumento legacy-only debe actualizar precio_venta");
-      assertApprox(legacySoloDespues.costo_final, 133.1, "Aumento legacy-only debe actualizar costo_final");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const sufijo = Date.now().toString().slice(-8);
+    const categoriaMixtaId = await crearCategoria(baseUrl, token, `TEST Aumento Mixto ${sufijo}`, {
+      margen_porcentaje: 50
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const categoriaLegacyId = await crearCategoria(baseUrl, token, `TEST Aumento Legacy ${sufijo}`, {
+      margen_porcentaje: 50
+    });
+
+    const legacyMixto = await crearProductoFiscal(baseUrl, token, {
+      nombre: `TEST Aumento Legacy Mixto ${sufijo}`,
+      categoria: `TEST Aumento Mixto ${sufijo}`,
+      categoria_id: categoriaMixtaId,
+      precio_compra: 100,
+      costo_final: 121,
+      precio_venta: 200,
+      stock: 1,
+      activo: true
+    });
+    const normalizadoMixto = await crearProductoFiscal(baseUrl, token, {
+      nombre: `TEST Aumento Normalizado ${sufijo}`,
+      categoria: `TEST Aumento Mixto ${sufijo}`,
+      categoria_id: categoriaMixtaId,
+      precio_compra: 100,
+      precio_venta: 0,
+      costo_economico: 50,
+      modelo_fiscal: "normalizado",
+      iva_venta_tratamiento: "gravado",
+      iva_venta_alicuota: 21,
+      stock: 1,
+      activo: true
+    });
+
+    const rechazado = await requestJson(baseUrl, "PATCH", "/productos/aumento-masivo", {
+      categoria_id: categoriaMixtaId,
+      porcentaje: 10,
+      campo: "ambos"
+    }, token);
+    assertEqual(rechazado.response.status, 409, "Aumento masivo mixto con normalizados debe rechazarse");
+
+    const legacyMixtoDespues = await getProduct(baseUrl, token, legacyMixto.id);
+    const normalizadoMixtoDespues = await getProduct(baseUrl, token, normalizadoMixto.id);
+    assertApprox(legacyMixtoDespues.precio_compra, legacyMixto.precio_compra, "Aumento rechazado no debe cambiar precio_compra legacy");
+    assertApprox(legacyMixtoDespues.precio_venta, legacyMixto.precio_venta, "Aumento rechazado no debe cambiar precio_venta legacy");
+    assertApprox(normalizadoMixtoDespues.precio_venta, normalizadoMixto.precio_venta, "Aumento rechazado no debe cambiar precio_venta normalizado");
+    assertApprox(normalizadoMixtoDespues.costo_economico, 50, "Aumento rechazado no debe cambiar costo_economico normalizado");
+    if (normalizadoMixtoDespues.precio_venta_modo !== normalizadoMixto.precio_venta_modo) {
+      throw new Error(`Aumento rechazado no debe cambiar modo normalizado. Actual=${normalizadoMixtoDespues.precio_venta_modo}`);
+    }
+
+    const legacySolo = await crearProductoFiscal(baseUrl, token, {
+      nombre: `TEST Aumento Legacy Solo ${sufijo}`,
+      categoria: `TEST Aumento Legacy ${sufijo}`,
+      categoria_id: categoriaLegacyId,
+      precio_compra: 100,
+      precio_venta: 200,
+      iva_porcentaje: 21,
+      precio_compra_incluye_iva: false,
+      stock: 1,
+      activo: true
+    });
+    const aplicado = await requestJson(baseUrl, "PATCH", "/productos/aumento-masivo", {
+      categoria_id: categoriaLegacyId,
+      porcentaje: 10,
+      campo: "ambos"
+    }, token);
+    if (!aplicado.response.ok) {
+      throw new Error(`Aumento masivo legacy-only debe seguir funcionando: ${aplicado.data?.message || aplicado.response.status}`);
+    }
+    const legacySoloDespues = await getProduct(baseUrl, token, legacySolo.id);
+    assertApprox(legacySoloDespues.precio_compra, 110, "Aumento legacy-only debe actualizar precio_compra");
+    assertApprox(legacySoloDespues.precio_venta, 220, "Aumento legacy-only debe actualizar precio_venta");
+    assertApprox(legacySoloDespues.costo_final, 133.1, "Aumento legacy-only debe actualizar costo_final");
+  });
 }
 
 async function testVentaSnapshotFiscalF2BHelper() {
