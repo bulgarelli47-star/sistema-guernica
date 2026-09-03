@@ -13086,85 +13086,64 @@ async function testProveedoresPagosSinProveedor() {
 }
 
 async function testTipoPagoCreaNuevo() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
 
-      const { response, data } = await requestJson(baseUrl, "POST", "/tipos_pago", {
-        codigo: "cheque_test",
-        nombre: "Cheque TEST",
-        orden: 99
-      }, token);
-      if (!response.ok) throw new Error(`POST /tipos_pago fallo: ${data?.message || response.status}`);
+    const { response, data } = await requestJson(baseUrl, "POST", "/tipos_pago", {
+      codigo: "cheque_test",
+      nombre: "Cheque TEST",
+      orden: 99
+    }, token);
+    if (!response.ok) throw new Error(`POST /tipos_pago fallo: ${data?.message || response.status}`);
 
-      const { response: r2, data: todos } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
-      if (!r2.ok) throw new Error(`GET /tipos_pago?todos=1 fallo: ${todos?.message || r2.status}`);
-      const nuevo = todos.find((t) => t.codigo === "cheque_test");
-      if (!nuevo) throw new Error("El tipo de pago creado debe aparecer en GET /tipos_pago?todos=1");
-      if (nuevo.nombre !== "Cheque TEST") throw new Error(`Nombre inesperado tras POST: ${nuevo.nombre}`);
-      assertEqual(nuevo.orden, 99, "El tipo de pago debe guardar el orden indicado");
-      assertEqual(nuevo.activo, 1, "El tipo de pago recien creado debe quedar activo");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const { response: r2, data: todos } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
+    if (!r2.ok) throw new Error(`GET /tipos_pago?todos=1 fallo: ${todos?.message || r2.status}`);
+    const nuevo = todos.find((t) => t.codigo === "cheque_test");
+    if (!nuevo) throw new Error("El tipo de pago creado debe aparecer en GET /tipos_pago?todos=1");
+    if (nuevo.nombre !== "Cheque TEST") throw new Error(`Nombre inesperado tras POST: ${nuevo.nombre}`);
+    assertEqual(nuevo.orden, 99, "El tipo de pago debe guardar el orden indicado");
+    assertEqual(nuevo.activo, 1, "El tipo de pago recien creado debe quedar activo");
+  });
 }
 
 async function testTipoPagoNoDuplicaCodigo() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
 
-      const payload = { codigo: "duplicado_test", nombre: "Duplicado TEST", orden: 50 };
+    const payload = { codigo: "duplicado_test", nombre: "Duplicado TEST", orden: 50 };
 
-      const { response: r1, data: d1 } = await requestJson(baseUrl, "POST", "/tipos_pago", payload, token);
-      if (!r1.ok) throw new Error(`Primer POST /tipos_pago fallo: ${d1?.message || r1.status}`);
+    const { response: r1, data: d1 } = await requestJson(baseUrl, "POST", "/tipos_pago", payload, token);
+    if (!r1.ok) throw new Error(`Primer POST /tipos_pago fallo: ${d1?.message || r1.status}`);
 
-      const { response: r2, data: d2 } = await requestJson(baseUrl, "POST", "/tipos_pago", payload, token);
-      if (r2.ok) throw new Error("POST /tipos_pago con codigo duplicado debe fallar");
-      assertEqual(r2.status, 400, "POST con codigo duplicado debe devolver 400");
-      if (!d2?.message) throw new Error("POST duplicado debe devolver mensaje de error descriptivo");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const { response: r2, data: d2 } = await requestJson(baseUrl, "POST", "/tipos_pago", payload, token);
+    if (r2.ok) throw new Error("POST /tipos_pago con codigo duplicado debe fallar");
+    assertEqual(r2.status, 400, "POST con codigo duplicado debe devolver 400");
+    if (!d2?.message) throw new Error("POST duplicado debe devolver mensaje de error descriptivo");
+  });
 }
 
 async function testTipoPagoModificaNombreYOrden() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
 
-      await requestJson(baseUrl, "POST", "/tipos_pago", { codigo: "editar_test", nombre: "Editar TEST inicial", orden: 50 }, token);
+    await requestJson(baseUrl, "POST", "/tipos_pago", { codigo: "editar_test", nombre: "Editar TEST inicial", orden: 50 }, token);
 
-      const { data: todos } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
-      const tipo = todos.find((t) => t.codigo === "editar_test");
-      if (!tipo) throw new Error("El tipo de pago debe existir antes de editarlo");
+    const { data: todos } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
+    const tipo = todos.find((t) => t.codigo === "editar_test");
+    if (!tipo) throw new Error("El tipo de pago debe existir antes de editarlo");
 
-      const { response, data } = await requestJson(baseUrl, "PUT", `/tipos_pago/${tipo.id}`, {
-        nombre: "Editar TEST modificado",
-        orden: 77
-      }, token);
-      if (!response.ok) throw new Error(`PUT /tipos_pago/${tipo.id} fallo: ${data?.message || response.status}`);
+    const { response, data } = await requestJson(baseUrl, "PUT", `/tipos_pago/${tipo.id}`, {
+      nombre: "Editar TEST modificado",
+      orden: 77
+    }, token);
+    if (!response.ok) throw new Error(`PUT /tipos_pago/${tipo.id} fallo: ${data?.message || response.status}`);
 
-      const { data: todosPost } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
-      const actualizado = todosPost.find((t) => t.codigo === "editar_test");
-      if (!actualizado) throw new Error("El tipo de pago debe seguir existiendo tras el PUT");
-      if (actualizado.nombre !== "Editar TEST modificado") throw new Error(`Nombre no fue actualizado. Actual=${actualizado.nombre}`);
-      assertEqual(actualizado.orden, 77, "El orden debe actualizarse correctamente con PUT");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const { data: todosPost } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
+    const actualizado = todosPost.find((t) => t.codigo === "editar_test");
+    if (!actualizado) throw new Error("El tipo de pago debe seguir existiendo tras el PUT");
+    if (actualizado.nombre !== "Editar TEST modificado") throw new Error(`Nombre no fue actualizado. Actual=${actualizado.nombre}`);
+    assertEqual(actualizado.orden, 77, "El orden debe actualizarse correctamente con PUT");
+  });
 }
 
 async function testTiposPagoRecargosYCuotasCrud() {
@@ -13497,30 +13476,23 @@ async function testVentasCuotasYPendientesNoDuplicanRecargo() {
 }
 
 async function testTipoPagoDesactiva() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
 
-      await requestJson(baseUrl, "POST", "/tipos_pago", { codigo: "desactivar_test", nombre: "Desactivar TEST", orden: 50 }, token);
+    await requestJson(baseUrl, "POST", "/tipos_pago", { codigo: "desactivar_test", nombre: "Desactivar TEST", orden: 50 }, token);
 
-      const { data: todos } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
-      const tipo = todos.find((t) => t.codigo === "desactivar_test");
-      if (!tipo) throw new Error("El tipo de pago debe existir para desactivarlo");
+    const { data: todos } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
+    const tipo = todos.find((t) => t.codigo === "desactivar_test");
+    if (!tipo) throw new Error("El tipo de pago debe existir para desactivarlo");
 
-      const { response, data } = await requestJson(baseUrl, "PATCH", `/tipos_pago/${tipo.id}/activo`, { activo: false }, token);
-      if (!response.ok) throw new Error(`PATCH activo=false fallo: ${data?.message || response.status}`);
+    const { response, data } = await requestJson(baseUrl, "PATCH", `/tipos_pago/${tipo.id}/activo`, { activo: false }, token);
+    if (!response.ok) throw new Error(`PATCH activo=false fallo: ${data?.message || response.status}`);
 
-      const { data: todosPost } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
-      const desactivado = todosPost.find((t) => t.codigo === "desactivar_test");
-      if (!desactivado) throw new Error("El tipo desactivado debe seguir en GET ?todos=1");
-      assertEqual(desactivado.activo, 0, "El tipo desactivado debe tener activo=0");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const { data: todosPost } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
+    const desactivado = todosPost.find((t) => t.codigo === "desactivar_test");
+    if (!desactivado) throw new Error("El tipo desactivado debe seguir en GET ?todos=1");
+    assertEqual(desactivado.activo, 0, "El tipo desactivado debe tener activo=0");
+  });
 }
 
 async function testTipoPagoReactiva() {
