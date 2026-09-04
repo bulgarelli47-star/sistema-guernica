@@ -2925,33 +2925,25 @@ async function testTipoPagoEfectivoPrevioTiposPago() {
 }
 
 async function testTiposPagoEndpointDefaultsCompatibles() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const { response, data } = await requestJson(baseUrl, "GET", "/tipos_pago", null, token);
+    if (!response.ok) throw new Error(`GET /tipos_pago fallo: ${data?.message || response.status}`);
+    if (!Array.isArray(data)) throw new Error("GET /tipos_pago debe devolver un array");
 
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const { response, data } = await requestJson(baseUrl, "GET", "/tipos_pago", null, token);
-      if (!response.ok) throw new Error(`GET /tipos_pago fallo: ${data?.message || response.status}`);
-      if (!Array.isArray(data)) throw new Error("GET /tipos_pago debe devolver un array");
-
-      const codigos = data.map((tipo) => tipo.codigo);
-      ["efectivo", "debito", "transferencia", "mixto"].forEach((codigo) => {
-        if (!codigos.includes(codigo)) {
-          throw new Error(`GET /tipos_pago debe incluir ${codigo}. Actual=${JSON.stringify(codigos)}`);
-        }
-      });
-
-      const efectivo = data.find((tipo) => tipo.codigo === "efectivo");
-      const mixto = data.find((tipo) => tipo.codigo === "mixto");
-      assertEqual(efectivo.impacta_caja, 1, "Tipo efectivo debe impactar caja");
-      assertEqual(efectivo.impacta_digital, 0, "Tipo efectivo no debe impactar digital");
-      assertEqual(mixto.permite_mixto, 1, "Tipo mixto debe permitir mixto");
+    const codigos = data.map((tipo) => tipo.codigo);
+    ["efectivo", "debito", "transferencia", "mixto"].forEach((codigo) => {
+      if (!codigos.includes(codigo)) {
+        throw new Error(`GET /tipos_pago debe incluir ${codigo}. Actual=${JSON.stringify(codigos)}`);
+      }
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+
+    const efectivo = data.find((tipo) => tipo.codigo === "efectivo");
+    const mixto = data.find((tipo) => tipo.codigo === "mixto");
+    assertEqual(efectivo.impacta_caja, 1, "Tipo efectivo debe impactar caja");
+    assertEqual(efectivo.impacta_digital, 0, "Tipo efectivo no debe impactar digital");
+    assertEqual(mixto.permite_mixto, 1, "Tipo mixto debe permitir mixto");
+  });
 }
 
 async function testTipoPagoDebitoPrevioTiposPago() {
@@ -13496,85 +13488,64 @@ async function testTipoPagoDesactiva() {
 }
 
 async function testTipoPagoReactiva() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
 
-      await requestJson(baseUrl, "POST", "/tipos_pago", { codigo: "reactivar_test", nombre: "Reactivar TEST", orden: 50 }, token);
+    await requestJson(baseUrl, "POST", "/tipos_pago", { codigo: "reactivar_test", nombre: "Reactivar TEST", orden: 50 }, token);
 
-      const { data: todos } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
-      const tipo = todos.find((t) => t.codigo === "reactivar_test");
-      if (!tipo) throw new Error("El tipo de pago debe existir para reactivarlo");
+    const { data: todos } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
+    const tipo = todos.find((t) => t.codigo === "reactivar_test");
+    if (!tipo) throw new Error("El tipo de pago debe existir para reactivarlo");
 
-      await requestJson(baseUrl, "PATCH", `/tipos_pago/${tipo.id}/activo`, { activo: false }, token);
+    await requestJson(baseUrl, "PATCH", `/tipos_pago/${tipo.id}/activo`, { activo: false }, token);
 
-      const { response, data } = await requestJson(baseUrl, "PATCH", `/tipos_pago/${tipo.id}/activo`, { activo: true }, token);
-      if (!response.ok) throw new Error(`PATCH activo=true fallo: ${data?.message || response.status}`);
+    const { response, data } = await requestJson(baseUrl, "PATCH", `/tipos_pago/${tipo.id}/activo`, { activo: true }, token);
+    if (!response.ok) throw new Error(`PATCH activo=true fallo: ${data?.message || response.status}`);
 
-      const { data: todosPost } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
-      const reactivado = todosPost.find((t) => t.codigo === "reactivar_test");
-      if (!reactivado) throw new Error("El tipo reactivado debe aparecer en GET ?todos=1");
-      assertEqual(reactivado.activo, 1, "El tipo reactivado debe tener activo=1");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const { data: todosPost } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
+    const reactivado = todosPost.find((t) => t.codigo === "reactivar_test");
+    if (!reactivado) throw new Error("El tipo reactivado debe aparecer en GET ?todos=1");
+    assertEqual(reactivado.activo, 1, "El tipo reactivado debe tener activo=1");
+  });
 }
 
 async function testTipoPagoGetExcluyeInactivos() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
 
-      await requestJson(baseUrl, "POST", "/tipos_pago", { codigo: "excluir_inactivo_test", nombre: "Excluir inactivo TEST", orden: 50 }, token);
+    await requestJson(baseUrl, "POST", "/tipos_pago", { codigo: "excluir_inactivo_test", nombre: "Excluir inactivo TEST", orden: 50 }, token);
 
-      const { data: todos } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
-      const tipo = todos.find((t) => t.codigo === "excluir_inactivo_test");
-      if (!tipo) throw new Error("El tipo de pago debe existir antes de desactivarlo");
+    const { data: todos } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
+    const tipo = todos.find((t) => t.codigo === "excluir_inactivo_test");
+    if (!tipo) throw new Error("El tipo de pago debe existir antes de desactivarlo");
 
-      await requestJson(baseUrl, "PATCH", `/tipos_pago/${tipo.id}/activo`, { activo: false }, token);
+    await requestJson(baseUrl, "PATCH", `/tipos_pago/${tipo.id}/activo`, { activo: false }, token);
 
-      const { response, data: activos } = await requestJson(baseUrl, "GET", "/tipos_pago", null, token);
-      if (!response.ok) throw new Error(`GET /tipos_pago fallo: ${activos?.message || response.status}`);
-      const encontrado = activos.find((t) => t.codigo === "excluir_inactivo_test");
-      if (encontrado) throw new Error("GET /tipos_pago sin ?todos=1 no debe devolver tipos inactivos");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const { response, data: activos } = await requestJson(baseUrl, "GET", "/tipos_pago", null, token);
+    if (!response.ok) throw new Error(`GET /tipos_pago fallo: ${activos?.message || response.status}`);
+    const encontrado = activos.find((t) => t.codigo === "excluir_inactivo_test");
+    if (encontrado) throw new Error("GET /tipos_pago sin ?todos=1 no debe devolver tipos inactivos");
+  });
 }
 
 async function testTipoPagoGetTodosIncluyeInactivos() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
 
-      await requestJson(baseUrl, "POST", "/tipos_pago", { codigo: "incluir_inactivo_test", nombre: "Incluir inactivo TEST", orden: 50 }, token);
+    await requestJson(baseUrl, "POST", "/tipos_pago", { codigo: "incluir_inactivo_test", nombre: "Incluir inactivo TEST", orden: 50 }, token);
 
-      const { data: todos } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
-      const tipo = todos.find((t) => t.codigo === "incluir_inactivo_test");
-      if (!tipo) throw new Error("El tipo de pago debe existir antes de desactivarlo");
+    const { data: todos } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
+    const tipo = todos.find((t) => t.codigo === "incluir_inactivo_test");
+    if (!tipo) throw new Error("El tipo de pago debe existir antes de desactivarlo");
 
-      await requestJson(baseUrl, "PATCH", `/tipos_pago/${tipo.id}/activo`, { activo: false }, token);
+    await requestJson(baseUrl, "PATCH", `/tipos_pago/${tipo.id}/activo`, { activo: false }, token);
 
-      const { response, data: todosPost } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
-      if (!response.ok) throw new Error(`GET /tipos_pago?todos=1 fallo: ${response.status}`);
-      const inactivo = todosPost.find((t) => t.codigo === "incluir_inactivo_test");
-      if (!inactivo) throw new Error("GET /tipos_pago?todos=1 debe incluir tipos inactivos");
-      assertEqual(inactivo.activo, 0, "El tipo inactivo debe tener activo=0 en GET ?todos=1");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const { response, data: todosPost } = await requestJson(baseUrl, "GET", "/tipos_pago?todos=1", null, token);
+    if (!response.ok) throw new Error(`GET /tipos_pago?todos=1 fallo: ${response.status}`);
+    const inactivo = todosPost.find((t) => t.codigo === "incluir_inactivo_test");
+    if (!inactivo) throw new Error("GET /tipos_pago?todos=1 debe incluir tipos inactivos");
+    assertEqual(inactivo.activo, 0, "El tipo inactivo debe tener activo=0 en GET ?todos=1");
+  });
 }
 
 async function testCuentasCobroEtapa2PagosYVentas() {
