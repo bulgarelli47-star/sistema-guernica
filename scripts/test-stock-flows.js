@@ -18093,135 +18093,114 @@ function compuestoBasePayload(categoriaId, componenteId, rinde, extras = []) {
 }
 
 async function testCompuestoCostoRendimientoControl() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const categoriaId = await crearCategoria(baseUrl, token, "TEST Costo Control");
-      const componenteId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Ingrediente Control",
-        categoria: "TEST Costo Control",
-        categoria_id: categoriaId,
-        precio_compra: 100,
-        iva_porcentaje: 0,
-        precio_compra_incluye_iva: false,
-        precio_venta: 150,
-        stock: 1000,
-        maneja_stock: true
-      });
-
-      // rinde=1: cantidad stored = 2, costo = 100*2 = 200
-      const { response, data } = await requestJson(baseUrl, "POST", "/productos", {
-        nombre: "TEST Compuesto Rinde 1",
-        ...compuestoBasePayload(categoriaId, componenteId, 1)
-      }, token);
-      if (!response.ok) throw new Error(`POST compuesto control fallo: ${data?.message || response.status}`);
-
-      const { response: r2, data: comp } = await requestJson(baseUrl, "GET", `/productos_compuestos/${data.id}`, null, token);
-      if (!r2.ok) throw new Error(`GET /productos_compuestos control fallo: ${comp?.message}`);
-      assertApprox(comp.costo_final, 200, "Control rinde=1: costo_final debe ser 200", 1);
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const categoriaId = await crearCategoria(baseUrl, token, "TEST Costo Control");
+    const componenteId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Ingrediente Control",
+      categoria: "TEST Costo Control",
+      categoria_id: categoriaId,
+      precio_compra: 100,
+      iva_porcentaje: 0,
+      precio_compra_incluye_iva: false,
+      precio_venta: 150,
+      stock: 1000,
+      maneja_stock: true
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+
+    // rinde=1: cantidad stored = 2, costo = 100*2 = 200
+    const { response, data } = await requestJson(baseUrl, "POST", "/productos", {
+      nombre: "TEST Compuesto Rinde 1",
+      ...compuestoBasePayload(categoriaId, componenteId, 1)
+    }, token);
+    if (!response.ok) throw new Error(`POST compuesto control fallo: ${data?.message || response.status}`);
+
+    const { response: r2, data: comp } = await requestJson(baseUrl, "GET", `/productos_compuestos/${data.id}`, null, token);
+    if (!r2.ok) throw new Error(`GET /productos_compuestos control fallo: ${comp?.message}`);
+    assertApprox(comp.costo_final, 200, "Control rinde=1: costo_final debe ser 200", 1);
+  });
 }
 
 async function testCompuestoCostoRendimiento5() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const categoriaId = await crearCategoria(baseUrl, token, "TEST Costo Rinde5");
-      const componenteId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Ingrediente Rinde5",
-        categoria: "TEST Costo Rinde5",
-        categoria_id: categoriaId,
-        precio_compra: 100,
-        iva_porcentaje: 0,
-        precio_compra_incluye_iva: false,
-        precio_venta: 150,
-        stock: 1000,
-        maneja_stock: true
-      });
-
-      // rinde=5: frontend envía cantidad = cantidadUso/rinde = 10/5 = 2
-      // costo correcto = 100*2 + 0/5 = 200
-      const payload = { nombre: "TEST Compuesto Rinde 5", ...compuestoBasePayload(categoriaId, componenteId, 5) };
-      const { response, data } = await requestJson(baseUrl, "POST", "/productos", payload, token);
-      if (!response.ok) throw new Error(`POST compuesto rinde=5 fallo: ${data?.message || response.status}`);
-      const compuestoId = data.id;
-
-      // GET /productos_compuestos/:id (calcularCostoProductoCompuesto desde BD)
-      const { response: r2, data: comp } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compuestoId}`, null, token);
-      if (!r2.ok) throw new Error(`GET /productos_compuestos/${compuestoId} fallo`);
-      assertApprox(comp.costo_final, 200, "Rinde=5: GET /productos_compuestos debe devolver costo_final=200 (no 40)", 1);
-
-      // GET /productos (costoCompuestoMemoria inline)
-      const { response: r3, data: lista } = await requestJson(baseUrl, "GET", "/productos", null, token);
-      if (!r3.ok) throw new Error("GET /productos fallo");
-      const enListado = lista.find((p) => Number(p.id) === Number(compuestoId));
-      if (!enListado) throw new Error("Compuesto rinde=5 no encontrado en GET /productos");
-      assertApprox(enListado.costo_final, 200, "Rinde=5: GET /productos costo_final debe ser 200 (no 40)", 1);
-
-      // PUT /productos/:id (calcularCostoProductoCompuestoPayload con rinde=5)
-      const { response: r4 } = await requestJson(baseUrl, "PUT", `/productos/${compuestoId}`, payload, token);
-      if (!r4.ok) throw new Error(`PUT compuesto rinde=5 fallo: ${r4.status}`);
-
-      const { data: compPut } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compuestoId}`, null, token);
-      assertApprox(compPut.costo_final, 200, "Rinde=5: PUT + GET debe persistir costo_final=200", 1);
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const categoriaId = await crearCategoria(baseUrl, token, "TEST Costo Rinde5");
+    const componenteId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Ingrediente Rinde5",
+      categoria: "TEST Costo Rinde5",
+      categoria_id: categoriaId,
+      precio_compra: 100,
+      iva_porcentaje: 0,
+      precio_compra_incluye_iva: false,
+      precio_venta: 150,
+      stock: 1000,
+      maneja_stock: true
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+
+    // rinde=5: frontend envía cantidad = cantidadUso/rinde = 10/5 = 2
+    // costo correcto = 100*2 + 0/5 = 200
+    const payload = { nombre: "TEST Compuesto Rinde 5", ...compuestoBasePayload(categoriaId, componenteId, 5) };
+    const { response, data } = await requestJson(baseUrl, "POST", "/productos", payload, token);
+    if (!response.ok) throw new Error(`POST compuesto rinde=5 fallo: ${data?.message || response.status}`);
+    const compuestoId = data.id;
+
+    // GET /productos_compuestos/:id (calcularCostoProductoCompuesto desde BD)
+    const { response: r2, data: comp } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compuestoId}`, null, token);
+    if (!r2.ok) throw new Error(`GET /productos_compuestos/${compuestoId} fallo`);
+    assertApprox(comp.costo_final, 200, "Rinde=5: GET /productos_compuestos debe devolver costo_final=200 (no 40)", 1);
+
+    // GET /productos (costoCompuestoMemoria inline)
+    const { response: r3, data: lista } = await requestJson(baseUrl, "GET", "/productos", null, token);
+    if (!r3.ok) throw new Error("GET /productos fallo");
+    const enListado = lista.find((p) => Number(p.id) === Number(compuestoId));
+    if (!enListado) throw new Error("Compuesto rinde=5 no encontrado en GET /productos");
+    assertApprox(enListado.costo_final, 200, "Rinde=5: GET /productos costo_final debe ser 200 (no 40)", 1);
+
+    // PUT /productos/:id (calcularCostoProductoCompuestoPayload con rinde=5)
+    const { response: r4 } = await requestJson(baseUrl, "PUT", `/productos/${compuestoId}`, payload, token);
+    if (!r4.ok) throw new Error(`PUT compuesto rinde=5 fallo: ${r4.status}`);
+
+    const { data: compPut } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compuestoId}`, null, token);
+    assertApprox(compPut.costo_final, 200, "Rinde=5: PUT + GET debe persistir costo_final=200", 1);
+  });
 }
 
 async function testCompuestoCostoExtrasConRendimiento() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const categoriaId = await crearCategoria(baseUrl, token, "TEST Extras Rinde5");
-      const componenteId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Ingrediente Extras",
-        categoria: "TEST Extras Rinde5",
-        categoria_id: categoriaId,
-        precio_compra: 100,
-        iva_porcentaje: 0,
-        precio_compra_incluye_iva: false,
-        precio_venta: 150,
-        stock: 1000,
-        maneja_stock: true
-      });
-
-      // componentes: 100*2 = 200, extras: monto=50, rinde=5
-      // correcto = 200 + 50/5 = 200 + 10 = 210
-      const payload = {
-        nombre: "TEST Compuesto Extras Rinde5",
-        ...compuestoBasePayload(categoriaId, componenteId, 5, [{ descripcion: "Envase TEST", monto: 50 }])
-      };
-      const { response, data } = await requestJson(baseUrl, "POST", "/productos", payload, token);
-      if (!response.ok) throw new Error(`POST compuesto extras fallo: ${data?.message || response.status}`);
-      const compuestoId = data.id;
-
-      const { response: r2, data: comp } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compuestoId}`, null, token);
-      if (!r2.ok) throw new Error(`GET /productos_compuestos con extras fallo`);
-      assertApprox(comp.costo_final, 210, "Extras rinde=5: costo = 200 + 10 = 210 (no 50)", 1);
-
-      const { response: r3, data: lista } = await requestJson(baseUrl, "GET", "/productos", null, token);
-      if (!r3.ok) throw new Error("GET /productos con extras fallo");
-      const enListado = lista.find((p) => Number(p.id) === Number(compuestoId));
-      if (!enListado) throw new Error("Compuesto con extras no encontrado en GET /productos");
-      assertApprox(enListado.costo_final, 210, "Extras rinde=5: GET /productos costo_final = 210 (no 50)", 1);
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const categoriaId = await crearCategoria(baseUrl, token, "TEST Extras Rinde5");
+    const componenteId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Ingrediente Extras",
+      categoria: "TEST Extras Rinde5",
+      categoria_id: categoriaId,
+      precio_compra: 100,
+      iva_porcentaje: 0,
+      precio_compra_incluye_iva: false,
+      precio_venta: 150,
+      stock: 1000,
+      maneja_stock: true
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+
+    // componentes: 100*2 = 200, extras: monto=50, rinde=5
+    // correcto = 200 + 50/5 = 200 + 10 = 210
+    const payload = {
+      nombre: "TEST Compuesto Extras Rinde5",
+      ...compuestoBasePayload(categoriaId, componenteId, 5, [{ descripcion: "Envase TEST", monto: 50 }])
+    };
+    const { response, data } = await requestJson(baseUrl, "POST", "/productos", payload, token);
+    if (!response.ok) throw new Error(`POST compuesto extras fallo: ${data?.message || response.status}`);
+    const compuestoId = data.id;
+
+    const { response: r2, data: comp } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compuestoId}`, null, token);
+    if (!r2.ok) throw new Error(`GET /productos_compuestos con extras fallo`);
+    assertApprox(comp.costo_final, 210, "Extras rinde=5: costo = 200 + 10 = 210 (no 50)", 1);
+
+    const { response: r3, data: lista } = await requestJson(baseUrl, "GET", "/productos", null, token);
+    if (!r3.ok) throw new Error("GET /productos con extras fallo");
+    const enListado = lista.find((p) => Number(p.id) === Number(compuestoId));
+    if (!enListado) throw new Error("Compuesto con extras no encontrado en GET /productos");
+    assertApprox(enListado.costo_final, 210, "Extras rinde=5: GET /productos costo_final = 210 (no 50)", 1);
+  });
 }
 
 async function testCompuestoUsaCostoUnitarioDeComponenteFraccionado() {
