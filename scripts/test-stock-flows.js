@@ -19285,115 +19285,87 @@ async function testTiendaConvertirVenta() {
 }
 
 async function testCompuestosLegacyGetStockFisicoManejaStock1() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const catId = await crearCategoria(baseUrl, token, "TEST LegacyMS1");
-      const ingId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Ing LegacyMS1", categoria: "TEST LegacyMS1", categoria_id: catId,
-        stock: 100, maneja_stock: true
-      });
-      const compId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Comp LegacyMS1", categoria: "TEST LegacyMS1", categoria_id: catId,
-        tipo: "compuesto", maneja_stock: true, stock: 7, precio_venta: 300,
-        componentes: [{ producto_id: ingId, cantidad: 1 }], costos_extra: []
-      });
-      const { response, data } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compId}`, null, token);
-      if (!response.ok) throw new Error(`GET /productos_compuestos maneja_stock=1 fallo: ${data?.message}`);
-      assertEqual(data.stock, 7, "Legacy GET maneja_stock=1: stock debe ser el fisico real (7)");
-      assertEqual(data.stock_fisico, 7, "Legacy GET maneja_stock=1: stock_fisico debe ser 7");
-      assertEqual(data.stock_disponible, 7, "Legacy GET maneja_stock=1: stock_disponible debe usar stock fisico, no componentes");
-      assertEqual(data.stock_vendible_calculado, 7, "Legacy GET maneja_stock=1: stock_vendible_calculado debe ser 7");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const catId = await crearCategoria(baseUrl, token, "TEST LegacyMS1");
+    const ingId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Ing LegacyMS1", categoria: "TEST LegacyMS1", categoria_id: catId,
+      stock: 100, maneja_stock: true
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const compId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Comp LegacyMS1", categoria: "TEST LegacyMS1", categoria_id: catId,
+      tipo: "compuesto", maneja_stock: true, stock: 7, precio_venta: 300,
+      componentes: [{ producto_id: ingId, cantidad: 1 }], costos_extra: []
+    });
+    const { response, data } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compId}`, null, token);
+    if (!response.ok) throw new Error(`GET /productos_compuestos maneja_stock=1 fallo: ${data?.message}`);
+    assertEqual(data.stock, 7, "Legacy GET maneja_stock=1: stock debe ser el fisico real (7)");
+    assertEqual(data.stock_fisico, 7, "Legacy GET maneja_stock=1: stock_fisico debe ser 7");
+    assertEqual(data.stock_disponible, 7, "Legacy GET maneja_stock=1: stock_disponible debe usar stock fisico, no componentes");
+    assertEqual(data.stock_vendible_calculado, 7, "Legacy GET maneja_stock=1: stock_vendible_calculado debe ser 7");
+  });
 }
 
 async function testCompuestosLegacyGetStockPorComponentesManejaStock0() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const catId = await crearCategoria(baseUrl, token, "TEST LegacyMS0");
-      const ingId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Ing LegacyMS0", categoria: "TEST LegacyMS0", categoria_id: catId,
-        stock: 10, maneja_stock: true
-      });
-      const compId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Comp LegacyMS0", categoria: "TEST LegacyMS0", categoria_id: catId,
-        tipo: "compuesto", maneja_stock: false, stock: 0, precio_venta: 200,
-        componentes: [{ producto_id: ingId, cantidad: 2 }], costos_extra: []
-      });
-      const { response, data } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compId}`, null, token);
-      if (!response.ok) throw new Error(`GET /productos_compuestos maneja_stock=0 fallo: ${data?.message}`);
-      assertEqual(data.stock, 0, "Legacy GET maneja_stock=0: stock debe ser 0 (sin stock propio)");
-      assertEqual(data.stock_fisico, 0, "Legacy GET maneja_stock=0: stock_fisico debe ser 0");
-      // 10 unidades de ingrediente / 2 por porcion = 5 porciones disponibles
-      assertEqual(data.stock_disponible, 5, "Legacy GET maneja_stock=0: stock_disponible debe calcularse por componentes (10/2=5)");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const catId = await crearCategoria(baseUrl, token, "TEST LegacyMS0");
+    const ingId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Ing LegacyMS0", categoria: "TEST LegacyMS0", categoria_id: catId,
+      stock: 10, maneja_stock: true
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const compId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Comp LegacyMS0", categoria: "TEST LegacyMS0", categoria_id: catId,
+      tipo: "compuesto", maneja_stock: false, stock: 0, precio_venta: 200,
+      componentes: [{ producto_id: ingId, cantidad: 2 }], costos_extra: []
+    });
+    const { response, data } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compId}`, null, token);
+    if (!response.ok) throw new Error(`GET /productos_compuestos maneja_stock=0 fallo: ${data?.message}`);
+    assertEqual(data.stock, 0, "Legacy GET maneja_stock=0: stock debe ser 0 (sin stock propio)");
+    assertEqual(data.stock_fisico, 0, "Legacy GET maneja_stock=0: stock_fisico debe ser 0");
+    // 10 unidades de ingrediente / 2 por porcion = 5 porciones disponibles
+    assertEqual(data.stock_disponible, 5, "Legacy GET maneja_stock=0: stock_disponible debe calcularse por componentes (10/2=5)");
+  });
 }
 
 async function testCompuestosLegacyEndpointSDManejaStock1() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const catId = await crearCategoria(baseUrl, token, "TEST LegacySD1");
-      const ingId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Ing LegacySD1", categoria: "TEST LegacySD1", categoria_id: catId,
-        stock: 100, maneja_stock: true
-      });
-      const compId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Comp LegacySD1", categoria: "TEST LegacySD1", categoria_id: catId,
-        tipo: "compuesto", maneja_stock: true, stock: 9, precio_venta: 300,
-        componentes: [{ producto_id: ingId, cantidad: 1 }], costos_extra: []
-      });
-      const { response, data } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compId}/stock_disponible`, null, token);
-      if (!response.ok) throw new Error(`/stock_disponible maneja_stock=1 fallo: ${data?.message}`);
-      assertEqual(data.stock_disponible, 9, "Legacy /stock_disponible maneja_stock=1: debe devolver stock fisico (9)");
-      assertEqual(data.stock_vendible_calculado, 9, "Legacy /stock_disponible maneja_stock=1: stock_vendible_calculado debe ser 9");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const catId = await crearCategoria(baseUrl, token, "TEST LegacySD1");
+    const ingId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Ing LegacySD1", categoria: "TEST LegacySD1", categoria_id: catId,
+      stock: 100, maneja_stock: true
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const compId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Comp LegacySD1", categoria: "TEST LegacySD1", categoria_id: catId,
+      tipo: "compuesto", maneja_stock: true, stock: 9, precio_venta: 300,
+      componentes: [{ producto_id: ingId, cantidad: 1 }], costos_extra: []
+    });
+    const { response, data } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compId}/stock_disponible`, null, token);
+    if (!response.ok) throw new Error(`/stock_disponible maneja_stock=1 fallo: ${data?.message}`);
+    assertEqual(data.stock_disponible, 9, "Legacy /stock_disponible maneja_stock=1: debe devolver stock fisico (9)");
+    assertEqual(data.stock_vendible_calculado, 9, "Legacy /stock_disponible maneja_stock=1: stock_vendible_calculado debe ser 9");
+  });
 }
 
 async function testCompuestosLegacyEndpointSDManejaStock0() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const catId = await crearCategoria(baseUrl, token, "TEST LegacySD0");
-      const ingId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Ing LegacySD0", categoria: "TEST LegacySD0", categoria_id: catId,
-        stock: 15, maneja_stock: true
-      });
-      const compId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Comp LegacySD0", categoria: "TEST LegacySD0", categoria_id: catId,
-        tipo: "compuesto", maneja_stock: false, stock: 0, precio_venta: 200,
-        componentes: [{ producto_id: ingId, cantidad: 3 }], costos_extra: []
-      });
-      const { response, data } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compId}/stock_disponible`, null, token);
-      if (!response.ok) throw new Error(`/stock_disponible maneja_stock=0 fallo: ${data?.message}`);
-      // 15 / 3 = 5 porciones
-      assertEqual(data.stock_disponible, 5, "Legacy /stock_disponible maneja_stock=0: debe calcularse por componentes (15/3=5)");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const catId = await crearCategoria(baseUrl, token, "TEST LegacySD0");
+    const ingId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Ing LegacySD0", categoria: "TEST LegacySD0", categoria_id: catId,
+      stock: 15, maneja_stock: true
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const compId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Comp LegacySD0", categoria: "TEST LegacySD0", categoria_id: catId,
+      tipo: "compuesto", maneja_stock: false, stock: 0, precio_venta: 200,
+      componentes: [{ producto_id: ingId, cantidad: 3 }], costos_extra: []
+    });
+    const { response, data } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compId}/stock_disponible`, null, token);
+    if (!response.ok) throw new Error(`/stock_disponible maneja_stock=0 fallo: ${data?.message}`);
+    // 15 / 3 = 5 porciones
+    assertEqual(data.stock_disponible, 5, "Legacy /stock_disponible maneja_stock=0: debe calcularse por componentes (15/3=5)");
+  });
 }
 
 async function testBatchLegacyLimitadoAManeja0RendimientoMayor1() {
