@@ -3395,55 +3395,47 @@ async function testSimpleConRendimientoDescuentaStockFisicoUnaVez() {
 }
 
 async function testCompuestoConComponenteFraccionadoDescuentaCantidadUsada() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      await abrirCaja(baseUrl, token, 1000);
-      const categoriaId = await crearCategoria(baseUrl, token, "TEST Fraccionados");
-      const componenteId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Harina fraccionada",
-        categoria: "TEST Fraccionados",
-        categoria_id: categoriaId,
-        stock: 10,
-        unidad_medida: "kg",
-        precio_compra: 20,
-        precio_venta: 50
-      });
-      const compuestoId = await crearProductoCompuesto(baseUrl, token, {
-        nombre: "TEST Compuesto fraccionado",
-        categoria: "TEST Fraccionados",
-        categoria_id: categoriaId,
-        precio_venta: 200,
-        componentes: [{ producto_id: componenteId, cantidad: 1.25 }],
-        costos_extra: []
-      });
-
-      const venta = await requestJson(baseUrl, "POST", "/ventas", {
-        usuario: "test",
-        tipo: "normal",
-        tipo_cobro: "efectivo",
-        items: [{
-          producto_id: compuestoId,
-          nombre_producto: "TEST Compuesto fraccionado",
-          cantidad: 2,
-          precio_unitario: 200
-        }]
-      }, token);
-      if (!venta.response.ok) throw new Error(`Venta compuesto fraccionado fallo: ${venta.data?.message || venta.response.status}`);
-
-      assertApprox((await getProduct(baseUrl, token, componenteId)).stock, 10, "Vender compuesto sin stock no debe descontar componente fraccionado");
-      const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
-      const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(venta.data.venta_id) && item.origen === "venta_receta");
-      if (!ajuste) throw new Error("Vender compuesto fraccionado debe generar ajuste teorico pendiente");
-      assertApprox(ajuste.cantidad_teorica, 2.5, "Ajuste teorico debe conservar cantidad fraccionada usada");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    await abrirCaja(baseUrl, token, 1000);
+    const categoriaId = await crearCategoria(baseUrl, token, "TEST Fraccionados");
+    const componenteId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Harina fraccionada",
+      categoria: "TEST Fraccionados",
+      categoria_id: categoriaId,
+      stock: 10,
+      unidad_medida: "kg",
+      precio_compra: 20,
+      precio_venta: 50
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const compuestoId = await crearProductoCompuesto(baseUrl, token, {
+      nombre: "TEST Compuesto fraccionado",
+      categoria: "TEST Fraccionados",
+      categoria_id: categoriaId,
+      precio_venta: 200,
+      componentes: [{ producto_id: componenteId, cantidad: 1.25 }],
+      costos_extra: []
+    });
+
+    const venta = await requestJson(baseUrl, "POST", "/ventas", {
+      usuario: "test",
+      tipo: "normal",
+      tipo_cobro: "efectivo",
+      items: [{
+        producto_id: compuestoId,
+        nombre_producto: "TEST Compuesto fraccionado",
+        cantidad: 2,
+        precio_unitario: 200
+      }]
+    }, token);
+    if (!venta.response.ok) throw new Error(`Venta compuesto fraccionado fallo: ${venta.data?.message || venta.response.status}`);
+
+    assertApprox((await getProduct(baseUrl, token, componenteId)).stock, 10, "Vender compuesto sin stock no debe descontar componente fraccionado");
+    const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+    const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(venta.data.venta_id) && item.origen === "venta_receta");
+    if (!ajuste) throw new Error("Vender compuesto fraccionado debe generar ajuste teorico pendiente");
+    assertApprox(ajuste.cantidad_teorica, 2.5, "Ajuste teorico debe conservar cantidad fraccionada usada");
+  });
 }
 
 async function testCompuestoConStockPropioNoDuplicaDescuento() {
@@ -18204,70 +18196,63 @@ async function testCompuestoCostoExtrasConRendimiento() {
 }
 
 async function testCompuestoUsaCostoUnitarioDeComponenteFraccionado() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const categoriaId = await crearCategoria(baseUrl, token, "TEST Fraccionado Compuesto");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const categoriaId = await crearCategoria(baseUrl, token, "TEST Fraccionado Compuesto");
 
-      // Componente fraccionado: costo_total=1800 por 1000 unidades → costo_unitario=1.8/un
-      // costo_final guardado = costo_aplicado = 1.8 * 100 = 180 (NO es 1.8 por unidad)
-      const { response: rf, data: fracc } = await requestJson(baseUrl, "POST", "/productos", {
-        nombre: "TEST Componente Fraccionado",
-        categoria_id: categoriaId,
-        categoria: "TEST Fraccionado Compuesto",
-        tipo: "simple",
-        usa_costos_varios: true,
-        costos_insumos: [{ nombre: "Fraccion 1", costo_total: 1800, cantidad_rinde: 1000, cantidad_usada: 100, unidad: "un" }],
-        precio_compra: 0,
-        iva_porcentaje: 0, precio_compra_incluye_iva: true,
-        precio_venta: 200, stock: 1000, maneja_stock: true,
-        redondeo: 0, unidad_medida: "un", codigo_barras: "", imagen_url: "",
-        activo: true, usuario: "test",
-        es_combo: false, aplica_para_combo: false, descripcion: "", observaciones: ""
-      }, token);
-      if (!rf.ok) throw new Error(`POST fraccionado fallo: ${fracc?.message || rf.status}`);
-      const fraccionadoId = fracc.id;
+    // Componente fraccionado: costo_total=1800 por 1000 unidades → costo_unitario=1.8/un
+    // costo_final guardado = costo_aplicado = 1.8 * 100 = 180 (NO es 1.8 por unidad)
+    const { response: rf, data: fracc } = await requestJson(baseUrl, "POST", "/productos", {
+      nombre: "TEST Componente Fraccionado",
+      categoria_id: categoriaId,
+      categoria: "TEST Fraccionado Compuesto",
+      tipo: "simple",
+      usa_costos_varios: true,
+      costos_insumos: [{ nombre: "Fraccion 1", costo_total: 1800, cantidad_rinde: 1000, cantidad_usada: 100, unidad: "un" }],
+      precio_compra: 0,
+      iva_porcentaje: 0, precio_compra_incluye_iva: true,
+      precio_venta: 200, stock: 1000, maneja_stock: true,
+      redondeo: 0, unidad_medida: "un", codigo_barras: "", imagen_url: "",
+      activo: true, usuario: "test",
+      es_combo: false, aplica_para_combo: false, descripcion: "", observaciones: ""
+    }, token);
+    if (!rf.ok) throw new Error(`POST fraccionado fallo: ${fracc?.message || rf.status}`);
+    const fraccionadoId = fracc.id;
 
-      // Compuesto usa 80 unidades del fraccionado, rinde=1
-      // Frontend envía cantidad = cantidadUso * factor / rinde = 80 * 1 / 1 = 80
-      // costo correcto = 1.8 * 80 = 144 (no costo_final(180) * 80 = 14400)
-      const { response, data } = await requestJson(baseUrl, "POST", "/productos", {
-        nombre: "TEST Compuesto Fraccionado",
-        categoria_id: categoriaId,
-        categoria: "TEST Fraccionado Compuesto",
-        tipo: "compuesto",
-        componentes: [{ producto_id: fraccionadoId, cantidad: 80 }],
-        costos_extra: [],
-        rendimiento_receta: 1,
-        maneja_stock: false,
-        stock: 0, stock_minimo: 0, alerta_stock_minimo: false,
-        precio_venta: 300, precio_compra: 0, redondeo: 0,
-        iva_porcentaje: 0, precio_compra_incluye_iva: true,
-        unidad_medida: "un", codigo_barras: "", imagen_url: "",
-        activo: true, usuario: "test",
-        usa_costos_varios: false, es_combo: false, aplica_para_combo: false,
-        descripcion: "", observaciones: ""
-      }, token);
-      if (!response.ok) throw new Error(`POST compuesto fallo: ${data?.message || response.status}`);
-      const compuestoId = data.id;
+    // Compuesto usa 80 unidades del fraccionado, rinde=1
+    // Frontend envía cantidad = cantidadUso * factor / rinde = 80 * 1 / 1 = 80
+    // costo correcto = 1.8 * 80 = 144 (no costo_final(180) * 80 = 14400)
+    const { response, data } = await requestJson(baseUrl, "POST", "/productos", {
+      nombre: "TEST Compuesto Fraccionado",
+      categoria_id: categoriaId,
+      categoria: "TEST Fraccionado Compuesto",
+      tipo: "compuesto",
+      componentes: [{ producto_id: fraccionadoId, cantidad: 80 }],
+      costos_extra: [],
+      rendimiento_receta: 1,
+      maneja_stock: false,
+      stock: 0, stock_minimo: 0, alerta_stock_minimo: false,
+      precio_venta: 300, precio_compra: 0, redondeo: 0,
+      iva_porcentaje: 0, precio_compra_incluye_iva: true,
+      unidad_medida: "un", codigo_barras: "", imagen_url: "",
+      activo: true, usuario: "test",
+      usa_costos_varios: false, es_combo: false, aplica_para_combo: false,
+      descripcion: "", observaciones: ""
+    }, token);
+    if (!response.ok) throw new Error(`POST compuesto fallo: ${data?.message || response.status}`);
+    const compuestoId = data.id;
 
-      // GET /productos_compuestos usa getCostoConsumoUnitarioProducto → siempre correcto
-      const { data: comp } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compuestoId}`, null, token);
-      assertApprox(comp.costo_final, 144, "calcularCostoProductoCompuesto fraccionado: debe usar costo_unitario (1.8*80=144)", 1);
+    // GET /productos_compuestos usa getCostoConsumoUnitarioProducto → siempre correcto
+    const { data: comp } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compuestoId}`, null, token);
+    assertApprox(comp.costo_final, 144, "calcularCostoProductoCompuesto fraccionado: debe usar costo_unitario (1.8*80=144)", 1);
 
-      // GET /productos usa costoCompuestoMemoria → era el bug (180*80=14400), debe ser 144
-      const { response: r3, data: lista } = await requestJson(baseUrl, "GET", "/productos", null, token);
-      if (!r3.ok) throw new Error("GET /productos fallo");
-      const enListado = lista.find((p) => Number(p.id) === Number(compuestoId));
-      if (!enListado) throw new Error("Compuesto fraccionado no encontrado en GET /productos");
-      assertApprox(enListado.costo_final, 144, "costoCompuestoMemoria fraccionado: debe usar costo_consumo_unitario (1.8*80=144), no costo_final (180*80=14400)", 1);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    // GET /productos usa costoCompuestoMemoria → era el bug (180*80=14400), debe ser 144
+    const { response: r3, data: lista } = await requestJson(baseUrl, "GET", "/productos", null, token);
+    if (!r3.ok) throw new Error("GET /productos fallo");
+    const enListado = lista.find((p) => Number(p.id) === Number(compuestoId));
+    if (!enListado) throw new Error("Compuesto fraccionado no encontrado en GET /productos");
+    assertApprox(enListado.costo_final, 144, "costoCompuestoMemoria fraccionado: debe usar costo_consumo_unitario (1.8*80=144), no costo_final (180*80=14400)", 1);
+  });
 }
 
 // ─── Helpers de setup para tests de "quitar" ────────────────────────────────
