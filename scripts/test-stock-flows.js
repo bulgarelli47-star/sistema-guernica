@@ -18340,128 +18340,100 @@ async function venderConQuitar(baseUrl, token, compuestoId, modId) {
 // ─── Tests de modificador tipo "quitar" ─────────────────────────────────────
 
 async function testModificadorQuitarSeCreaEnCompuesto() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const { componenteId, compuestoId, modId } = await setupQuitarTest(dbPath, baseUrl, token, 30, 15);
-      const mod = (await requestJson(baseUrl, "GET", `/productos/${compuestoId}/modificadores?todos=1`, null, token)).data;
-      const encontrado = mod.find((m) => Number(m.id) === Number(modId));
-      if (!encontrado) throw new Error("Modificador quitar no aparece en GET /productos/:id/modificadores");
-      if (encontrado.tipo !== "quitar") throw new Error(`Tipo debe ser quitar. Actual=${encontrado.tipo}`);
-      assertEqual(encontrado.componentes.length, 1, "Modificador quitar debe tener 1 componente");
-      assertEqual(Number(encontrado.componentes[0].producto_id), componenteId, "Componente del quitar debe ser el ingrediente");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const { componenteId, compuestoId, modId } = await setupQuitarTest(dbPath, baseUrl, token, 30, 15);
+    const mod = (await requestJson(baseUrl, "GET", `/productos/${compuestoId}/modificadores?todos=1`, null, token)).data;
+    const encontrado = mod.find((m) => Number(m.id) === Number(modId));
+    if (!encontrado) throw new Error("Modificador quitar no aparece en GET /productos/:id/modificadores");
+    if (encontrado.tipo !== "quitar") throw new Error(`Tipo debe ser quitar. Actual=${encontrado.tipo}`);
+    assertEqual(encontrado.componentes.length, 1, "Modificador quitar debe tener 1 componente");
+    assertEqual(Number(encontrado.componentes[0].producto_id), componenteId, "Componente del quitar debe ser el ingrediente");
+  });
 }
 
 async function testModificadorQuitarVentaCompuestoDescuentaMenos() {
   // receta=30, quitar=15 → A deducido: 30(receta) - 15(snapshot quitar) = 15 neto
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const { componenteId, compuestoId, modId } = await setupQuitarTest(dbPath, baseUrl, token, 30, 15);
-      const stockInicial = (await getProduct(baseUrl, token, componenteId)).stock;
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const { componenteId, compuestoId, modId } = await setupQuitarTest(dbPath, baseUrl, token, 30, 15);
+    const stockInicial = (await getProduct(baseUrl, token, componenteId)).stock;
 
-      const venta = await venderConQuitar(baseUrl, token, compuestoId, modId);
-      if (!venta.response.ok) throw new Error(`Venta compuesto con quitar fallo: ${venta.data?.message || venta.response.status}`);
+    const venta = await venderConQuitar(baseUrl, token, compuestoId, modId);
+    if (!venta.response.ok) throw new Error(`Venta compuesto con quitar fallo: ${venta.data?.message || venta.response.status}`);
 
-      const stockFinal = (await getProduct(baseUrl, token, componenteId)).stock;
-      // Receta descuenta 30, snapshot quitar restaura 15 → neto = -15
-      assertEqual(stockFinal, stockInicial, "Venta compuesto con quitar no debe descontar stock fisico");
-      const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
-      const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(venta.data.venta_id) && item.origen === "venta_receta");
-      if (!ajuste) throw new Error("Venta compuesto con quitar debe generar ajuste teorico");
-      assertApprox(ajuste.cantidad_teorica, 15, "Venta compuesto con quitar 15/30 debe generar consumo teorico neto 15");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const stockFinal = (await getProduct(baseUrl, token, componenteId)).stock;
+    // Receta descuenta 30, snapshot quitar restaura 15 → neto = -15
+    assertEqual(stockFinal, stockInicial, "Venta compuesto con quitar no debe descontar stock fisico");
+    const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+    const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(venta.data.venta_id) && item.origen === "venta_receta");
+    if (!ajuste) throw new Error("Venta compuesto con quitar debe generar ajuste teorico");
+    assertApprox(ajuste.cantidad_teorica, 15, "Venta compuesto con quitar 15/30 debe generar consumo teorico neto 15");
+  });
 }
 
 async function testModificadorQuitarComponenteNoEnRecetaFalla400() {
   // Quitar un componente que no es parte de la receta base → 400
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      await abrirCaja(baseUrl, token, 1000);
-      const categoriaId = await crearCategoria(baseUrl, token, "TEST Quitar NoReceta");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    await abrirCaja(baseUrl, token, 1000);
+    const categoriaId = await crearCategoria(baseUrl, token, "TEST Quitar NoReceta");
 
-      const componenteEnReceta = await crearProducto(baseUrl, token, {
-        nombre: "TEST Comp En Receta",
-        categoria: "TEST Quitar NoReceta",
-        categoria_id: categoriaId,
-        stock: 100,
-        maneja_stock: true,
-        precio_venta: 10
-      });
-      const componenteFueraReceta = await crearProducto(baseUrl, token, {
-        nombre: "TEST Comp Fuera Receta",
-        categoria: "TEST Quitar NoReceta",
-        categoria_id: categoriaId,
-        stock: 100,
-        maneja_stock: true,
-        precio_venta: 5
-      });
-      const compuestoId = await crearProductoCompuesto(baseUrl, token, {
-        nombre: "TEST Compuesto NoReceta",
-        categoria: "TEST Quitar NoReceta",
-        categoria_id: categoriaId,
-        precio_venta: 500,
-        componentes: [{ producto_id: componenteEnReceta, cantidad: 20 }]
-      });
-
-      // Crear modificador "quitar" sobre el componente que NO está en la receta
-      const { response: rMod, data: dMod } = await requestJson(baseUrl, "POST", `/productos/${compuestoId}/modificadores`, {
-        nombre: "Sin comp fuera",
-        tipo: "quitar",
-        precio_extra: 0,
-        activo: true,
-        componentes: [{ producto_id: componenteFueraReceta, cantidad: 5 }]
-      }, token);
-      if (!rMod.ok) throw new Error(`No se pudo crear modificador para test: ${dMod?.message}`);
-      const modId = dMod.modificador.id;
-
-      // Intentar vender con ese modificador → debe fallar 400
-      const venta = await venderConQuitar(baseUrl, token, compuestoId, modId);
-      assertEqual(venta.response.status, 400, "Quitar componente no en receta debe fallar con 400");
+    const componenteEnReceta = await crearProducto(baseUrl, token, {
+      nombre: "TEST Comp En Receta",
+      categoria: "TEST Quitar NoReceta",
+      categoria_id: categoriaId,
+      stock: 100,
+      maneja_stock: true,
+      precio_venta: 10
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const componenteFueraReceta = await crearProducto(baseUrl, token, {
+      nombre: "TEST Comp Fuera Receta",
+      categoria: "TEST Quitar NoReceta",
+      categoria_id: categoriaId,
+      stock: 100,
+      maneja_stock: true,
+      precio_venta: 5
+    });
+    const compuestoId = await crearProductoCompuesto(baseUrl, token, {
+      nombre: "TEST Compuesto NoReceta",
+      categoria: "TEST Quitar NoReceta",
+      categoria_id: categoriaId,
+      precio_venta: 500,
+      componentes: [{ producto_id: componenteEnReceta, cantidad: 20 }]
+    });
+
+    // Crear modificador "quitar" sobre el componente que NO está en la receta
+    const { response: rMod, data: dMod } = await requestJson(baseUrl, "POST", `/productos/${compuestoId}/modificadores`, {
+      nombre: "Sin comp fuera",
+      tipo: "quitar",
+      precio_extra: 0,
+      activo: true,
+      componentes: [{ producto_id: componenteFueraReceta, cantidad: 5 }]
+    }, token);
+    if (!rMod.ok) throw new Error(`No se pudo crear modificador para test: ${dMod?.message}`);
+    const modId = dMod.modificador.id;
+
+    // Intentar vender con ese modificador → debe fallar 400
+    const venta = await venderConQuitar(baseUrl, token, compuestoId, modId);
+    assertEqual(venta.response.status, 400, "Quitar componente no en receta debe fallar con 400");
+  });
 }
 
 async function testModificadorQuitarCantidadSuperiorBaseCapea() {
   // quitar=50 > receta=30 → capea a 30; componente queda sin descontar (neto=0)
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const { componenteId, compuestoId, modId } = await setupQuitarTest(dbPath, baseUrl, token, 30, 50);
-      const stockInicial = (await getProduct(baseUrl, token, componenteId)).stock;
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const { componenteId, compuestoId, modId } = await setupQuitarTest(dbPath, baseUrl, token, 30, 50);
+    const stockInicial = (await getProduct(baseUrl, token, componenteId)).stock;
 
-      const venta = await venderConQuitar(baseUrl, token, compuestoId, modId);
-      if (!venta.response.ok) throw new Error(`Venta con quitar > base fallo: ${venta.data?.message || venta.response.status}`);
+    const venta = await venderConQuitar(baseUrl, token, compuestoId, modId);
+    if (!venta.response.ok) throw new Error(`Venta con quitar > base fallo: ${venta.data?.message || venta.response.status}`);
 
-      const stockFinal = (await getProduct(baseUrl, token, componenteId)).stock;
-      // Receta descuenta 30, snapshot quitar restaura min(50,30)=30 → neto=0
-      assertEqual(stockFinal, stockInicial, "Quitar mayor a base debe capear: componente no se descuenta ni genera stock positivo");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const stockFinal = (await getProduct(baseUrl, token, componenteId)).stock;
+    // Receta descuenta 30, snapshot quitar restaura min(50,30)=30 → neto=0
+    assertEqual(stockFinal, stockInicial, "Quitar mayor a base debe capear: componente no se descuenta ni genera stock positivo");
+  });
 }
 
 async function testModificadorQuitarAnulacionReponeExacto() {
