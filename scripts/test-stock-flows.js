@@ -10124,7 +10124,7 @@ async function testPagosFacturaUnicaF3E41b() {
 // fase posterior (ver testCargarCompraModoPorProductoF3E2): el modo se deriva por producto.
 async function testCargarCompraUxSimpleOperativaF3E2() {
   const rutaPagos = path.join(ROOT, "frontend", "pagos.html");
-  const html = fs.readFileSync(rutaPagos, "utf8");
+  const html = normalizarEol(fs.readFileSync(rutaPagos, "utf8"));
 
   // A: header sticky.
   if (!html.includes(".ccf-header-sticky { position: sticky;")) {
@@ -10178,7 +10178,8 @@ async function testCargarCompraUxSimpleOperativaF3E2() {
   if (!html.includes('id="ccfItemAlicuota"')) {
     throw new Error("F3E2-ajuste: cada renglon debe permitir elegir su alicuota IVA");
   }
-  if (!html.includes("alicuota,\n        subtotal:")) {
+  const cuerpoAgregarItem = ccfExtraerFuncion(html, "ccfAgregarItem");
+  if (!/ccfItems\.push\(\{[\s\S]*\balicuota\b[\s\S]*\bsubtotal\s*:/.test(cuerpoAgregarItem)) {
     throw new Error("F3E2-ajuste: el item en memoria debe conservar la alicuota elegida junto al resto de sus datos");
   }
   // Solo alicuotas que Atlas ya conoce (21 / 10,5 / 27 / 0), nada inventado.
@@ -10305,7 +10306,7 @@ async function testCargarCompraHeaderIconografiaAtlasF3E2() {
 // IVA por producto (que sigue derivando de la configuracion del PRODUCTO, no del proveedor).
 async function testCargarCompraProveedorTipoComprobanteDefaultF3E2() {
   const rutaPagos = path.join(ROOT, "frontend", "pagos.html");
-  const html = fs.readFileSync(rutaPagos, "utf8");
+  const html = normalizarEol(fs.readFileSync(rutaPagos, "utf8"));
 
   const src = ccfExtraerFuncion(html, "ccfTipoComprobanteDefaultProveedor");
   // eslint-disable-next-line no-eval
@@ -10364,11 +10365,8 @@ async function testCargarCompraProveedorTipoComprobanteDefaultF3E2() {
 // en pagos.html) para los dos ejemplos pedidos explicitamente.
 async function testCargarCompraCalculoFinalNetoF3E2() {
   const rutaPagos = path.join(ROOT, "frontend", "pagos.html");
-  const html = fs.readFileSync(rutaPagos, "utf8");
-  const inicio = html.indexOf("function ccfCalcularLinea(precioIngresado, alicuota, modo)");
-  if (inicio === -1) throw new Error("F3E2-ajuste: no se encontro ccfCalcularLinea en pagos.html");
-  const finFuncion = html.indexOf("\n    }\n", inicio) + 6;
-  const src = html.slice(inicio, finFuncion);
+  const html = normalizarEol(fs.readFileSync(rutaPagos, "utf8"));
+  const src = ccfExtraerFuncion(html, "ccfCalcularLinea");
 
   // eslint-disable-next-line no-eval
   const ccfCalcularLinea = new Function(`${src}\nreturn ccfCalcularLinea;`)();
@@ -10399,7 +10397,7 @@ async function testCargarCompraCalculoFinalNetoF3E2() {
 // cambiar un toggle global -- ver testCargarCompraModoPorProductoF3E2.)
 async function testCargarCompraTotalConsideraCantidadF3E2() {
   const rutaPagos = path.join(ROOT, "frontend", "pagos.html");
-  const html = fs.readFileSync(rutaPagos, "utf8");
+  const html = normalizarEol(fs.readFileSync(rutaPagos, "utf8"));
 
   // Confirma que el bug esta corregido en el codigo real: el unico call-site de
   // ccfCalcularLinea en ccfAgregarItem() debe multiplicar por cantidad, no pasar el costo
@@ -10411,10 +10409,7 @@ async function testCargarCompraTotalConsideraCantidadF3E2() {
     throw new Error("F3E2-toggle: ccfSetTipoPrecio() debe haber sido eliminada junto con el toggle global Final/Neto");
   }
 
-  const inicio = html.indexOf("function ccfCalcularLinea(precioIngresado, alicuota, modo)");
-  if (inicio === -1) throw new Error("F3E2-microfix: no se encontro ccfCalcularLinea en pagos.html");
-  const finFuncion = html.indexOf("\n    }\n", inicio) + 6;
-  const src = html.slice(inicio, finFuncion);
+  const src = ccfExtraerFuncion(html, "ccfCalcularLinea");
   // eslint-disable-next-line no-eval
   const ccfCalcularLinea = new Function(`${src}\nreturn ccfCalcularLinea;`)();
 
@@ -10470,11 +10465,65 @@ async function testCargarCompraTotalConsideraCantidadF3E2() {
   assertApprox(totalFacturaCompleto, 69600 + linea10_5.final, "E: Total factura final suma las 3 lineas ya multiplicadas por cantidad");
 }
 
+function normalizarEol(texto) {
+  return String(texto).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
 function ccfExtraerFuncion(html, nombre) {
   const inicio = html.indexOf(`function ${nombre}(`);
   if (inicio === -1) throw new Error(`F3E2-ajuste: no se encontro ${nombre} en pagos.html`);
   const fin = html.indexOf("\n    }\n", inicio) + 6;
   return html.slice(inicio, fin);
+}
+
+async function testBootstrapDbTemporalDesdeCeroHigiene2B() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    // Justo despues de init-db.js (ANTES de arrancar el servidor): ya deben existir las tablas
+    // fundamentales que backend/server.js NUNCA crea por si solo.
+    const tablasTrasInitDb = new Set((await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table'")).map((r) => r.name));
+    for (const tabla of ["productos", "ventas", "pagos", "movimientos_stock"]) {
+      if (!tablasTrasInitDb.has(tabla)) throw new Error(`HIGIENE-2B: falta la tabla '${tabla}' (deberia venir de database/init-db.js)`);
+    }
+
+    // NO se ejecuta resetOperationalDataStatements() aca -- ese mecanismo pertenece al camino
+    // legacy (copiar SOURCE_DB) y presupone una DB ya poblada con datos de desarrollo.
+    await withServer(dbPath, async (baseUrl) => {
+      // Recien ACA (servidor ya arriba, sus ensureXSchema() ya corrieron antes de app.listen())
+      // deben existir tambien las tablas que init-db.js desconoce.
+      const tablasTrasServer = new Set((await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table'")).map((r) => r.name));
+      for (const tabla of ["sesiones", "tipos_pago", "stock_ajustes_pendientes", "caja_traslados_internos"]) {
+        if (!tablasTrasServer.has(tabla)) throw new Error(`HIGIENE-2B: falta la tabla '${tabla}' (deberia venir del arranque de backend/server.js)`);
+      }
+      // F3 (compras): presentes en ambos origenes de forma redundante/defensiva.
+      for (const tabla of ["compras", "compra_items", "compra_recepciones", "compra_recepcion_items"]) {
+        if (!tablasTrasServer.has(tabla)) throw new Error(`HIGIENE-2B: falta la tabla F3 '${tabla}'`);
+      }
+
+      // Seed determinístico de init-db.js: usuario admin/admin123 (nunca producto #11).
+      const token = await login(baseUrl, "admin", "admin123");
+
+      // Fixture propio del test -- NUNCA se asume id=11 ni "Coca Cola 1250".
+      const proveedor = await crearProveedor(baseUrl, token, {
+        nombre: `Proveedor HIGIENE2B ${Date.now()}`,
+        tipo_impacto: "costo_variable_mercaderia"
+      });
+      const categoriaId = await crearCategoria(baseUrl, token, `HIGIENE2B Cat ${Date.now()}`, { maneja_stock: true });
+      const nombreProducto = `HIGIENE2B Producto Propio ${Date.now()}`;
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: nombreProducto, categoria_id: categoriaId, categoria: "HIGIENE2B", stock: 5, maneja_stock: true,
+        proveedor_id: proveedor.id
+      });
+      if (!(Number(productoId) > 0)) throw new Error("HIGIENE-2B: el producto fixture deberia tener un id real asignado por la DB");
+
+      const producto = await getProduct(baseUrl, token, productoId);
+      if (!producto) throw new Error("HIGIENE-2B: el producto fixture deberia ser recuperable via GET /productos");
+      assertSame(producto.nombre, nombreProducto, "HIGIENE-2B: el producto recuperado es el fixture propio del test, no un dato preexistente");
+      assertEqual(producto.proveedor_id, proveedor.id, "HIGIENE-2B: el producto fixture referencia al proveedor fixture, no a datos reales de desarrollo");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
 }
 
 // Microajuste "eliminacion del toggle Final/Neto": el modo de interpretacion del costo
@@ -10483,7 +10532,7 @@ function ccfExtraerFuncion(html, nombre) {
 // bloqueo cuando el contrato no entrega el dato (nunca se interpreta undefined como Neto).
 async function testCargarCompraModoPorProductoF3E2() {
   const rutaPagos = path.join(ROOT, "frontend", "pagos.html");
-  const html = fs.readFileSync(rutaPagos, "utf8");
+  const html = normalizarEol(fs.readFileSync(rutaPagos, "utf8"));
 
   // E: no debe quedar ningun rastro del toggle global ni de su estado interno.
   for (const fragmento of ["ccfTipoPrecio", "ccfSetTipoPrecio", "data-ccf-tipo-precio", "Los precios ingresados son"]) {
@@ -10543,7 +10592,7 @@ async function testCargarCompraModoPorProductoF3E2() {
 // comportamiento neutro cuando no hay costo/IVA configurado, sin tocar el producto (7/J).
 async function testCargarCompraProductoComboReferenciaF3E2() {
   const rutaPagos = path.join(ROOT, "frontend", "pagos.html");
-  const html = fs.readFileSync(rutaPagos, "utf8");
+  const html = normalizarEol(fs.readFileSync(rutaPagos, "utf8"));
 
   // A: no deben quedar dos controles independientes (buscador + select separados).
   if (html.includes('id="ccfBuscarProducto"') || html.includes('id="ccfProducto"')) {
@@ -20834,6 +20883,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1D1BIdentitySchemaRechazaSlugNoCanonico);
   await _run(testMT1D1BIdentityMalformedDbDevuelveInvalid);
   await _run(testMT1D1BRegistryIdentityDobleGarantia);
+  await _run(testBootstrapDbTemporalDesdeCeroHigiene2B);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
