@@ -27,3 +27,6 @@ frontend/fonts/*.zip
 # Fuentes locales no distribuidas
 frontend/fonts/brimborion/
 frontend/fonts/salvador/
+
+# Salida persistida de corridas de test
+test-output.txt
