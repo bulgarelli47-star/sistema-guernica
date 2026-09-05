@@ -18422,45 +18422,38 @@ async function testModificadorQuitarAnulacionReponeExacto() {
 
 async function testModificadorQuitarPendienteDescuentaMenos() {
   // receta=30, quitar=15 → pendiente guarda snapshot; al cobrar no re-aplica
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const { componenteId, compuestoId, modId } = await setupQuitarTest(dbPath, baseUrl, token, 30, 15);
-      const stockInicial = (await getProduct(baseUrl, token, componenteId)).stock;
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const { componenteId, compuestoId, modId } = await setupQuitarTest(dbPath, baseUrl, token, 30, 15);
+    const stockInicial = (await getProduct(baseUrl, token, componenteId)).stock;
 
-      // Guardar pendiente: receta descuenta 30, snapshot quitar restaura 15 → neto -15
-      const pendiente = await requestJson(baseUrl, "POST", "/ventas", {
-        usuario: "test",
-        tipo: "pendiente",
-        identificador_pendiente: "Mesa Quitar Test",
-        items: [{
-          producto_id: compuestoId,
-          nombre_producto: "TEST Plato Con Quitar",
-          cantidad: 1,
-          precio_unitario: 500,
-          modificadores: [{ modificador_id: modId, cantidad: 1 }]
-        }]
-      }, token);
-      if (!pendiente.response.ok) throw new Error(`Pendiente con quitar fallo: ${pendiente.data?.message || pendiente.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial, "Pendiente con quitar no debe descontar stock fisico al guardar");
-      const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
-      const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(pendiente.data.venta_id) && item.origen === "venta_receta");
-      if (!ajuste) throw new Error("Pendiente con quitar debe generar ajuste teorico");
-      assertApprox(ajuste.cantidad_teorica, 15, "Pendiente con quitar debe guardar consumo teorico neto 15");
+    // Guardar pendiente: receta descuenta 30, snapshot quitar restaura 15 → neto -15
+    const pendiente = await requestJson(baseUrl, "POST", "/ventas", {
+      usuario: "test",
+      tipo: "pendiente",
+      identificador_pendiente: "Mesa Quitar Test",
+      items: [{
+        producto_id: compuestoId,
+        nombre_producto: "TEST Plato Con Quitar",
+        cantidad: 1,
+        precio_unitario: 500,
+        modificadores: [{ modificador_id: modId, cantidad: 1 }]
+      }]
+    }, token);
+    if (!pendiente.response.ok) throw new Error(`Pendiente con quitar fallo: ${pendiente.data?.message || pendiente.response.status}`);
+    assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial, "Pendiente con quitar no debe descontar stock fisico al guardar");
+    const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+    const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(pendiente.data.venta_id) && item.origen === "venta_receta");
+    if (!ajuste) throw new Error("Pendiente con quitar debe generar ajuste teorico");
+    assertApprox(ajuste.cantidad_teorica, 15, "Pendiente con quitar debe guardar consumo teorico neto 15");
 
-      // Cobrar el pendiente NO debe volver a aplicar snapshots de quitar
-      const cobro = await requestJson(baseUrl, "POST", `/ventas/${pendiente.data.venta_id}/cobrar`, {
-        tipo_cobro: "efectivo"
-      }, token);
-      if (!cobro.response.ok) throw new Error(`Cobrar pendiente con quitar fallo: ${cobro.data?.message || cobro.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial, "Cobrar pendiente con quitar no debe descontar stock fisico");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    // Cobrar el pendiente NO debe volver a aplicar snapshots de quitar
+    const cobro = await requestJson(baseUrl, "POST", `/ventas/${pendiente.data.venta_id}/cobrar`, {
+      tipo_cobro: "efectivo"
+    }, token);
+    if (!cobro.response.ok) throw new Error(`Cobrar pendiente con quitar fallo: ${cobro.data?.message || cobro.response.status}`);
+    assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial, "Cobrar pendiente con quitar no debe descontar stock fisico");
+  });
 }
 
 // ── Saldos operativos por cuenta destino — Etapa 1 ────────────────────────────
@@ -18739,87 +18732,80 @@ async function testSaldosRetirarDesdeSaldoRealNoEsperado() {
 async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
   // Cubre el diff de stock en edición de pendiente con quitar:
   // pendiente sin quitar → edit +quitar → edit -quitar → cobrar
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      // receta=30 del componente, quitar=15
-      const { componenteId, compuestoId, modId } = await setupQuitarTest(dbPath, baseUrl, token, 30, 15);
-      const stockInicial = (await getProduct(baseUrl, token, componenteId)).stock;
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    // receta=30 del componente, quitar=15
+    const { componenteId, compuestoId, modId } = await setupQuitarTest(dbPath, baseUrl, token, 30, 15);
+    const stockInicial = (await getProduct(baseUrl, token, componenteId)).stock;
 
-      // 1. Pendiente SIN quitar → receta descuenta 30
-      const pendiente = await requestJson(baseUrl, "POST", "/ventas", {
-        usuario: "test",
-        tipo: "pendiente",
-        identificador_pendiente: "Mesa Edit Quitar",
-        items: [{
-          producto_id: compuestoId,
-          nombre_producto: "TEST Plato Con Quitar",
-          cantidad: 1,
-          precio_unitario: 500,
-          modificadores: []
-        }]
-      }, token);
-      if (!pendiente.response.ok) throw new Error(`Pendiente inicial fallo: ${pendiente.data?.message}`);
-      const ventaId = pendiente.data.venta_id;
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial,
-        "Pendiente sin quitar no debe descontar stock fisico");
-      let ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
-      let ajuste = ajustes.find((item) => Number(item.venta_id) === Number(ventaId) && item.origen === "venta_receta");
-      if (!ajuste) throw new Error("Pendiente sin quitar debe crear ajuste teorico");
-      assertApprox(ajuste.cantidad_teorica, 30, "Pendiente sin quitar debe guardar consumo teorico 30");
+    // 1. Pendiente SIN quitar → receta descuenta 30
+    const pendiente = await requestJson(baseUrl, "POST", "/ventas", {
+      usuario: "test",
+      tipo: "pendiente",
+      identificador_pendiente: "Mesa Edit Quitar",
+      items: [{
+        producto_id: compuestoId,
+        nombre_producto: "TEST Plato Con Quitar",
+        cantidad: 1,
+        precio_unitario: 500,
+        modificadores: []
+      }]
+    }, token);
+    if (!pendiente.response.ok) throw new Error(`Pendiente inicial fallo: ${pendiente.data?.message}`);
+    const ventaId = pendiente.data.venta_id;
+    assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial,
+      "Pendiente sin quitar no debe descontar stock fisico");
+    let ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+    let ajuste = ajustes.find((item) => Number(item.venta_id) === Number(ventaId) && item.origen === "venta_receta");
+    if (!ajuste) throw new Error("Pendiente sin quitar debe crear ajuste teorico");
+    assertApprox(ajuste.cantidad_teorica, 30, "Pendiente sin quitar debe guardar consumo teorico 30");
 
-      // 2. Editar AGREGANDO quitar 15 → diff snapshot old=[], new=[quitar 15] → restaura 15
-      const edit1 = await requestJson(baseUrl, "PUT", `/ventas/${ventaId}/pendiente`, {
-        identificador_pendiente: "Mesa Edit Quitar",
-        items: [{
-          producto_id: compuestoId,
-          nombre_producto: "TEST Plato Con Quitar",
-          cantidad: 1,
-          precio_unitario: 500,
-          modificadores: [{ modificador_id: modId, cantidad: 1 }]
-        }]
-      }, token);
-      if (!edit1.response.ok) throw new Error(`Edicion agregando quitar fallo: ${edit1.data?.message}`);
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial,
-        "Editar pendiente agregando quitar no debe mover stock fisico");
-      ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
-      ajuste = ajustes.find((item) => Number(item.venta_id) === Number(ventaId) && item.origen === "venta_receta");
-      if (!ajuste) throw new Error("Editar pendiente con quitar debe regenerar ajuste teorico");
-      assertApprox(ajuste.cantidad_teorica, 15, "Editar pendiente con quitar debe dejar consumo teorico neto 15");
+    // 2. Editar AGREGANDO quitar 15 → diff snapshot old=[], new=[quitar 15] → restaura 15
+    const edit1 = await requestJson(baseUrl, "PUT", `/ventas/${ventaId}/pendiente`, {
+      identificador_pendiente: "Mesa Edit Quitar",
+      items: [{
+        producto_id: compuestoId,
+        nombre_producto: "TEST Plato Con Quitar",
+        cantidad: 1,
+        precio_unitario: 500,
+        modificadores: [{ modificador_id: modId, cantidad: 1 }]
+      }]
+    }, token);
+    if (!edit1.response.ok) throw new Error(`Edicion agregando quitar fallo: ${edit1.data?.message}`);
+    assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial,
+      "Editar pendiente agregando quitar no debe mover stock fisico");
+    ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+    ajuste = ajustes.find((item) => Number(item.venta_id) === Number(ventaId) && item.origen === "venta_receta");
+    if (!ajuste) throw new Error("Editar pendiente con quitar debe regenerar ajuste teorico");
+    assertApprox(ajuste.cantidad_teorica, 15, "Editar pendiente con quitar debe dejar consumo teorico neto 15");
 
-      // 3. Editar QUITANDO el modificador → diff old=[quitar 15], new=[] → deducta 15 de vuelta
-      const edit2 = await requestJson(baseUrl, "PUT", `/ventas/${ventaId}/pendiente`, {
-        identificador_pendiente: "Mesa Edit Quitar",
-        items: [{
-          producto_id: compuestoId,
-          nombre_producto: "TEST Plato Con Quitar",
-          cantidad: 1,
-          precio_unitario: 500,
-          modificadores: []
-        }]
-      }, token);
-      if (!edit2.response.ok) throw new Error(`Edicion quitando quitar fallo: ${edit2.data?.message}`);
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial,
-        "Editar pendiente quitando el modificador no debe mover stock fisico");
-      ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
-      ajuste = ajustes.find((item) => Number(item.venta_id) === Number(ventaId) && item.origen === "venta_receta");
-      if (!ajuste) throw new Error("Editar pendiente quitando modificador debe regenerar ajuste teorico");
-      assertApprox(ajuste.cantidad_teorica, 30, "Editar pendiente quitando modificador debe volver a consumo teorico 30");
+    // 3. Editar QUITANDO el modificador → diff old=[quitar 15], new=[] → deducta 15 de vuelta
+    const edit2 = await requestJson(baseUrl, "PUT", `/ventas/${ventaId}/pendiente`, {
+      identificador_pendiente: "Mesa Edit Quitar",
+      items: [{
+        producto_id: compuestoId,
+        nombre_producto: "TEST Plato Con Quitar",
+        cantidad: 1,
+        precio_unitario: 500,
+        modificadores: []
+      }]
+    }, token);
+    if (!edit2.response.ok) throw new Error(`Edicion quitando quitar fallo: ${edit2.data?.message}`);
+    assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial,
+      "Editar pendiente quitando el modificador no debe mover stock fisico");
+    ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+    ajuste = ajustes.find((item) => Number(item.venta_id) === Number(ventaId) && item.origen === "venta_receta");
+    if (!ajuste) throw new Error("Editar pendiente quitando modificador debe regenerar ajuste teorico");
+    assertApprox(ajuste.cantidad_teorica, 30, "Editar pendiente quitando modificador debe volver a consumo teorico 30");
 
-      // 4. Cobrar pendiente (composición final sin quitar) → no re-aplica stock extra
-      const cobro = await requestJson(baseUrl, "POST", `/ventas/${ventaId}/cobrar`, {
-        tipo_cobro: "efectivo"
-      }, token);
-      if (!cobro.response.ok) throw new Error(`Cobrar pendiente fallo: ${cobro.data?.message}`);
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial,
-        "Cobrar pendiente no debe descontar stock fisico");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    // 4. Cobrar pendiente (composición final sin quitar) → no re-aplica stock extra
+    const cobro = await requestJson(baseUrl, "POST", `/ventas/${ventaId}/cobrar`, {
+      tipo_cobro: "efectivo"
+    }, token);
+    if (!cobro.response.ok) throw new Error(`Cobrar pendiente fallo: ${cobro.data?.message}`);
+    assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockInicial,
+      "Cobrar pendiente no debe descontar stock fisico");
+  });
 }
 
 async function testResumenAjustesPendientes() {
