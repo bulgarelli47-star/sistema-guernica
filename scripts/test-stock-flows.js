@@ -18466,69 +18466,55 @@ async function testModificadorQuitarPendienteDescuentaMenos() {
 // ── Saldos operativos por cuenta destino — Etapa 1 ────────────────────────────
 
 async function testSaldosOperativosLegacySigueFuncionando() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const apertura = await abrirCaja(baseUrl, token, 0);
-      const dest = await crearCuentaDestino(baseUrl, token, { nombre: "Destino Legacy", tipo_destino: "billetera", orden: 1 });
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const apertura = await abrirCaja(baseUrl, token, 0);
+    const dest = await crearCuentaDestino(baseUrl, token, { nombre: "Destino Legacy", tipo_destino: "billetera", orden: 1 });
 
-      const r = await guardarConciliacionCuentaDestino(baseUrl, token, {
-        caja_id: apertura.id,
-        cuenta_destino_id: dest.id,
-        monto_sistema: 300,
-        monto_real: 250
-      });
-      // sin saldo_inicial, diferencia = monto_real - (0 + monto_sistema) = -50
-      assertApprox(r.conciliacion.diferencia, -50, "Legacy: diferencia = monto_real - monto_sistema");
-      assertEqual(r.conciliacion.saldo_inicial != null ? 1 : 0, 1, "Legacy: saldo_inicial existe en respuesta");
-      assertApprox(r.conciliacion.saldo_inicial, 0, "Legacy: saldo_inicial default 0");
-      assertApprox(r.conciliacion.saldo_arrastrado, 0, "Legacy: saldo_arrastrado 0 sin decision");
-      assertEqual(r.conciliacion.decision_cierre, null, "Legacy: decision_cierre null");
+    const r = await guardarConciliacionCuentaDestino(baseUrl, token, {
+      caja_id: apertura.id,
+      cuenta_destino_id: dest.id,
+      monto_sistema: 300,
+      monto_real: 250
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    // sin saldo_inicial, diferencia = monto_real - (0 + monto_sistema) = -50
+    assertApprox(r.conciliacion.diferencia, -50, "Legacy: diferencia = monto_real - monto_sistema");
+    assertEqual(r.conciliacion.saldo_inicial != null ? 1 : 0, 1, "Legacy: saldo_inicial existe en respuesta");
+    assertApprox(r.conciliacion.saldo_inicial, 0, "Legacy: saldo_inicial default 0");
+    assertApprox(r.conciliacion.saldo_arrastrado, 0, "Legacy: saldo_arrastrado 0 sin decision");
+    assertEqual(r.conciliacion.decision_cierre, null, "Legacy: decision_cierre null");
+  });
 }
 
 async function testSaldosOperativosConSaldoInicial() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const apertura = await abrirCaja(baseUrl, token, 0);
-      const dest = await crearCuentaDestino(baseUrl, token, { nombre: "Destino SaldoInicial", tipo_destino: "billetera", orden: 1 });
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const apertura = await abrirCaja(baseUrl, token, 0);
+    const dest = await crearCuentaDestino(baseUrl, token, { nombre: "Destino SaldoInicial", tipo_destino: "billetera", orden: 1 });
 
-      const r = await guardarConciliacionCuentaDestino(baseUrl, token, {
-        caja_id: apertura.id,
-        cuenta_destino_id: dest.id,
-        saldo_inicial: 500,
-        monto_sistema: 200,
-        monto_real: 800
-      });
-      // saldo_esperado = 500 + 200 = 700; diferencia = 800 - 700 = 100
-      assertApprox(r.conciliacion.saldo_inicial, 500, "saldo_inicial se guarda");
-      assertApprox(r.conciliacion.diferencia, 100, "diferencia = monto_real - (saldo_inicial + monto_sistema)");
-      assertEqual(r.conciliacion.estado === "diferencia" ? 1 : 0, 1, "estado diferencia cuando hay diferencia");
-
-      // cero exacto
-      const r2 = await guardarConciliacionCuentaDestino(baseUrl, token, {
-        caja_id: apertura.id,
-        cuenta_destino_id: dest.id,
-        saldo_inicial: 500,
-        monto_sistema: 200,
-        monto_real: 700
-      });
-      assertApprox(r2.conciliacion.diferencia, 0, "diferencia cero cuando monto_real = saldo_inicial + monto_sistema");
-      assertEqual(r2.conciliacion.estado === "conciliado" ? 1 : 0, 1, "estado conciliado con diferencia cero");
+    const r = await guardarConciliacionCuentaDestino(baseUrl, token, {
+      caja_id: apertura.id,
+      cuenta_destino_id: dest.id,
+      saldo_inicial: 500,
+      monto_sistema: 200,
+      monto_real: 800
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    // saldo_esperado = 500 + 200 = 700; diferencia = 800 - 700 = 100
+    assertApprox(r.conciliacion.saldo_inicial, 500, "saldo_inicial se guarda");
+    assertApprox(r.conciliacion.diferencia, 100, "diferencia = monto_real - (saldo_inicial + monto_sistema)");
+    assertEqual(r.conciliacion.estado === "diferencia" ? 1 : 0, 1, "estado diferencia cuando hay diferencia");
+
+    // cero exacto
+    const r2 = await guardarConciliacionCuentaDestino(baseUrl, token, {
+      caja_id: apertura.id,
+      cuenta_destino_id: dest.id,
+      saldo_inicial: 500,
+      monto_sistema: 200,
+      monto_real: 700
+    });
+    assertApprox(r2.conciliacion.diferencia, 0, "diferencia cero cuando monto_real = saldo_inicial + monto_sistema");
+    assertEqual(r2.conciliacion.estado === "conciliado" ? 1 : 0, 1, "estado conciliado con diferencia cero");
+  });
 }
 
 async function testSaldosOperativosArrastrar() {
@@ -18669,67 +18655,53 @@ async function testSaldosFormulaSaldoEsperadoFinal() {
   // saldo_inicial=1000, monto_sistema=300 (representa 500 ingresos − 200 egresos)
   // saldo_esperado_final = 1000 + 300 = 1300
   // saldo_real=1250 → diferencia = 1250 − 1300 = −50
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const apertura = await abrirCaja(baseUrl, token, 0);
-      const dest = await crearCuentaDestino(baseUrl, token, { nombre: "Dest Formula Test", tipo_destino: "billetera", orden: 1 });
-      const r = await guardarConciliacionCuentaDestino(baseUrl, token, {
-        caja_id: apertura.id,
-        cuenta_destino_id: dest.id,
-        saldo_inicial: 1000,
-        monto_sistema: 300,
-        monto_real: 1250
-      });
-      assertApprox(r.conciliacion.saldo_inicial, 1000, "formula: saldo_inicial guardado");
-      // saldo_esperado = 1000 + 300 = 1300
-      assertApprox(r.conciliacion.diferencia, -50, "formula: diferencia = monto_real - (saldo_inicial + monto_sistema) = 1250-1300=-50");
-      assertEqual(r.conciliacion.estado === "diferencia" ? 1 : 0, 1, "formula: estado diferencia cuando hay diferencia negativa");
-      // con saldo_inicial = 0: saldo_esperado = solo movimiento
-      const r2 = await guardarConciliacionCuentaDestino(baseUrl, token, {
-        caja_id: apertura.id,
-        cuenta_destino_id: dest.id,
-        saldo_inicial: 0,
-        monto_sistema: 300,
-        monto_real: 300
-      });
-      assertApprox(r2.conciliacion.diferencia, 0, "formula: sin saldo_inicial, diferencia=0 cuando real==movimiento");
-      assertEqual(r2.conciliacion.estado === "conciliado" ? 1 : 0, 1, "formula: conciliado cuando sin saldo_inicial y real==movimiento");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const apertura = await abrirCaja(baseUrl, token, 0);
+    const dest = await crearCuentaDestino(baseUrl, token, { nombre: "Dest Formula Test", tipo_destino: "billetera", orden: 1 });
+    const r = await guardarConciliacionCuentaDestino(baseUrl, token, {
+      caja_id: apertura.id,
+      cuenta_destino_id: dest.id,
+      saldo_inicial: 1000,
+      monto_sistema: 300,
+      monto_real: 1250
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    assertApprox(r.conciliacion.saldo_inicial, 1000, "formula: saldo_inicial guardado");
+    // saldo_esperado = 1000 + 300 = 1300
+    assertApprox(r.conciliacion.diferencia, -50, "formula: diferencia = monto_real - (saldo_inicial + monto_sistema) = 1250-1300=-50");
+    assertEqual(r.conciliacion.estado === "diferencia" ? 1 : 0, 1, "formula: estado diferencia cuando hay diferencia negativa");
+    // con saldo_inicial = 0: saldo_esperado = solo movimiento
+    const r2 = await guardarConciliacionCuentaDestino(baseUrl, token, {
+      caja_id: apertura.id,
+      cuenta_destino_id: dest.id,
+      saldo_inicial: 0,
+      monto_sistema: 300,
+      monto_real: 300
+    });
+    assertApprox(r2.conciliacion.diferencia, 0, "formula: sin saldo_inicial, diferencia=0 cuando real==movimiento");
+    assertEqual(r2.conciliacion.estado === "conciliado" ? 1 : 0, 1, "formula: conciliado cuando sin saldo_inicial y real==movimiento");
+  });
 }
 
 async function testSaldosArrastreNoCambiaDiferencia() {
   // La decision de arrastre no debe alterar la diferencia = real - (saldo_inicial + sistema)
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const apertura = await abrirCaja(baseUrl, token, 0);
-      const dest = await crearCuentaDestino(baseUrl, token, { nombre: "Dest Arrastre Diff", tipo_destino: "billetera", orden: 1 });
-      const { response, data } = await requestJson(baseUrl, "POST", "/caja/conciliaciones/cuentas-destino", {
-        caja_id: apertura.id,
-        cuenta_destino_id: dest.id,
-        saldo_inicial: 500,
-        monto_sistema: 200,
-        monto_real: 600,
-        decision_cierre: "arrastrar"
-      }, token);
-      if (!response.ok) throw new Error(`Arrastre diff fallo: ${data?.message}`);
-      // diferencia = 600 - (500+200) = -100 independiente del arrastre
-      assertApprox(data.conciliacion.diferencia, -100, "arrastre no cambia diferencia: real−(ini+sistema)=600-700=-100");
-      assertApprox(data.conciliacion.saldo_arrastrado, 600, "arrastre: saldo_arrastrado = monto_real");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const apertura = await abrirCaja(baseUrl, token, 0);
+    const dest = await crearCuentaDestino(baseUrl, token, { nombre: "Dest Arrastre Diff", tipo_destino: "billetera", orden: 1 });
+    const { response, data } = await requestJson(baseUrl, "POST", "/caja/conciliaciones/cuentas-destino", {
+      caja_id: apertura.id,
+      cuenta_destino_id: dest.id,
+      saldo_inicial: 500,
+      monto_sistema: 200,
+      monto_real: 600,
+      decision_cierre: "arrastrar"
+    }, token);
+    if (!response.ok) throw new Error(`Arrastre diff fallo: ${data?.message}`);
+    // diferencia = 600 - (500+200) = -100 independiente del arrastre
+    assertApprox(data.conciliacion.diferencia, -100, "arrastre no cambia diferencia: real−(ini+sistema)=600-700=-100");
+    assertApprox(data.conciliacion.saldo_arrastrado, 600, "arrastre: saldo_arrastrado = monto_real");
+  });
 }
 
 async function testSaldosRetirarDesdeSaldoRealNoEsperado() {
