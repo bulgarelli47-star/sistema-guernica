@@ -660,62 +660,55 @@ function assertThrows(fn, message) {
 }
 
 async function testRecetaSinStockBloqueaMovimientoManual() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const catId = await crearCategoria(baseUrl, token, "TEST RecetaSinStockFisico");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const catId = await crearCategoria(baseUrl, token, "TEST RecetaSinStockFisico");
 
-      // Ingrediente físico con stock propio
-      const ingId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Ingrediente RecetaSinStock",
-        categoria: "TEST RecetaSinStockFisico",
-        categoria_id: catId,
-        stock: 5000,
-        maneja_stock: true
-      });
-
-      // Receta sin stock propio: tipo=compuesto, maneja_stock=false
-      const recetaId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Receta Sin Stock Fisico",
-        categoria: "TEST RecetaSinStockFisico",
-        categoria_id: catId,
-        tipo: "compuesto",
-        maneja_stock: false,
-        stock: 0,
-        componentes: [{ producto_id: ingId, cantidad: 1 }],
-        costos_extra: []
-      });
-
-      // Verificar que el producto tiene los atributos esperados antes del POST
-      const receta = await getProduct(baseUrl, token, recetaId);
-      if (!receta) throw new Error("Receta de prueba no encontrada en GET /productos");
-      if (String(receta.tipo || "").toLowerCase() !== "compuesto") {
-        throw new Error(`Receta debe ser tipo=compuesto, actual=${receta.tipo}`);
-      }
-      if (Number(receta.maneja_stock) !== 0) {
-        throw new Error(`Receta sin stock debe tener maneja_stock=0, actual=${receta.maneja_stock}`);
-      }
-
-      const beforeReceta = Number(receta.stock || 0);
-      const beforeIng = Number((await getProduct(baseUrl, token, ingId))?.stock || 0);
-
-      const result = await requestJson(baseUrl, "POST", `/productos/${recetaId}/movimientos-stock`, {
-        tipo_movimiento: "egreso",
-        cantidad: 1,
-        motivo: "TEST receta sin stock no ajustable",
-        usuario: "test"
-      }, token);
-
-      assertEqual(result.response.status, 400, "Receta sin stock propio no debe recibir movimiento manual");
-      assertEqual((await getProduct(baseUrl, token, recetaId)).stock, beforeReceta, "Receta debe conservar stock tras bloqueo");
-      assertEqual((await getProduct(baseUrl, token, ingId)).stock, beforeIng, "Ingrediente no debe verse afectado por movimiento bloqueado");
+    // Ingrediente físico con stock propio
+    const ingId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Ingrediente RecetaSinStock",
+      categoria: "TEST RecetaSinStockFisico",
+      categoria_id: catId,
+      stock: 5000,
+      maneja_stock: true
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+
+    // Receta sin stock propio: tipo=compuesto, maneja_stock=false
+    const recetaId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Receta Sin Stock Fisico",
+      categoria: "TEST RecetaSinStockFisico",
+      categoria_id: catId,
+      tipo: "compuesto",
+      maneja_stock: false,
+      stock: 0,
+      componentes: [{ producto_id: ingId, cantidad: 1 }],
+      costos_extra: []
+    });
+
+    // Verificar que el producto tiene los atributos esperados antes del POST
+    const receta = await getProduct(baseUrl, token, recetaId);
+    if (!receta) throw new Error("Receta de prueba no encontrada en GET /productos");
+    if (String(receta.tipo || "").toLowerCase() !== "compuesto") {
+      throw new Error(`Receta debe ser tipo=compuesto, actual=${receta.tipo}`);
+    }
+    if (Number(receta.maneja_stock) !== 0) {
+      throw new Error(`Receta sin stock debe tener maneja_stock=0, actual=${receta.maneja_stock}`);
+    }
+
+    const beforeReceta = Number(receta.stock || 0);
+    const beforeIng = Number((await getProduct(baseUrl, token, ingId))?.stock || 0);
+
+    const result = await requestJson(baseUrl, "POST", `/productos/${recetaId}/movimientos-stock`, {
+      tipo_movimiento: "egreso",
+      cantidad: 1,
+      motivo: "TEST receta sin stock no ajustable",
+      usuario: "test"
+    }, token);
+
+    assertEqual(result.response.status, 400, "Receta sin stock propio no debe recibir movimiento manual");
+    assertEqual((await getProduct(baseUrl, token, recetaId)).stock, beforeReceta, "Receta debe conservar stock tras bloqueo");
+    assertEqual((await getProduct(baseUrl, token, ingId)).stock, beforeIng, "Ingrediente no debe verse afectado por movimiento bloqueado");
+  });
 }
 
 async function testRecetaSinStockComoComponenteNoDescuentaDirecto() {
@@ -786,35 +779,28 @@ async function venderRecetaSinStock(baseUrl, token, recetaId, cantidad = 3) {
 }
 
 async function testVentaRecetaSinStockGeneraAjustePendiente() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const { componenteId, recetaId } = await setupRecetaSinStockVenta(baseUrl, token);
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const { componenteId, recetaId } = await setupRecetaSinStockVenta(baseUrl, token);
 
-      const venta = await venderRecetaSinStock(baseUrl, token, recetaId, 3);
-      if (!venta.response.ok) throw new Error(`Venta receta sin stock fallo: ${venta.data?.message || venta.response.status}`);
+    const venta = await venderRecetaSinStock(baseUrl, token, recetaId, 3);
+    if (!venta.response.ok) throw new Error(`Venta receta sin stock fallo: ${venta.data?.message || venta.response.status}`);
 
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 100, "Venta de receta sin stock no debe descontar componente");
-      assertEqual((await getProduct(baseUrl, token, recetaId)).stock, 0, "Receta sin stock debe quedar en stock 0");
+    assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 100, "Venta de receta sin stock no debe descontar componente");
+    assertEqual((await getProduct(baseUrl, token, recetaId)).stock, 0, "Receta sin stock debe quedar en stock 0");
 
-      const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
-      const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(venta.data.venta_id) && item.origen === "venta_receta");
-      if (!ajuste) throw new Error("Venta de receta sin stock debe crear ajuste pendiente venta_receta");
-      assertEqual(ajuste.producto_id, componenteId, "Ajuste pendiente debe apuntar al componente fisico");
-      assertEqual(ajuste.componente_id, componenteId, "Ajuste pendiente debe guardar componente_id");
-      assertEqual(ajuste.producto_vendido_id, recetaId, "Ajuste pendiente debe guardar producto_vendido_id");
-      assertApprox(ajuste.cantidad_teorica, 6, "Ajuste pendiente debe guardar cantidad teorica");
+    const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
+    const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(venta.data.venta_id) && item.origen === "venta_receta");
+    if (!ajuste) throw new Error("Venta de receta sin stock debe crear ajuste pendiente venta_receta");
+    assertEqual(ajuste.producto_id, componenteId, "Ajuste pendiente debe apuntar al componente fisico");
+    assertEqual(ajuste.componente_id, componenteId, "Ajuste pendiente debe guardar componente_id");
+    assertEqual(ajuste.producto_vendido_id, recetaId, "Ajuste pendiente debe guardar producto_vendido_id");
+    assertApprox(ajuste.cantidad_teorica, 6, "Ajuste pendiente debe guardar cantidad teorica");
 
-      const aprobar = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajuste.id}/aprobar`, {}, token);
-      if (!aprobar.response.ok) throw new Error(`Aprobar ajuste teorico fallo: ${aprobar.data?.message || aprobar.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 94, "Aprobar ajuste pendiente debe descontar stock fisico");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const aprobar = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajuste.id}/aprobar`, {}, token);
+    if (!aprobar.response.ok) throw new Error(`Aprobar ajuste teorico fallo: ${aprobar.data?.message || aprobar.response.status}`);
+    assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 94, "Aprobar ajuste pendiente debe descontar stock fisico");
+  });
 }
 
 async function testAnularRecetaSinStockCancelaPendienteSinReponerAprobado() {
@@ -3571,24 +3557,17 @@ async function testAnularVentaCompuestaCancelaAjusteTeorico() {
 }
 
 async function testResumenReporteDevuelveClaves() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/resumen", null, token);
-      if (!response.ok) throw new Error(`GET /reportes/resumen fallo: ${data?.message || response.status}`);
-      const claves = ["ventas_totales", "pagos_totales", "balance_general", "iva_credito_fiscal", "ticket_promedio", "total_ventas", "total_pagos", "ventas_efectivo", "ventas_debito", "pagos_efectivo", "pagos_debito"];
-      for (const clave of claves) {
-        if (!(clave in data)) {
-          throw new Error(`GET /reportes/resumen debe devolver clave '${clave}'. Respuesta=${JSON.stringify(data)}`);
-        }
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const { response, data } = await requestJson(baseUrl, "GET", "/reportes/resumen", null, token);
+    if (!response.ok) throw new Error(`GET /reportes/resumen fallo: ${data?.message || response.status}`);
+    const claves = ["ventas_totales", "pagos_totales", "balance_general", "iva_credito_fiscal", "ticket_promedio", "total_ventas", "total_pagos", "ventas_efectivo", "ventas_debito", "pagos_efectivo", "pagos_debito"];
+    for (const clave of claves) {
+      if (!(clave in data)) {
+        throw new Error(`GET /reportes/resumen debe devolver clave '${clave}'. Respuesta=${JSON.stringify(data)}`);
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    }
+  });
 }
 
 async function testResumenReporteExcluyeVentasAnuladas() {
@@ -3835,63 +3814,56 @@ async function testReporteStockValorizaSoloStockFisico() {
 }
 
 async function testConfiguracionCodigoAutomaticoProductos() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const sufijo = Date.now().toString().slice(-8);
-      const categoriaId = await crearCategoria(baseUrl, token, `TEST Codigo Auto ${sufijo}`);
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const sufijo = Date.now().toString().slice(-8);
+    const categoriaId = await crearCategoria(baseUrl, token, `TEST Codigo Auto ${sufijo}`);
 
-      let result = await requestJson(baseUrl, "GET", "/configuracion", null, token);
-      if (!result.response.ok) throw new Error(`GET /configuracion fallo: ${result.data?.message || result.response.status}`);
-      if (result.data.config.stock_codigo_automatico !== true) {
-        throw new Error(`stock_codigo_automatico debe venir activo por defecto. Actual=${result.data.config.stock_codigo_automatico}`);
-      }
+    let result = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+    if (!result.response.ok) throw new Error(`GET /configuracion fallo: ${result.data?.message || result.response.status}`);
+    if (result.data.config.stock_codigo_automatico !== true) {
+      throw new Error(`stock_codigo_automatico debe venir activo por defecto. Actual=${result.data.config.stock_codigo_automatico}`);
+    }
 
-      result = await requestJson(baseUrl, "PUT", "/configuracion", { config: { stock_codigo_automatico: false } }, token);
-      if (!result.response.ok) throw new Error(`PUT /configuracion stock_codigo_automatico=false fallo: ${result.data?.message || result.response.status}`);
-      if (result.data.config.stock_codigo_automatico !== false) {
-        throw new Error("stock_codigo_automatico=false debe persistir en la respuesta de guardado");
-      }
+    result = await requestJson(baseUrl, "PUT", "/configuracion", { config: { stock_codigo_automatico: false } }, token);
+    if (!result.response.ok) throw new Error(`PUT /configuracion stock_codigo_automatico=false fallo: ${result.data?.message || result.response.status}`);
+    if (result.data.config.stock_codigo_automatico !== false) {
+      throw new Error("stock_codigo_automatico=false debe persistir en la respuesta de guardado");
+    }
 
-      result = await requestJson(baseUrl, "GET", "/configuracion", null, token);
-      if (!result.response.ok) throw new Error(`GET /configuracion recarga fallo: ${result.data?.message || result.response.status}`);
-      if (result.data.config.stock_codigo_automatico !== false) {
-        throw new Error("stock_codigo_automatico=false debe rehidratar al recargar configuracion");
-      }
+    result = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+    if (!result.response.ok) throw new Error(`GET /configuracion recarga fallo: ${result.data?.message || result.response.status}`);
+    if (result.data.config.stock_codigo_automatico !== false) {
+      throw new Error("stock_codigo_automatico=false debe rehidratar al recargar configuracion");
+    }
 
-      const sinCodigoId = await crearProducto(baseUrl, token, {
-        nombre: `TEST Sin Codigo Auto ${sufijo}`,
-        categoria: `TEST Codigo Auto ${sufijo}`,
-        categoria_id: categoriaId,
-        codigo: "",
-        stock: 1
-      });
-      const sinCodigo = await getProduct(baseUrl, token, sinCodigoId);
-      if (String(sinCodigo.codigo || "") !== "") {
-        throw new Error(`Con stock_codigo_automatico=false no debe generar codigo. Actual=${sinCodigo.codigo}`);
-      }
-
-      result = await requestJson(baseUrl, "PUT", "/configuracion", { config: { stock_codigo_automatico: true } }, token);
-      if (!result.response.ok) throw new Error(`PUT /configuracion stock_codigo_automatico=true fallo: ${result.data?.message || result.response.status}`);
-
-      const conCodigoId = await crearProducto(baseUrl, token, {
-        nombre: `TEST Con Codigo Auto ${sufijo}`,
-        categoria: `TEST Codigo Auto ${sufijo}`,
-        categoria_id: categoriaId,
-        codigo: "",
-        stock: 1
-      });
-      const conCodigo = await getProduct(baseUrl, token, conCodigoId);
-      if (!String(conCodigo.codigo || "").trim()) {
-        throw new Error("Con stock_codigo_automatico=true debe generar codigo al crear sin codigo manual");
-      }
+    const sinCodigoId = await crearProducto(baseUrl, token, {
+      nombre: `TEST Sin Codigo Auto ${sufijo}`,
+      categoria: `TEST Codigo Auto ${sufijo}`,
+      categoria_id: categoriaId,
+      codigo: "",
+      stock: 1
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const sinCodigo = await getProduct(baseUrl, token, sinCodigoId);
+    if (String(sinCodigo.codigo || "") !== "") {
+      throw new Error(`Con stock_codigo_automatico=false no debe generar codigo. Actual=${sinCodigo.codigo}`);
+    }
+
+    result = await requestJson(baseUrl, "PUT", "/configuracion", { config: { stock_codigo_automatico: true } }, token);
+    if (!result.response.ok) throw new Error(`PUT /configuracion stock_codigo_automatico=true fallo: ${result.data?.message || result.response.status}`);
+
+    const conCodigoId = await crearProducto(baseUrl, token, {
+      nombre: `TEST Con Codigo Auto ${sufijo}`,
+      categoria: `TEST Codigo Auto ${sufijo}`,
+      categoria_id: categoriaId,
+      codigo: "",
+      stock: 1
+    });
+    const conCodigo = await getProduct(baseUrl, token, conCodigoId);
+    if (!String(conCodigo.codigo || "").trim()) {
+      throw new Error("Con stock_codigo_automatico=true debe generar codigo al crear sin codigo manual");
+    }
+  });
 }
 
 async function testProductoModeloFiscalF1ACompatibilidad() {
@@ -4173,274 +4145,266 @@ async function testProductoModeloFiscalF1ACompatibilidad() {
 }
 
 async function testProductoMotorFiscalNormalizadoF1B1() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const sufijo = Date.now().toString().slice(-8);
-      const categoriaId = await crearCategoria(baseUrl, token, `TEST Fiscal Motor ${sufijo}`, {
-        margen_porcentaje: 50
-      });
-      const categoriaIdMargen80 = await crearCategoria(baseUrl, token, `TEST Fiscal Motor 80 ${sufijo}`, {
-        margen_porcentaje: 80
-      });
-      const basePayload = {
-        categoria: `TEST Fiscal Motor ${sufijo}`,
-        categoria_id: categoriaId,
-        stock: 1,
-        maneja_stock: true,
-        activo: true,
-        redondeo: 0,
-        unidad_medida: "unidad"
-      };
-
-      const legacy = await crearProductoFiscal(baseUrl, token, {
-        ...basePayload,
-        nombre: `TEST Motor Legacy ${sufijo}`,
-        precio_compra: 100,
-        precio_venta: 0,
-        iva_porcentaje: 21,
-        precio_compra_incluye_iva: false
-      });
-      assertApprox(legacy.costo_final, 121, "Motor legacy debe conservar costo_final actual");
-      assertApprox(legacy.precio_sugerido, 181.5, "Motor legacy debe conservar precio sugerido actual");
-      assertApprox(legacy.precio_venta, 181.5, "Motor legacy debe conservar precio final automatico actual");
-
-      const normalizado21 = await crearProductoFiscal(baseUrl, token, {
-        ...basePayload,
-        nombre: `TEST Motor Gravado 21 ${sufijo}`,
-        precio_compra: 100,
-        precio_venta: 0,
-        iva_porcentaje: 3,
-        precio_compra_incluye_iva: false,
-        costo_economico: 50,
-        modelo_fiscal: "normalizado",
-        iva_venta_tratamiento: "gravado",
-        iva_venta_alicuota: 21
-      });
-      assertApprox(normalizado21.precio_neto_sugerido, 75, "Motor normalizado 21 debe calcular neto sugerido");
-      assertApprox(normalizado21.iva_sugerido, 15.75, "Motor normalizado 21 debe calcular IVA sugerido");
-      assertApprox(normalizado21.precio_final_sugerido, 90.75, "Motor normalizado 21 debe calcular final sugerido");
-      assertApprox(normalizado21.precio_venta, 90.75, "Motor normalizado 21 debe persistir precio final automatico");
-      if (normalizado21.precio_venta_modo !== "automatico") {
-        throw new Error(`Producto normalizado con precio 0 debe inferir modo automatico al crear. Actual=${normalizado21.precio_venta_modo}`);
-      }
-      assertApprox(normalizado21.iva_porcentaje, 3, "IVA legacy no debe contaminar motor normalizado");
-
-      await requestJson(baseUrl, "POST", "/usuarios", {
-        nombre: `Colaborador Fiscal ${sufijo}`,
-        usuario: `colab_fiscal_${sufijo}`,
-        password: "colaborador123",
-        confirmar_password: "colaborador123",
-        rol: "colaborador",
-        activo: true
-      }, token);
-      const colaboradorToken = await login(baseUrl, `colab_fiscal_${sufijo}`, "colaborador123");
-      const productosColaborador = await requestJson(baseUrl, "GET", "/productos", null, colaboradorToken);
-      if (!productosColaborador.response.ok) {
-        throw new Error(`GET /productos colaborador fallo: ${productosColaborador.data?.message || productosColaborador.response.status}`);
-      }
-      const normalizadoColaborador = productosColaborador.data.find((producto) => Number(producto.id) === Number(normalizado21.id));
-      if (!normalizadoColaborador) {
-        throw new Error("GET /productos colaborador debe incluir el producto normalizado sin campos sensibles");
-      }
-      for (const campo of [
-        "costo_economico",
-        "precio_compra",
-        "costo_final",
-        "precio_neto_sugerido",
-        "iva_sugerido",
-        "precio_final_sugerido",
-        "precio_neto_desde_final",
-        "iva_desde_final"
-      ]) {
-        if (Object.prototype.hasOwnProperty.call(normalizadoColaborador, campo)) {
-          throw new Error(`GET /productos colaborador no debe exponer ${campo}`);
-        }
-      }
-      if (!Object.prototype.hasOwnProperty.call(normalizadoColaborador, "precio_venta")) {
-        throw new Error("GET /productos colaborador debe seguir exponiendo precio_venta");
-      }
-      assertApprox(normalizadoColaborador.precio_venta, 90.75, "GET /productos colaborador debe conservar precio_venta visible");
-
-      const normalizado105 = await crearProductoFiscal(baseUrl, token, {
-        ...basePayload,
-        nombre: `TEST Motor Gravado 105 ${sufijo}`,
-        precio_compra: 100,
-        precio_venta: 0,
-        iva_porcentaje: 27,
-        costo_economico: 50,
-        modelo_fiscal: "normalizado",
-        iva_venta_tratamiento: "gravado",
-        iva_venta_alicuota: 10.5
-      });
-      assertApprox(normalizado105.precio_neto_sugerido, 75, "Motor normalizado 10.5 debe calcular neto sugerido");
-      assertApprox(normalizado105.iva_sugerido, 7.88, "Motor normalizado 10.5 debe calcular IVA sugerido");
-      assertApprox(normalizado105.precio_venta, 82.88, "Motor normalizado 10.5 debe persistir precio final automatico");
-
-      const exento = await crearProductoFiscal(baseUrl, token, {
-        ...basePayload,
-        nombre: `TEST Motor Exento ${sufijo}`,
-        precio_compra: 999,
-        precio_venta: 0,
-        iva_porcentaje: 27,
-        costo_economico: 50,
-        modelo_fiscal: "normalizado",
-        iva_venta_tratamiento: "exento",
-        iva_venta_alicuota: 21
-      });
-      assertApprox(exento.iva_sugerido, 0, "Motor exento debe calcular IVA 0");
-      assertApprox(exento.precio_venta, 75, "Motor exento debe usar neto como final");
-
-      const noGravado = await crearProductoFiscal(baseUrl, token, {
-        ...basePayload,
-        nombre: `TEST Motor No Gravado ${sufijo}`,
-        precio_compra: 999,
-        precio_venta: 0,
-        iva_porcentaje: 27,
-        costo_economico: 50,
-        modelo_fiscal: "normalizado",
-        iva_venta_tratamiento: "no_gravado",
-        iva_venta_alicuota: 21
-      });
-      assertApprox(noGravado.iva_sugerido, 0, "Motor no_gravado debe calcular IVA 0");
-      assertApprox(noGravado.precio_venta, 75, "Motor no_gravado debe usar neto como final");
-
-      const manual = await crearProductoFiscal(baseUrl, token, {
-        ...basePayload,
-        nombre: `TEST Motor Manual ${sufijo}`,
-        precio_compra: 100,
-        precio_venta: 100,
-        costo_economico: 50,
-        modelo_fiscal: "normalizado",
-        iva_venta_tratamiento: "gravado",
-        iva_venta_alicuota: 21
-      });
-      assertApprox(manual.precio_venta, 100, "Precio manual debe tener prioridad sobre sugerido normalizado");
-      if (manual.precio_venta_modo !== "manual") {
-        throw new Error(`Producto normalizado con precio > 0 debe inferir modo manual al crear. Actual=${manual.precio_venta_modo}`);
-      }
-      assertApprox(manual.precio_final_sugerido, 90.75, "Precio sugerido normalizado debe seguir disponible con precio manual");
-      assertApprox(manual.precio_neto_desde_final, 82.64, "Descomposicion de final 100 con IVA 21 debe calcular neto");
-      assertApprox(manual.iva_desde_final, 17.36, "Descomposicion de final 100 con IVA 21 debe calcular IVA");
-
-      const putViejo = await requestJson(baseUrl, "PUT", `/productos/${normalizado21.id}`, {
-        nombre: `TEST Motor Gravado 21 viejo ${sufijo}`,
-        categoria: `TEST Fiscal Motor 80 ${sufijo}`,
-        categoria_id: categoriaIdMargen80,
-        precio_compra: 100,
-        precio_venta: 90.75,
-        stock: Number(normalizado21.stock || 0),
-        maneja_stock: true,
-        activo: true,
-        iva_porcentaje: 27,
-        precio_compra_incluye_iva: false,
-        redondeo: 0,
-        unidad_medida: "unidad",
-        usuario: "test"
-      }, token);
-      if (!putViejo.response.ok) {
-        throw new Error(`PUT viejo sobre normalizado fallo: ${putViejo.data?.message || putViejo.response.status}`);
-      }
-      const normalizadoViejo = await getProduct(baseUrl, token, normalizado21.id);
-      if (normalizadoViejo.modelo_fiscal !== "normalizado") {
-        throw new Error(`PUT viejo debe preservar modelo normalizado. Actual=${normalizadoViejo.modelo_fiscal}`);
-      }
-      assertApprox(normalizadoViejo.costo_economico, 50, "PUT viejo debe preservar costo_economico normalizado");
-      assertApprox(normalizadoViejo.iva_venta_alicuota, 21, "PUT viejo debe preservar alicuota normalizada");
-      if (normalizadoViejo.precio_venta_modo !== "automatico") {
-        throw new Error(`PUT viejo debe preservar modo automatico. Actual=${normalizadoViejo.precio_venta_modo}`);
-      }
-      assertApprox(normalizadoViejo.precio_venta, 108.9, "PUT viejo con precio cargado no debe congelar el valor como manual");
-
-      const automaticoAManual = await requestJson(baseUrl, "PUT", `/productos/${normalizado21.id}`, {
-        nombre: `TEST Motor Gravado 21 manual ${sufijo}`,
-        categoria: `TEST Fiscal Motor 80 ${sufijo}`,
-        categoria_id: categoriaIdMargen80,
-        precio_compra: 100,
-        precio_venta: 100,
-        stock: Number(normalizadoViejo.stock || 0),
-        maneja_stock: true,
-        activo: true,
-        iva_porcentaje: 27,
-        precio_compra_incluye_iva: false,
-        redondeo: 0,
-        unidad_medida: "unidad",
-        precio_venta_modo: "manual",
-        usuario: "test"
-      }, token);
-      if (!automaticoAManual.response.ok) {
-        throw new Error(`PUT automatico a manual fallo: ${automaticoAManual.data?.message || automaticoAManual.response.status}`);
-      }
-      const normalizadoManual = await getProduct(baseUrl, token, normalizado21.id);
-      if (normalizadoManual.precio_venta_modo !== "manual") {
-        throw new Error(`PUT explicito debe cambiar modo a manual. Actual=${normalizadoManual.precio_venta_modo}`);
-      }
-      assertApprox(normalizadoManual.precio_venta, 100, "Modo manual debe persistir precio indicado");
-      assertApprox(normalizadoManual.precio_final_sugerido, 108.9, "Modo manual debe conservar sugerido derivado actualizado");
-
-      const manualAAutomatico = await requestJson(baseUrl, "PUT", `/productos/${normalizado21.id}`, {
-        nombre: `TEST Motor Gravado 21 automatico ${sufijo}`,
-        categoria: `TEST Fiscal Motor ${sufijo}`,
-        categoria_id: categoriaId,
-        precio_compra: 100,
-        precio_venta: 100,
-        stock: Number(normalizadoManual.stock || 0),
-        maneja_stock: true,
-        activo: true,
-        iva_porcentaje: 27,
-        precio_compra_incluye_iva: false,
-        redondeo: 0,
-        unidad_medida: "unidad",
-        precio_venta_modo: "automatico",
-        usuario: "test"
-      }, token);
-      if (!manualAAutomatico.response.ok) {
-        throw new Error(`PUT manual a automatico fallo: ${manualAAutomatico.data?.message || manualAAutomatico.response.status}`);
-      }
-      const normalizadoAutomatico = await getProduct(baseUrl, token, normalizado21.id);
-      if (normalizadoAutomatico.precio_venta_modo !== "automatico") {
-        throw new Error(`PUT explicito debe cambiar modo a automatico. Actual=${normalizadoAutomatico.precio_venta_modo}`);
-      }
-      assertApprox(normalizadoAutomatico.precio_venta, 90.75, "Modo automatico debe ignorar precio manual previo y recalcular");
-
-      const costoNullManual = await crearProductoFiscal(baseUrl, token, {
-        ...basePayload,
-        nombre: `TEST Motor Null Manual ${sufijo}`,
-        precio_compra: 999,
-        precio_venta: 123,
-        iva_porcentaje: 27,
-        costo_economico: null,
-        modelo_fiscal: "normalizado",
-        iva_venta_tratamiento: "gravado",
-        iva_venta_alicuota: 21
-      });
-      assertEqual(costoNullManual.costo_economico ?? null, null, "costo_economico null debe seguir permitido");
-      assertApprox(costoNullManual.precio_venta, 123, "costo_economico null debe conservar precio manual");
-      assertApprox(costoNullManual.precio_final_sugerido, 0, "costo_economico null no debe inferir sugerido desde IMP");
-
-      const costoNullAutomatico = await crearProductoFiscal(baseUrl, token, {
-        ...basePayload,
-        nombre: `TEST Motor Null Automatico ${sufijo}`,
-        precio_compra: 999,
-        precio_venta: 0,
-        iva_porcentaje: 27,
-        costo_economico: null,
-        modelo_fiscal: "normalizado",
-        iva_venta_tratamiento: "gravado",
-        iva_venta_alicuota: 21
-      });
-      assertEqual(costoNullAutomatico.costo_economico ?? null, null, "costo_economico null automatico debe persistir null");
-      assertApprox(costoNullAutomatico.precio_venta, 0, "costo_economico null sin precio manual debe producir precio deterministico 0");
-      assertApprox(costoNullAutomatico.precio_neto_sugerido, 0, "costo_economico null no debe inferir neto desde precio_compra");
-      assertApprox(costoNullAutomatico.iva_sugerido, 0, "costo_economico null no debe inferir IVA desde IMP");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const sufijo = Date.now().toString().slice(-8);
+    const categoriaId = await crearCategoria(baseUrl, token, `TEST Fiscal Motor ${sufijo}`, {
+      margen_porcentaje: 50
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const categoriaIdMargen80 = await crearCategoria(baseUrl, token, `TEST Fiscal Motor 80 ${sufijo}`, {
+      margen_porcentaje: 80
+    });
+    const basePayload = {
+      categoria: `TEST Fiscal Motor ${sufijo}`,
+      categoria_id: categoriaId,
+      stock: 1,
+      maneja_stock: true,
+      activo: true,
+      redondeo: 0,
+      unidad_medida: "unidad"
+    };
+
+    const legacy = await crearProductoFiscal(baseUrl, token, {
+      ...basePayload,
+      nombre: `TEST Motor Legacy ${sufijo}`,
+      precio_compra: 100,
+      precio_venta: 0,
+      iva_porcentaje: 21,
+      precio_compra_incluye_iva: false
+    });
+    assertApprox(legacy.costo_final, 121, "Motor legacy debe conservar costo_final actual");
+    assertApprox(legacy.precio_sugerido, 181.5, "Motor legacy debe conservar precio sugerido actual");
+    assertApprox(legacy.precio_venta, 181.5, "Motor legacy debe conservar precio final automatico actual");
+
+    const normalizado21 = await crearProductoFiscal(baseUrl, token, {
+      ...basePayload,
+      nombre: `TEST Motor Gravado 21 ${sufijo}`,
+      precio_compra: 100,
+      precio_venta: 0,
+      iva_porcentaje: 3,
+      precio_compra_incluye_iva: false,
+      costo_economico: 50,
+      modelo_fiscal: "normalizado",
+      iva_venta_tratamiento: "gravado",
+      iva_venta_alicuota: 21
+    });
+    assertApprox(normalizado21.precio_neto_sugerido, 75, "Motor normalizado 21 debe calcular neto sugerido");
+    assertApprox(normalizado21.iva_sugerido, 15.75, "Motor normalizado 21 debe calcular IVA sugerido");
+    assertApprox(normalizado21.precio_final_sugerido, 90.75, "Motor normalizado 21 debe calcular final sugerido");
+    assertApprox(normalizado21.precio_venta, 90.75, "Motor normalizado 21 debe persistir precio final automatico");
+    if (normalizado21.precio_venta_modo !== "automatico") {
+      throw new Error(`Producto normalizado con precio 0 debe inferir modo automatico al crear. Actual=${normalizado21.precio_venta_modo}`);
+    }
+    assertApprox(normalizado21.iva_porcentaje, 3, "IVA legacy no debe contaminar motor normalizado");
+
+    await requestJson(baseUrl, "POST", "/usuarios", {
+      nombre: `Colaborador Fiscal ${sufijo}`,
+      usuario: `colab_fiscal_${sufijo}`,
+      password: "colaborador123",
+      confirmar_password: "colaborador123",
+      rol: "colaborador",
+      activo: true
+    }, token);
+    const colaboradorToken = await login(baseUrl, `colab_fiscal_${sufijo}`, "colaborador123");
+    const productosColaborador = await requestJson(baseUrl, "GET", "/productos", null, colaboradorToken);
+    if (!productosColaborador.response.ok) {
+      throw new Error(`GET /productos colaborador fallo: ${productosColaborador.data?.message || productosColaborador.response.status}`);
+    }
+    const normalizadoColaborador = productosColaborador.data.find((producto) => Number(producto.id) === Number(normalizado21.id));
+    if (!normalizadoColaborador) {
+      throw new Error("GET /productos colaborador debe incluir el producto normalizado sin campos sensibles");
+    }
+    for (const campo of [
+      "costo_economico",
+      "precio_compra",
+      "costo_final",
+      "precio_neto_sugerido",
+      "iva_sugerido",
+      "precio_final_sugerido",
+      "precio_neto_desde_final",
+      "iva_desde_final"
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(normalizadoColaborador, campo)) {
+        throw new Error(`GET /productos colaborador no debe exponer ${campo}`);
+      }
+    }
+    if (!Object.prototype.hasOwnProperty.call(normalizadoColaborador, "precio_venta")) {
+      throw new Error("GET /productos colaborador debe seguir exponiendo precio_venta");
+    }
+    assertApprox(normalizadoColaborador.precio_venta, 90.75, "GET /productos colaborador debe conservar precio_venta visible");
+
+    const normalizado105 = await crearProductoFiscal(baseUrl, token, {
+      ...basePayload,
+      nombre: `TEST Motor Gravado 105 ${sufijo}`,
+      precio_compra: 100,
+      precio_venta: 0,
+      iva_porcentaje: 27,
+      costo_economico: 50,
+      modelo_fiscal: "normalizado",
+      iva_venta_tratamiento: "gravado",
+      iva_venta_alicuota: 10.5
+    });
+    assertApprox(normalizado105.precio_neto_sugerido, 75, "Motor normalizado 10.5 debe calcular neto sugerido");
+    assertApprox(normalizado105.iva_sugerido, 7.88, "Motor normalizado 10.5 debe calcular IVA sugerido");
+    assertApprox(normalizado105.precio_venta, 82.88, "Motor normalizado 10.5 debe persistir precio final automatico");
+
+    const exento = await crearProductoFiscal(baseUrl, token, {
+      ...basePayload,
+      nombre: `TEST Motor Exento ${sufijo}`,
+      precio_compra: 999,
+      precio_venta: 0,
+      iva_porcentaje: 27,
+      costo_economico: 50,
+      modelo_fiscal: "normalizado",
+      iva_venta_tratamiento: "exento",
+      iva_venta_alicuota: 21
+    });
+    assertApprox(exento.iva_sugerido, 0, "Motor exento debe calcular IVA 0");
+    assertApprox(exento.precio_venta, 75, "Motor exento debe usar neto como final");
+
+    const noGravado = await crearProductoFiscal(baseUrl, token, {
+      ...basePayload,
+      nombre: `TEST Motor No Gravado ${sufijo}`,
+      precio_compra: 999,
+      precio_venta: 0,
+      iva_porcentaje: 27,
+      costo_economico: 50,
+      modelo_fiscal: "normalizado",
+      iva_venta_tratamiento: "no_gravado",
+      iva_venta_alicuota: 21
+    });
+    assertApprox(noGravado.iva_sugerido, 0, "Motor no_gravado debe calcular IVA 0");
+    assertApprox(noGravado.precio_venta, 75, "Motor no_gravado debe usar neto como final");
+
+    const manual = await crearProductoFiscal(baseUrl, token, {
+      ...basePayload,
+      nombre: `TEST Motor Manual ${sufijo}`,
+      precio_compra: 100,
+      precio_venta: 100,
+      costo_economico: 50,
+      modelo_fiscal: "normalizado",
+      iva_venta_tratamiento: "gravado",
+      iva_venta_alicuota: 21
+    });
+    assertApprox(manual.precio_venta, 100, "Precio manual debe tener prioridad sobre sugerido normalizado");
+    if (manual.precio_venta_modo !== "manual") {
+      throw new Error(`Producto normalizado con precio > 0 debe inferir modo manual al crear. Actual=${manual.precio_venta_modo}`);
+    }
+    assertApprox(manual.precio_final_sugerido, 90.75, "Precio sugerido normalizado debe seguir disponible con precio manual");
+    assertApprox(manual.precio_neto_desde_final, 82.64, "Descomposicion de final 100 con IVA 21 debe calcular neto");
+    assertApprox(manual.iva_desde_final, 17.36, "Descomposicion de final 100 con IVA 21 debe calcular IVA");
+
+    const putViejo = await requestJson(baseUrl, "PUT", `/productos/${normalizado21.id}`, {
+      nombre: `TEST Motor Gravado 21 viejo ${sufijo}`,
+      categoria: `TEST Fiscal Motor 80 ${sufijo}`,
+      categoria_id: categoriaIdMargen80,
+      precio_compra: 100,
+      precio_venta: 90.75,
+      stock: Number(normalizado21.stock || 0),
+      maneja_stock: true,
+      activo: true,
+      iva_porcentaje: 27,
+      precio_compra_incluye_iva: false,
+      redondeo: 0,
+      unidad_medida: "unidad",
+      usuario: "test"
+    }, token);
+    if (!putViejo.response.ok) {
+      throw new Error(`PUT viejo sobre normalizado fallo: ${putViejo.data?.message || putViejo.response.status}`);
+    }
+    const normalizadoViejo = await getProduct(baseUrl, token, normalizado21.id);
+    if (normalizadoViejo.modelo_fiscal !== "normalizado") {
+      throw new Error(`PUT viejo debe preservar modelo normalizado. Actual=${normalizadoViejo.modelo_fiscal}`);
+    }
+    assertApprox(normalizadoViejo.costo_economico, 50, "PUT viejo debe preservar costo_economico normalizado");
+    assertApprox(normalizadoViejo.iva_venta_alicuota, 21, "PUT viejo debe preservar alicuota normalizada");
+    if (normalizadoViejo.precio_venta_modo !== "automatico") {
+      throw new Error(`PUT viejo debe preservar modo automatico. Actual=${normalizadoViejo.precio_venta_modo}`);
+    }
+    assertApprox(normalizadoViejo.precio_venta, 108.9, "PUT viejo con precio cargado no debe congelar el valor como manual");
+
+    const automaticoAManual = await requestJson(baseUrl, "PUT", `/productos/${normalizado21.id}`, {
+      nombre: `TEST Motor Gravado 21 manual ${sufijo}`,
+      categoria: `TEST Fiscal Motor 80 ${sufijo}`,
+      categoria_id: categoriaIdMargen80,
+      precio_compra: 100,
+      precio_venta: 100,
+      stock: Number(normalizadoViejo.stock || 0),
+      maneja_stock: true,
+      activo: true,
+      iva_porcentaje: 27,
+      precio_compra_incluye_iva: false,
+      redondeo: 0,
+      unidad_medida: "unidad",
+      precio_venta_modo: "manual",
+      usuario: "test"
+    }, token);
+    if (!automaticoAManual.response.ok) {
+      throw new Error(`PUT automatico a manual fallo: ${automaticoAManual.data?.message || automaticoAManual.response.status}`);
+    }
+    const normalizadoManual = await getProduct(baseUrl, token, normalizado21.id);
+    if (normalizadoManual.precio_venta_modo !== "manual") {
+      throw new Error(`PUT explicito debe cambiar modo a manual. Actual=${normalizadoManual.precio_venta_modo}`);
+    }
+    assertApprox(normalizadoManual.precio_venta, 100, "Modo manual debe persistir precio indicado");
+    assertApprox(normalizadoManual.precio_final_sugerido, 108.9, "Modo manual debe conservar sugerido derivado actualizado");
+
+    const manualAAutomatico = await requestJson(baseUrl, "PUT", `/productos/${normalizado21.id}`, {
+      nombre: `TEST Motor Gravado 21 automatico ${sufijo}`,
+      categoria: `TEST Fiscal Motor ${sufijo}`,
+      categoria_id: categoriaId,
+      precio_compra: 100,
+      precio_venta: 100,
+      stock: Number(normalizadoManual.stock || 0),
+      maneja_stock: true,
+      activo: true,
+      iva_porcentaje: 27,
+      precio_compra_incluye_iva: false,
+      redondeo: 0,
+      unidad_medida: "unidad",
+      precio_venta_modo: "automatico",
+      usuario: "test"
+    }, token);
+    if (!manualAAutomatico.response.ok) {
+      throw new Error(`PUT manual a automatico fallo: ${manualAAutomatico.data?.message || manualAAutomatico.response.status}`);
+    }
+    const normalizadoAutomatico = await getProduct(baseUrl, token, normalizado21.id);
+    if (normalizadoAutomatico.precio_venta_modo !== "automatico") {
+      throw new Error(`PUT explicito debe cambiar modo a automatico. Actual=${normalizadoAutomatico.precio_venta_modo}`);
+    }
+    assertApprox(normalizadoAutomatico.precio_venta, 90.75, "Modo automatico debe ignorar precio manual previo y recalcular");
+
+    const costoNullManual = await crearProductoFiscal(baseUrl, token, {
+      ...basePayload,
+      nombre: `TEST Motor Null Manual ${sufijo}`,
+      precio_compra: 999,
+      precio_venta: 123,
+      iva_porcentaje: 27,
+      costo_economico: null,
+      modelo_fiscal: "normalizado",
+      iva_venta_tratamiento: "gravado",
+      iva_venta_alicuota: 21
+    });
+    assertEqual(costoNullManual.costo_economico ?? null, null, "costo_economico null debe seguir permitido");
+    assertApprox(costoNullManual.precio_venta, 123, "costo_economico null debe conservar precio manual");
+    assertApprox(costoNullManual.precio_final_sugerido, 0, "costo_economico null no debe inferir sugerido desde IMP");
+
+    const costoNullAutomatico = await crearProductoFiscal(baseUrl, token, {
+      ...basePayload,
+      nombre: `TEST Motor Null Automatico ${sufijo}`,
+      precio_compra: 999,
+      precio_venta: 0,
+      iva_porcentaje: 27,
+      costo_economico: null,
+      modelo_fiscal: "normalizado",
+      iva_venta_tratamiento: "gravado",
+      iva_venta_alicuota: 21
+    });
+    assertEqual(costoNullAutomatico.costo_economico ?? null, null, "costo_economico null automatico debe persistir null");
+    assertApprox(costoNullAutomatico.precio_venta, 0, "costo_economico null sin precio manual debe producir precio deterministico 0");
+    assertApprox(costoNullAutomatico.precio_neto_sugerido, 0, "costo_economico null no debe inferir neto desde precio_compra");
+    assertApprox(costoNullAutomatico.iva_sugerido, 0, "costo_economico null no debe inferir IVA desde IMP");
+  });
 }
 
 async function testAumentoMasivoProtegeProductosNormalizadosF1B2() {
@@ -18658,37 +18622,30 @@ async function testSaldosOperativosUltimoSaldoArrastrado() {
 }
 
 async function testSaldosOperativosCuentaNullNoRompe() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const apertura = await abrirCaja(baseUrl, token, 0);
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const apertura = await abrirCaja(baseUrl, token, 0);
 
-      // conciliacion global (cuenta_destino_id = null) con nuevos campos
-      const r = await guardarConciliacionCuentaDestino(baseUrl, token, {
-        caja_id: apertura.id,
-        cuenta_destino_id: null,
-        saldo_inicial: 1000,
-        monto_sistema: 500,
-        monto_real: 1600,
-        decision_cierre: "retirar",
-        monto_retiro: 100
-      });
-      assertApprox(r.conciliacion.saldo_inicial, 1000, "cuenta null: saldo_inicial guardado");
-      // diferencia = 1600 - (1000 + 500) = 100
-      assertApprox(r.conciliacion.diferencia, 100, "cuenta null: diferencia correcta con saldo_inicial");
-      assertApprox(r.conciliacion.saldo_arrastrado, 1500, "cuenta null: saldo_arrastrado = monto_real - retiro");
-
-      // helper con null
-      await cerrarCaja(baseUrl, token, 0, 0, 0);
-      const ultimo = await getUltimoSaldoArrastrado(baseUrl, token, null);
-      assertApprox(ultimo.saldo?.saldo_arrastrado, 1500, "helper cuenta null devuelve ultimo saldo arrastrado");
+    // conciliacion global (cuenta_destino_id = null) con nuevos campos
+    const r = await guardarConciliacionCuentaDestino(baseUrl, token, {
+      caja_id: apertura.id,
+      cuenta_destino_id: null,
+      saldo_inicial: 1000,
+      monto_sistema: 500,
+      monto_real: 1600,
+      decision_cierre: "retirar",
+      monto_retiro: 100
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    assertApprox(r.conciliacion.saldo_inicial, 1000, "cuenta null: saldo_inicial guardado");
+    // diferencia = 1600 - (1000 + 500) = 100
+    assertApprox(r.conciliacion.diferencia, 100, "cuenta null: diferencia correcta con saldo_inicial");
+    assertApprox(r.conciliacion.saldo_arrastrado, 1500, "cuenta null: saldo_arrastrado = monto_real - retiro");
+
+    // helper con null
+    await cerrarCaja(baseUrl, token, 0, 0, 0);
+    const ultimo = await getUltimoSaldoArrastrado(baseUrl, token, null);
+    assertApprox(ultimo.saldo?.saldo_arrastrado, 1500, "helper cuenta null devuelve ultimo saldo arrastrado");
+  });
 }
 
 // ── Fórmula saldo_esperado_final = saldo_inicial + movimiento_neto ─────────────
@@ -19654,270 +19611,228 @@ async function testHerenciaReglasGeneralVsPersonalizada() {
 }
 
 async function testUsaReglasPersonalizadas() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const suf = Date.now();
-      // 1. Sin usa_reglas_personalizadas → default 0
-      const { data: d1, response: r1 } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "TEST ReglasDefault", dni_cuit: `rp-def-${suf}`, activo: true
-      }, token);
-      if (!r1.ok) throw new Error(`Crear cliente default fallo: ${d1?.message}`);
-      if (Number(d1.cliente?.usa_reglas_personalizadas) !== 0) throw new Error(`Default debe ser 0, actual=${d1.cliente?.usa_reglas_personalizadas}`);
-      // 2. Con usa_reglas_personalizadas=1 → persiste
-      const { data: d2, response: r2 } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "TEST ReglasCustom", dni_cuit: `rp-cus-${suf}`, activo: true, usa_reglas_personalizadas: true
-      }, token);
-      if (!r2.ok) throw new Error(`Crear cliente custom fallo: ${d2?.message}`);
-      if (Number(d2.cliente?.usa_reglas_personalizadas) !== 1) throw new Error(`usa_reglas_personalizadas=1 debe persistir, actual=${d2.cliente?.usa_reglas_personalizadas}`);
-      // 3. Editar y cambiar a 0 → persiste
-      const { data: d3, response: r3 } = await requestJson(baseUrl, "PUT", `/clientes/${d2.cliente?.id}`, {
-        nombre: "TEST ReglasCustom", dni_cuit: `rp-cus-${suf}`, activo: true, usa_reglas_personalizadas: false
-      }, token);
-      if (!r3.ok) throw new Error(`Update a 0 fallo: ${d3?.message}`);
-      if (Number(d3.cliente?.usa_reglas_personalizadas) !== 0) throw new Error(`Update a 0 debe persistir, actual=${d3.cliente?.usa_reglas_personalizadas}`);
-      // 4. Valor inválido → normaliza a 0
-      const { data: d4, response: r4 } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "TEST ReglasInvalido", dni_cuit: `rp-inv-${suf}`, activo: true, usa_reglas_personalizadas: "invalido"
-      }, token);
-      if (!r4.ok) throw new Error(`Crear con valor inválido fallo: ${d4?.message}`);
-      if (Number(d4.cliente?.usa_reglas_personalizadas) !== 0) throw new Error(`Valor inválido debe normalizar a 0, actual=${d4.cliente?.usa_reglas_personalizadas}`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const suf = Date.now();
+    // 1. Sin usa_reglas_personalizadas → default 0
+    const { data: d1, response: r1 } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "TEST ReglasDefault", dni_cuit: `rp-def-${suf}`, activo: true
+    }, token);
+    if (!r1.ok) throw new Error(`Crear cliente default fallo: ${d1?.message}`);
+    if (Number(d1.cliente?.usa_reglas_personalizadas) !== 0) throw new Error(`Default debe ser 0, actual=${d1.cliente?.usa_reglas_personalizadas}`);
+    // 2. Con usa_reglas_personalizadas=1 → persiste
+    const { data: d2, response: r2 } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "TEST ReglasCustom", dni_cuit: `rp-cus-${suf}`, activo: true, usa_reglas_personalizadas: true
+    }, token);
+    if (!r2.ok) throw new Error(`Crear cliente custom fallo: ${d2?.message}`);
+    if (Number(d2.cliente?.usa_reglas_personalizadas) !== 1) throw new Error(`usa_reglas_personalizadas=1 debe persistir, actual=${d2.cliente?.usa_reglas_personalizadas}`);
+    // 3. Editar y cambiar a 0 → persiste
+    const { data: d3, response: r3 } = await requestJson(baseUrl, "PUT", `/clientes/${d2.cliente?.id}`, {
+      nombre: "TEST ReglasCustom", dni_cuit: `rp-cus-${suf}`, activo: true, usa_reglas_personalizadas: false
+    }, token);
+    if (!r3.ok) throw new Error(`Update a 0 fallo: ${d3?.message}`);
+    if (Number(d3.cliente?.usa_reglas_personalizadas) !== 0) throw new Error(`Update a 0 debe persistir, actual=${d3.cliente?.usa_reglas_personalizadas}`);
+    // 4. Valor inválido → normaliza a 0
+    const { data: d4, response: r4 } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "TEST ReglasInvalido", dni_cuit: `rp-inv-${suf}`, activo: true, usa_reglas_personalizadas: "invalido"
+    }, token);
+    if (!r4.ok) throw new Error(`Crear con valor inválido fallo: ${d4?.message}`);
+    if (Number(d4.cliente?.usa_reglas_personalizadas) !== 0) throw new Error(`Valor inválido debe normalizar a 0, actual=${d4.cliente?.usa_reglas_personalizadas}`);
+  });
 }
 
 async function testRequiereAutorizacion() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      await requestJson(baseUrl, "POST", "/usuarios", {
-        nombre: "Colab Req Auth", usuario: "colab_req_auth",
-        password: "colab123", confirmar_password: "colab123",
-        rol: "colaborador", activo: true
-      }, token);
-      const colaboradorToken = await login(baseUrl, "colab_req_auth", "colab123");
-      const suf = Date.now();
-      // Cliente con requiere_autorizacion=1
-      const { data: dReq } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "TEST RequiereAuth", dni_cuit: `req-auth-${suf}`,
-        habilita_cuenta_corriente: true, activo: true,
-        usa_reglas_personalizadas: true, requiere_autorizacion: true, limite_fiado: 0
-      }, token);
-      const reqId = dReq.cliente?.id;
-      // Cliente sin requiere_autorizacion=0
-      const { data: dNoReq } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "TEST NoRequiereAuth", dni_cuit: `no-req-${suf}`,
-        habilita_cuenta_corriente: true, activo: true,
-        requiere_autorizacion: false, limite_fiado: 0
-      }, token);
-      const noReqId = dNoReq.cliente?.id;
-      // Test 1: requiere_autorizacion=1 + colaborador → 403
-      const { response: r1 } = await requestJson(baseUrl, "POST", `/clientes/${reqId}/venta-cuenta`, {
-        total: 50, concepto: "Test req auth colab", autorizar_excedido: false
-      }, colaboradorToken);
-      if (r1.status !== 403) throw new Error(`Colaborador con requiere_autorizacion=1 debe dar 403, dio ${r1.status}`);
-      // Test 2: requiere_autorizacion=1 + admin → OK
-      const { response: r2 } = await requestJson(baseUrl, "POST", `/clientes/${reqId}/venta-cuenta`, {
-        total: 50, concepto: "Test req auth admin", autorizar_excedido: false
-      }, token);
-      if (!r2.ok) throw new Error(`Admin con requiere_autorizacion=1 debe OK, dio ${r2.status}`);
-      // Test 3: requiere_autorizacion=0 + colaborador → OK (sin limitaciones de auth)
-      const { response: r3 } = await requestJson(baseUrl, "POST", `/clientes/${noReqId}/venta-cuenta`, {
-        total: 50, concepto: "Test no req colab", autorizar_excedido: false
-      }, colaboradorToken);
-      if (!r3.ok) throw new Error(`Colaborador sin requiere_autorizacion debe OK, dio ${r3.status}`);
-      // Test 4: requiere_autorizacion=0 + colaborador + autorizar_excedido=true → 403 sigue igual (rol check)
-      const { response: r4 } = await requestJson(baseUrl, "POST", `/clientes/${noReqId}/venta-cuenta`, {
-        total: 50, concepto: "Test colab autorizar excedido", autorizar_excedido: true
-      }, colaboradorToken);
-      if (r4.status !== 403) throw new Error(`Colaborador con autorizar_excedido=true debe seguir dando 403, dio ${r4.status}`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "POST", "/usuarios", {
+      nombre: "Colab Req Auth", usuario: "colab_req_auth",
+      password: "colab123", confirmar_password: "colab123",
+      rol: "colaborador", activo: true
+    }, token);
+    const colaboradorToken = await login(baseUrl, "colab_req_auth", "colab123");
+    const suf = Date.now();
+    // Cliente con requiere_autorizacion=1
+    const { data: dReq } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "TEST RequiereAuth", dni_cuit: `req-auth-${suf}`,
+      habilita_cuenta_corriente: true, activo: true,
+      usa_reglas_personalizadas: true, requiere_autorizacion: true, limite_fiado: 0
+    }, token);
+    const reqId = dReq.cliente?.id;
+    // Cliente sin requiere_autorizacion=0
+    const { data: dNoReq } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "TEST NoRequiereAuth", dni_cuit: `no-req-${suf}`,
+      habilita_cuenta_corriente: true, activo: true,
+      requiere_autorizacion: false, limite_fiado: 0
+    }, token);
+    const noReqId = dNoReq.cliente?.id;
+    // Test 1: requiere_autorizacion=1 + colaborador → 403
+    const { response: r1 } = await requestJson(baseUrl, "POST", `/clientes/${reqId}/venta-cuenta`, {
+      total: 50, concepto: "Test req auth colab", autorizar_excedido: false
+    }, colaboradorToken);
+    if (r1.status !== 403) throw new Error(`Colaborador con requiere_autorizacion=1 debe dar 403, dio ${r1.status}`);
+    // Test 2: requiere_autorizacion=1 + admin → OK
+    const { response: r2 } = await requestJson(baseUrl, "POST", `/clientes/${reqId}/venta-cuenta`, {
+      total: 50, concepto: "Test req auth admin", autorizar_excedido: false
+    }, token);
+    if (!r2.ok) throw new Error(`Admin con requiere_autorizacion=1 debe OK, dio ${r2.status}`);
+    // Test 3: requiere_autorizacion=0 + colaborador → OK (sin limitaciones de auth)
+    const { response: r3 } = await requestJson(baseUrl, "POST", `/clientes/${noReqId}/venta-cuenta`, {
+      total: 50, concepto: "Test no req colab", autorizar_excedido: false
+    }, colaboradorToken);
+    if (!r3.ok) throw new Error(`Colaborador sin requiere_autorizacion debe OK, dio ${r3.status}`);
+    // Test 4: requiere_autorizacion=0 + colaborador + autorizar_excedido=true → 403 sigue igual (rol check)
+    const { response: r4 } = await requestJson(baseUrl, "POST", `/clientes/${noReqId}/venta-cuenta`, {
+      total: 50, concepto: "Test colab autorizar excedido", autorizar_excedido: true
+    }, colaboradorToken);
+    if (r4.status !== 403) throw new Error(`Colaborador con autorizar_excedido=true debe seguir dando 403, dio ${r4.status}`);
+  });
 }
 
 async function testPermiteExcedente() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      // Crear colaborador para test de rol
-      await requestJson(baseUrl, "POST", "/usuarios", {
-        nombre: "Colab Excedente Test", usuario: "colab_exc_test",
-        password: "colab123", confirmar_password: "colab123",
-        rol: "colaborador", activo: true
-      }, token);
-      const colaboradorToken = await login(baseUrl, "colab_exc_test", "colab123");
-      const suf = Date.now();
-      // Test 1: permite_excedente=0, supera límite, sin autorización → 409
-      const { data: d1 } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "TEST ExcNO", dni_cuit: `exc-no-${suf}`,
-        habilita_cuenta_corriente: true, activo: true, usa_reglas_personalizadas: true, permite_excedente: false, limite_fiado: 100
-      }, token);
-      const { response: rv1 } = await requestJson(baseUrl, "POST", `/clientes/${d1.cliente?.id}/venta-cuenta`, {
-        total: 200, concepto: "Test sin excedente", autorizar_excedido: false
-      }, token);
-      if (rv1.status !== 409) throw new Error(`Sin permite_excedente y sin autorizar debe dar 409, dio ${rv1.status}`);
-      // Test 2: permite_excedente=1, supera límite, sin autorización → OK
-      const { data: d2 } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "TEST ExcSI", dni_cuit: `exc-si-${suf}`,
-        habilita_cuenta_corriente: true, activo: true, usa_reglas_personalizadas: true, permite_excedente: true, limite_fiado: 100
-      }, token);
-      const { response: rv2 } = await requestJson(baseUrl, "POST", `/clientes/${d2.cliente?.id}/venta-cuenta`, {
-        total: 200, concepto: "Test con excedente", autorizar_excedido: false
-      }, token);
-      if (!rv2.ok) throw new Error(`Con permite_excedente=1 y sin autorizar debe OK, dio ${rv2.status}`);
-      // Test 3: permite_excedente=0, colaborador + autorizar_excedido=true → 403
-      const { response: rv3 } = await requestJson(baseUrl, "POST", `/clientes/${d1.cliente?.id}/venta-cuenta`, {
-        total: 50, concepto: "Test colab autorizar", autorizar_excedido: true
-      }, colaboradorToken);
-      if (rv3.status !== 403) throw new Error(`Colaborador con autorizar_excedido=true debe dar 403, dio ${rv3.status}`);
-      // Test 4: permite_excedente=0, admin + autorizar_excedido=true → OK (no 403 por rol)
-      const { response: rv4 } = await requestJson(baseUrl, "POST", `/clientes/${d1.cliente?.id}/venta-cuenta`, {
-        total: 50, concepto: "Test admin autorizar", autorizar_excedido: true
-      }, token);
-      if (rv4.status === 403) throw new Error(`Admin con autorizar_excedido=true no debe dar 403 por rol`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    // Crear colaborador para test de rol
+    await requestJson(baseUrl, "POST", "/usuarios", {
+      nombre: "Colab Excedente Test", usuario: "colab_exc_test",
+      password: "colab123", confirmar_password: "colab123",
+      rol: "colaborador", activo: true
+    }, token);
+    const colaboradorToken = await login(baseUrl, "colab_exc_test", "colab123");
+    const suf = Date.now();
+    // Test 1: permite_excedente=0, supera límite, sin autorización → 409
+    const { data: d1 } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "TEST ExcNO", dni_cuit: `exc-no-${suf}`,
+      habilita_cuenta_corriente: true, activo: true, usa_reglas_personalizadas: true, permite_excedente: false, limite_fiado: 100
+    }, token);
+    const { response: rv1 } = await requestJson(baseUrl, "POST", `/clientes/${d1.cliente?.id}/venta-cuenta`, {
+      total: 200, concepto: "Test sin excedente", autorizar_excedido: false
+    }, token);
+    if (rv1.status !== 409) throw new Error(`Sin permite_excedente y sin autorizar debe dar 409, dio ${rv1.status}`);
+    // Test 2: permite_excedente=1, supera límite, sin autorización → OK
+    const { data: d2 } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "TEST ExcSI", dni_cuit: `exc-si-${suf}`,
+      habilita_cuenta_corriente: true, activo: true, usa_reglas_personalizadas: true, permite_excedente: true, limite_fiado: 100
+    }, token);
+    const { response: rv2 } = await requestJson(baseUrl, "POST", `/clientes/${d2.cliente?.id}/venta-cuenta`, {
+      total: 200, concepto: "Test con excedente", autorizar_excedido: false
+    }, token);
+    if (!rv2.ok) throw new Error(`Con permite_excedente=1 y sin autorizar debe OK, dio ${rv2.status}`);
+    // Test 3: permite_excedente=0, colaborador + autorizar_excedido=true → 403
+    const { response: rv3 } = await requestJson(baseUrl, "POST", `/clientes/${d1.cliente?.id}/venta-cuenta`, {
+      total: 50, concepto: "Test colab autorizar", autorizar_excedido: true
+    }, colaboradorToken);
+    if (rv3.status !== 403) throw new Error(`Colaborador con autorizar_excedido=true debe dar 403, dio ${rv3.status}`);
+    // Test 4: permite_excedente=0, admin + autorizar_excedido=true → OK (no 403 por rol)
+    const { response: rv4 } = await requestJson(baseUrl, "POST", `/clientes/${d1.cliente?.id}/venta-cuenta`, {
+      total: 50, concepto: "Test admin autorizar", autorizar_excedido: true
+    }, token);
+    if (rv4.status === 403) throw new Error(`Admin con autorizar_excedido=true no debe dar 403 por rol`);
+  });
 }
 
 async function testPerfilCliente() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const suf = Date.now();
-      // 1. perfil_cliente=normal → persiste correctamente
-      const { response: r1, data: d1 } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "TEST Perfil Normal", dni_cuit: `pnorm-${suf}`, activo: true, perfil_cliente: "normal"
-      }, token);
-      if (!r1.ok) throw new Error(`Perfil normal fallo: ${d1?.message}`);
-      if (d1.cliente?.perfil_cliente !== "normal") throw new Error(`Esperado perfil=normal, actual=${d1.cliente?.perfil_cliente}`);
-      // 2. perfil_cliente=empleado → persiste correctamente
-      const { response: r2, data: d2 } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "TEST Perfil Empleado", dni_cuit: `pemp-${suf}`, activo: true, perfil_cliente: "empleado"
-      }, token);
-      if (!r2.ok) throw new Error(`Perfil empleado fallo: ${d2?.message}`);
-      if (d2.cliente?.perfil_cliente !== "empleado") throw new Error(`Esperado perfil=empleado, actual=${d2.cliente?.perfil_cliente}`);
-      // 3. perfil_cliente=empresa → persiste correctamente
-      const { response: r3, data: d3 } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "TEST Perfil Empresa", dni_cuit: `pempresa-${suf}`, activo: true, perfil_cliente: "empresa"
-      }, token);
-      if (!r3.ok) throw new Error(`Perfil empresa fallo: ${d3?.message}`);
-      if (d3.cliente?.perfil_cliente !== "empresa") throw new Error(`Esperado perfil=empresa, actual=${d3.cliente?.perfil_cliente}`);
-      // 4. actualizar perfil → guarda correctamente
-      const clienteId = d1.cliente?.id;
-      const { response: r4, data: d4 } = await requestJson(baseUrl, "PUT", `/clientes/${clienteId}`, {
-        nombre: "TEST Perfil Normal", dni_cuit: `pnorm-${suf}`, activo: true, perfil_cliente: "empresa"
-      }, token);
-      if (!r4.ok) throw new Error(`Update perfil fallo: ${d4?.message}`);
-      if (d4.cliente?.perfil_cliente !== "empresa") throw new Error(`Update perfil: esperado empresa, actual=${d4.cliente?.perfil_cliente}`);
-      // 5. valor inválido → normaliza a "normal"
-      const { response: r5, data: d5 } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "TEST Perfil Invalido", dni_cuit: `pinv-${suf}`, activo: true, perfil_cliente: "invalido_xyz"
-      }, token);
-      if (!r5.ok) throw new Error(`Perfil inválido fallo crear: ${d5?.message}`);
-      if (d5.cliente?.perfil_cliente !== "normal") throw new Error(`Valor inválido debe normalizar a normal, actual=${d5.cliente?.perfil_cliente}`);
-      // GET /clientes devuelve perfil_cliente
-      const { data: lista } = await requestJson(baseUrl, "GET", "/clientes?include_inactive=1", null, token);
-      const clienteEnLista = (lista || []).find(c => Number(c.id) === Number(d2.cliente?.id));
-      if (!clienteEnLista) throw new Error("Cliente empleado no encontrado en listado");
-      if (clienteEnLista.perfil_cliente !== "empleado") throw new Error(`GET /clientes debe devolver perfil_cliente=empleado, actual=${clienteEnLista.perfil_cliente}`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const suf = Date.now();
+    // 1. perfil_cliente=normal → persiste correctamente
+    const { response: r1, data: d1 } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "TEST Perfil Normal", dni_cuit: `pnorm-${suf}`, activo: true, perfil_cliente: "normal"
+    }, token);
+    if (!r1.ok) throw new Error(`Perfil normal fallo: ${d1?.message}`);
+    if (d1.cliente?.perfil_cliente !== "normal") throw new Error(`Esperado perfil=normal, actual=${d1.cliente?.perfil_cliente}`);
+    // 2. perfil_cliente=empleado → persiste correctamente
+    const { response: r2, data: d2 } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "TEST Perfil Empleado", dni_cuit: `pemp-${suf}`, activo: true, perfil_cliente: "empleado"
+    }, token);
+    if (!r2.ok) throw new Error(`Perfil empleado fallo: ${d2?.message}`);
+    if (d2.cliente?.perfil_cliente !== "empleado") throw new Error(`Esperado perfil=empleado, actual=${d2.cliente?.perfil_cliente}`);
+    // 3. perfil_cliente=empresa → persiste correctamente
+    const { response: r3, data: d3 } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "TEST Perfil Empresa", dni_cuit: `pempresa-${suf}`, activo: true, perfil_cliente: "empresa"
+    }, token);
+    if (!r3.ok) throw new Error(`Perfil empresa fallo: ${d3?.message}`);
+    if (d3.cliente?.perfil_cliente !== "empresa") throw new Error(`Esperado perfil=empresa, actual=${d3.cliente?.perfil_cliente}`);
+    // 4. actualizar perfil → guarda correctamente
+    const clienteId = d1.cliente?.id;
+    const { response: r4, data: d4 } = await requestJson(baseUrl, "PUT", `/clientes/${clienteId}`, {
+      nombre: "TEST Perfil Normal", dni_cuit: `pnorm-${suf}`, activo: true, perfil_cliente: "empresa"
+    }, token);
+    if (!r4.ok) throw new Error(`Update perfil fallo: ${d4?.message}`);
+    if (d4.cliente?.perfil_cliente !== "empresa") throw new Error(`Update perfil: esperado empresa, actual=${d4.cliente?.perfil_cliente}`);
+    // 5. valor inválido → normaliza a "normal"
+    const { response: r5, data: d5 } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "TEST Perfil Invalido", dni_cuit: `pinv-${suf}`, activo: true, perfil_cliente: "invalido_xyz"
+    }, token);
+    if (!r5.ok) throw new Error(`Perfil inválido fallo crear: ${d5?.message}`);
+    if (d5.cliente?.perfil_cliente !== "normal") throw new Error(`Valor inválido debe normalizar a normal, actual=${d5.cliente?.perfil_cliente}`);
+    // GET /clientes devuelve perfil_cliente
+    const { data: lista } = await requestJson(baseUrl, "GET", "/clientes?include_inactive=1", null, token);
+    const clienteEnLista = (lista || []).find(c => Number(c.id) === Number(d2.cliente?.id));
+    if (!clienteEnLista) throw new Error("Cliente empleado no encontrado en listado");
+    if (clienteEnLista.perfil_cliente !== "empleado") throw new Error(`GET /clientes debe devolver perfil_cliente=empleado, actual=${clienteEnLista.perfil_cliente}`);
+  });
 }
 
 async function testDniCuitUnico() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const dni = `20300111222-${Date.now()}`;
-      // Primer cliente con ese DNI → debe crear OK
-      const { response: r1, data: d1 } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "Cliente DNI Test A", dni_cuit: dni, activo: true
-      }, token);
-      if (!r1.ok) throw new Error(`Primer cliente con DNI debe crearse OK, dio ${r1.status}: ${d1?.message}`);
-      // Segundo cliente con mismo DNI → debe fallar (409)
-      const { response: r2 } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "Cliente DNI Test B", dni_cuit: dni, activo: true
-      }, token);
-      if (r2.status !== 409) throw new Error(`Segundo cliente con mismo DNI debe dar 409, dio ${r2.status}`);
-      // Múltiples clientes sin DNI deben permitirse
-      const { response: rA } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "Cliente Sin DNI A", dni_cuit: "", activo: true
-      }, token);
-      const { response: rB } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "Cliente Sin DNI B", dni_cuit: "", activo: true
-      }, token);
-      // Sin DNI vacío puede rechazarse por obligatorio — solo verificamos que no es error de unicidad (409)
-      if (rA.status === 409) throw new Error("Cliente sin DNI no debe fallar por unicidad");
-      if (rB.status === 409) throw new Error("Segundo cliente sin DNI no debe fallar por unicidad");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const dni = `20300111222-${Date.now()}`;
+    // Primer cliente con ese DNI → debe crear OK
+    const { response: r1, data: d1 } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "Cliente DNI Test A", dni_cuit: dni, activo: true
+    }, token);
+    if (!r1.ok) throw new Error(`Primer cliente con DNI debe crearse OK, dio ${r1.status}: ${d1?.message}`);
+    // Segundo cliente con mismo DNI → debe fallar (409)
+    const { response: r2 } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "Cliente DNI Test B", dni_cuit: dni, activo: true
+    }, token);
+    if (r2.status !== 409) throw new Error(`Segundo cliente con mismo DNI debe dar 409, dio ${r2.status}`);
+    // Múltiples clientes sin DNI deben permitirse
+    const { response: rA } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "Cliente Sin DNI A", dni_cuit: "", activo: true
+    }, token);
+    const { response: rB } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "Cliente Sin DNI B", dni_cuit: "", activo: true
+    }, token);
+    // Sin DNI vacío puede rechazarse por obligatorio — solo verificamos que no es error de unicidad (409)
+    if (rA.status === 409) throw new Error("Cliente sin DNI no debe fallar por unicidad");
+    if (rB.status === 409) throw new Error("Segundo cliente sin DNI no debe fallar por unicidad");
+  });
 }
 
 async function testClienteSuspendido() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      // Crear cliente activo normal
-      const { data: cd } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "Cliente Suspendido Test", dni_cuit: `susp-${Date.now()}`,
-        habilita_cuenta_corriente: true, activo: true, suspendido: false
-      }, token);
-      const clienteId = cd.cliente?.id;
-      if (!clienteId) throw new Error("No se pudo crear cliente para test suspendido");
-      // GET /clientes devuelve suspendido
-      const { data: lista } = await requestJson(baseUrl, "GET", "/clientes?include_inactive=1", null, token);
-      const clienteEnLista = lista.find(c => Number(c.id) === Number(clienteId));
-      if (!clienteEnLista) throw new Error("Cliente no encontrado en lista");
-      if (clienteEnLista.suspendido === undefined) throw new Error("Campo suspendido ausente en GET /clientes");
-      assertEqual(Number(clienteEnLista.suspendido), 0, "Cliente no suspendido debe tener suspendido=0");
-      // Suspender el cliente
-      const { response: rEdit, data: editData } = await requestJson(baseUrl, "PUT", `/clientes/${clienteId}`, {
-        nombre: "Cliente Suspendido Test", dni_cuit: `susp-${clienteId}`,
-        habilita_cuenta_corriente: true, activo: true, suspendido: true
-      }, token);
-      if (!rEdit.ok) throw new Error(`PUT /clientes suspender fallo: ${editData?.message}`);
-      assertEqual(Number(editData.cliente?.suspendido), 1, "Cliente editado debe tener suspendido=1");
-      // Venta a cuenta con cliente suspendido → debe dar 403
-      const { response: rVenta } = await requestJson(baseUrl, "POST", `/clientes/${clienteId}/venta-cuenta`, {
-        total: 50, concepto: "Test suspendido", autorizar_excedido: false
-      }, token);
-      if (rVenta.status !== 403) throw new Error(`Venta a cuenta con cliente suspendido debe dar 403, dio ${rVenta.status}`);
-      // Verificar estado frontend: suspendido=1 → "Suspendida"
-      const html = fs.readFileSync(path.join(ROOT, "frontend", "clientes.html"), "utf8");
-      if (!html.includes('"Suspendida"')) throw new Error("Estado 'Suspendida' no encontrado en clientes.html");
-      if (!html.includes('n(c.suspendido)===1')) throw new Error("Condición suspendido===1 no encontrada en estadoCliente");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    // Crear cliente activo normal
+    const { data: cd } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "Cliente Suspendido Test", dni_cuit: `susp-${Date.now()}`,
+      habilita_cuenta_corriente: true, activo: true, suspendido: false
+    }, token);
+    const clienteId = cd.cliente?.id;
+    if (!clienteId) throw new Error("No se pudo crear cliente para test suspendido");
+    // GET /clientes devuelve suspendido
+    const { data: lista } = await requestJson(baseUrl, "GET", "/clientes?include_inactive=1", null, token);
+    const clienteEnLista = lista.find(c => Number(c.id) === Number(clienteId));
+    if (!clienteEnLista) throw new Error("Cliente no encontrado en lista");
+    if (clienteEnLista.suspendido === undefined) throw new Error("Campo suspendido ausente en GET /clientes");
+    assertEqual(Number(clienteEnLista.suspendido), 0, "Cliente no suspendido debe tener suspendido=0");
+    // Suspender el cliente
+    const { response: rEdit, data: editData } = await requestJson(baseUrl, "PUT", `/clientes/${clienteId}`, {
+      nombre: "Cliente Suspendido Test", dni_cuit: `susp-${clienteId}`,
+      habilita_cuenta_corriente: true, activo: true, suspendido: true
+    }, token);
+    if (!rEdit.ok) throw new Error(`PUT /clientes suspender fallo: ${editData?.message}`);
+    assertEqual(Number(editData.cliente?.suspendido), 1, "Cliente editado debe tener suspendido=1");
+    // Venta a cuenta con cliente suspendido → debe dar 403
+    const { response: rVenta } = await requestJson(baseUrl, "POST", `/clientes/${clienteId}/venta-cuenta`, {
+      total: 50, concepto: "Test suspendido", autorizar_excedido: false
+    }, token);
+    if (rVenta.status !== 403) throw new Error(`Venta a cuenta con cliente suspendido debe dar 403, dio ${rVenta.status}`);
+    // Verificar estado frontend: suspendido=1 → "Suspendida"
+    const html = fs.readFileSync(path.join(ROOT, "frontend", "clientes.html"), "utf8");
+    if (!html.includes('"Suspendida"')) throw new Error("Estado 'Suspendida' no encontrado en clientes.html");
+    if (!html.includes('n(c.suspendido)===1')) throw new Error("Condición suspendido===1 no encontrada en estadoCliente");
+  });
 }
 
 async function testEstadoPorVencerFrontend() {
@@ -19954,74 +19869,60 @@ async function testEstadoPorVencerFrontend() {
 }
 
 async function testAutorizarExcedenteRequiereRolSuperior() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const adminToken = await login(baseUrl, "admin", "admin123");
-      // Crear colaborador
-      await requestJson(baseUrl, "POST", "/usuarios", {
-        nombre: "Colab CC Test", usuario: "colab_cc_test",
-        password: "colab123", confirmar_password: "colab123",
-        rol: "colaborador", activo: true
-      }, adminToken);
-      const colaboradorToken = await login(baseUrl, "colab_cc_test", "colab123");
-      // Crear cliente con límite de $100
-      const { data: cd } = await requestJson(baseUrl, "POST", "/clientes", {
-        nombre: "Cliente Limite Test", dni_cuit: `lim-${Date.now()}`,
-        limite_fiado: 100, habilita_cuenta_corriente: true, activo: true
-      }, adminToken);
-      const clienteId = cd.cliente?.id;
-      if (!clienteId) throw new Error("No se pudo crear cliente para test de excedente");
-      // Colaborador + autorizar_excedido=true → debe dar 403
-      const { response: r403 } = await requestJson(baseUrl, "POST", `/clientes/${clienteId}/venta-cuenta`, {
-        total: 200, concepto: "Test excedente colab", autorizar_excedido: true
-      }, colaboradorToken);
-      if (r403.status !== 403) throw new Error(`Colaborador con autorizar_excedido=true debe dar 403, dio ${r403.status}`);
-      // Admin + autorizar_excedido=true → NO debe dar 403 por rol
-      const { response: rAdmin } = await requestJson(baseUrl, "POST", `/clientes/${clienteId}/venta-cuenta`, {
-        total: 200, concepto: "Test excedente admin", autorizar_excedido: true
-      }, adminToken);
-      if (rAdmin.status === 403) throw new Error(`Admin con autorizar_excedido=true NO debe dar 403 por rol`);
-      // Colaborador sin autorizar + dentro del límite → no debe dar 403
-      const { response: rDentro } = await requestJson(baseUrl, "POST", `/clientes/${clienteId}/venta-cuenta`, {
-        total: 50, concepto: "Test dentro limite", autorizar_excedido: false
-      }, colaboradorToken);
-      if (rDentro.status === 403) throw new Error("Colaborador sin autorizar_excedido no debe dar 403");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  await withFreshTestDb(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    // Crear colaborador
+    await requestJson(baseUrl, "POST", "/usuarios", {
+      nombre: "Colab CC Test", usuario: "colab_cc_test",
+      password: "colab123", confirmar_password: "colab123",
+      rol: "colaborador", activo: true
+    }, adminToken);
+    const colaboradorToken = await login(baseUrl, "colab_cc_test", "colab123");
+    // Crear cliente con límite de $100
+    const { data: cd } = await requestJson(baseUrl, "POST", "/clientes", {
+      nombre: "Cliente Limite Test", dni_cuit: `lim-${Date.now()}`,
+      limite_fiado: 100, habilita_cuenta_corriente: true, activo: true
+    }, adminToken);
+    const clienteId = cd.cliente?.id;
+    if (!clienteId) throw new Error("No se pudo crear cliente para test de excedente");
+    // Colaborador + autorizar_excedido=true → debe dar 403
+    const { response: r403 } = await requestJson(baseUrl, "POST", `/clientes/${clienteId}/venta-cuenta`, {
+      total: 200, concepto: "Test excedente colab", autorizar_excedido: true
+    }, colaboradorToken);
+    if (r403.status !== 403) throw new Error(`Colaborador con autorizar_excedido=true debe dar 403, dio ${r403.status}`);
+    // Admin + autorizar_excedido=true → NO debe dar 403 por rol
+    const { response: rAdmin } = await requestJson(baseUrl, "POST", `/clientes/${clienteId}/venta-cuenta`, {
+      total: 200, concepto: "Test excedente admin", autorizar_excedido: true
+    }, adminToken);
+    if (rAdmin.status === 403) throw new Error(`Admin con autorizar_excedido=true NO debe dar 403 por rol`);
+    // Colaborador sin autorizar + dentro del límite → no debe dar 403
+    const { response: rDentro } = await requestJson(baseUrl, "POST", `/clientes/${clienteId}/venta-cuenta`, {
+      total: 50, concepto: "Test dentro limite", autorizar_excedido: false
+    }, colaboradorToken);
+    if (rDentro.status === 403) throw new Error("Colaborador sin autorizar_excedido no debe dar 403");
+  });
 }
 
 async function testGuardarComponentesDuplicadosSumaYDedup() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const catId = await crearCategoria(baseUrl, token, "TEST DedupComp");
-      const ingId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Ing DedupComp", categoria: "TEST DedupComp", categoria_id: catId,
-        stock: 100, maneja_stock: true
-      });
-      // mismo producto_id dos veces: 2 + 3 = 5
-      const compId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Comp DedupComp", categoria: "TEST DedupComp", categoria_id: catId,
-        tipo: "compuesto", maneja_stock: false, stock: 0, precio_venta: 200,
-        componentes: [{ producto_id: ingId, cantidad: 2 }, { producto_id: ingId, cantidad: 3 }],
-        costos_extra: []
-      });
-      const { response, data } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compId}`, null, token);
-      if (!response.ok) throw new Error(`GET /productos_compuestos fallo: ${data?.message}`);
-      assertEqual(data.componentes.length, 1, "Dedup: POST con duplicados debe guardar una sola fila");
-      assertApprox(data.componentes[0].cantidad, 5, "Dedup: cantidad debe sumar los duplicados (2+3=5)", 0.01);
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const catId = await crearCategoria(baseUrl, token, "TEST DedupComp");
+    const ingId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Ing DedupComp", categoria: "TEST DedupComp", categoria_id: catId,
+      stock: 100, maneja_stock: true
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    // mismo producto_id dos veces: 2 + 3 = 5
+    const compId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Comp DedupComp", categoria: "TEST DedupComp", categoria_id: catId,
+      tipo: "compuesto", maneja_stock: false, stock: 0, precio_venta: 200,
+      componentes: [{ producto_id: ingId, cantidad: 2 }, { producto_id: ingId, cantidad: 3 }],
+      costos_extra: []
+    });
+    const { response, data } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compId}`, null, token);
+    if (!response.ok) throw new Error(`GET /productos_compuestos fallo: ${data?.message}`);
+    assertEqual(data.componentes.length, 1, "Dedup: POST con duplicados debe guardar una sola fila");
+    assertApprox(data.componentes[0].cantidad, 5, "Dedup: cantidad debe sumar los duplicados (2+3=5)", 0.01);
+  });
 }
 
 async function testConsolidacionComponentesDuplicadosExistentes() {
@@ -20082,64 +19983,57 @@ async function testLogsTemporalesRemovidos() {
 }
 
 async function testFinanzasResumenV15() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
 
-      // T1: sin fechas, ingresos_periodo existe en la respuesta
-      const r1 = await requestJson(baseUrl, "GET", "/finanzas/resumen", null, token);
-      if (!r1.response.ok) throw new Error(`T1: sin fechas debe OK, dio ${r1.response.status}`);
-      if (r1.data?.ingresos_periodo === undefined) throw new Error("T1: ingresos_periodo debe existir en resumen");
+    // T1: sin fechas, ingresos_periodo existe en la respuesta
+    const r1 = await requestJson(baseUrl, "GET", "/finanzas/resumen", null, token);
+    if (!r1.response.ok) throw new Error(`T1: sin fechas debe OK, dio ${r1.response.status}`);
+    if (r1.data?.ingresos_periodo === undefined) throw new Error("T1: ingresos_periodo debe existir en resumen");
 
-      // T2: con desde/hasta responde OK
-      const r2 = await requestJson(baseUrl, "GET", "/finanzas/resumen?desde=2020-01-01&hasta=2099-12-31", null, token);
-      if (!r2.response.ok) throw new Error(`T2: con fechas debe OK, dio ${r2.response.status}`);
+    // T2: con desde/hasta responde OK
+    const r2 = await requestJson(baseUrl, "GET", "/finanzas/resumen?desde=2020-01-01&hasta=2099-12-31", null, token);
+    if (!r2.response.ok) throw new Error(`T2: con fechas debe OK, dio ${r2.response.status}`);
 
-      // T3: las 4 claves de ingresos_periodo existen
-      const ing3 = r2.data?.ingresos_periodo || {};
-      ["ventas_cobradas", "ventas_pendientes", "ventas_cuenta_corriente", "total_periodo"].forEach((k) => {
-        if (ing3[k] === undefined) throw new Error(`T3: ingresos_periodo debe incluir la clave ${k}`);
-      });
-
-      // T4: total_periodo no doble cuenta — crear 1 cobrada (100) + 1 pendiente (100) = 200
-      await abrirCaja(baseUrl, token, 1000);
-      const catId = await crearCategoria(baseUrl, token, `FinV15 ${Date.now()}`);
-      const prodId = await crearProducto(baseUrl, token, {
-        nombre: "FinV15 prod", categoria_id: catId, precio_venta: 100, stock: 50, maneja_stock: true
-      });
-      const { response: venta1 } = await requestJson(baseUrl, "POST", "/ventas", {
-        tipo: "normal", estado: "cobrada",
-        items: [{ producto_id: prodId, nombre_producto: "FinV15 prod", cantidad: 1, precio_unitario: 100 }],
-        es_cuenta_corriente: false, tipo_cobro: "efectivo", monto_efectivo: 100, monto_debito: 0
-      }, token);
-      if (!venta1.ok) throw new Error(`T4: venta cobrada debe responder OK. Status=${venta1.status}`);
-      const { response: venta2 } = await requestJson(baseUrl, "POST", "/ventas", {
-        tipo: "pendiente", estado: "pendiente",
-        identificador_pendiente: `FinV15-pend-${Date.now()}`,
-        items: [{ producto_id: prodId, nombre_producto: "FinV15 prod", cantidad: 1, precio_unitario: 100 }],
-        es_cuenta_corriente: false
-      }, token);
-      if (!venta2.ok) throw new Error(`T4: venta pendiente debe responder OK. Status=${venta2.status}`);
-      const r4 = await requestJson(baseUrl, "GET", "/finanzas/resumen?desde=2020-01-01&hasta=2099-12-31", null, token);
-      const ing4 = r4.data?.ingresos_periodo || {};
-      assertEqual(ing4.total_periodo, 200, "T4: total_periodo debe ser suma directa sin doble conteo (100+100=200)");
-      assertEqual(ing4.ventas_cobradas, 100, "T4: ventas_cobradas debe ser 100");
-      assertEqual(ing4.ventas_pendientes, 100, "T4: ventas_pendientes debe ser 100");
-
-      // T5: pasivos no duplica pagos con/sin proveedor — con BD limpia ambos son 0
-      const r5 = await requestJson(baseUrl, "GET", "/finanzas/resumen", null, token);
-      const pas = r5.data?.pasivos || {};
-      if (pas.pagos_pendientes === undefined) throw new Error("T5: pasivos.pagos_pendientes debe existir");
-      if (pas.proveedores_pendientes === undefined) throw new Error("T5: pasivos.proveedores_pendientes debe existir");
-      assertEqual(pas.pagos_pendientes, 0, "T5: pagos_pendientes sin pagos debe ser 0");
-      assertEqual(pas.proveedores_pendientes, 0, "T5: proveedores_pendientes sin pagos debe ser 0");
+    // T3: las 4 claves de ingresos_periodo existen
+    const ing3 = r2.data?.ingresos_periodo || {};
+    ["ventas_cobradas", "ventas_pendientes", "ventas_cuenta_corriente", "total_periodo"].forEach((k) => {
+      if (ing3[k] === undefined) throw new Error(`T3: ingresos_periodo debe incluir la clave ${k}`);
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+
+    // T4: total_periodo no doble cuenta — crear 1 cobrada (100) + 1 pendiente (100) = 200
+    await abrirCaja(baseUrl, token, 1000);
+    const catId = await crearCategoria(baseUrl, token, `FinV15 ${Date.now()}`);
+    const prodId = await crearProducto(baseUrl, token, {
+      nombre: "FinV15 prod", categoria_id: catId, precio_venta: 100, stock: 50, maneja_stock: true
+    });
+    const { response: venta1 } = await requestJson(baseUrl, "POST", "/ventas", {
+      tipo: "normal", estado: "cobrada",
+      items: [{ producto_id: prodId, nombre_producto: "FinV15 prod", cantidad: 1, precio_unitario: 100 }],
+      es_cuenta_corriente: false, tipo_cobro: "efectivo", monto_efectivo: 100, monto_debito: 0
+    }, token);
+    if (!venta1.ok) throw new Error(`T4: venta cobrada debe responder OK. Status=${venta1.status}`);
+    const { response: venta2 } = await requestJson(baseUrl, "POST", "/ventas", {
+      tipo: "pendiente", estado: "pendiente",
+      identificador_pendiente: `FinV15-pend-${Date.now()}`,
+      items: [{ producto_id: prodId, nombre_producto: "FinV15 prod", cantidad: 1, precio_unitario: 100 }],
+      es_cuenta_corriente: false
+    }, token);
+    if (!venta2.ok) throw new Error(`T4: venta pendiente debe responder OK. Status=${venta2.status}`);
+    const r4 = await requestJson(baseUrl, "GET", "/finanzas/resumen?desde=2020-01-01&hasta=2099-12-31", null, token);
+    const ing4 = r4.data?.ingresos_periodo || {};
+    assertEqual(ing4.total_periodo, 200, "T4: total_periodo debe ser suma directa sin doble conteo (100+100=200)");
+    assertEqual(ing4.ventas_cobradas, 100, "T4: ventas_cobradas debe ser 100");
+    assertEqual(ing4.ventas_pendientes, 100, "T4: ventas_pendientes debe ser 100");
+
+    // T5: pasivos no duplica pagos con/sin proveedor — con BD limpia ambos son 0
+    const r5 = await requestJson(baseUrl, "GET", "/finanzas/resumen", null, token);
+    const pas = r5.data?.pasivos || {};
+    if (pas.pagos_pendientes === undefined) throw new Error("T5: pasivos.pagos_pendientes debe existir");
+    if (pas.proveedores_pendientes === undefined) throw new Error("T5: pasivos.proveedores_pendientes debe existir");
+    assertEqual(pas.pagos_pendientes, 0, "T5: pagos_pendientes sin pagos debe ser 0");
+    assertEqual(pas.proveedores_pendientes, 0, "T5: proveedores_pendientes sin pagos debe ser 0");
+  });
 }
 
 async function testFinanzasResumen20() {
@@ -20340,44 +20234,37 @@ async function testRecetaSnapshotAnulacionCobradaLimpia() {
 }
 
 async function testEndpointRecetaSnapshotVenta() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const catId = await crearCategoria(baseUrl, token, `SnapEP ${Date.now()}`);
-      const insumoId = await crearProducto(baseUrl, token, {
-        nombre: "SnapEP insumo", categoria_id: catId, precio_venta: 50, stock: 200, maneja_stock: true
-      });
-      const { data: compData } = await requestJson(baseUrl, "POST", "/productos_compuestos", {
-        nombre: "SnapEP compuesto", categoria_id: catId,
-        tipo: "compuesto", maneja_stock: false, stock: 0,
-        precio_venta: 150, precio_compra: 0, costo_final: 0,
-        componentes: [{ producto_id: insumoId, cantidad: 0.5 }],
-        costos_extra: [], usuario: "admin"
-      }, token);
-      const compId = compData.id;
-      if (!compId) throw new Error("SnapEP: compuesto no creado");
-      await abrirCaja(baseUrl, token, 500);
-      const { response: vRes, data: vData } = await requestJson(baseUrl, "POST", "/ventas", {
-        tipo: "normal", estado: "cobrada",
-        items: [{ producto_id: compId, nombre_producto: "SnapEP compuesto", cantidad: 2, precio_unitario: 150 }],
-        es_cuenta_corriente: false, tipo_cobro: "efectivo", monto_efectivo: 300, monto_debito: 0
-      }, token);
-      if (!vRes.ok) throw new Error(`SnapEP: venta debe OK, dio ${vRes.status}`);
-      const ventaId = vData.venta_id;
-      const { response: snapR, data: snapData } = await requestJson(baseUrl, "GET", `/ventas/${ventaId}/receta-snapshot`, null, token);
-      if (!snapR.ok) throw new Error(`SnapEP: GET receta-snapshot debe OK, dio ${snapR.status}`);
-      if (!Array.isArray(snapData.snapshots)) throw new Error("SnapEP: snapshots debe ser array");
-      if (!snapData.snapshots.length) throw new Error("SnapEP: snapshots no debe estar vacío");
-      const snap = snapData.snapshots[0];
-      if (Number(snap.componente_id) !== Number(insumoId)) throw new Error(`SnapEP: componente_id esperado ${insumoId}, actual ${snap.componente_id}`);
-      assertEqual(snap.cantidad_total, 1.0, "SnapEP: cantidad_total debe ser 0.5 * 2 = 1.0");
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const catId = await crearCategoria(baseUrl, token, `SnapEP ${Date.now()}`);
+    const insumoId = await crearProducto(baseUrl, token, {
+      nombre: "SnapEP insumo", categoria_id: catId, precio_venta: 50, stock: 200, maneja_stock: true
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const { data: compData } = await requestJson(baseUrl, "POST", "/productos_compuestos", {
+      nombre: "SnapEP compuesto", categoria_id: catId,
+      tipo: "compuesto", maneja_stock: false, stock: 0,
+      precio_venta: 150, precio_compra: 0, costo_final: 0,
+      componentes: [{ producto_id: insumoId, cantidad: 0.5 }],
+      costos_extra: [], usuario: "admin"
+    }, token);
+    const compId = compData.id;
+    if (!compId) throw new Error("SnapEP: compuesto no creado");
+    await abrirCaja(baseUrl, token, 500);
+    const { response: vRes, data: vData } = await requestJson(baseUrl, "POST", "/ventas", {
+      tipo: "normal", estado: "cobrada",
+      items: [{ producto_id: compId, nombre_producto: "SnapEP compuesto", cantidad: 2, precio_unitario: 150 }],
+      es_cuenta_corriente: false, tipo_cobro: "efectivo", monto_efectivo: 300, monto_debito: 0
+    }, token);
+    if (!vRes.ok) throw new Error(`SnapEP: venta debe OK, dio ${vRes.status}`);
+    const ventaId = vData.venta_id;
+    const { response: snapR, data: snapData } = await requestJson(baseUrl, "GET", `/ventas/${ventaId}/receta-snapshot`, null, token);
+    if (!snapR.ok) throw new Error(`SnapEP: GET receta-snapshot debe OK, dio ${snapR.status}`);
+    if (!Array.isArray(snapData.snapshots)) throw new Error("SnapEP: snapshots debe ser array");
+    if (!snapData.snapshots.length) throw new Error("SnapEP: snapshots no debe estar vacío");
+    const snap = snapData.snapshots[0];
+    if (Number(snap.componente_id) !== Number(insumoId)) throw new Error(`SnapEP: componente_id esperado ${insumoId}, actual ${snap.componente_id}`);
+    assertEqual(snap.cantidad_total, 1.0, "SnapEP: cantidad_total debe ser 0.5 * 2 = 1.0");
+  });
 }
 
 async function testRecetaSnapshotGuardadoEnVenta() {
@@ -20892,29 +20779,22 @@ async function testRecetaSnapshotGuardadoEnVenta() {
 });
 
 async function testVentaNormalSigueOK() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      await abrirCaja(baseUrl, token, 1000);
-      const catId = await crearCategoria(baseUrl, token, "TEST NormalSigueOK");
-      const prodId = await crearProducto(baseUrl, token, {
-        nombre: "TEST prod normal", categoria_id: catId,
-        precio_venta: 100, stock: 50, maneja_stock: true
-      });
-      const { response } = await requestJson(baseUrl, "POST", "/ventas", {
-        tipo: "normal", estado: "registrada",
-        items: [{ producto_id: prodId, nombre_producto: "TEST prod normal", cantidad: 1, precio_unitario: 100 }],
-        es_cuenta_corriente: false,
-        tipo_cobro: "efectivo", monto_efectivo: 100, monto_debito: 0
-      }, token);
-      if (!response.ok) throw new Error(`testVentaNormalSigueOK: venta normal debe OK, dio ${response.status}`);
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    await abrirCaja(baseUrl, token, 1000);
+    const catId = await crearCategoria(baseUrl, token, "TEST NormalSigueOK");
+    const prodId = await crearProducto(baseUrl, token, {
+      nombre: "TEST prod normal", categoria_id: catId,
+      precio_venta: 100, stock: 50, maneja_stock: true
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const { response } = await requestJson(baseUrl, "POST", "/ventas", {
+      tipo: "normal", estado: "registrada",
+      items: [{ producto_id: prodId, nombre_producto: "TEST prod normal", cantidad: 1, precio_unitario: 100 }],
+      es_cuenta_corriente: false,
+      tipo_cobro: "efectivo", monto_efectivo: 100, monto_debito: 0
+    }, token);
+    if (!response.ok) throw new Error(`testVentaNormalSigueOK: venta normal debe OK, dio ${response.status}`);
+  });
 }
 
 async function testVentaCCDesdePostVentasAplicaReglas() {
