@@ -111,6 +111,15 @@ function runSql(dbPath, sql, params = []) {
   });
 }
 
+async function configurarClaveAutorizacionTest(dbPath) {
+  await runSql(
+    dbPath,
+    `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)
+     VALUES ('autorizacion_clave_maestra', '"1234"', 'usuarios_permisos', datetime('now'))
+     ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, seccion = excluded.seccion, actualizado_en = excluded.actualizado_en`
+  );
+}
+
 function allSql(dbPath, sql, params = []) {
   return new Promise((resolve, reject) => {
     const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY);
@@ -845,11 +854,16 @@ async function testAnularRecetaSinStockCancelaPendienteSinReponerAprobado() {
 }
 
 async function testPermisosColaborador() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await configurarClaveAutorizacionTest(dbPath);
       const adminToken = await login(baseUrl, "admin", "admin123");
+      const categoriaId = await crearCategoria(baseUrl, adminToken, "TEST Permisos Colaborador");
+      const productoId = await crearProducto(baseUrl, adminToken, {
+        nombre: "TEST Producto Permisos Colaborador",
+        categoria: "TEST Permisos Colaborador",
+        categoria_id: categoriaId,
+        stock: 10
+      });
       const configAdmin = await requestJson(baseUrl, "GET", "/configuracion", null, adminToken);
       if (!configAdmin.data?.config?.permisos_acciones_roles?.caja?.colaborador) {
         throw new Error("La configuracion debe exponer permisos para rol colaborador");
@@ -888,7 +902,7 @@ async function testPermisosColaborador() {
       const lecturaCaja = await requestJson(baseUrl, "GET", "/caja/resumen", null, colaboradorToken);
       if (!lecturaCaja.response.ok) throw new Error("El colaborador debe poder acceder a caja");
 
-      const stock = await requestJson(baseUrl, "POST", "/productos/3/movimientos-stock", {
+      const stock = await requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, {
         tipo_movimiento: "ingreso",
         cantidad: 1,
         motivo: "TEST colaborador bloqueado",
@@ -915,10 +929,7 @@ async function testPermisosColaborador() {
 
       const reporteStockAdmin = await requestJson(baseUrl, "GET", "/reportes/stock", null, adminToken);
       if (!reporteStockAdmin.response.ok) throw new Error("Admin debe acceder al reporte sensible de stock");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testFinanzasResumenBackendV1() {
