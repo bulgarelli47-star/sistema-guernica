@@ -933,10 +933,7 @@ async function testPermisosColaborador() {
 }
 
 async function testFinanzasResumenBackendV1() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
       await requestJson(baseUrl, "POST", "/usuarios", {
         nombre: "Colaborador Finanzas",
@@ -967,10 +964,7 @@ async function testFinanzasResumenBackendV1() {
       ["posicion_liquida", "masa_monetaria_bruta", "patrimonio_operativo_estimado", "deuda_neta"].forEach((clave) => {
         if (data.resultado?.[clave] === undefined) throw new Error(`resultado debe devolver ${clave}`);
       });
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testProduccionV1DominioSeparado() {
@@ -19936,11 +19930,7 @@ async function testFinanzasResumenV15() {
 }
 
 async function testFinanzasResumen20() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
 
       // T1: shape anterior sigue existiendo
@@ -19982,6 +19972,12 @@ async function testFinanzasResumen20() {
         es_cuenta_corriente: false, tipo_cobro: "efectivo", monto_efectivo: 100, monto_debito: 0
       }, token);
       if (!ventaRes.ok) throw new Error(`T5: venta debe responder OK. Status=${ventaRes.status}`);
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      const cuentaCobroEfectivo = await crearCuentaCobro(baseUrl, token, {
+        tipo_pago_codigo: "efectivo",
+        tipo_cuenta: "caja",
+        cuenta_destino_id: cuentaDestinoEfectivo.id
+      });
       // proveedor + pago ejecutado: $40
       const { data: prvData } = await requestJson(baseUrl, "POST", "/proveedores", {
         nombre: `Fin20 prov ${Date.now()}`, tipo_impacto: "costo_fijo_operativo", activo: true
@@ -19992,7 +19988,9 @@ async function testFinanzasResumen20() {
         proveedor_id: prvId, concepto: "Fin20 pago ejecutado",
         monto_total: 40, tipo_pago: "efectivo",
         monto_efectivo: 40, monto_debito: 0,
-        fecha: hoy, hora: "12:00:00", estado: "registrado"
+        fecha: hoy, hora: "12:00:00", estado: "registrado",
+        cuenta_cobro_id: cuentaCobroEfectivo.id,
+        cuenta_destino_id: cuentaDestinoEfectivo.id
       }, token);
       if (!pagoRes.ok) throw new Error(`T5: pago debe responder OK. Status=${pagoRes.status}`);
       // pago ejecutado SIN proveedor: $15 (alquiler, gastos varios)
@@ -20000,7 +19998,9 @@ async function testFinanzasResumen20() {
         concepto: "Fin20 pago sin proveedor",
         monto_total: 15, tipo_pago: "efectivo",
         monto_efectivo: 15, monto_debito: 0,
-        fecha: hoy, hora: "12:00:01", estado: "registrado"
+        fecha: hoy, hora: "12:00:01", estado: "registrado",
+        cuenta_cobro_id: cuentaCobroEfectivo.id,
+        cuenta_destino_id: cuentaDestinoEfectivo.id
       }, token);
       if (!pagoSinPrvRes.ok) throw new Error(`T5: pago sin proveedor debe responder OK. Status=${pagoSinPrvRes.status}`);
       const r5 = await requestJson(baseUrl, "GET", "/finanzas/resumen?desde=2020-01-01&hasta=2099-12-31", null, token);
@@ -20016,10 +20016,7 @@ async function testFinanzasResumen20() {
       const tipoFijo = pas5.por_tipo_impacto?.find((t) => t.tipo_impacto === "costo_fijo_operativo");
       if (!tipoFijo) throw new Error("T5: por_tipo_impacto debe incluir costo_fijo_operativo");
       assertEqual(tipoFijo.total_pagado, 40, "T5: costo_fijo_operativo.total_pagado debe ser 40");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testRecetaSnapshotNoGeneraParaProductoSimple() {
