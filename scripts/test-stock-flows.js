@@ -659,6 +659,23 @@ function ventaSimplePayload(overrides = {}) {
   };
 }
 
+function ventaProductoReportePayload(producto, opciones = {}) {
+  const {
+    cantidad = 2,
+    precioUnitario = producto.precio,
+    ...overrides
+  } = opciones;
+  return ventaSimplePayload({
+    ...overrides,
+    items: [{
+      producto_id: producto.productoId,
+      nombre_producto: producto.nombre,
+      cantidad,
+      precio_unitario: precioUnitario
+    }]
+  });
+}
+
 function assertEqual(actual, expected, message) {
   if (Number(actual) !== Number(expected)) {
     throw new Error(`${message}. Esperado=${expected}, actual=${actual}`);
@@ -2619,17 +2636,25 @@ async function testVentaNormalConRecargoDuplicadoUsaSubtotalComercial() {
 }
 
 async function testCuentaCorrienteAnuladaNoBloqueaDuplicado() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await configurarClaveAutorizacionTest(dbPath);
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const sufijo = Date.now().toString().slice(-8);
+      const categoriaNombre = `TEST CC Duplicado ${sufijo}`;
+      const categoriaId = await crearCategoria(baseUrl, token, categoriaNombre);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Producto CC Duplicado ${sufijo}`,
+        codigo: `CCDUP-${sufijo}`,
+        categoria: categoriaNombre,
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        stock: 20,
+        maneja_stock: true
+      });
       const clienteResult = await requestJson(baseUrl, "POST", "/clientes", {
         nombre: "Cliente CC Duplicado Test",
-        dni_cuit: `ccdup-${Date.now().toString().slice(-8)}`,
+        dni_cuit: `ccdup-${sufijo}`,
         tipo_persona: "fisica",
         habilita_cuenta_corriente: true,
         activo: true
@@ -2638,7 +2663,13 @@ async function testCuentaCorrienteAnuladaNoBloqueaDuplicado() {
       const payload = ventaSimplePayload({
         es_cuenta_corriente: true,
         cliente_id: clienteResult.data.cliente.id,
-        tipo_cobro: undefined
+        tipo_cobro: undefined,
+        items: [{
+          producto_id: productoId,
+          nombre_producto: `TEST Producto CC Duplicado ${sufijo}`,
+          cantidad: 2,
+          precio_unitario: 100
+        }]
       });
 
       const venta = await requestJson(baseUrl, "POST", "/ventas", payload, token);
@@ -2659,10 +2690,7 @@ async function testCuentaCorrienteAnuladaNoBloqueaDuplicado() {
         throw new Error(`Cuenta corriente anulada no debe bloquear repeticion. Mensaje=${repetida.data?.message || "sin mensaje"}`);
       }
       if (!repetida.response.ok) throw new Error(`Cuenta corriente repetida tras anulacion fallo: ${repetida.data?.message || repetida.response.status}`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testProductoCompuestoGeneraAjusteTeorico() {
@@ -4918,12 +4946,9 @@ async function testVentaSnapshotsHistoricosF2CTienda() {
 }
 
 async function testCuentaCorrienteSeparaVentaHistoricaYDeudaF2D() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
+      await configurarClaveAutorizacionTest(dbPath);
       await abrirCaja(baseUrl, token, 1000);
       const sufijo = Date.now().toString().slice(-8);
       const categoriaId = await crearCategoria(baseUrl, token, `TEST F2D ${sufijo}`, { margen_porcentaje: 0 });
@@ -5062,10 +5087,7 @@ async function testCuentaCorrienteSeparaVentaHistoricaYDeudaF2D() {
       if (!reporteVentas.response.ok) throw new Error(`Reporte ventas F2D fallo: ${reporteVentas.data?.message || reporteVentas.response.status}`);
       assertApprox(reporteVentas.data.resumen.total_cuenta_corriente, 3500, "F2D reporte historico debe usar total original de CC no deuda recalculada");
       assertApprox(reporteVentas.data.resumen.saldo_cuenta_corriente, 0, "F2D reporte de deuda debe usar saldo_pendiente vigente");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testResumenFiscalHistoricoF2EHelper() {
@@ -11696,17 +11718,25 @@ async function testModificadoresEtapa0SchemaYReporteNeutro() {
 }
 
 async function testCuentaCorrienteConservaDetalleHistoricoSinModificadores() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const sufijo = Date.now().toString().slice(-8);
+      const categoriaNombre = `TEST CC Historico ${sufijo}`;
+      const categoriaId = await crearCategoria(baseUrl, token, categoriaNombre);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Producto CC Historico ${sufijo}`,
+        codigo: `CCHIST-${sufijo}`,
+        categoria: categoriaNombre,
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        stock: 20,
+        maneja_stock: true
+      });
 
       const clienteResult = await requestJson(baseUrl, "POST", "/clientes", {
         nombre: "Cliente CC Modificadores Etapa 0",
-        dni_cuit: `30${Date.now().toString().slice(-8)}`,
+        dni_cuit: `30${sufijo}`,
         tipo_persona: "fisica",
         habilita_cuenta_corriente: true,
         activo: true
@@ -11716,20 +11746,23 @@ async function testCuentaCorrienteConservaDetalleHistoricoSinModificadores() {
       const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         es_cuenta_corriente: true,
         cliente_id: clienteResult.data.cliente.id,
-        tipo_cobro: undefined
+        tipo_cobro: undefined,
+        items: [{
+          producto_id: productoId,
+          nombre_producto: `TEST Producto CC Historico ${sufijo}`,
+          cantidad: 2,
+          precio_unitario: 100
+        }]
       }), token);
       if (!venta.response.ok) throw new Error(`Venta cuenta corriente sin modificadores fallo: ${venta.data?.message || venta.response.status}`);
 
-      await runSql(dbPath, "UPDATE productos SET precio_venta = 999 WHERE id = 11");
+      await runSql(dbPath, "UPDATE productos SET precio_venta = 999 WHERE id = ?", [productoId]);
 
       const detalle = await getVentaDetalle(baseUrl, token, venta.data.venta_id);
       assertApprox(detalle.venta.total, 200, "Cuenta corriente debe conservar total historico de la venta creada");
       assertApprox(detalle.items[0].precio_unitario, 100, "Cuenta corriente debe conservar precio_unitario historico en detalle_ventas");
       assertApprox(detalle.items[0].subtotal, 200, "Cuenta corriente debe conservar subtotal historico en detalle_ventas");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testComboActualGeneraAjusteTeoricoSinModificadores() {
@@ -17289,11 +17322,7 @@ async function testCajaCierreDigitalConfirmadoUsuario() {
 }
 
 async function testConciliacionManualPorCuentaDestino() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       const apertura = await abrirCaja(baseUrl, token, 1000);
       // La apertura genera continuidad digital automatica para cuentas digitales activas
@@ -17303,6 +17332,7 @@ async function testConciliacionManualPorCuentaDestino() {
         "SELECT COUNT(*) AS total FROM conciliaciones_cuentas_destino WHERE caja_id = ?",
         [apertura.id]
       ))[0].total;
+      const productoTestConciliacionDestino = await crearProductoParaReporteVentas(baseUrl, token, "ConciliacionCuentaDestino");
       const mercadoPago = await crearCuentaDestino(baseUrl, token, {
         nombre: "Mercado Pago conciliacion destino TEST",
         tipo_destino: "billetera",
@@ -17324,13 +17354,13 @@ async function testConciliacionManualPorCuentaDestino() {
         cuenta_destino_id: banco.id
       });
 
-      const ventaMp = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaMp = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTestConciliacionDestino, {
         tipo_cobro: "debito",
         cuenta_cobro_id: cuentaMp.id
       }), token);
       if (!ventaMp.response.ok) throw new Error(`Venta MP conciliacion destino fallo: ${ventaMp.data?.message || ventaMp.response.status}`);
       await delay(1100);
-      const ventaBanco = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaBanco = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTestConciliacionDestino, {
         tipo_cobro: "transferencia",
         cuenta_cobro_id: cuentaBanco.id
       }), token);
@@ -17389,10 +17419,7 @@ async function testConciliacionManualPorCuentaDestino() {
       if (!getCerrada.conciliaciones.some((item) => Number(item.cuenta_destino_id) === Number(mercadoPago.id))) {
         throw new Error("GET conciliaciones destino de ultima caja cerrada debe conservar conciliacion Mercado Pago");
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCajaResumenPorCuentaCobro() {
