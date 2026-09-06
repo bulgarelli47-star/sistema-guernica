@@ -1929,10 +1929,7 @@ async function testResolverAjustePendienteConCuentaLocal() {
 }
 
 async function testClientesTipoClienteClasificacion() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       const sufijo = Date.now().toString().slice(-8);
 
@@ -1992,10 +1989,7 @@ async function testClientesTipoClienteClasificacion() {
       const listadoActualizado = listado.data.find((cliente) => Number(cliente.id) === Number(negocio.data.cliente.id));
       if (listadoActualizado.tipo_cliente !== "colaborador") throw new Error(`GET /clientes debe devolver tipo_cliente actualizado. Actual=${listadoActualizado.tipo_cliente}`);
       if (listadoActualizado.tipo_cuenta_corriente !== "empresa") throw new Error(`GET /clientes debe devolver tipo_cuenta_corriente actualizado normalizado. Actual=${listadoActualizado.tipo_cuenta_corriente}`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testClientesHistorialProductosComprados() {
@@ -2105,11 +2099,7 @@ async function testClientesHistorialProductosComprados() {
 }
 
 async function testClientesDeudaActualizadaComparacionSegura() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       const sufijo = Date.now().toString().slice(-8);
 
@@ -2124,6 +2114,16 @@ async function testClientesDeudaActualizadaComparacionSegura() {
       const clienteId = cliente.data.cliente.id;
 
       const categoriaId = await crearCategoria(baseUrl, token, `TEST Deuda Actualizada ${sufijo}`);
+      const productoActivoId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Producto Activo Deuda ${sufijo}`,
+        codigo: `PADA-${sufijo}`,
+        categoria: `TEST Deuda Actualizada ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        stock: 10,
+        maneja_stock: true,
+        activo: true
+      });
       const productoInactivoId = await crearProducto(baseUrl, token, {
         nombre: `TEST Producto Inactivo Deuda ${sufijo}`,
         codigo: `PIDA-${sufijo}`,
@@ -2134,7 +2134,7 @@ async function testClientesDeudaActualizadaComparacionSegura() {
         maneja_stock: true,
         activo: false
       });
-      await runSql(dbPath, "UPDATE productos SET precio_venta = 150, activo = 1 WHERE id = 11");
+      await runSql(dbPath, "UPDATE productos SET precio_venta = 150, activo = 1 WHERE id = ?", [productoActivoId]);
       await runSql(dbPath, "UPDATE productos SET precio_venta = 200, activo = 0 WHERE id = ?", [productoInactivoId]);
 
       const insertarVentaCuenta = async ({ fecha, estado = "cuenta_corriente_pendiente", total, saldo, productoId, nombre, cantidad, precio, subtotal }) => {
@@ -2158,8 +2158,8 @@ async function testClientesDeudaActualizadaComparacionSegura() {
         fecha: "2026-02-01",
         total: 200,
         saldo: 200,
-        productoId: 11,
-        nombre: "Coca Cola 1250",
+        productoId: productoActivoId,
+        nombre: `TEST Producto Activo Deuda ${sufijo}`,
         cantidad: 2,
         precio: 100,
         subtotal: 200
@@ -2179,8 +2179,8 @@ async function testClientesDeudaActualizadaComparacionSegura() {
         estado: "anulado",
         total: 100,
         saldo: 100,
-        productoId: 11,
-        nombre: "Coca Cola 1250",
+        productoId: productoActivoId,
+        nombre: `TEST Producto Activo Deuda ${sufijo}`,
         cantidad: 1,
         precio: 100,
         subtotal: 100
@@ -2190,8 +2190,8 @@ async function testClientesDeudaActualizadaComparacionSegura() {
         estado: "cobrada",
         total: 100,
         saldo: 0,
-        productoId: 11,
-        nombre: "Coca Cola 1250",
+        productoId: productoActivoId,
+        nombre: `TEST Producto Activo Deuda ${sufijo}`,
         cantidad: 1,
         precio: 100,
         subtotal: 100
@@ -2204,23 +2204,17 @@ async function testClientesDeudaActualizadaComparacionSegura() {
       assertApprox(comparacion.data.deuda_actualizada, 380, "La deuda actualizada debe usar precio actual solo de productos activos");
       assertApprox(comparacion.data.diferencia, 100, "La diferencia debe ser actualizada menos historica");
       assertEqual(comparacion.data.productos_afectados.length, 1, "Solo el producto activo con precio cambiado debe figurar como afectado");
-      assertEqual(comparacion.data.productos_afectados[0].producto_id, 11, "El producto afectado debe ser el activo actualizado");
+      assertEqual(comparacion.data.productos_afectados[0].producto_id, productoActivoId, "El producto afectado debe ser el activo actualizado");
 
       const inexistente = await requestJson(baseUrl, "GET", "/clientes/999999/deuda-actualizada", null, token);
       assertEqual(inexistente.response.status, 404, "Cliente inexistente debe devolver 404 en deuda actualizada");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testClientesAplicarRecalculoDeudaControlado() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
+      await configurarClaveAutorizacionTest(dbPath);
       const sufijo = Date.now().toString().slice(-8);
 
       const crearClienteRecalculo = async (nombre) => {
@@ -2396,10 +2390,7 @@ async function testClientesAplicarRecalculoDeudaControlado() {
       const detalleDespues = (await allSql(dbPath, "SELECT precio_unitario, subtotal FROM detalle_ventas WHERE venta_id = ?", [ventaActivaId]))[0];
       assertApprox(detalleDespues.precio_unitario, detalleAntes.precio_unitario, "No debe modificar precio_unitario historico");
       assertApprox(detalleDespues.subtotal, detalleAntes.subtotal, "No debe modificar subtotal historico");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testVentaContadoImpactaStockYCaja() {
