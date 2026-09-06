@@ -3732,11 +3732,7 @@ async function testResumenReporteRespetaFiltroFechas() {
 }
 
 async function testReporteStockValorizaSoloStockFisico() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       const sufijo = Date.now().toString().slice(-8);
       const categoriaId = await crearCategoria(baseUrl, token, `TEST Reporte Stock ${sufijo}`);
@@ -3807,10 +3803,7 @@ async function testReporteStockValorizaSoloStockFisico() {
       }
       assertApprox(rendimiento.stock_valorizado_fisico, 0, "Producto sin stock real no debe tener valorizacion fisica");
       assertApprox(rendimiento.valor_rendimiento_estimado, 99900, "Producto sin stock real debe quedar como estimacion separada");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testConfiguracionCodigoAutomaticoProductos() {
@@ -3867,12 +3860,7 @@ async function testConfiguracionCodigoAutomaticoProductos() {
 }
 
 async function testProductoModeloFiscalF1ACompatibilidad() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       const sufijo = Date.now().toString().slice(-8);
       const categoriaId = await crearCategoria(baseUrl, token, `TEST Fiscal ${sufijo}`);
@@ -4138,10 +4126,7 @@ async function testProductoModeloFiscalF1ACompatibilidad() {
         throw new Error(`Valor legacy ambiguo no debe convertir modelo_fiscal. Actual=${legacyIibb.modelo_fiscal}`);
       }
       assertEqual(legacyIibb.iva_venta_alicuota ?? null, null, "Valor legacy ambiguo no debe convertirse a IVA venta");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testProductoMotorFiscalNormalizadoF1B1() {
@@ -4760,11 +4745,7 @@ async function testVentaSnapshotsHistoricosF2CNormalLegacyModificadores() {
 }
 
 async function testVentaSnapshotsHistoricosF2CCuentaCorrienteYPendientes() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
       const sufijo = Date.now().toString().slice(-8);
@@ -4876,18 +4857,11 @@ async function testVentaSnapshotsHistoricosF2CCuentaCorrienteYPendientes() {
       const ventaPendRecargo = await getVentaDb(dbPath, pendienteRecargo.data.venta_id);
       assertApprox(ventaPendRecargo.total, 110, "F2C pendiente cobrado con recargo debe mantener total operativo con recargo");
       assertApprox(ventaPendRecargo.total_venta_original, 110, "F2C pendiente cobrado con recargo debe congelar total_venta_original con recargo");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testVentaSnapshotsHistoricosF2CTienda() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       const sufijo = Date.now().toString().slice(-8);
       const categoriaId = await crearCategoria(baseUrl, token, `TEST F2C Tienda ${sufijo}`, { margen_porcentaje: 50 });
@@ -4923,10 +4897,7 @@ async function testVentaSnapshotsHistoricosF2CTienda() {
       assertApprox(detalle.precio_unitario, 100, "F2C tienda debe conservar precio_unitario_snapshot del pedido");
       assertApprox(detalle.subtotal_neto_snapshot, 165.29, "F2C tienda debe calcular snapshot fiscal con precio snapshot");
       assertApprox(detalle.iva_monto_snapshot, 34.71, "F2C tienda debe calcular IVA con precio snapshot");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCuentaCorrienteSeparaVentaHistoricaYDeudaF2D() {
@@ -9148,8 +9119,9 @@ async function testStockDedupConcurrenciaManualRecepcionF3E3E3() {
         registrarManualF3E3E3(baseUrl, token, fx.productoId, 3, "f3e3e3-concurrente-manual"),
         recibirCompraDesdeStockF3E3E3(baseUrl, token, fx.item.id, 3, "f3e3e3-concurrente-recepcion", false)
       ]);
-      const statuses = [manual.response.status, recepcion.response.status].sort((a, b) => a - b).join(",");
-      assertSame(statuses, "200,409", "F3E3E3 concurrencia manual+recepcion aplica uno y advierte el otro");
+      const manualGana = manual.response.status === 200 && recepcion.response.status === 409;
+      const recepcionGana = manual.response.status === 409 && recepcion.response.status === 201;
+      assertSame(manualGana || recepcionGana, true, "F3E3E3 concurrencia manual+recepcion aplica uno y advierte el otro");
       const advertido = [manual, recepcion].find((r) => r.response.status === 409);
       assertSame(advertido.data.code, "POSSIBLE_DUPLICATE_STOCK_INGRESS", "F3E3E3 concurrencia devuelve warning estructurado");
       assertApprox((await getProduct(baseUrl, token, fx.productoId)).stock, 53, "F3E3E3 concurrencia no aplica ambos silenciosamente");
@@ -10636,11 +10608,7 @@ function setVistaOperativaStatement(modulo, rol, valor) {
 // reducida -- pero SIN exponer ningun monto de costo real. La regla es especifica a
 // *Pagos=completa, no una ampliacion de permisos de Stock (Casos A-D pedidos explicitamente).
 async function testProductosContratoPrecioCompraIncluyeIvaF3E2() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
       const categoriaId = await crearCategoria(baseUrl, adminToken, `Contrato F3E2 ${Date.now()}`);
       const productoId = await crearProducto(baseUrl, adminToken, {
@@ -10696,10 +10664,7 @@ async function testProductosContratoPrecioCompraIncluyeIvaF3E2() {
       }
       if (!("precio_compra_incluye_iva" in casoC)) throw new Error("Caso C: Stock reducido + Pagos completo debe exponer precio_compra_incluye_iva");
       assertEqual(Number(casoC.precio_compra_incluye_iva), 1, "Caso C: precio_compra_incluye_iva=1 llega intacto con Stock reducido + Pagos completo");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 // F3E-2 corregido: prueba que "Cargar compra" depende EXCLUSIVAMENTE de la vista efectiva
@@ -10910,11 +10875,7 @@ async function testCargarCompraSeguridadF3E2Corregido() {
 // vista de *Stock, distinto resultado para una accion representativa de Stock=completa
 // (F(x) Ingreso/Egreso, hoy bloqueada por el middleware hardcodeado ADMIN_ENCARGADO).
 async function testStockVistaConfigurableF3E2Corregido() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
       const categoriaId = await crearCategoria(baseUrl, adminToken, `Vista Stock F3E2 ${Date.now()}`, { maneja_stock: true });
       const productoId = await crearProducto(baseUrl, adminToken, {
@@ -10947,10 +10908,7 @@ async function testStockVistaConfigurableF3E2Corregido() {
 
       const productoTrasIngreso = await getProduct(baseUrl, adminToken, productoId);
       assertApprox(productoTrasIngreso.stock, 15, "El ingreso +5 se aplico sobre el stock inicial de 10");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 // Control final: la vista efectiva de *Stock debe ser AUTORITATIVA para F(x) Ingreso/Egreso.
@@ -10970,11 +10928,7 @@ function setStockAjustarStatement(valores) {
 }
 
 async function testStockVistaAutoritativaSobreStockAjustarF3E2Corregido() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
       const categoriaId = await crearCategoria(baseUrl, adminToken, `DobleGate F3E2 ${Date.now()}`, { maneja_stock: true });
       const productoId = await crearProducto(baseUrl, adminToken, {
@@ -11029,20 +10983,13 @@ async function testStockVistaAutoritativaSobreStockAjustarF3E2Corregido() {
 
       const productoFinal = await getProduct(baseUrl, adminToken, productoId);
       assertApprox(productoFinal.stock, 12, "Solo los Casos A y C (permitidos) debieron aplicar +1 cada uno sobre el stock inicial de 10");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 // Control final (accion CRUD representativa, ademas de F(x)): Editar producto. Misma logica
 // que el cruce anterior mostro para stock_ajustar, ahora con stock_editar_producto.
 async function testStockCrudVistaAutoritativaSobrePermisoLegacyF3E2Corregido() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
       const categoriaId = await crearCategoria(baseUrl, adminToken, `DobleGateCrud F3E2 ${Date.now()}`, { maneja_stock: true });
       const productoId = await crearProducto(baseUrl, adminToken, {
@@ -11097,10 +11044,7 @@ async function testStockCrudVistaAutoritativaSobrePermisoLegacyF3E2Corregido() {
       await prepareDb(dbPath, [setPermisoAccionLegacyStatement("stock_editar_producto", { admin: true, encargado: true, colaborador: true })]);
       const casoD = await intentarEditar(encargadoToken);
       assertEqual(casoD.response.status, 403, "Caso D: encargado+Stock reducida debe rechazarse aunque stock_editar_producto=true");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 // Control final por flujo funcional: una operacion real de edicion de producto usa MAS DE UN
@@ -11110,11 +11054,7 @@ async function testStockCrudVistaAutoritativaSobrePermisoLegacyF3E2Corregido() {
 // stock_editar_producto=true, TODO el flujo debe rechazarse. Se prueba con colaborador y
 // encargado para descartar un verde accidental por rol.
 async function testStockFlujoCompletoMultiEndpointF3E2Corregido() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
       const categoriaId = await crearCategoria(baseUrl, adminToken, `FlujoStock F3E2 ${Date.now()}`, { maneja_stock: true });
 
@@ -11223,10 +11163,7 @@ async function testStockFlujoCompletoMultiEndpointF3E2Corregido() {
 
       await correrFlujoCompleto("colaborador", colaboradorToken);
       await correrFlujoCompleto("encargado", encargadoToken);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 // UX unica "Cargar compra": reproduce EXACTAMENTE la secuencia que ejecuta ccfGuardar()
@@ -13136,11 +13073,7 @@ async function testTipoPagoModificaNombreYOrden() {
 }
 
 async function testTiposPagoRecargosYCuotasCrud() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
 
       const { response: getResponse, data: activos } = await requestJson(baseUrl, "GET", "/tipos_pago", null, token);
@@ -13243,10 +13176,7 @@ async function testTiposPagoRecargosYCuotasCrud() {
       assertEqual(apagado.cuotas_json.length, 0, "PUT permite_cuotas=false debe devolver cuotas_json vacio");
       assertEqual(segundoFinal.cuotas_json.length, 2, "Varios metodos deben conservar cuotas independientes");
       assertApprox(segundoFinal.cuotas_json.find((item) => item.cuotas === 4).recargo, 9, "Segundo metodo debe conservar su cuota 4");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testVentasAplicanRecargosMetodosPago() {
@@ -13859,11 +13789,7 @@ async function testCuentasCobroEtapa2PagosYVentas() {
 }
 
 async function testConfiguracionCuentasCobroValidacionesOperativas() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       const destinoDigital = await crearCuentaDestino(baseUrl, token, {
         nombre: "TEST destino digital validacion",
@@ -13951,10 +13877,7 @@ async function testConfiguracionCuentasCobroValidacionesOperativas() {
       if (!legacy) throw new Error("Cuenta legacy insertada debe seguir existiendo");
       assertEqual(legacy.cuenta_destino_id || 0, 0, "Cuenta legacy no debe migrarse automaticamente");
       assertEqual(legacy.terminal_id, "0", "Valor legacy terminal_id=0 no debe borrarse automaticamente");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testMercadoPagoPointIntentosInfraestructura() {
@@ -14498,11 +14421,7 @@ async function testCajaPagosEfectivoAsignanDestinoCaja02B() {
 }
 
 async function testCajaArqueoOperativoSchemaCaja03B() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       const apertura = await abrirCaja(baseUrl, token, 6550);
       const cajaAtencion = await crearCuentaDestino(baseUrl, token, {
@@ -14657,10 +14576,7 @@ async function testCajaArqueoOperativoSchemaCaja03B() {
       const movimientosCaja = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM caja_movimientos"))[0].total;
       assertEqual(pagos, 0, "CAJA03B no usa pagos para extracciones");
       assertEqual(movimientosCaja, 0, "CAJA03B no usa caja_movimientos para extracciones");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCajaDenominacionesArqueoCaja03C() {
@@ -15055,11 +14971,7 @@ async function testCajaArqueoOperativoTrasladoCaja03D() {
 }
 
 async function testCajaEstadoEfectivoOperativoCaja03E() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       await prepareDb(dbPath, [
         ["DELETE FROM caja_traslados_internos"],
         ["DELETE FROM caja_arqueos"],
@@ -15193,18 +15105,11 @@ async function testCajaEstadoEfectivoOperativoCaja03E() {
       assertEqual(pagos, 0, "CAJA03E read model no crea pagos");
       assertEqual(movimientosCaja, 0, "CAJA03E read model no crea caja_movimientos");
       assertEqual(conciliaciones - conciliacionesBaseline, 1, "CAJA03E no crea conciliaciones nuevas al leer (mas alla del insert manual del test)");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCajaOrigenFisicoPagosEfectivoCaja03F() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       await prepareDb(dbPath, [
         ["DELETE FROM caja_traslados_internos"],
         ["DELETE FROM caja_arqueos"],
@@ -15429,10 +15334,7 @@ async function testCajaOrigenFisicoPagosEfectivoCaja03F() {
         "SELECT COUNT(*) AS total FROM pagos WHERE concepto IN ('CAJA03F pago cuenta no efectiva', 'CAJA03F pago cuenta inactiva')"
       ))[0].total;
       assertEqual(fallidosInsertados, 0, "CAJA03F pagos rechazados no se persisten");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 function findEstadoCuentaEfectivo(estado, cuentaId, contexto) {
@@ -16671,11 +16573,7 @@ async function testCajaControlOperativoGlobalEfectivo() {
 }
 
 async function testCajaSaldoInicialCuentaFisicaCaja03J() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       await prepareDb(dbPath, [
         ["DELETE FROM conciliaciones_cuentas_destino"],
         ["DELETE FROM caja_aperturas"]
@@ -16816,10 +16714,7 @@ async function testCajaSaldoInicialCuentaFisicaCaja03J() {
         74000,
         "CAJA03J 80000 cierre 74000 apertura 74000 persistido"
       );
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCajaContinuidadSaldosDigitales() {
@@ -17062,11 +16957,7 @@ async function testCajaContinuidadSaldosDigitalesE2E() {
 // de sistema) ANTES de cerrar. El real conciliado no debe convertirse en 0 ni en el cierre real
 // (POST /caja/cierre modelo 1) ni en la apertura siguiente. No se inserta nada a mano en la DB.
 async function testCajaContinuidadDigitalRealConciliadoNoSePierde() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       await prepareDb(dbPath, [
         ["DELETE FROM caja_traslados_internos"],
         ["DELETE FROM caja_arqueos"],
@@ -17170,10 +17061,7 @@ async function testCajaContinuidadDigitalRealConciliadoNoSePierde() {
       assertApprox(bancorDia2?.esperado, 2000, "REALDIGITAL dia2 Bancor esperado 2000 sin movimientos");
       assertApprox(mpDia2?.saldo_inicial, 3000, "REALDIGITAL dia2 Mercado Pago saldo inicial 3000");
       assertApprox(mpDia2?.esperado, 3000, "REALDIGITAL dia2 Mercado Pago esperado 3000 sin movimientos");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 // FIX DIGITAL - causa raiz confirmada: la decision de cierre digital (usar el real confirmado
@@ -20124,11 +20012,7 @@ async function testFinanzasResumen20() {
 }
 
 async function testRecetaSnapshotNoGeneraParaProductoSimple() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       const catId = await crearCategoria(baseUrl, token, `SnapSimple ${Date.now()}`);
       const prodId = await crearProducto(baseUrl, token, {
@@ -20143,10 +20027,7 @@ async function testRecetaSnapshotNoGeneraParaProductoSimple() {
       if (!vRes.ok) throw new Error(`SnapSimple: venta debe OK, dio ${vRes.status}`);
       const rows = await allSql(dbPath, "SELECT * FROM detalle_venta_receta_snapshot WHERE venta_id = ?", [vData.venta_id]);
       assertEqual(rows.length, 0, "SnapSimple: producto simple no debe generar snapshot de receta");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testRecetaSnapshotAnulacionPendienteLimpia() {
@@ -20268,11 +20149,7 @@ async function testEndpointRecetaSnapshotVenta() {
 }
 
 async function testRecetaSnapshotGuardadoEnVenta() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
 
       // Crear insumo con stock
@@ -20319,10 +20196,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
       // cantidad_total = 0.2 * 2 (cantidad vendida) = 0.4
       assertEqual(snap.cantidad_por_porcion, 0.2, "snapshot: cantidad_por_porcion debe ser 0.2");
       assertEqual(snap.cantidad_total, 0.4, "snapshot: cantidad_total debe ser 0.4 (0.2 * 2 ventas)");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 (async () => {
@@ -20917,11 +20791,7 @@ async function testVentaCCDesdePostVentasAplicaReglas() {
 }
 
 async function testUsuarioVentaNoEsAdmin() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       // Crear usuario encargado
       await requestJson(baseUrl, "POST", "/usuarios", {
@@ -20951,10 +20821,7 @@ async function testUsuarioVentaNoEsAdmin() {
       if (!rows[0] || rows[0].usuario === "admin") {
         throw new Error(`testUsuarioVentaNoEsAdmin: usuario en venta debe ser juan_enc, fue ${rows[0]?.usuario}`);
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testControlPlaneBootstrapDesdeCeroMT1A() {
