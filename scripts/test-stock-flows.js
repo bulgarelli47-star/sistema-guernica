@@ -111,6 +111,27 @@ function runSql(dbPath, sql, params = []) {
   });
 }
 
+async function crearProductoParaReporteVentas(baseUrl, token, nombreBase, overrides = {}) {
+  const sufijo = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const categoriaNombre = `TEST Reportes ${nombreBase} ${sufijo}`;
+  const categoriaId = await crearCategoria(baseUrl, token, categoriaNombre);
+  const nombre = `TEST Producto Reportes ${nombreBase} ${sufijo}`;
+  const productoId = await crearProducto(baseUrl, token, {
+    nombre,
+    categoria: categoriaNombre,
+    categoria_id: categoriaId,
+    stock: 100,
+    precio_venta: 100,
+    ...overrides
+  });
+  return {
+    categoriaId,
+    productoId,
+    nombre,
+    precio: Number(overrides.precio_venta ?? 100)
+  };
+}
+
 async function configurarClaveAutorizacionTest(dbPath) {
   await runSql(
     dbPath,
@@ -16723,16 +16744,13 @@ async function testCajaSaldoInicialCuentaFisicaCaja03J() {
 }
 
 async function testCajaContinuidadSaldosDigitales() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       await prepareDb(dbPath, [
         ["DELETE FROM conciliaciones_cuentas_destino"],
         ["DELETE FROM caja_aperturas"]
       ]);
       const token = await login(baseUrl, "admin", "admin123");
+      const productoTestContinuidadDigital = await crearProductoParaReporteVentas(baseUrl, token, "ContinuidadSaldosDigitales");
 
       const mercadoPago = await crearCuentaDestino(baseUrl, token, {
         nombre: `Mercado Pago CONTDIGITAL ${Date.now()}`,
@@ -16785,7 +16803,7 @@ async function testCajaContinuidadSaldosDigitales() {
       const ventaMp = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "debito",
         cuenta_cobro_id: cuentaCobroMp.id,
-        items: [{ producto_id: 11, nombre_producto: "TEST CONTDIGITAL", cantidad: 1, precio_unitario: 25000 }]
+        items: [{ producto_id: productoTestContinuidadDigital.productoId, nombre_producto: "TEST CONTDIGITAL", cantidad: 1, precio_unitario: 25000 }]
       }), token);
       if (!ventaMp.response.ok) throw new Error(`CONTDIGITAL venta MP fallo: ${ventaMp.data?.message || ventaMp.response.status}`);
 
@@ -16837,21 +16855,14 @@ async function testCajaContinuidadSaldosDigitales() {
       const estadoTrasConciliar = await getEstadoDigitalOperativo(baseUrl, token, segundaCaja.id);
       const mpTrasConciliar = estadoTrasConciliar.cuentas.find((c) => Number(c.cuenta_destino_id) === Number(mercadoPago.id));
       assertApprox(mpTrasConciliar?.saldo_inicial, 100000, "CONTDIGITAL conciliacion manual no suma el arrastre encima del valor guardado");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 // Circuito REAL: abrir -> operar -> POST /caja/cierre (modelo 1, el boton real) -> abrir dia 2 ->
 // GET /caja/estado-digital-operativo. No se inserta saldo_arrastrado a mano: tiene que
 // generarlo el propio cierre, y la propia apertura tiene que recuperarlo.
 async function testCajaContinuidadSaldosDigitalesE2E() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       await prepareDb(dbPath, [
         ["DELETE FROM caja_traslados_internos"],
         ["DELETE FROM caja_arqueos"],
@@ -16859,6 +16870,7 @@ async function testCajaContinuidadSaldosDigitalesE2E() {
         ["DELETE FROM caja_aperturas"]
       ]);
       const token = await login(baseUrl, "admin", "admin123");
+      const productoTestE2EDigital = await crearProductoParaReporteVentas(baseUrl, token, "ContinuidadSaldosDigitalesE2E");
 
       // Cuentas efectivo minimas: solo para poder cerrar por el circuito real modelo 1.
       const cajaCambio = await crearCuentaDestino(baseUrl, token, {
@@ -16890,7 +16902,7 @@ async function testCajaContinuidadSaldosDigitalesE2E() {
       const ventaDia1 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "debito",
         cuenta_cobro_id: cuentaCobroMp.id,
-        items: [{ producto_id: 11, nombre_producto: "TEST E2EDIGITAL dia1", cantidad: 1, precio_unitario: 100000 }]
+        items: [{ producto_id: productoTestE2EDigital.productoId, nombre_producto: "TEST E2EDIGITAL dia1", cantidad: 1, precio_unitario: 100000 }]
       }), token);
       if (!ventaDia1.response.ok) throw new Error(`E2EDIGITAL venta dia1 fallo: ${ventaDia1.data?.message || ventaDia1.response.status}`);
 
@@ -16944,7 +16956,7 @@ async function testCajaContinuidadSaldosDigitalesE2E() {
       const ventaDia2 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "debito",
         cuenta_cobro_id: cuentaCobroMp.id,
-        items: [{ producto_id: 11, nombre_producto: "TEST E2EDIGITAL dia2", cantidad: 1, precio_unitario: 25000 }]
+        items: [{ producto_id: productoTestE2EDigital.productoId, nombre_producto: "TEST E2EDIGITAL dia2", cantidad: 1, precio_unitario: 25000 }]
       }), token);
       if (!ventaDia2.response.ok) throw new Error(`E2EDIGITAL venta dia2 fallo: ${ventaDia2.data?.message || ventaDia2.response.status}`);
 
@@ -16952,10 +16964,7 @@ async function testCajaContinuidadSaldosDigitalesE2E() {
       const mpDia2ConMovimiento = estadoDigitalDia2ConMovimiento.cuentas.find((c) => Number(c.cuenta_destino_id) === Number(mercadoPago.id));
       assertApprox(mpDia2ConMovimiento?.saldo_inicial, 100000, "E2EDIGITAL dia2 con movimiento: saldo inicial se mantiene en 100000");
       assertApprox(mpDia2ConMovimiento?.esperado, 125000, "E2EDIGITAL dia2 con movimiento: esperado = saldo inicial + entrada real (100000 + 25000)");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 // Reproduce el caso real reportado: dos cuentas digitales conciliadas a mano (sin movimientos
@@ -18598,11 +18607,7 @@ async function testSaldosArrastreNoCambiaDiferencia() {
 
 async function testSaldosRetirarDesdeSaldoRealNoEsperado() {
   // saldo_arrastrado = saldo_real - monto_retiro (NO saldo_esperado - monto_retiro)
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       const apertura = await abrirCaja(baseUrl, token, 0);
       const dest = await crearCuentaDestino(baseUrl, token, { nombre: "Dest Retirar Real", tipo_destino: "billetera", orden: 1 });
@@ -18620,10 +18625,7 @@ async function testSaldosRetirarDesdeSaldoRealNoEsperado() {
       // saldo_arrastrado = saldo_real - retiro = 800 - 300 = 500 (NO 1200-300=900)
       assertApprox(data.conciliacion.diferencia, -400, "retirar: diferencia usa saldo_real vs saldo_esperado");
       assertApprox(data.conciliacion.saldo_arrastrado, 500, "retirar: saldo_arrastrado = saldo_real - retiro");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
