@@ -2914,14 +2914,18 @@ async function testPagoCalculaIvaCreditoFiscal() {
 }
 
 async function testTipoPagoEfectivoPrevioTiposPago() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const cuentaEfectivoDestino = await crearCuentaDestino(baseUrl, token, {
+        nombre: "TEST destino efectivo previo",
+        tipo_destino: "efectivo"
+      });
+      await crearCuentaCobro(baseUrl, token, {
+        nombre: "TEST cuenta efectivo previo",
+        tipo_pago_codigo: "efectivo",
+        cuenta_destino_id: cuentaEfectivoDestino.id
+      });
       const proveedor = await crearProveedor(baseUrl, token);
 
       const pago = await registrarPago(baseUrl, token, {
@@ -2941,10 +2945,7 @@ async function testTipoPagoEfectivoPrevioTiposPago() {
       const resumen = await getCajaResumen(baseUrl, token);
       assertEqual(resumen.resumen.total_pagos_efectivo, 120, "Pago efectivo debe impactar egreso efectivo en caja");
       assertEqual(resumen.resumen.total_pagos_general, 120, "Pago efectivo debe impactar total pagos en caja");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testTiposPagoEndpointDefaultsCompatibles() {
@@ -2970,13 +2971,10 @@ async function testTiposPagoEndpointDefaultsCompatibles() {
 }
 
 async function testTipoPagoDebitoPrevioTiposPago() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
       const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
@@ -3002,20 +3000,14 @@ async function testTipoPagoDebitoPrevioTiposPago() {
       const resumen = await getCajaResumen(baseUrl, token);
       assertEqual(resumen.resumen.total_pagos_debito, 230, "Pago debito debe impactar egreso digital en caja");
       assertEqual(resumen.resumen.total_pagos_general, 230, "Pago debito debe impactar total pagos en caja");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testTipoPagoTransferenciaPrevioTiposPago() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
       const cuentaTransferencia = await crearCuentaCobro(baseUrl, token, {
@@ -3041,20 +3033,14 @@ async function testTipoPagoTransferenciaPrevioTiposPago() {
       const resumen = await getCajaResumen(baseUrl, token);
       assertEqual(resumen.resumen.total_pagos_debito, 340, "Pago transferencia debe impactar egreso digital en caja");
       assertEqual(resumen.resumen.total_pagos_general, 340, "Pago transferencia no debe romper total pagos en caja");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testTipoPagoMixtoPrevioTiposPago() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
       const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
@@ -3079,20 +3065,14 @@ async function testTipoPagoMixtoPrevioTiposPago() {
       assertEqual(pago.monto_efectivo + pago.monto_debito, pago.monto_total, "Pago mixto debe guardar suma igual al total");
       assertEqual(pago.monto_efectivo, 150, "Pago mixto debe guardar monto_efectivo");
       assertEqual(pago.monto_debito, 300, "Pago mixto debe guardar monto_debito");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testTipoPagoPendientePrevioTiposPago() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
 
@@ -3110,20 +3090,21 @@ async function testTipoPagoPendientePrevioTiposPago() {
 
       const resumen = await getCajaResumen(baseUrl, token);
       assertEqual(resumen.resumen.total_pagos_general, 0, "Pago pendiente previo tipos_pago no debe impactar caja");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCierreConservaTipoPagoStringEnPagosSnapshot() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaEfectivoDestino = await crearCuentaDestino(baseUrl, token, {
+        nombre: "TEST destino efectivo snapshot pagos",
+        tipo_destino: "efectivo"
+      });
+      await crearCuentaCobro(baseUrl, token, {
+        nombre: "TEST cuenta efectivo snapshot pagos",
+        tipo_pago_codigo: "efectivo",
+        cuenta_destino_id: cuentaEfectivoDestino.id
+      });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
       const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
@@ -3166,10 +3147,7 @@ async function testCierreConservaTipoPagoStringEnPagosSnapshot() {
       if (tiposSnapshot.join(",") !== "debito,efectivo,transferencia") {
         throw new Error(`pagos_snapshot debe conservar metodo de pago como tipo_cobro string. Actual=${JSON.stringify(detalle.pagos_snapshot)}`);
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testPagoHeredaCategoriaPagoDesdeImpactoProveedor() {
