@@ -2694,34 +2694,28 @@ async function testCuentaCorrienteAnuladaNoBloqueaDuplicado() {
 }
 
 async function testProductoCompuestoGeneraAjusteTeorico() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, [
-      ...resetOperationalDataStatements(),
-      ["UPDATE productos SET stock = 80, maneja_stock = 1, usa_costos_varios = 0, tipo = 'simple', es_combo = 0 WHERE id = 11"],
-      ["INSERT INTO categorias (nombre, margen_porcentaje, activo, maneja_stock, usa_costos_varios) VALUES ('TEST Compuestos', 0, 1, 1, 0)"]
-    ]);
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
-
-      const categoriaIdResult = await new Promise((resolve, reject) => {
-        const db = new sqlite3.Database(dbPath);
-        db.get("SELECT id FROM categorias WHERE nombre = 'TEST Compuestos' ORDER BY id DESC LIMIT 1", [], (error, row) => {
-          db.close();
-          if (error) reject(error);
-          else resolve(row?.id);
-        });
+      const categoriaId = await crearCategoria(baseUrl, token, "TEST Compuestos");
+      const componenteId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Componente Ajuste Teorico",
+        categoria: "TEST Compuestos",
+        categoria_id: categoriaId,
+        stock: 80,
+        maneja_stock: true,
+        usa_costos_varios: false,
+        tipo: "simple",
+        es_combo: false,
+        precio_venta: 100
       });
 
       const compuesto = await requestJson(baseUrl, "POST", "/productos_compuestos", {
         nombre: "TEST Combo Coca x3",
         categoria: "TEST Compuestos",
-        categoria_id: categoriaIdResult,
+        categoria_id: categoriaId,
         precio_venta: 400,
-        componentes: [{ producto_id: 11, cantidad: 3 }],
+        componentes: [{ producto_id: componenteId, cantidad: 3 }],
         costos_extra: [],
         usuario: "test"
       }, token);
@@ -2743,18 +2737,15 @@ async function testProductoCompuestoGeneraAjusteTeorico() {
       }, token);
       if (!venta.response.ok) throw new Error(`Venta de compuesto fallo: ${venta.data?.message || venta.response.status}`);
 
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 80, "Vender compuesto sin stock no debe descontar componente fisico");
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 80, "Vender compuesto sin stock no debe descontar componente fisico");
       const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
       const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(venta.data.venta_id) && item.origen === "venta_receta");
       if (!ajuste) throw new Error("Vender compuesto sin stock debe generar ajuste teorico pendiente");
-      assertEqual(ajuste.producto_id, 11, "Ajuste teorico debe apuntar al componente fisico");
+      assertEqual(ajuste.producto_id, componenteId, "Ajuste teorico debe apuntar al componente fisico");
       assertApprox(ajuste.cantidad_teorica, 6, "Ajuste teorico debe guardar consumo de 6 unidades");
       const productoCompuestoDespues = await getProduct(baseUrl, token, compuesto.data.id);
       assertEqual(productoCompuestoDespues.stock_fisico, 0, "Vender compuesto no debe romper stock propio del compuesto");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testProveedorGuardaImpactoContable() {
