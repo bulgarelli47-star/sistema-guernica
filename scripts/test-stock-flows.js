@@ -2873,13 +2873,17 @@ async function testPagoMixtoGuardaMontosYCaja() {
 }
 
 async function testPagoCalculaIvaCreditoFiscal() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaEfectivoDestino = await crearCuentaDestino(baseUrl, token, {
+        nombre: "TEST destino efectivo IVA credito",
+        tipo_destino: "efectivo"
+      });
+      await crearCuentaCobro(baseUrl, token, {
+        nombre: "TEST cuenta efectivo IVA credito",
+        tipo_pago_codigo: "efectivo",
+        cuenta_destino_id: cuentaEfectivoDestino.id
+      });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token, {
         condicion_iva: "responsable_inscripto",
@@ -2906,10 +2910,7 @@ async function testPagoCalculaIvaCreditoFiscal() {
       const pagoListado = pagos.find((item) => Number(item.id) === Number(pago.id));
       if (!pagoListado) throw new Error("El pago con IVA debe aparecer en listado de pagos");
       assertApprox(pagoListado.iva_credito_fiscal, 210, "El listado de pagos debe exponer IVA credito fiscal calculado");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testTipoPagoEfectivoPrevioTiposPago() {
@@ -4616,10 +4617,7 @@ async function testVentaSnapshotFiscalF2BHelper() {
 }
 
 async function testVentaSnapshotFiscalF2BSchema() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await withServer(dbPath, async () => {});
+  await withFreshTestDb(async (baseUrl, dbPath) => {
     const detalleColumns = await allSql(dbPath, "PRAGMA table_info(detalle_ventas)");
     const ventasColumns = await allSql(dbPath, "PRAGMA table_info(ventas)");
     const detalleNames = new Set(detalleColumns.map((column) => column.name));
@@ -4641,9 +4639,7 @@ async function testVentaSnapshotFiscalF2BSchema() {
     if (!ventasNames.has("total_venta_original")) {
       throw new Error("Schema F2B ventas debe contener total_venta_original");
     }
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testVentaSnapshotsHistoricosF2CNormalLegacyModificadores() {
@@ -5192,13 +5188,10 @@ async function testResumenFiscalHistoricoF2EHelper() {
 }
 
 async function testResumenFiscalHistoricoF2EIntegracion() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      await configurarClaveAutorizacionTest(dbPath);
       const sufijo = Date.now().toString().slice(-8);
       const categoriaId = await crearCategoria(baseUrl, token, `TEST F2E ${sufijo}`, { margen_porcentaje: 0 });
       const prod21 = await crearProductoFiscal(baseUrl, token, {
@@ -5384,10 +5377,7 @@ async function testResumenFiscalHistoricoF2EIntegracion() {
       const detallePendiente = await getVentaDetalle(baseUrl, token, pendiente.data.venta_id);
       assertApprox(detallePendiente.resumen_fiscal.subtotal_items, 200, "F2E pendiente editado refleja version vigente");
       assertApprox(detallePendiente.resumen_fiscal.total_historico, 200, "F2E pendiente editado actualiza total historico mientras es borrador");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testMovimientoManualRegistraStockAnteriorYNuevo() {
@@ -12614,13 +12604,10 @@ async function testModificadoresEtapa2CEdicionPendientes() {
 }
 
 async function testModificadoresApiEdicionActivacionYSnapshots() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      await configurarClaveAutorizacionTest(dbPath);
 
       const suffix = Date.now().toString().slice(-8);
       const categoriaId = await crearCategoria(baseUrl, token, `TEST Mods API ${suffix}`);
@@ -12823,10 +12810,7 @@ async function testModificadoresApiEdicionActivacionYSnapshots() {
       }, token);
       if (!anular.response.ok) throw new Error(`Anular venta historica fallo: ${anular.data?.message || anular.response.status}`);
       assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 50, "Anular debe reponer componente usando snapshot viejo, no configuracion editada");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testProveedoresPagosDevuelveClaves() {
