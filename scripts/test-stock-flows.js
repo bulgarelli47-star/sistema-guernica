@@ -3282,17 +3282,27 @@ async function testCierreInmutableAnteVentaPosterior() {
 }
 
 async function testCierreInmutableAntePagoPosterior() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      // Maestro de configuracion (no dato de desarrollo real): una DB desde cero no trae ninguna
+      // cuenta_cobro/cuenta_destino por defecto, a diferencia de SOURCE_DB que ya tenia una cargada.
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, token, 1000);
       const proveedorInicial = await crearProveedor(baseUrl, token);
+      // ventaSimplePayload() referencia producto_id 11 historico (SOURCE_DB); en fresh no existe
+      // ningun producto por defecto, asi que se crea explicito y se sobreescriben los items
+      // conservando exactamente cantidad/precio_unitario/nombre_producto originales.
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST Cierre Inmutable Pago ${Date.now()}`);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Cierre Inmutable Pago Producto ${Date.now()}`,
+        categoria_id: categoriaId,
+        stock: 10
+      });
 
-      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        items: [{ producto_id: productoId, nombre_producto: "Coca Cola 1250", cantidad: 2, precio_unitario: 100 }]
+      }), token);
       if (!venta.response.ok) throw new Error(`Venta para cierre con pago fallo: ${venta.data?.message || venta.response.status}`);
 
       await registrarPago(baseUrl, token, {
@@ -3330,10 +3340,7 @@ async function testCierreInmutableAntePagoPosterior() {
       if (JSON.stringify(detalleDespues.pagos_snapshot) !== pagosAntes) {
         throw new Error("El pagos_snapshot del cierre anterior cambio luego de un pago posterior");
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCajaCerradaNoRecibeOperacionPosterior() {
@@ -3639,12 +3646,10 @@ async function testResumenReporteExcluyeVentasAnuladas() {
 }
 
 async function testResumenReporteExcluyePagosPendientes() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
 
@@ -3653,14 +3658,16 @@ async function testResumenReporteExcluyePagosPendientes() {
         concepto: "TEST pago registrado resumen",
         monto_total: 300,
         tipo_pago: "efectivo",
-        estado: "registrado"
+        estado: "registrado",
+        cuenta_cobro_id: cuentaEfectivo.id
       });
       await registrarPago(baseUrl, token, {
         proveedor_id: proveedor.id,
         concepto: "TEST pago pendiente resumen",
         monto_total: 400,
         tipo_pago: "efectivo",
-        estado: "pendiente"
+        estado: "pendiente",
+        cuenta_cobro_id: cuentaEfectivo.id
       });
 
       const { response, data } = await requestJson(baseUrl, "GET", "/reportes/resumen", null, token);
@@ -3668,10 +3675,7 @@ async function testResumenReporteExcluyePagosPendientes() {
 
       assertApprox(data.pagos_totales, 300, "Resumen debe excluir pagos pendientes de pagos_totales");
       assertEqual(data.total_pagos, 1, "Resumen debe excluir pagos pendientes de total_pagos");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testResumenReporteCalculaBalanceGeneral() {
@@ -13886,13 +13890,10 @@ async function testConfiguracionCuentasCobroValidacionesOperativas() {
 }
 
 async function testMercadoPagoPointIntentosInfraestructura() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const productoTestMpPoint = await crearProductoParaReporteVentas(baseUrl, token, "MercadoPagoPointInfra");
 
       const cuentaDestinoMp = await crearCuentaDestino(baseUrl, token, {
         nombre: "Mercado Pago Point Destino TEST",
@@ -13923,7 +13924,7 @@ async function testMercadoPagoPointIntentosInfraestructura() {
       );
       const cuentaPointSinTerminal = { id: cuentaPointSinTerminalInsert.lastID };
 
-      const stockAntes = (await getProduct(baseUrl, token, 11)).stock;
+      const stockAntes = (await getProduct(baseUrl, token, productoTestMpPoint.productoId)).stock;
       const resumenAntes = await getCajaResumen(baseUrl, token);
 
       const crear = await requestJson(baseUrl, "POST", "/integraciones/mercadopago-point/intentos", {
@@ -13979,14 +13980,11 @@ async function testMercadoPagoPointIntentosInfraestructura() {
 
       const ventas = await getVentas(baseUrl, token);
       if (ventas.length !== 0) throw new Error("Crear intentos Point MP-A no debe crear ni cobrar ventas");
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, stockAntes, "Crear intentos Point no debe tocar stock");
+      assertEqual((await getProduct(baseUrl, token, productoTestMpPoint.productoId)).stock, stockAntes, "Crear intentos Point no debe tocar stock");
       const resumenDespues = await getCajaResumen(baseUrl, token);
       assertEqual(resumenDespues.resumen.total_ventas, resumenAntes.resumen.total_ventas, "Crear intentos Point no debe tocar caja/ventas");
       assertEqual(resumenDespues.resumen.total_efectivo, resumenAntes.resumen.total_efectivo, "Crear intentos Point no debe tocar caja/efectivo");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCuentasDestinoEtapa3AInfraestructura() {
