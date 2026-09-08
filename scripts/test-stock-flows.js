@@ -3151,13 +3151,17 @@ async function testCierreConservaTipoPagoStringEnPagosSnapshot() {
 }
 
 async function testPagoHeredaCategoriaPagoDesdeImpactoProveedor() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaEfectivoDestino = await crearCuentaDestino(baseUrl, token, {
+        nombre: "TEST destino efectivo categoria proveedor",
+        tipo_destino: "efectivo"
+      });
+      await crearCuentaCobro(baseUrl, token, {
+        nombre: "TEST cuenta efectivo categoria proveedor",
+        tipo_pago_codigo: "efectivo",
+        cuenta_destino_id: cuentaEfectivoDestino.id
+      });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token, {
         tipo_impacto: "inversion"
@@ -3175,10 +3179,7 @@ async function testPagoHeredaCategoriaPagoDesdeImpactoProveedor() {
       if (pago.categoria_pago !== "inversion") {
         throw new Error(`Pago debe heredar categoria_pago desde proveedor.tipo_impacto. Esperado=inversion, actual=${pago.categoria_pago}`);
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCierreGuardaSnapshotsParseables() {
@@ -12792,12 +12793,10 @@ async function testModificadoresApiEdicionActivacionYSnapshots() {
 }
 
 async function testProveedoresPagosDevuelveClaves() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
 
@@ -12806,7 +12805,8 @@ async function testProveedoresPagosDevuelveClaves() {
         concepto: "TEST claves endpoint proveedores",
         monto_total: 200,
         tipo_pago: "efectivo",
-        estado: "registrado"
+        estado: "registrado",
+        cuenta_cobro_id: cuentaEfectivo.id
       });
 
       const { response, data } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, token);
@@ -12828,25 +12828,20 @@ async function testProveedoresPagosDevuelveClaves() {
           throw new Error(`Cada proveedor debe tener clave '${clave}'. Item=${JSON.stringify(item)}`);
         }
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testProveedoresPagosSumaTotalPagado() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
 
-      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST pagado 1", monto_total: 300, tipo_pago: "efectivo", estado: "registrado" });
-      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST pagado 2", monto_total: 200, tipo_pago: "efectivo", estado: "registrado" });
-      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST pendiente no suma", monto_total: 100, tipo_pago: "efectivo", estado: "pendiente" });
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST pagado 1", monto_total: 300, tipo_pago: "efectivo", estado: "registrado", cuenta_cobro_id: cuentaEfectivo.id });
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST pagado 2", monto_total: 200, tipo_pago: "efectivo", estado: "registrado", cuenta_cobro_id: cuentaEfectivo.id });
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST pendiente no suma", monto_total: 100, tipo_pago: "efectivo", estado: "pendiente", cuenta_cobro_id: cuentaEfectivo.id });
 
       const { response, data } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, token);
       if (!response.ok) throw new Error(`GET /reportes/proveedores-pagos fallo: ${data?.message || response.status}`);
@@ -12855,25 +12850,20 @@ async function testProveedoresPagosSumaTotalPagado() {
       if (!item) throw new Error("El proveedor debe aparecer en el reporte de proveedores");
       assertApprox(item.total_pagado, 500, "total_pagado debe sumar solo pagos registrados (300 + 200 = 500)");
       assertEqual(item.cantidad_pagos, 3, "cantidad_pagos debe contar todos los pagos del proveedor (registrados + pendientes)");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testProveedoresPagosSumaTotalPendiente() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
 
-      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST registrado", monto_total: 300, tipo_pago: "efectivo", estado: "registrado" });
-      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST pendiente 1", monto_total: 150, tipo_pago: "efectivo", estado: "pendiente" });
-      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST pendiente 2", monto_total: 250, tipo_pago: "efectivo", estado: "pendiente" });
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST registrado", monto_total: 300, tipo_pago: "efectivo", estado: "registrado", cuenta_cobro_id: cuentaEfectivo.id });
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST pendiente 1", monto_total: 150, tipo_pago: "efectivo", estado: "pendiente", cuenta_cobro_id: cuentaEfectivo.id });
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST pendiente 2", monto_total: 250, tipo_pago: "efectivo", estado: "pendiente", cuenta_cobro_id: cuentaEfectivo.id });
 
       const { response, data } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, token);
       if (!response.ok) throw new Error(`GET /reportes/proveedores-pagos fallo: ${data?.message || response.status}`);
@@ -12882,19 +12872,14 @@ async function testProveedoresPagosSumaTotalPendiente() {
       if (!item) throw new Error("El proveedor debe aparecer en el reporte de proveedores");
       assertApprox(item.total_pendiente, 400, "total_pendiente debe sumar solo pagos pendientes (150 + 250 = 400)");
       assertApprox(item.total_pagado, 300, "total_pagado no debe incluir pagos pendientes");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testProveedoresPagosCalculaIvaSoloRegistrados() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token, {
         condicion_iva: "responsable_inscripto",
@@ -12909,7 +12894,7 @@ async function testProveedoresPagosCalculaIvaSoloRegistrados() {
       });
       await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST IVA registrado", monto_total: 1210, tipo_pago: "transferencia", estado: "registrado", cuenta_cobro_id: cuentaTransferencia.id });
       // Pago pendiente: servidor almacena iva_credito_fiscal = 0 para pendientes
-      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST IVA pendiente", monto_total: 2420, tipo_pago: "efectivo", estado: "pendiente" });
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST IVA pendiente", monto_total: 2420, tipo_pago: "efectivo", estado: "pendiente", cuenta_cobro_id: cuentaEfectivo.id });
 
       const { response, data } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, token);
       if (!response.ok) throw new Error(`GET /reportes/proveedores-pagos fallo: ${data?.message || response.status}`);
@@ -12917,23 +12902,18 @@ async function testProveedoresPagosCalculaIvaSoloRegistrados() {
       const item = data.proveedores.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
       if (!item) throw new Error("El proveedor debe aparecer en el reporte");
       assertApprox(item.iva_credito_fiscal, 210, "iva_credito_fiscal debe calcularse solo sobre pagos registrados", 1);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testProveedoresPagosRespetaFiltroFechas() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
 
-      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST filtro fecha proveedor", monto_total: 300, tipo_pago: "efectivo", estado: "registrado" });
+      await registrarPago(baseUrl, token, { proveedor_id: proveedor.id, concepto: "TEST filtro fecha proveedor", monto_total: 300, tipo_pago: "efectivo", estado: "registrado", cuenta_cobro_id: cuentaEfectivo.id });
 
       // Rango amplio: incluye el pago de hoy
       const { response: r1, data: d1 } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos?desde=2000-01-01&hasta=2099-12-31", null, token);
@@ -12947,26 +12927,22 @@ async function testProveedoresPagosRespetaFiltroFechas() {
       if (!r2.ok) throw new Error(`GET rango historico fallo: ${d2?.message || r2.status}`);
       const itemHistorico = d2.proveedores.find((d) => Number(d.proveedor_id) === Number(proveedor.id));
       if (itemHistorico && Number(itemHistorico.total_pagado) !== 0) throw new Error(`Rango historico debe tener total_pagado=0 para el proveedor. Actual=${itemHistorico.total_pagado}`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testProveedoresPagosSinProveedor() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, token, 1000);
 
       await registrarPago(baseUrl, token, {
         concepto: "TEST pago sin proveedor agrupado",
         monto_total: 150,
         tipo_pago: "efectivo",
-        estado: "registrado"
+        estado: "registrado",
+        cuenta_cobro_id: cuentaEfectivo.id
       });
 
       const { response, data } = await requestJson(baseUrl, "GET", "/reportes/proveedores-pagos", null, token);
@@ -12976,10 +12952,7 @@ async function testProveedoresPagosSinProveedor() {
       const sinProveedorPago = data.pagos.find((p) => p.proveedor_nombre === "Sin proveedor");
       if (!sinProveedorPago) throw new Error(`Pagos sin proveedor deben aparecer en data.pagos. Nombres=${JSON.stringify(data.pagos.map((p) => p.proveedor_nombre))}`);
       assertApprox(sinProveedorPago.monto_total, 150, "El pago sin proveedor debe tener el monto correcto en data.pagos");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testTipoPagoCreaNuevo() {
