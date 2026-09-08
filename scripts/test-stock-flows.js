@@ -1622,13 +1622,7 @@ async function testReconciliarAjustesPendientesStock() {
 }
 
 async function testResolverAjustePendienteConVenta() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
       await requestJson(baseUrl, "POST", "/usuarios", {
         nombre: "Colaborador Resolver",
@@ -1648,9 +1642,19 @@ async function testResolverAjustePendienteConVenta() {
       }, adminToken);
       if (!clienteCC.response.ok) throw new Error(`No se pudo crear cliente CC resolver: ${clienteCC.data?.message || clienteCC.response.status}`);
       await abrirCaja(baseUrl, adminToken, 1000);
+      const categoriaId = await crearCategoria(baseUrl, adminToken, `TEST Resolver Ajuste ${Date.now()}`);
+      const productoNombre = "TEST Producto Resolver Ajuste";
+      const productoId = await crearProducto(baseUrl, adminToken, {
+        nombre: productoNombre,
+        categoria: "TEST Resolver Ajuste",
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        stock: 80,
+        maneja_stock: true
+      });
 
       const ajusteCobrar = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "egreso",
         cantidad: 3,
         motivo: "TEST resolver parcial"
@@ -1664,13 +1668,13 @@ async function testResolverAjustePendienteConVenta() {
       if (!listadoAccionableAntes.data.some((a) => Number(a.id) === Number(ajusteCobrar.id))) {
         throw new Error("Ajuste creado debe aparecer en listado solo_accionables");
       }
-      const stockAntesParcial = (await getProduct(baseUrl, adminToken, 11)).stock;
+      const stockAntesParcial = (await getProduct(baseUrl, adminToken, productoId)).stock;
       const ventaCobrar = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
-        items: [{ producto_id: 11, nombre_producto: "Coca Cola 1250", cantidad: 1, precio_unitario: 100 }]
+        items: [{ producto_id: productoId, nombre_producto: productoNombre, cantidad: 1, precio_unitario: 100 }]
       }), adminToken);
       if (!ventaCobrar.response.ok) throw new Error(`Venta normal para resolver fallo: ${ventaCobrar.data?.message || ventaCobrar.response.status}`);
-      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, stockAntesParcial - 1, "Resolver parcial debe descontar stock por cantidad vendida");
-      const movimientosAntesResolver = await getMovimientosStock(baseUrl, adminToken, 11);
+      assertEqual((await getProduct(baseUrl, adminToken, productoId)).stock, stockAntesParcial - 1, "Resolver parcial debe descontar stock por cantidad vendida");
+      const movimientosAntesResolver = await getMovimientosStock(baseUrl, adminToken, productoId);
       const resolverCobrar = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajusteCobrar.id}/resolver`, {
         venta_id: ventaCobrar.data.venta_id,
         tipo_resolucion: "cobrar",
@@ -1698,7 +1702,7 @@ async function testResolverAjustePendienteConVenta() {
       if (!listadoAccionableDespues.data.some((a) => Number(a.id) === Number(ajusteCobrar.id))) {
         throw new Error("Ajuste resuelto parcialmente debe seguir en listado solo_accionables");
       }
-      const movimientosDespuesResolver = await getMovimientosStock(baseUrl, adminToken, 11);
+      const movimientosDespuesResolver = await getMovimientosStock(baseUrl, adminToken, productoId);
       assertEqual(movimientosDespuesResolver.length, movimientosAntesResolver.length, "Resolver ajuste no debe insertar movimientos_stock");
 
       const dobleResolver = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajusteCobrar.id}/resolver`, {
@@ -1708,13 +1712,13 @@ async function testResolverAjustePendienteConVenta() {
       assertEqual(dobleResolver.response.status, 409, "Resolver dos veces debe fallar");
 
       const ajusteCompleto = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "egreso",
         cantidad: 3,
         motivo: "TEST resolver completo"
       });
       const ventaCompleta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
-        items: [{ producto_id: 11, nombre_producto: "Coca Cola 1250", cantidad: 3, precio_unitario: 100 }]
+        items: [{ producto_id: productoId, nombre_producto: productoNombre, cantidad: 3, precio_unitario: 100 }]
       }), adminToken);
       if (!ventaCompleta.response.ok) throw new Error(`Venta completa para resolver fallo: ${ventaCompleta.data?.message || ventaCompleta.response.status}`);
       const resolverCompleto = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajusteCompleto.id}/resolver`, {
@@ -1733,14 +1737,15 @@ async function testResolverAjustePendienteConVenta() {
       }
 
       const ajusteCuenta = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "egreso",
         cantidad: 1,
         motivo: "TEST resolver cuenta corriente"
       });
       const ventaCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         es_cuenta_corriente: true,
-        cliente_id: clienteCC.data.cliente.id
+        cliente_id: clienteCC.data.cliente.id,
+        items: [{ producto_id: productoId, nombre_producto: productoNombre, cantidad: 2, precio_unitario: 100 }]
       }), adminToken);
       if (!ventaCuenta.response.ok) throw new Error(`Venta cuenta corriente para resolver fallo: ${ventaCuenta.data?.message || ventaCuenta.response.status}`);
       const resolverCuenta = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ajusteCuenta.id}/resolver`, {
@@ -1757,69 +1762,79 @@ async function testResolverAjustePendienteConVenta() {
       }, adminToken);
       if (!rechazarResuelto.response.ok) throw new Error(`Rechazar ajuste resuelto por venta debe seguir funcionando: ${rechazarResuelto.data?.message || rechazarResuelto.response.status}`);
       if (rechazarResuelto.data.ajuste.estado !== "rechazado") throw new Error("Rechazar debe conservar flujo administrativo existente");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testAjusteVentaRecetaConVentaIdEsAccionable() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
-      const adminToken = await login(baseUrl, "admin", "admin123");
-
-      const ensureResumen = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, adminToken);
-      if (!ensureResumen.response.ok) throw new Error(`Ensure resumen ajustes fallo: ${ensureResumen.data?.message || ensureResumen.response.status}`);
-
-      const { lastID: ventaId } = await runSql(
-        dbPath,
-        `INSERT INTO ventas
-         (fecha, hora, usuario, total, tipo, estado, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, es_cuenta_corriente, saldo_pendiente)
-         VALUES ('2024-01-20', '12:00:00', 'test', 100, 'normal', 'cobrada', 'efectivo', 'efectivo', 100, 0, 0, 0)`
-      );
-      const { lastID: detalleVentaId } = await runSql(
-        dbPath,
-        `INSERT INTO detalle_ventas (venta_id, producto_id, nombre_producto, cantidad, precio_unitario, subtotal)
-         VALUES (?, 4, 'TEST Receta sin stock', 1, 100, 100)`,
-        [ventaId]
-      );
-      const { lastID: ajusteId } = await runSql(
-        dbPath,
-        `INSERT INTO stock_ajustes_pendientes
-         (producto_id, componente_id, tipo_movimiento, cantidad, cantidad_teorica,
-          motivo, observaciones, proveedor_id, stock_actual_snapshot, estado,
-          solicitado_por, solicitado_rol, fecha, hora, created_at, caja_id,
-          venta_id, detalle_venta_id, producto_vendido_id, producto_vendido_nombre_snapshot, origen)
-         VALUES (11, 11, 'egreso', 2, 2, 'TEST venta receta accionable', '', NULL, 80, 'pendiente',
-                 'test', 'admin', '2024-01-20', '12:01:00', datetime('now'), NULL,
-                 ?, ?, 4, 'TEST Receta sin stock', 'venta_receta')`,
-        [ventaId, detalleVentaId]
-      );
-
-      const listadoAccionable = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes?estado=pendiente&solo_accionables=1", null, adminToken);
-      if (!listadoAccionable.response.ok) throw new Error(`Listado venta_receta accionable fallo: ${listadoAccionable.data?.message || listadoAccionable.response.status}`);
-      const ajuste = listadoAccionable.data.find((item) => Number(item.id) === Number(ajusteId));
-      if (!ajuste) throw new Error("Ajuste venta_receta con venta_id debe aparecer en solo_accionables=1");
-      if (ajuste.origen !== "venta_receta") throw new Error(`Ajuste debe conservar origen venta_receta. Actual=${ajuste.origen}`);
-      assertEqual(ajuste.venta_id, ventaId, "Ajuste venta_receta debe conservar venta_id como origen");
-      assertEqual(ajuste.detalle_venta_id, detalleVentaId, "Ajuste venta_receta debe conservar detalle_venta_id");
-      assertEqual(ajuste.producto_vendido_id, 4, "Ajuste venta_receta debe conservar producto_vendido_id");
-      assertApprox(ajuste.cantidad_teorica, 2, "Ajuste venta_receta debe exponer cantidad_teorica");
-
-      const resumen = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, adminToken);
-      if (!resumen.response.ok) throw new Error(`Resumen venta_receta accionable fallo: ${resumen.data?.message || resumen.response.status}`);
-      assertEqual(resumen.data.pendientes, 1, "Ajuste venta_receta debe contar como pendiente real");
-      assertEqual(resumen.data.pendientes_accionables, 1, "Ajuste venta_receta debe contar como pendiente accionable");
-      assertEqual(resumen.data.resueltos_por_venta, 0, "Ajuste venta_receta no debe contar como resuelto_por_venta por tener venta_id");
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    const categoriaId = await crearCategoria(baseUrl, adminToken, "TEST Venta Receta Legacy");
+    const productoVendidoNombre = "TEST Receta sin stock";
+    const productoVendidoId = await crearProducto(baseUrl, adminToken, {
+      nombre: productoVendidoNombre,
+      categoria: "TEST Venta Receta Legacy",
+      categoria_id: categoriaId,
+      tipo: "compuesto",
+      maneja_stock: false,
+      stock: 0,
+      precio_venta: 100
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const productoAjusteId = await crearProducto(baseUrl, adminToken, {
+      nombre: "TEST Insumo ajuste venta receta",
+      categoria: "TEST Venta Receta Legacy",
+      categoria_id: categoriaId,
+      tipo: "simple",
+      maneja_stock: true,
+      stock: 80,
+      precio_venta: 100,
+      costo_final: 50,
+      precio_compra: 50
+    });
+
+    const ensureResumen = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, adminToken);
+    if (!ensureResumen.response.ok) throw new Error(`Ensure resumen ajustes fallo: ${ensureResumen.data?.message || ensureResumen.response.status}`);
+
+    const { lastID: ventaId } = await runSql(
+      dbPath,
+      `INSERT INTO ventas
+       (fecha, hora, usuario, total, tipo, estado, metodo_pago, tipo_cobro, monto_efectivo, monto_debito, es_cuenta_corriente, saldo_pendiente)
+       VALUES ('2024-01-20', '12:00:00', 'test', 100, 'normal', 'cobrada', 'efectivo', 'efectivo', 100, 0, 0, 0)`
+    );
+    const { lastID: detalleVentaId } = await runSql(
+      dbPath,
+      `INSERT INTO detalle_ventas (venta_id, producto_id, nombre_producto, cantidad, precio_unitario, subtotal)
+       VALUES (?, ?, ?, 1, 100, 100)`,
+      [ventaId, productoVendidoId, productoVendidoNombre]
+    );
+    const { lastID: ajusteId } = await runSql(
+      dbPath,
+      `INSERT INTO stock_ajustes_pendientes
+       (producto_id, componente_id, tipo_movimiento, cantidad, cantidad_teorica,
+        motivo, observaciones, proveedor_id, stock_actual_snapshot, estado,
+        solicitado_por, solicitado_rol, fecha, hora, created_at, caja_id,
+        venta_id, detalle_venta_id, producto_vendido_id, producto_vendido_nombre_snapshot, origen)
+       VALUES (?, ?, 'egreso', 2, 2, 'TEST venta receta accionable', '', NULL, 80, 'pendiente',
+               'test', 'admin', '2024-01-20', '12:01:00', datetime('now'), NULL,
+               ?, ?, ?, ?, 'venta_receta')`,
+      [productoAjusteId, productoAjusteId, ventaId, detalleVentaId, productoVendidoId, productoVendidoNombre]
+    );
+
+    const listadoAccionable = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes?estado=pendiente&solo_accionables=1", null, adminToken);
+    if (!listadoAccionable.response.ok) throw new Error(`Listado venta_receta accionable fallo: ${listadoAccionable.data?.message || listadoAccionable.response.status}`);
+    const ajuste = listadoAccionable.data.find((item) => Number(item.id) === Number(ajusteId));
+    if (!ajuste) throw new Error("Ajuste venta_receta con venta_id debe aparecer en solo_accionables=1");
+    if (ajuste.origen !== "venta_receta") throw new Error(`Ajuste debe conservar origen venta_receta. Actual=${ajuste.origen}`);
+    assertEqual(ajuste.venta_id, ventaId, "Ajuste venta_receta debe conservar venta_id como origen");
+    assertEqual(ajuste.detalle_venta_id, detalleVentaId, "Ajuste venta_receta debe conservar detalle_venta_id");
+    assertEqual(ajuste.producto_vendido_id, productoVendidoId, "Ajuste venta_receta debe conservar producto_vendido_id");
+    assertApprox(ajuste.cantidad_teorica, 2, "Ajuste venta_receta debe exponer cantidad_teorica");
+
+    const resumen = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, adminToken);
+    if (!resumen.response.ok) throw new Error(`Resumen venta_receta accionable fallo: ${resumen.data?.message || resumen.response.status}`);
+    assertEqual(resumen.data.pendientes, 1, "Ajuste venta_receta debe contar como pendiente real");
+    assertEqual(resumen.data.pendientes_accionables, 1, "Ajuste venta_receta debe contar como pendiente accionable");
+    assertEqual(resumen.data.resueltos_por_venta, 0, "Ajuste venta_receta no debe contar como resuelto_por_venta por tener venta_id");
+  });
 }
 
 async function testResolverAjustePendienteConCuentaLocal() {
@@ -2581,51 +2596,76 @@ async function testAnularPendienteReponeStock() {
 }
 
 async function testAnularVentaCobradaReponeStock() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await configurarClaveAutorizacionTest(dbPath);
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const categoriaNombre = `TEST Anular Cobrada ${Date.now()}`;
+      const categoriaId = await crearCategoria(baseUrl, token, categoriaNombre);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: "TEST anular cobrada repone",
+        categoria: categoriaNombre,
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        stock: 80,
+        maneja_stock: true
+      });
+      const payload = ventaSimplePayload({
+        items: [{
+          producto_id: productoId,
+          nombre_producto: "TEST anular cobrada repone",
+          cantidad: 2,
+          precio_unitario: 100
+        }]
+      });
 
-      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const venta = await requestJson(baseUrl, "POST", "/ventas", payload, token);
       if (!venta.response.ok) throw new Error(`Venta para anular fallo: ${venta.data?.message || venta.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 78, "La venta debe descontar stock antes de anular");
+      assertEqual((await getProduct(baseUrl, token, productoId)).stock, 78, "La venta debe descontar stock antes de anular");
 
       const anulacion = await requestJson(baseUrl, "POST", `/ventas/${venta.data.venta_id}/anular-cobrada`, {
         authorization_code: "1234"
       }, token);
       if (!anulacion.response.ok) throw new Error(`Anulacion cobrada fallo: ${anulacion.data?.message || anulacion.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 80, "La anulacion cobrada debe reponer stock");
+      assertEqual((await getProduct(baseUrl, token, productoId)).stock, 80, "La anulacion cobrada debe reponer stock");
 
       const ventas = await getVentas(baseUrl, token);
       const ventaAnulada = ventas.find((item) => Number(item.id) === Number(venta.data.venta_id));
       if (ventaAnulada?.estado !== "anulado") {
         throw new Error(`La venta anulada debe quedar en estado anulado. Estado=${ventaAnulada?.estado}`);
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testVentaNormalAnuladaNoBloqueaRepeticionDuplicada() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await configurarClaveAutorizacionTest(dbPath);
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const categoriaNombre = `TEST Duplicado Anulada ${Date.now()}`;
+      const categoriaId = await crearCategoria(baseUrl, token, categoriaNombre);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: "TEST duplicado anulada",
+        categoria: categoriaNombre,
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        stock: 80,
+        maneja_stock: true
+      });
+      const payload = ventaSimplePayload({
+        items: [{
+          producto_id: productoId,
+          nombre_producto: "TEST duplicado anulada",
+          cantidad: 2,
+          precio_unitario: 100
+        }]
+      });
 
-      const ventaDuplicado = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const ventaDuplicado = await requestJson(baseUrl, "POST", "/ventas", payload, token);
       if (!ventaDuplicado.response.ok) throw new Error(`Venta base para duplicado fallo: ${ventaDuplicado.data?.message || ventaDuplicado.response.status}`);
 
       await sincronizarVentaAlSegundoActual(dbPath, ventaDuplicado.data.venta_id);
-      const duplicadoReal = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const duplicadoReal = await requestJson(baseUrl, "POST", "/ventas", payload, token);
       assertEqual(duplicadoReal.response.status, 409, "Una venta normal no anulada identica debe seguir bloqueada como duplicado");
 
       const anulacion = await requestJson(baseUrl, "POST", `/ventas/${ventaDuplicado.data.venta_id}/anular-cobrada`, {
@@ -2633,17 +2673,14 @@ async function testVentaNormalAnuladaNoBloqueaRepeticionDuplicada() {
       }, token);
       if (!anulacion.response.ok) throw new Error(`Anulacion para repeticion fallo: ${anulacion.data?.message || anulacion.response.status}`);
 
-      const repetidaTrasAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const repetidaTrasAnular = await requestJson(baseUrl, "POST", "/ventas", payload, token);
       if (repetidaTrasAnular.response.status === 409) {
         throw new Error(`Una venta anulada no debe bloquear una repeticion identica. Mensaje=${repetidaTrasAnular.data?.message || "sin mensaje"}`);
       }
       if (!repetidaTrasAnular.response.ok) {
         throw new Error(`Venta repetida tras anulacion debe responder OK. Status=${repetidaTrasAnular.response.status}, mensaje=${repetidaTrasAnular.data?.message || "sin mensaje"}`);
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testVentaNormalConRecargoDuplicadoUsaSubtotalComercial() {
@@ -3286,16 +3323,21 @@ async function testCierreGuardaSnapshotsParseables() {
 }
 
 async function testCierreInmutableAnteVentaPosterior() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      // ventaSimplePayload() referencia producto_id 11 historico (SOURCE_DB); en fresh no existe
+      // ningun producto por defecto, asi que se crea explicito y se sobreescriben los items
+      // conservando exactamente cantidad/precio_unitario/nombre_producto originales.
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST Cierre Inmutable Venta ${Date.now()}`);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Cierre Inmutable Venta Producto ${Date.now()}`,
+        categoria_id: categoriaId,
+        stock: 10
+      });
+      const itemsVenta = [{ producto_id: productoId, nombre_producto: "Coca Cola 1250", cantidad: 2, precio_unitario: 100 }];
 
-      const ventaInicial = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const ventaInicial = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({ items: itemsVenta }), token);
       if (!ventaInicial.response.ok) throw new Error(`Venta inicial para cierre fallo: ${ventaInicial.data?.message || ventaInicial.response.status}`);
 
       const cierre = await cerrarCaja(baseUrl, token, 1200, 1000, 200);
@@ -3306,7 +3348,7 @@ async function testCierreInmutableAnteVentaPosterior() {
 
       await abrirCaja(baseUrl, token, 500);
       const ventaPosterior = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
-        usuario: "test posterior"
+        usuario: "test posterior", items: itemsVenta
       }), token);
       if (!ventaPosterior.response.ok) throw new Error(`Venta posterior al cierre fallo: ${ventaPosterior.data?.message || ventaPosterior.response.status}`);
 
@@ -3320,10 +3362,7 @@ async function testCierreInmutableAnteVentaPosterior() {
       if (JSON.stringify(detalleDespues.pagos_snapshot) !== pagosAntes) {
         throw new Error("El pagos_snapshot del cierre anterior cambio luego de una venta posterior");
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCierreInmutableAntePagoPosterior() {
@@ -3587,13 +3626,9 @@ async function testCompuestoConStockPropioNoDuplicaDescuento() {
 }
 
 async function testAnularVentaCompuestaCancelaAjusteTeorico() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
+      await configurarClaveAutorizacionTest(dbPath);
       await abrirCaja(baseUrl, token, 1000);
       const categoriaId = await crearCategoria(baseUrl, token, "TEST Anular Compuesto");
       const componenteId = await crearProducto(baseUrl, token, {
@@ -3634,10 +3669,7 @@ async function testAnularVentaCompuestaCancelaAjusteTeorico() {
       if (!rechazados.some((item) => Number(item.venta_id) === Number(venta.data.venta_id) && item.origen === "venta_receta")) {
         throw new Error("Anular venta compuesta debe cancelar ajuste teorico pendiente");
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testResumenReporteDevuelveClaves() {
@@ -3655,19 +3687,17 @@ async function testResumenReporteDevuelveClaves() {
 }
 
 async function testResumenReporteExcluyeVentasAnuladas() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
+      await configurarClaveAutorizacionTest(dbPath);
       await abrirCaja(baseUrl, token, 1000);
+      const producto = await crearProductoParaReporteVentas(baseUrl, token, "Resumen Anuladas");
 
-      const ventaOk = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const ventaOk = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(producto), token);
       if (!ventaOk.response.ok) throw new Error(`Venta cobrada fallo: ${ventaOk.data?.message || ventaOk.response.status}`);
 
       await delay(1100);
-      const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(producto), token);
       if (!ventaAnular.response.ok) throw new Error(`Venta a anular fallo: ${ventaAnular.data?.message || ventaAnular.response.status}`);
 
       const anulacion = await requestJson(baseUrl, "POST", `/ventas/${ventaAnular.data.venta_id}/anular-cobrada`, {
@@ -3680,10 +3710,7 @@ async function testResumenReporteExcluyeVentasAnuladas() {
 
       assertApprox(data.ventas_totales, 200, "Resumen debe excluir ventas anuladas de ventas_totales");
       assertEqual(data.total_ventas, 1, "Resumen debe excluir ventas anuladas de total_ventas");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testResumenReporteExcluyePagosPendientes() {
@@ -4683,13 +4710,10 @@ async function testVentaSnapshotFiscalF2BSchema() {
 }
 
 async function testVentaSnapshotsHistoricosF2CNormalLegacyModificadores() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      await configurarClaveAutorizacionTest(dbPath);
       const sufijo = Date.now().toString().slice(-8);
       const categoriaId = await crearCategoria(baseUrl, token, `TEST F2C Ventas ${sufijo}`, { margen_porcentaje: 50 });
       const normalizado = await crearProductoFiscal(baseUrl, token, {
@@ -4760,8 +4784,19 @@ async function testVentaSnapshotsHistoricosF2CNormalLegacyModificadores() {
       assertApprox(detalleCantidad3.subtotal_neto_snapshot, 247.93, "F2C cantidad 3 debe calcular fiscal desde subtotal de linea");
       assertApprox(detalleCantidad3.iva_monto_snapshot, 52.07, "F2C cantidad 3 debe calcular IVA desde subtotal de linea");
 
-      await runSql(dbPath, "UPDATE productos SET modelo_fiscal = 'normalizado', costo_economico = 50, iva_venta_tratamiento = 'gravado', iva_venta_alicuota = 21 WHERE id = 11");
-      const mod = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
+      const categoriaIdFixtureMods = await crearCategoria(baseUrl, token, `TEST Mods Fresh ${Date.now()}`);
+      const productoBaseNombre = "TEST Producto Base Mod";
+      const productoBaseId = await crearProducto(baseUrl, token, {
+        nombre: productoBaseNombre,
+        categoria: "TEST Mods Fresh",
+        categoria_id: categoriaIdFixtureMods,
+        stock: 80,
+        precio_venta: 100,
+        maneja_stock: true
+      });
+      const productoBasePrecio = 100;
+      await runSql(dbPath, "UPDATE productos SET modelo_fiscal = 'normalizado', costo_economico = 50, iva_venta_tratamiento = 'gravado', iva_venta_alicuota = 21 WHERE id = ?", [productoBaseId]);
+      const mod = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
         nombre: `TEST F2C Extra ${sufijo}`,
         tipo: "libre",
         precio_extra: 200,
@@ -4774,10 +4809,10 @@ async function testVentaSnapshotsHistoricosF2CNormalLegacyModificadores() {
         tipo: "normal",
         tipo_cobro: "efectivo",
         items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
+          producto_id: productoBaseId,
+          nombre_producto: productoBaseNombre,
           cantidad: 1,
-          precio_unitario: 100,
+          precio_unitario: productoBasePrecio,
           modificadores: [{ modificador_id: mod.data.modificador.id, cantidad: 1 }]
         }]
       }, token);
@@ -4814,10 +4849,7 @@ async function testVentaSnapshotsHistoricosF2CNormalLegacyModificadores() {
       if (!patchCobro.response.ok) throw new Error(`PATCH cobro F2C fallo: ${patchCobro.data?.message || patchCobro.response.status}`);
       const ventaCantidad3Patch = await getVentaDb(dbPath, ventaCantidad3.data.venta_id);
       assertApprox(ventaCantidad3Patch.total_venta_original, 300, "F2C cambio metodo cobro no debe modificar total_venta_original");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testVentaSnapshotsHistoricosF2CCuentaCorrienteYPendientes() {
@@ -11442,37 +11474,32 @@ async function testProductosMasVendidosDevuelveClaves() {
 }
 
 async function testProductosMasVendidosExcluyeVentasAnuladas() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      await abrirCaja(baseUrl, token, 1000);
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+    await configurarClaveAutorizacionTest(dbPath);
+    const token = await login(baseUrl, "admin", "admin123");
+    await abrirCaja(baseUrl, token, 1000);
+    const producto = await crearProductoParaReporteVentas(baseUrl, token, "Excluye Anuladas");
 
-      const ventaOk = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
-      if (!ventaOk.response.ok) throw new Error(`Venta cobrada fallo: ${ventaOk.data?.message || ventaOk.response.status}`);
+    const ventaOk = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(producto), token);
+    if (!ventaOk.response.ok) throw new Error(`Venta cobrada fallo: ${ventaOk.data?.message || ventaOk.response.status}`);
 
-      await delay(1100);
-      const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
-      if (!ventaAnular.response.ok) throw new Error(`Venta a anular fallo: ${ventaAnular.data?.message || ventaAnular.response.status}`);
+    await delay(1100);
+    const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(producto), token);
+    if (!ventaAnular.response.ok) throw new Error(`Venta a anular fallo: ${ventaAnular.data?.message || ventaAnular.response.status}`);
 
-      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${ventaAnular.data.venta_id}/anular-cobrada`, {
-        authorization_code: "1234"
-      }, token);
-      if (!anulacion.response.ok) throw new Error(`Anulacion fallo: ${anulacion.data?.message || anulacion.response.status}`);
+    const anulacion = await requestJson(baseUrl, "POST", `/ventas/${ventaAnular.data.venta_id}/anular-cobrada`, {
+      authorization_code: "1234"
+    }, token);
+    if (!anulacion.response.ok) throw new Error(`Anulacion fallo: ${anulacion.data?.message || anulacion.response.status}`);
 
-      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/productos-mas-vendidos", null, token);
-      if (!response.ok) throw new Error(`GET /reportes/productos-mas-vendidos fallo: ${data?.message || response.status}`);
+    const { response, data } = await requestJson(baseUrl, "GET", "/reportes/productos-mas-vendidos", null, token);
+    if (!response.ok) throw new Error(`GET /reportes/productos-mas-vendidos fallo: ${data?.message || response.status}`);
 
-      const item = data.find((d) => Number(d.producto_id) === 11);
-      if (!item) throw new Error("El producto 11 debe aparecer en el reporte tras la venta no anulada");
-      assertApprox(item.cantidad_total, 2, "Productos mas vendidos debe excluir ventas anuladas de cantidad_total");
-      assertApprox(item.total_vendido, 200, "Productos mas vendidos debe excluir ventas anuladas de total_vendido");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const item = data.find((d) => Number(d.producto_id) === Number(producto.productoId));
+    if (!item) throw new Error("El producto fixture debe aparecer en el reporte tras la venta no anulada");
+    assertApprox(item.cantidad_total, 2, "Productos mas vendidos debe excluir ventas anuladas de cantidad_total");
+    assertApprox(item.total_vendido, 200, "Productos mas vendidos debe excluir ventas anuladas de total_vendido");
+  });
 }
 
 async function testProductosMasVendidosOrdenaPorCantidad() {
@@ -11846,144 +11873,165 @@ async function testModificadoresEtapa1BackendAislado() {
 }
 
 async function testModificadoresEtapa2AVentasNormales() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      await abrirCaja(baseUrl, token, 1000);
-      const categoriaId = await crearCategoria(baseUrl, token, "TEST Mods Etapa 2A");
-      const componenteId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Componente Extra Etapa 2A",
-        categoria: "TEST Mods Etapa 2A",
-        categoria_id: categoriaId,
-        stock: 30,
-        precio_venta: 10
-      });
-      const suffix = Date.now().toString().slice(-8);
-
-      const ventaSinMods = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
-      if (!ventaSinMods.response.ok) throw new Error(`Venta normal sin modificadores fallo: ${ventaSinMods.data?.message || ventaSinMods.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 78, "Venta normal sin modificadores debe seguir descontando igual");
-      const detalleSinMods = await getVentaDetalle(baseUrl, token, ventaSinMods.data.venta_id);
-      assertEqual(detalleSinMods.items.length, 1, "Venta sin modificadores debe guardar una sola linea de detalle_ventas");
-      assertApprox(detalleSinMods.items[0].subtotal, 200, "Venta sin modificadores debe conservar subtotal historico");
-
-      const libre = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
-        codigo: `etapa2a_libre_${suffix}`,
-        nombre: "TEST Etapa 2A Libre",
-        tipo: "libre",
-        precio_extra: 25,
-        orden: 1
-      }, token);
-      if (!libre.response.ok) throw new Error(`Crear modificador libre etapa 2A fallo: ${libre.data?.message || libre.response.status}`);
-
-      const observacion = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
-        codigo: `etapa2a_obs_${suffix}`,
-        nombre: "TEST Etapa 2A Observacion",
-        tipo: "observacion",
-        precio_extra: 99,
-        observacion_cocina: "Sin cebolla",
-        orden: 2
-      }, token);
-      if (!observacion.response.ok) throw new Error(`Crear modificador observacion etapa 2A fallo: ${observacion.data?.message || observacion.response.status}`);
-
-      const agregar = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
-        codigo: `etapa2a_agregar_${suffix}`,
-        nombre: "TEST Etapa 2A Agregar",
-        tipo: "agregar",
-        precio_extra: 40,
-        componentes: [{ producto_id: componenteId, cantidad: 3 }],
-        orden: 3
-      }, token);
-      if (!agregar.response.ok) throw new Error(`Crear modificador agregar etapa 2A fallo: ${agregar.data?.message || agregar.response.status}`);
-
-      const ventaConMods = await requestJson(baseUrl, "POST", "/ventas", {
-        usuario: "test",
-        tipo: "normal",
-        tipo_cobro: "efectivo",
-        items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
-          cantidad: 1,
-          precio_unitario: 100,
-          modificadores: [
-            { modificador_id: libre.data.modificador.id, cantidad: 1 },
-            { modificador_id: observacion.data.modificador.id, cantidad: 1 },
-            { modificador_id: agregar.data.modificador.id, cantidad: 1 }
-          ]
-        }]
-      }, token);
-      if (!ventaConMods.response.ok) throw new Error(`Venta normal con modificadores fallo: ${ventaConMods.data?.message || ventaConMods.response.status}`);
-      assertApprox(ventaConMods.data.total, 165, "Venta con modificadores debe sumar libre y agregar, no observacion");
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 77, "Venta con modificadores debe descontar solo stock base una vez");
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 27, "Modificador agregar debe descontar componente extra desde snapshot");
-
-      const detalleConMods = await getVentaDetalle(baseUrl, token, ventaConMods.data.venta_id);
-      assertEqual(detalleConMods.items.length, 1, "Modificadores no deben insertarse como productos vendidos");
-      assertEqual(detalleConMods.items[0].producto_id, 11, "Detalle debe conservar el producto base vendido");
-      assertApprox(detalleConMods.items[0].precio_unitario, 165, "Detalle debe guardar precio unitario final con modificadores");
-      assertApprox(detalleConMods.items[0].subtotal, 165, "Detalle debe guardar total final con modificadores");
-
-      const modsSnapshot = await allSql(
-        dbPath,
-        "SELECT * FROM detalle_venta_modificadores WHERE detalle_venta_id = ? ORDER BY id ASC",
-        [detalleConMods.items[0].id]
-      );
-      assertEqual(modsSnapshot.length, 3, "Detalle con modificadores debe guardar los tres modificadores asociados");
-      const obsSnapshot = modsSnapshot.find((item) => item.tipo === "observacion");
-      if (!obsSnapshot || Number(obsSnapshot.precio_extra) !== 0) {
-        throw new Error(`Observacion debe guardarse en historial sin mover precio. Actual=${JSON.stringify(obsSnapshot)}`);
-      }
-
-      const componentesSnapshot = await allSql(
-        dbPath,
-        "SELECT * FROM detalle_venta_componentes_snapshot WHERE detalle_venta_id = ? ORDER BY id ASC",
-        [detalleConMods.items[0].id]
-      );
-      assertEqual(componentesSnapshot.length, 1, "Detalle con modificador agregar debe guardar snapshot de componente");
-      assertEqual(componentesSnapshot[0].producto_id, componenteId, "Snapshot debe asociar el componente extra correcto");
-      assertApprox(componentesSnapshot[0].cantidad, 3, "Snapshot debe guardar cantidad extra total");
-
-      const resumenCaja = await getCajaResumen(baseUrl, token);
-      assertApprox(resumenCaja.resumen.total_ventas, 365, "Caja debe incluir el precio extra en el total de venta");
-
-      const reporte = await requestJson(baseUrl, "GET", "/reportes/productos-mas-vendidos?limite=100", null, token);
-      if (!reporte.response.ok) throw new Error(`Reporte productos mas vendidos etapa 2A fallo: ${reporte.data?.message || reporte.response.status}`);
-      if (reporte.data.some((item) => String(item.nombre || "").includes("TEST Etapa 2A"))) {
-        throw new Error(`Modificadores no deben aparecer como productos vendidos. Reporte=${JSON.stringify(reporte.data)}`);
-      }
-      const productoBase = reporte.data.find((item) => Number(item.producto_id) === 11);
-      if (!productoBase) throw new Error("Producto base debe aparecer en productos mas vendidos");
-      assertApprox(productoBase.cantidad_total, 3, "Productos mas vendidos debe contar solo cantidades del producto base");
-      assertApprox(productoBase.total_vendido, 365, "Productos mas vendidos debe incluir el total final con precio extra");
-
-      const modificadorOtroProducto = await requestJson(baseUrl, "POST", `/productos/${componenteId}/modificadores`, {
-        codigo: `etapa2a_otro_${suffix}`,
-        nombre: "TEST Etapa 2A Otro Producto",
-        tipo: "libre",
-        precio_extra: 5
-      }, token);
-      if (!modificadorOtroProducto.response.ok) throw new Error(`Crear modificador de otro producto fallo: ${modificadorOtroProducto.data?.message || modificadorOtroProducto.response.status}`);
-
-      const ventaInvalida = await requestJson(baseUrl, "POST", "/ventas", {
-        usuario: "test",
-        tipo: "normal",
-        tipo_cobro: "efectivo",
-        items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
-          cantidad: 1,
-          precio_unitario: 100,
-          modificadores: [{ modificador_id: modificadorOtroProducto.data.modificador.id, cantidad: 1 }]
-        }]
-      }, token);
-      assertEqual(ventaInvalida.response.status, 400, "Modificador no asociado al producto vendido debe fallar");
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    await abrirCaja(baseUrl, token, 1000);
+    const categoriaIdFixtureMods = await crearCategoria(baseUrl, token, `TEST Mods Fresh ${Date.now()}`);
+    const productoBaseNombreFixture = "TEST Producto Base Mod";
+    const productoBaseIdFixture = await crearProducto(baseUrl, token, {
+      nombre: productoBaseNombreFixture,
+      categoria: "TEST Mods Fresh",
+      categoria_id: categoriaIdFixtureMods,
+      stock: 80,
+      precio_venta: 100,
+      maneja_stock: true
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const fixture = {
+      categoriaId: categoriaIdFixtureMods,
+      productoBaseId: productoBaseIdFixture,
+      productoBaseNombre: productoBaseNombreFixture,
+      productoBasePrecio: 100,
+      productoBaseStock: 80
+    };
+    fixture.componenteNombre = "TEST Queso Extra Mod";
+    fixture.componenteId = await crearProducto(baseUrl, token, {
+      nombre: fixture.componenteNombre,
+      categoria: "TEST Mods Fresh",
+      categoria_id: categoriaIdFixtureMods,
+      stock: 30,
+      precio_venta: 10,
+      maneja_stock: true
+    });
+    fixture.componenteStock = 30;
+    const productoBaseId = fixture.productoBaseId;
+    const componenteId = fixture.componenteId;
+    const suffix = Date.now().toString().slice(-8);
+
+    const ventaSinMods = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      items: [{
+        producto_id: productoBaseId,
+        nombre_producto: fixture.productoBaseNombre,
+        cantidad: 2,
+        precio_unitario: fixture.productoBasePrecio
+      }]
+    }), token);
+    if (!ventaSinMods.response.ok) throw new Error(`Venta normal sin modificadores fallo: ${ventaSinMods.data?.message || ventaSinMods.response.status}`);
+    assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, 78, "Venta normal sin modificadores debe seguir descontando igual");
+    const detalleSinMods = await getVentaDetalle(baseUrl, token, ventaSinMods.data.venta_id);
+    assertEqual(detalleSinMods.items.length, 1, "Venta sin modificadores debe guardar una sola linea de detalle_ventas");
+    assertApprox(detalleSinMods.items[0].subtotal, 200, "Venta sin modificadores debe conservar subtotal historico");
+
+    const libre = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
+      codigo: `etapa2a_libre_${suffix}`,
+      nombre: "TEST Etapa 2A Libre",
+      tipo: "libre",
+      precio_extra: 25,
+      orden: 1
+    }, token);
+    if (!libre.response.ok) throw new Error(`Crear modificador libre etapa 2A fallo: ${libre.data?.message || libre.response.status}`);
+
+    const observacion = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
+      codigo: `etapa2a_obs_${suffix}`,
+      nombre: "TEST Etapa 2A Observacion",
+      tipo: "observacion",
+      precio_extra: 99,
+      observacion_cocina: "Sin cebolla",
+      orden: 2
+    }, token);
+    if (!observacion.response.ok) throw new Error(`Crear modificador observacion etapa 2A fallo: ${observacion.data?.message || observacion.response.status}`);
+
+    const agregar = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
+      codigo: `etapa2a_agregar_${suffix}`,
+      nombre: "TEST Etapa 2A Agregar",
+      tipo: "agregar",
+      precio_extra: 40,
+      componentes: [{ producto_id: componenteId, cantidad: 3 }],
+      orden: 3
+    }, token);
+    if (!agregar.response.ok) throw new Error(`Crear modificador agregar etapa 2A fallo: ${agregar.data?.message || agregar.response.status}`);
+
+    const ventaConMods = await requestJson(baseUrl, "POST", "/ventas", {
+      usuario: "test",
+      tipo: "normal",
+      tipo_cobro: "efectivo",
+      items: [{
+        producto_id: productoBaseId,
+        nombre_producto: fixture.productoBaseNombre,
+        cantidad: 1,
+        precio_unitario: fixture.productoBasePrecio,
+        modificadores: [
+          { modificador_id: libre.data.modificador.id, cantidad: 1 },
+          { modificador_id: observacion.data.modificador.id, cantidad: 1 },
+          { modificador_id: agregar.data.modificador.id, cantidad: 1 }
+        ]
+      }]
+    }, token);
+    if (!ventaConMods.response.ok) throw new Error(`Venta normal con modificadores fallo: ${ventaConMods.data?.message || ventaConMods.response.status}`);
+    assertApprox(ventaConMods.data.total, 165, "Venta con modificadores debe sumar libre y agregar, no observacion");
+    assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, 77, "Venta con modificadores debe descontar solo stock base una vez");
+    assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 27, "Modificador agregar debe descontar componente extra desde snapshot");
+
+    const detalleConMods = await getVentaDetalle(baseUrl, token, ventaConMods.data.venta_id);
+    assertEqual(detalleConMods.items.length, 1, "Modificadores no deben insertarse como productos vendidos");
+    assertEqual(detalleConMods.items[0].producto_id, productoBaseId, "Detalle debe conservar el producto base vendido");
+    assertApprox(detalleConMods.items[0].precio_unitario, 165, "Detalle debe guardar precio unitario final con modificadores");
+    assertApprox(detalleConMods.items[0].subtotal, 165, "Detalle debe guardar total final con modificadores");
+
+    const modsSnapshot = await allSql(
+      dbPath,
+      "SELECT * FROM detalle_venta_modificadores WHERE detalle_venta_id = ? ORDER BY id ASC",
+      [detalleConMods.items[0].id]
+    );
+    assertEqual(modsSnapshot.length, 3, "Detalle con modificadores debe guardar los tres modificadores asociados");
+    const obsSnapshot = modsSnapshot.find((item) => item.tipo === "observacion");
+    if (!obsSnapshot || Number(obsSnapshot.precio_extra) !== 0) {
+      throw new Error(`Observacion debe guardarse en historial sin mover precio. Actual=${JSON.stringify(obsSnapshot)}`);
+    }
+
+    const componentesSnapshot = await allSql(
+      dbPath,
+      "SELECT * FROM detalle_venta_componentes_snapshot WHERE detalle_venta_id = ? ORDER BY id ASC",
+      [detalleConMods.items[0].id]
+    );
+    assertEqual(componentesSnapshot.length, 1, "Detalle con modificador agregar debe guardar snapshot de componente");
+    assertEqual(componentesSnapshot[0].producto_id, componenteId, "Snapshot debe asociar el componente extra correcto");
+    assertApprox(componentesSnapshot[0].cantidad, 3, "Snapshot debe guardar cantidad extra total");
+
+    const resumenCaja = await getCajaResumen(baseUrl, token);
+    assertApprox(resumenCaja.resumen.total_ventas, 365, "Caja debe incluir el precio extra en el total de venta");
+
+    const reporte = await requestJson(baseUrl, "GET", "/reportes/productos-mas-vendidos?limite=100", null, token);
+    if (!reporte.response.ok) throw new Error(`Reporte productos mas vendidos etapa 2A fallo: ${reporte.data?.message || reporte.response.status}`);
+    if (reporte.data.some((item) => String(item.nombre || "").includes("TEST Etapa 2A"))) {
+      throw new Error(`Modificadores no deben aparecer como productos vendidos. Reporte=${JSON.stringify(reporte.data)}`);
+    }
+    const productoBase = reporte.data.find((item) => Number(item.producto_id) === Number(productoBaseId));
+    if (!productoBase) throw new Error("Producto base debe aparecer en productos mas vendidos");
+    assertApprox(productoBase.cantidad_total, 3, "Productos mas vendidos debe contar solo cantidades del producto base");
+    assertApprox(productoBase.total_vendido, 365, "Productos mas vendidos debe incluir el total final con precio extra");
+
+    const modificadorOtroProducto = await requestJson(baseUrl, "POST", `/productos/${componenteId}/modificadores`, {
+      codigo: `etapa2a_otro_${suffix}`,
+      nombre: "TEST Etapa 2A Otro Producto",
+      tipo: "libre",
+      precio_extra: 5
+    }, token);
+    if (!modificadorOtroProducto.response.ok) throw new Error(`Crear modificador de otro producto fallo: ${modificadorOtroProducto.data?.message || modificadorOtroProducto.response.status}`);
+
+    const ventaInvalida = await requestJson(baseUrl, "POST", "/ventas", {
+      usuario: "test",
+      tipo: "normal",
+      tipo_cobro: "efectivo",
+      items: [{
+        producto_id: productoBaseId,
+        nombre_producto: fixture.productoBaseNombre,
+        cantidad: 1,
+        precio_unitario: fixture.productoBasePrecio,
+        modificadores: [{ modificador_id: modificadorOtroProducto.data.modificador.id, cantidad: 1 }]
+      }]
+    }, token);
+    assertEqual(ventaInvalida.response.status, 400, "Modificador no asociado al producto vendido debe fallar");
+  });
 }
 
 async function testModificadoresEtapa2AProteccionesAuditoria() {
@@ -13387,11 +13435,7 @@ async function testTipoPagoGetTodosIncluyeInactivos() {
 }
 
 async function testCuentasCobroEtapa2PagosYVentas() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
 
@@ -13456,6 +13500,7 @@ async function testCuentasCobroEtapa2PagosYVentas() {
       }
 
       const proveedor = await crearProveedor(baseUrl, token);
+      const productoTest = await crearProductoParaReporteVentas(baseUrl, token, "CuentasCobroEtapa2");
       const pagoValido = await registrarPago(baseUrl, token, {
         proveedor_id: proveedor.id,
         concepto: "TEST pago con cuenta cobro",
@@ -13567,7 +13612,7 @@ async function testCuentasCobroEtapa2PagosYVentas() {
       if (pagoMixtoSinCuenta.response.ok) throw new Error("Pago mixto con parte digital sin cuenta_cobro_id debe fallar");
       assertEqual(pagoMixtoSinCuenta.response.status, 400, "Pago mixto sin cuenta debe devolver 400");
 
-      const ventaValida = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaValida = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "debito",
         cuenta_cobro_id: cuentaDebito.id
       }), token);
@@ -13575,35 +13620,35 @@ async function testCuentasCobroEtapa2PagosYVentas() {
       const detalleVentaValida = await getVentaDetalle(baseUrl, token, ventaValida.data.venta_id);
       assertEqual(detalleVentaValida.venta.cuenta_cobro_id, cuentaDebito.id, "Venta con cuenta_cobro_id valida debe quedar guardada");
 
-      const ventaDebitoSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaDebitoSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "debito",
         cuenta_cobro_id: null
       }), token);
       if (ventaDebitoSinCuenta.response.ok) throw new Error("Venta debito sin cuenta_cobro_id debe fallar");
       assertEqual(ventaDebitoSinCuenta.response.status, 400, "Venta debito sin cuenta debe devolver 400");
 
-      const ventaTransferenciaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaTransferenciaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "transferencia",
         cuenta_cobro_id: null
       }), token);
       if (ventaTransferenciaSinCuenta.response.ok) throw new Error("Venta transferencia sin cuenta_cobro_id debe fallar");
       assertEqual(ventaTransferenciaSinCuenta.response.status, 400, "Venta transferencia sin cuenta debe devolver 400");
 
-      const ventaCreditoSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaCreditoSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "credito_digital_test",
         cuenta_cobro_id: null
       }), token);
       if (ventaCreditoSinCuenta.response.ok) throw new Error("Venta credito sin cuenta_cobro_id debe fallar");
       assertEqual(ventaCreditoSinCuenta.response.status, 400, "Venta credito sin cuenta debe devolver 400");
 
-      const ventaQrSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaQrSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "qr_digital_test",
         cuenta_cobro_id: null
       }), token);
       if (ventaQrSinCuenta.response.ok) throw new Error("Venta QR sin cuenta_cobro_id debe fallar");
       assertEqual(ventaQrSinCuenta.response.status, 400, "Venta QR sin cuenta debe devolver 400");
 
-      const ventaBilleteraSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaBilleteraSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "billetera_digital_test",
         cuenta_cobro_id: null
       }), token);
@@ -13611,41 +13656,41 @@ async function testCuentasCobroEtapa2PagosYVentas() {
       assertEqual(ventaBilleteraSinCuenta.response.status, 400, "Venta billetera sin cuenta debe devolver 400");
 
       await delay(1100);
-      const ventaCreditoConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaCreditoConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "credito_digital_test",
         cuenta_cobro_id: cuentaCredito.id
       }), token);
       if (!ventaCreditoConCuenta.response.ok) throw new Error(`Venta credito con cuenta valida fallo: ${ventaCreditoConCuenta.data?.message || ventaCreditoConCuenta.response.status}`);
 
       await delay(1100);
-      const ventaTransferenciaConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaTransferenciaConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "transferencia",
         cuenta_cobro_id: cuentaTransferencia.id
       }), token);
       if (!ventaTransferenciaConCuenta.response.ok) throw new Error(`Venta transferencia con cuenta valida fallo: ${ventaTransferenciaConCuenta.data?.message || ventaTransferenciaConCuenta.response.status}`);
 
       await delay(1100);
-      const ventaQrConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaQrConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "qr_digital_test",
         cuenta_cobro_id: cuentaQr.id
       }), token);
       if (!ventaQrConCuenta.response.ok) throw new Error(`Venta QR con cuenta valida fallo: ${ventaQrConCuenta.data?.message || ventaQrConCuenta.response.status}`);
 
       await delay(1100);
-      const ventaBilleteraConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaBilleteraConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "billetera_digital_test",
         cuenta_cobro_id: cuentaBilletera.id
       }), token);
       if (!ventaBilleteraConCuenta.response.ok) throw new Error(`Venta billetera con cuenta valida fallo: ${ventaBilleteraConCuenta.data?.message || ventaBilleteraConCuenta.response.status}`);
 
-      const ventaDebitoCuentaInactiva = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaDebitoCuentaInactiva = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "debito",
         cuenta_cobro_id: cuentaDebitoInactiva.id
       }), token);
       if (ventaDebitoCuentaInactiva.response.ok) throw new Error("Venta digital con cuenta inactiva debe fallar");
       assertEqual(ventaDebitoCuentaInactiva.response.status, 400, "Venta digital con cuenta inactiva debe devolver 400");
 
-      const ventaMixtaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaMixtaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "mixto",
         monto_efectivo: 80,
         monto_debito: 120,
@@ -13655,7 +13700,7 @@ async function testCuentasCobroEtapa2PagosYVentas() {
       assertEqual(ventaMixtaSinCuenta.response.status, 400, "Venta mixta digital sin cuenta debe devolver 400");
 
       await delay(1100);
-      const ventaMixtaConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaMixtaConCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "mixto",
         monto_efectivo: 80,
         monto_debito: 120,
@@ -13663,7 +13708,7 @@ async function testCuentasCobroEtapa2PagosYVentas() {
       }), token);
       if (!ventaMixtaConCuenta.response.ok) throw new Error(`Venta mixta con cuenta valida fallo: ${ventaMixtaConCuenta.data?.message || ventaMixtaConCuenta.response.status}`);
 
-      const ventaTipoIncorrecto = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaTipoIncorrecto = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "efectivo",
         cuenta_cobro_id: cuentaDebito.id
       }), token);
@@ -13671,7 +13716,7 @@ async function testCuentasCobroEtapa2PagosYVentas() {
       assertEqual(ventaTipoIncorrecto.response.status, 400, "Venta con cuenta_cobro_id de otro tipo_cobro debe devolver 400");
 
       await delay(1100);
-      const ventaLegacy = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaLegacy = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "efectivo",
         cuenta_cobro_id: null
       }), token);
@@ -13686,17 +13731,14 @@ async function testCuentasCobroEtapa2PagosYVentas() {
         habilita_cuenta_corriente: true
       }, token);
       if (!cliente.response.ok) throw new Error(`No se pudo crear cliente CC: ${cliente.data?.message || cliente.response.status}`);
-      const ventaCuentaCorriente = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaCuentaCorriente = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         es_cuenta_corriente: true,
         cliente_id: cliente.data.cliente.id,
         tipo_cobro: undefined,
         cuenta_cobro_id: null
       }), token);
       if (!ventaCuentaCorriente.response.ok) throw new Error(`Venta cuenta corriente sin cuenta fallo: ${ventaCuentaCorriente.data?.message || ventaCuentaCorriente.response.status}`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testConfiguracionCuentasCobroValidacionesOperativas() {
@@ -17581,82 +17623,68 @@ async function testReporteCuentasCobro() {
 }
 
 async function testVentasPorDiaDevuelveClaves() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      await abrirCaja(baseUrl, token, 1000);
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    await abrirCaja(baseUrl, token, 1000);
+    const producto = await crearProductoParaReporteVentas(baseUrl, token, "Ventas Dia Claves");
 
-      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
-      if (!venta.response.ok) throw new Error(`Venta fallo: ${venta.data?.message || venta.response.status}`);
+    const venta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(producto), token);
+    if (!venta.response.ok) throw new Error(`Venta fallo: ${venta.data?.message || venta.response.status}`);
 
-      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/ventas-por-dia", null, token);
-      if (!response.ok) throw new Error(`GET /reportes/ventas-por-dia fallo: ${data?.message || response.status}`);
-      if (!Array.isArray(data)) throw new Error("GET /reportes/ventas-por-dia debe devolver un array");
-      if (!data.length) throw new Error("GET /reportes/ventas-por-dia debe devolver al menos un item");
+    const { response, data } = await requestJson(baseUrl, "GET", "/reportes/ventas-por-dia", null, token);
+    if (!response.ok) throw new Error(`GET /reportes/ventas-por-dia fallo: ${data?.message || response.status}`);
+    if (!Array.isArray(data)) throw new Error("GET /reportes/ventas-por-dia debe devolver un array");
+    if (!data.length) throw new Error("GET /reportes/ventas-por-dia debe devolver al menos un item");
 
-      const item = data[0];
-      for (const clave of ["fecha", "total", "cantidad_ventas"]) {
-        if (!(clave in item)) {
-          throw new Error(`Cada item debe tener clave '${clave}'. Item=${JSON.stringify(item)}`);
-        }
+    const item = data[0];
+    for (const clave of ["fecha", "total", "cantidad_ventas"]) {
+      if (!(clave in item)) {
+        throw new Error(`Cada item debe tener clave '${clave}'. Item=${JSON.stringify(item)}`);
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    }
+  });
 }
 
 async function testVentasPorDiaExcluyeAnuladas() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      await abrirCaja(baseUrl, token, 1000);
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+    await configurarClaveAutorizacionTest(dbPath);
+    const token = await login(baseUrl, "admin", "admin123");
+    await abrirCaja(baseUrl, token, 1000);
+    const producto = await crearProductoParaReporteVentas(baseUrl, token, "Ventas Dia Anuladas");
 
-      const ventaOk = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
-      if (!ventaOk.response.ok) throw new Error(`Venta cobrada fallo: ${ventaOk.data?.message || ventaOk.response.status}`);
+    const ventaOk = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(producto), token);
+    if (!ventaOk.response.ok) throw new Error(`Venta cobrada fallo: ${ventaOk.data?.message || ventaOk.response.status}`);
 
-      await delay(1100);
-      const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
-      if (!ventaAnular.response.ok) throw new Error(`Venta a anular fallo: ${ventaAnular.data?.message || ventaAnular.response.status}`);
+    await delay(1100);
+    const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(producto), token);
+    if (!ventaAnular.response.ok) throw new Error(`Venta a anular fallo: ${ventaAnular.data?.message || ventaAnular.response.status}`);
 
-      const anulacion = await requestJson(baseUrl, "POST", `/ventas/${ventaAnular.data.venta_id}/anular-cobrada`, {
-        authorization_code: "1234"
-      }, token);
-      if (!anulacion.response.ok) throw new Error(`Anulacion fallo: ${anulacion.data?.message || anulacion.response.status}`);
+    const anulacion = await requestJson(baseUrl, "POST", `/ventas/${ventaAnular.data.venta_id}/anular-cobrada`, {
+      authorization_code: "1234"
+    }, token);
+    if (!anulacion.response.ok) throw new Error(`Anulacion fallo: ${anulacion.data?.message || anulacion.response.status}`);
 
-      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/ventas-por-dia", null, token);
-      if (!response.ok) throw new Error(`GET /reportes/ventas-por-dia fallo: ${data?.message || response.status}`);
-      if (!data.length) throw new Error("Debe devolver al menos una entrada");
+    const { response, data } = await requestJson(baseUrl, "GET", "/reportes/ventas-por-dia", null, token);
+    if (!response.ok) throw new Error(`GET /reportes/ventas-por-dia fallo: ${data?.message || response.status}`);
+    if (!data.length) throw new Error("Debe devolver al menos una entrada");
 
-      const hoy = data[0];
-      assertApprox(hoy.total, 200, "Ventas por dia debe excluir ventas anuladas del total");
-      assertEqual(hoy.cantidad_ventas, 1, "Ventas por dia debe excluir ventas anuladas de cantidad_ventas");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const hoy = data[0];
+    assertApprox(hoy.total, 200, "Ventas por dia debe excluir ventas anuladas del total");
+    assertEqual(hoy.cantidad_ventas, 1, "Ventas por dia debe excluir ventas anuladas de cantidad_ventas");
+  });
 }
 
 async function testVentasPorDiaAgrupaVentas() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const producto = await crearProductoParaReporteVentas(baseUrl, token, "Ventas Dia Agrupa");
 
       // Dos ventas del mismo dia (hoy)
-      const v1 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const v1 = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(producto), token);
       if (!v1.response.ok) throw new Error(`Venta 1 fallo: ${v1.data?.message || v1.response.status}`);
       await delay(1100);
-      const v2 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const v2 = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(producto), token);
       if (!v2.response.ok) throw new Error(`Venta 2 fallo: ${v2.data?.message || v2.response.status}`);
 
       const { response, data } = await requestJson(baseUrl, "GET", "/reportes/ventas-por-dia", null, token);
@@ -17666,22 +17694,16 @@ async function testVentasPorDiaAgrupaVentas() {
       if (!entrada) throw new Error(`Las 2 ventas del mismo dia deben agruparse en una sola entrada. Respuesta=${JSON.stringify(data)}`);
       assertApprox(entrada.total, 400, "El total agrupado debe sumar ambas ventas (200 + 200 = 400)");
       assertEqual(entrada.cantidad_ventas, 2, "cantidad_ventas debe contar ambas ventas del dia");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testVentasPorDiaRespetaFiltroFechas() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const producto = await crearProductoParaReporteVentas(baseUrl, token, "Ventas Dia Fechas");
 
-      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(producto), token);
       if (!venta.response.ok) throw new Error(`Venta fallo: ${venta.data?.message || venta.response.status}`);
 
       // Rango amplio: incluye la venta de hoy
@@ -17693,18 +17715,12 @@ async function testVentasPorDiaRespetaFiltroFechas() {
       const { response: r2, data: d2 } = await requestJson(baseUrl, "GET", "/reportes/ventas-por-dia?desde=2010-01-01&hasta=2010-12-31", null, token);
       if (!r2.ok) throw new Error(`GET rango historico fallo: ${d2?.message || r2.status}`);
       if (d2.length !== 0) throw new Error(`Rango historico debe devolver array vacio. Actual=${JSON.stringify(d2)}`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testVentasPorDiaOrdenaAscendente() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
     await prepareDb(dbPath, [
-      ...resetOperationalDataStatements(),
       // Insertar 3 ventas con fechas conocidas en orden no ascendente
       ["INSERT INTO ventas (fecha, hora, usuario, total, tipo, estado, tipo_cobro, monto_efectivo, monto_debito, es_cuenta_corriente, saldo_pendiente) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ["2024-01-05", "12:00:00", "test", 300, "normal", "cobrada", "efectivo", 300, 0, 0, 0]],
@@ -17713,7 +17729,6 @@ async function testVentasPorDiaOrdenaAscendente() {
       ["INSERT INTO ventas (fecha, hora, usuario, total, tipo, estado, tipo_cobro, monto_efectivo, monto_debito, es_cuenta_corriente, saldo_pendiente) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ["2024-01-03", "11:00:00", "test", 200, "normal", "cobrada", "efectivo", 200, 0, 0, 0]]
     ]);
-    await withServer(dbPath, async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
 
       const { response, data } = await requestJson(baseUrl, "GET", "/reportes/ventas-por-dia?desde=2024-01-01&hasta=2024-01-31", null, token);
@@ -17727,10 +17742,7 @@ async function testVentasPorDiaOrdenaAscendente() {
       }
       if (data[0].fecha !== "2024-01-01") throw new Error(`Primera entrada debe ser 2024-01-01. Actual=${data[0].fecha}`);
       if (data[data.length - 1].fecha !== "2024-01-05") throw new Error(`Ultima entrada debe ser 2024-01-05. Actual=${data[data.length - 1].fecha}`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 function compuestoBasePayload(categoriaId, componenteId, rinde, extras = []) {
@@ -18701,11 +18713,7 @@ async function testTiendaIngredientesVisibles() {
 }
 
 async function testTiendaConvertirVenta() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
 
       // Crear usuarios de prueba
@@ -18728,12 +18736,21 @@ async function testTiendaConvertirVenta() {
       const encargadoToken = await login(baseUrl, "encargado_tienda", "encargado123");
       const colaboradorToken = await login(baseUrl, "colaborador_tienda", "colaborador123");
 
-      const stockInicial = (await getProduct(baseUrl, adminToken, 11)).stock;
+      const categoriaId = await crearCategoria(baseUrl, adminToken, `TEST Tienda Convertir ${Date.now()}`);
+      const productoId = await crearProducto(baseUrl, adminToken, {
+        nombre: `TEST Tienda Producto ${Date.now()}`,
+        categoria_id: categoriaId,
+        categoria: "TEST Tienda Convertir",
+        stock: 50,
+        precio_venta: 100,
+        maneja_stock: true
+      });
+      const stockInicial = (await getProduct(baseUrl, adminToken, productoId)).stock;
 
       // Crear pedido via endpoint público (sin auth)
       const { response: rPedido, data: dPedido } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
         cliente_nombre: "Test Convert",
-        items: [{ producto_id: 11, cantidad: 2, modificadores: [] }]
+        items: [{ producto_id: productoId, cantidad: 2, modificadores: [] }]
       });
       if (!rPedido.ok) throw new Error(`No se pudo crear pedido público: ${dPedido?.message || rPedido.status}`);
       const codigoPublico = dPedido.codigo_publico;
@@ -18783,13 +18800,13 @@ async function testTiendaConvertirVenta() {
       if (rDoble.status !== 409) throw new Error(`Convertir dos veces debe devolver 409, actual=${rDoble.status}`);
 
       // Verificar descuento de stock: debe ser exactamente 1 descuento (cantidad=2)
-      const stockTras = (await getProduct(baseUrl, adminToken, 11)).stock;
+      const stockTras = (await getProduct(baseUrl, adminToken, productoId)).stock;
       assertEqual(stockTras, stockInicial - 2, "Stock descontado exactamente 1 vez (cantidad=2)");
 
       // Test: encargado puede convertir un segundo pedido
       const { response: rPedido2, data: dPedido2 } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
         cliente_nombre: "Test Encargado",
-        items: [{ producto_id: 11, cantidad: 1, modificadores: [] }]
+        items: [{ producto_id: productoId, cantidad: 1, modificadores: [] }]
       });
       if (!rPedido2.ok) throw new Error(`No se pudo crear segundo pedido: ${dPedido2?.message}`);
       const { data: lista2 } = await requestJson(baseUrl, "GET", "/tienda/pedidos", null, encargadoToken);
@@ -18798,10 +18815,7 @@ async function testTiendaConvertirVenta() {
       await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedido2.id}/listo`, {}, encargadoToken);
       const { response: rConv2 } = await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedido2.id}/convertir-venta`, {}, encargadoToken);
       if (!rConv2.ok) throw new Error(`Encargado no pudo convertir pedido listo: ${rConv2.status}`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCompuestosLegacyGetStockFisicoManejaStock1() {
@@ -20407,19 +20421,15 @@ async function testVentaNormalSigueOK() {
 }
 
 async function testVentaCCDesdePostVentasAplicaReglas() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, [
-      ...resetOperationalDataStatements(),
-      ...setConfigCC({
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await prepareDb(dbPath, [
+        ...setConfigCC({
         cuentas_desactivar_por_vencimiento: false,
         cuentas_limite_global_activo: true,
         cuentas_limite_global_monto: 100,
         cuentas_dias_vencimiento: 30
       })
     ]);
-    await withServer(dbPath, async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
 
@@ -20519,10 +20529,7 @@ async function testVentaCCDesdePostVentasAplicaReglas() {
         es_cuenta_corriente: true, cliente_id: id5
       }, token);
       if (r5b.status !== 409) throw new Error(`Test5b CC regla global excedida: esperado 409, dio ${r5b.status}`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testUsuarioVentaNoEsAdmin() {
