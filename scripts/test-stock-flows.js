@@ -2425,21 +2425,23 @@ async function testClientesAplicarRecalculoDeudaControlado() {
 }
 
 async function testVentaContadoImpactaStockYCaja() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       const apertura = await abrirCaja(baseUrl, token, 1000);
+      const catId = await crearCategoria(baseUrl, token, `TEST VentaContadoStockCaja ${Date.now()}`);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: "TEST prod venta contado", categoria_id: catId,
+        precio_venta: 100, stock: 80, maneja_stock: true
+      });
 
-      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        items: [{ producto_id: productoId, nombre_producto: "TEST prod venta contado", cantidad: 2, precio_unitario: 100 }]
+      }), token);
       if (!venta.response.ok) throw new Error(`Venta contado fallo: ${venta.data?.message || venta.response.status}`);
       assertEqual(venta.data.total, 200, "La venta contado debe totalizar 200");
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 78, "La venta contado debe descontar stock");
+      assertEqual((await getProduct(baseUrl, token, productoId)).stock, 78, "La venta contado debe descontar stock");
 
-      const movimientos = await getMovimientosStock(baseUrl, token, 11);
+      const movimientos = await getMovimientosStock(baseUrl, token, productoId);
       const movimientoVenta = movimientos.find((mov) => mov.tipo_movimiento === "venta" && Number(mov.cantidad) === 2);
       if (!movimientoVenta) throw new Error("La venta simple debe registrar un movimiento_stock tipo venta por cantidad 2");
       assertEqual(movimientoVenta.stock_anterior, 80, "El movimiento de venta debe partir del stock inicial");
@@ -2448,35 +2450,46 @@ async function testVentaContadoImpactaStockYCaja() {
       const detalle = await getVentaDetalle(baseUrl, token, venta.data.venta_id);
       assertEqual(detalle.venta.caja_id, apertura.id, "La venta contado debe quedar asociada a la caja abierta");
       assertEqual(detalle.items.length, 1, "La venta simple sin modificadores debe guardar una sola linea en detalle_ventas");
-      assertEqual(detalle.items[0].producto_id, 11, "La venta simple debe conservar producto_id en detalle_ventas");
+      assertEqual(detalle.items[0].producto_id, productoId, "La venta simple debe conservar producto_id en detalle_ventas");
       assertApprox(detalle.items[0].subtotal, 200, "La venta simple debe conservar subtotal historico en detalle_ventas");
 
       const resumen = await getCajaResumen(baseUrl, token);
       assertEqual(resumen.resumen.total_efectivo, 200, "La caja debe sumar efectivo de venta contado");
       assertEqual(resumen.resumen.total_ventas, 200, "La caja debe sumar total de ventas");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testPendienteNoImpactaCajaHastaCobro() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const categoriaNombre = `TEST Pendiente Caja ${Date.now()}`;
+      const categoriaId = await crearCategoria(baseUrl, token, categoriaNombre);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: "TEST pendiente no impacta caja",
+        categoria: categoriaNombre,
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        stock: 80,
+        maneja_stock: true
+      });
+      const payload = ventaSimplePayload({
+        items: [{
+          producto_id: productoId,
+          nombre_producto: "TEST pendiente no impacta caja",
+          cantidad: 2,
+          precio_unitario: 100
+        }]
+      });
 
       const pendiente = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        ...payload,
         tipo: "pendiente",
         identificador_pendiente: "Mesa Test",
         tipo_cobro: undefined
       }), token);
       if (!pendiente.response.ok) throw new Error(`Ticket pendiente fallo: ${pendiente.data?.message || pendiente.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 78, "El pendiente debe reservar/descontar stock");
+      assertEqual((await getProduct(baseUrl, token, productoId)).stock, 78, "El pendiente debe reservar/descontar stock");
 
       const resumenAntes = await getCajaResumen(baseUrl, token);
       assertEqual(resumenAntes.resumen.total_ventas, 0, "El pendiente sin cobrar no debe impactar ventas de caja");
@@ -2486,15 +2499,12 @@ async function testPendienteNoImpactaCajaHastaCobro() {
         tipo_cobro: "efectivo"
       }, token);
       if (!cobro.response.ok) throw new Error(`Cobro pendiente fallo: ${cobro.data?.message || cobro.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 78, "Cobrar pendiente no debe volver a descontar stock");
+      assertEqual((await getProduct(baseUrl, token, productoId)).stock, 78, "Cobrar pendiente no debe volver a descontar stock");
 
       const resumenDespues = await getCajaResumen(baseUrl, token);
       assertEqual(resumenDespues.resumen.total_ventas, 200, "El pendiente cobrado debe impactar ventas de caja");
       assertEqual(resumenDespues.resumen.total_efectivo, 200, "El pendiente cobrado debe impactar efectivo");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testAnularPendienteReponeStock() {
@@ -2777,13 +2787,17 @@ async function testProveedorGuardaImpactoContable() {
 }
 
 async function testPagoRegistradoImpactaCaja() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaEfectivoDestino = await crearCuentaDestino(baseUrl, token, {
+        nombre: "TEST destino efectivo pago registrado",
+        tipo_destino: "efectivo"
+      });
+      await crearCuentaCobro(baseUrl, token, {
+        nombre: "TEST cuenta efectivo pago registrado",
+        tipo_pago_codigo: "efectivo",
+        cuenta_destino_id: cuentaEfectivoDestino.id
+      });
       const apertura = await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token, {
         tipo_impacto: "costo_variable_mercaderia"
@@ -2805,20 +2819,21 @@ async function testPagoRegistradoImpactaCaja() {
       assertEqual(resumen.resumen.total_pagos_efectivo, 300, "La caja debe registrar egreso efectivo por pago");
       assertEqual(resumen.resumen.total_pagos_general, 300, "La caja debe sumar total de pagos registrados");
       assertEqual(resumen.resumen.total_general, -300, "La caja debe reflejar el egreso en total_general");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testPagoPendienteNoImpactaCaja() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaEfectivoDestino = await crearCuentaDestino(baseUrl, token, {
+        nombre: "TEST destino efectivo pago pendiente",
+        tipo_destino: "efectivo"
+      });
+      await crearCuentaCobro(baseUrl, token, {
+        nombre: "TEST cuenta efectivo pago pendiente",
+        tipo_pago_codigo: "efectivo",
+        cuenta_destino_id: cuentaEfectivoDestino.id
+      });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
 
@@ -2840,20 +2855,21 @@ async function testPagoPendienteNoImpactaCaja() {
       const resumen = await getCajaResumen(baseUrl, token);
       assertEqual(resumen.resumen.total_pagos_general, 0, "El pago pendiente no debe impactar pagos de caja");
       assertEqual(resumen.resumen.total_general, 0, "El pago pendiente no debe alterar total_general de caja");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testPagoMixtoGuardaMontosYCaja() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaEfectivoDestino = await crearCuentaDestino(baseUrl, token, {
+        nombre: "TEST destino efectivo pago mixto",
+        tipo_destino: "efectivo"
+      });
+      await crearCuentaCobro(baseUrl, token, {
+        nombre: "TEST cuenta efectivo pago mixto",
+        tipo_pago_codigo: "efectivo",
+        cuenta_destino_id: cuentaEfectivoDestino.id
+      });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
       const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
@@ -2880,10 +2896,7 @@ async function testPagoMixtoGuardaMontosYCaja() {
       assertEqual(resumen.resumen.total_pagos_efectivo, 200, "La caja debe sumar parte efectivo del pago mixto");
       assertEqual(resumen.resumen.total_pagos_debito, 300, "La caja debe sumar parte debito del pago mixto");
       assertEqual(resumen.resumen.total_pagos_general, 500, "La caja debe sumar total del pago mixto");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testPagoCalculaIvaCreditoFiscal() {
@@ -3338,16 +3351,17 @@ async function testCierreInmutableAntePagoPosterior() {
 }
 
 async function testCajaCerradaNoRecibeOperacionPosterior() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const catId = await crearCategoria(baseUrl, token, `TEST CajaCerradaContinuidad ${Date.now()}`);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: "TEST prod caja continuidad", categoria_id: catId,
+        precio_venta: 100, stock: 100, maneja_stock: true
+      });
+      const itemsVenta = [{ producto_id: productoId, nombre_producto: "TEST prod caja continuidad", cantidad: 2, precio_unitario: 100 }];
 
-      const ventaInicial = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const ventaInicial = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({ items: itemsVenta }), token);
       if (!ventaInicial.response.ok) throw new Error(`Venta antes de cerrar caja fallo: ${ventaInicial.data?.message || ventaInicial.response.status}`);
 
       const cajaCerrada = await cerrarCaja(baseUrl, token, 1200, 1000, 200);
@@ -3355,7 +3369,7 @@ async function testCajaCerradaNoRecibeOperacionPosterior() {
 
       const cajaNueva = await abrirCaja(baseUrl, token, 500);
       const ventaPosterior = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
-        usuario: "test caja nueva"
+        usuario: "test caja nueva", items: itemsVenta
       }), token);
       if (!ventaPosterior.response.ok) throw new Error(`Venta posterior con caja nueva fallo: ${ventaPosterior.data?.message || ventaPosterior.response.status}`);
 
@@ -3364,10 +3378,7 @@ async function testCajaCerradaNoRecibeOperacionPosterior() {
       if (Number(detalleVentaPosterior.venta.caja_id) === Number(cajaCerrada.id)) {
         throw new Error("La operacion posterior no debe asociarse a la caja cerrada");
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testSimpleConRendimientoDescuentaStockFisicoUnaVez() {
@@ -13924,11 +13935,8 @@ async function testCuentasDestinoEtapa3AInfraestructura() {
 }
 
 async function testCajaResumenPorCuentaDestino() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await configurarClaveAutorizacionTest(dbPath);
       const token = await login(baseUrl, "admin", "admin123");
       const apertura = await abrirCaja(baseUrl, token, 1000);
       const mercadoPago = await crearCuentaDestino(baseUrl, token, {
@@ -13971,36 +13979,37 @@ async function testCajaResumenPorCuentaDestino() {
         orden: 30
       });
       const proveedor = await crearProveedor(baseUrl, token);
+      const productoTest = await crearProductoParaReporteVentas(baseUrl, token, "CuentasDestinoResumen");
 
-      const ventaPoint = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaPoint = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "debito",
         cuenta_cobro_id: point.id
       }), token);
       if (!ventaPoint.response.ok) throw new Error(`Venta Point destino fallo: ${ventaPoint.data?.message || ventaPoint.response.status}`);
 
       await delay(1100);
-      const ventaQr = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaQr = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "transferencia",
         cuenta_cobro_id: qr.id
       }), token);
       if (!ventaQr.response.ok) throw new Error(`Venta QR destino fallo: ${ventaQr.data?.message || ventaQr.response.status}`);
 
       await delay(1100);
-      const ventaCanalSinDestino = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaCanalSinDestino = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "efectivo",
         cuenta_cobro_id: legacySinDestino.id
       }), token);
       if (!ventaCanalSinDestino.response.ok) throw new Error(`Venta canal sin destino fallo: ${ventaCanalSinDestino.data?.message || ventaCanalSinDestino.response.status}`);
 
       await delay(1100);
-      const ventaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "efectivo",
         cuenta_cobro_id: null
       }), token);
       if (!ventaSinCuenta.response.ok) throw new Error(`Venta sin cuenta destino fallo: ${ventaSinCuenta.data?.message || ventaSinCuenta.response.status}`);
 
       await delay(1100);
-      const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "debito",
         cuenta_cobro_id: point.id
       }), token);
@@ -14077,205 +14086,181 @@ async function testCajaResumenPorCuentaDestino() {
       assertEqual(resumenCerrada.caja.id, cajaCerrada.id, "Resumen por cuenta destino sin caja abierta debe usar ultima caja cerrada");
       const mpCerrada = resumenCerrada.cuentas.find((cuenta) => cuenta.cuenta_destino_id === mercadoPago.id);
       assertApprox(mpCerrada?.balance, 350, "Resumen por cuenta destino de ultima caja cerrada debe conservar balance");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCajaPagosEfectivoAsignanDestinoCaja02B() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      await prepareDb(dbPath, [
-        ["DELETE FROM compra_recepcion_items"],
-        ["DELETE FROM compra_recepciones"],
-        ["DELETE FROM compra_items"],
-        ["DELETE FROM compra_comprobante_iva"],
-        ["DELETE FROM compra_comprobantes"],
-        ["DELETE FROM compras"]
-      ]);
-      const token = await login(baseUrl, "admin", "admin123");
-      const proveedor = await crearProveedor(baseUrl, token);
-      const destinoEfectivo = await crearCuentaDestino(baseUrl, token, {
-        nombre: `Caja efectivo CAJA02B ${Date.now()}`,
-        tipo_destino: "efectivo",
-        orden: -200
-      });
-      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, {
-        nombre: `Cuenta efectivo CAJA02B ${Date.now()}`,
-        tipo_pago_codigo: "efectivo",
-        tipo_cuenta: "caja",
-        cuenta_destino_id: destinoEfectivo.id,
-        orden: -200
-      });
-      const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
-        nombre: `Cuenta debito CAJA02B ${Date.now()}`,
-        tipo_pago_codigo: "debito",
-        orden: -190
-      });
-
-      await runSql(
-        dbPath,
-        `INSERT INTO pagos
-         (proveedor_id, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito, fecha, hora, estado,
-          categoria_pago, caja_id, cuenta_cobro_id, es_cuenta_corriente, iva_credito_fiscal)
-         VALUES (?, 'Legacy NULL CAJA02B', 11, 'efectivo', 11, 0, '2026-01-01', '08:00:00', 'registrado',
-          'otro_no_computable', NULL, NULL, 0, 0)`,
-        [proveedor.id]
-      );
-      const legacyAntes = (await allSql(dbPath, "SELECT cuenta_cobro_id FROM pagos WHERE concepto = 'Legacy NULL CAJA02B'"))[0];
-      assertEqual(legacyAntes.cuenta_cobro_id || 0, 0, "CAJA02B fixture legacy inicia con cuenta NULL");
-
-      await abrirCaja(baseUrl, token, 1000);
-      const pagoExplicito = await registrarPago(baseUrl, token, {
-        proveedor_id: proveedor.id,
-        concepto: `CAJA02B efectivo explicito ${Date.now()}`,
-        monto_total: 31,
-        tipo_pago: "efectivo",
-        estado: "registrado",
-        cuenta_cobro_id: cuentaEfectivo.id
-      });
-      assertEqual(pagoExplicito.cuenta_cobro_id, cuentaEfectivo.id, "CAJA02B pago efectivo explicito conserva cuenta enviada");
-
-      const pagoAuto = await registrarPago(baseUrl, token, {
-        proveedor_id: proveedor.id,
-        concepto: `CAJA02B efectivo automatico ${Date.now()}`,
-        monto_total: 41,
-        tipo_pago: "efectivo",
-        estado: "registrado"
-      });
-      assertEqual(pagoAuto.cuenta_cobro_id, cuentaEfectivo.id, "CAJA02B pago efectivo sin cuenta resuelve cuenta efectiva activa");
-      const pagoAutoDestino = (await allSql(
-        dbPath,
-        "SELECT cc.cuenta_destino_id FROM pagos p LEFT JOIN cuentas_cobro cc ON cc.id = p.cuenta_cobro_id WHERE p.id = ?",
-        [pagoAuto.id]
-      ))[0];
-      assertEqual(pagoAutoDestino.cuenta_destino_id, destinoEfectivo.id, "CAJA02B pago automatico queda asociado a destino efectivo");
-
-      const compra = await requestJson(baseUrl, "POST", "/compras", {
-        proveedor_id: proveedor.id,
-        fecha_compra: "2026-03-01",
-        concepto: "Compra CAJA02B",
-        tipo_impacto: "costo_variable_mercaderia",
-        total_compra: 100
-      }, token);
-      if (!compra.response.ok) throw new Error(`CAJA02B crear compra fallo: ${compra.data?.message || compra.response.status}`);
-      const pagoCompra = await requestJson(baseUrl, "POST", `/compras/${compra.data.compra.id}/pagos`, {
-        monto_total: 40,
-        tipo_pago: "efectivo",
-        concepto: "Pago compra CAJA02B"
-      }, token);
-      if (!pagoCompra.response.ok) throw new Error(`CAJA02B pago compra efectivo fallo: ${pagoCompra.data?.message || pagoCompra.response.status}`);
-      assertEqual(pagoCompra.data.pago.cuenta_cobro_id, cuentaEfectivo.id, "CAJA02B pago de compra resuelve misma cuenta efectiva");
-
-      const pagoDebito = await registrarPago(baseUrl, token, {
-        proveedor_id: proveedor.id,
-        concepto: `CAJA02B debito intacto ${Date.now()}`,
-        monto_total: 25,
-        tipo_pago: "debito",
-        estado: "registrado",
-        cuenta_cobro_id: cuentaDebito.id
-      });
-      assertEqual(pagoDebito.cuenta_cobro_id, cuentaDebito.id, "CAJA02B pago no efectivo conserva contrato previo");
-
-      const resumenDestino = await getCajaResumenCuentasDestino(baseUrl, token);
-      const sinDestino = resumenDestino.cuentas.find((cuenta) => cuenta.sin_cuenta_destino);
-      if (sinDestino && Number(sinDestino.pagos || 0) > 0) {
-        throw new Error(`CAJA02B pago efectivo nuevo no debe aparecer como sin destino. Actual=${JSON.stringify(sinDestino)}`);
-      }
-      const destinoCaja = resumenDestino.cuentas.find((cuenta) => Number(cuenta.cuenta_destino_id) === Number(destinoEfectivo.id));
-      assertApprox(destinoCaja?.egresos, 112, "CAJA02B pagos efectivos nuevos deben restar en destino efectivo");
-
-      const legacyDespues = (await allSql(dbPath, "SELECT cuenta_cobro_id FROM pagos WHERE concepto = 'Legacy NULL CAJA02B'"))[0];
-      assertEqual(legacyDespues.cuenta_cobro_id || 0, 0, "CAJA02B pago legacy NULL permanece intacto");
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+    await prepareDb(dbPath, [
+      ["DELETE FROM compra_recepcion_items"],
+      ["DELETE FROM compra_recepciones"],
+      ["DELETE FROM compra_items"],
+      ["DELETE FROM compra_comprobante_iva"],
+      ["DELETE FROM compra_comprobantes"],
+      ["DELETE FROM compras"]
+    ]);
+    const token = await login(baseUrl, "admin", "admin123");
+    const proveedor = await crearProveedor(baseUrl, token);
+    const destinoEfectivo = await crearCuentaDestino(baseUrl, token, {
+      nombre: `Caja efectivo CAJA02B ${Date.now()}`,
+      tipo_destino: "efectivo",
+      orden: -200
+    });
+    const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, {
+      nombre: `Cuenta efectivo CAJA02B ${Date.now()}`,
+      tipo_pago_codigo: "efectivo",
+      tipo_cuenta: "caja",
+      cuenta_destino_id: destinoEfectivo.id,
+      orden: -200
+    });
+    const cuentaDebito = await crearCuentaCobro(baseUrl, token, {
+      nombre: `Cuenta debito CAJA02B ${Date.now()}`,
+      tipo_pago_codigo: "debito",
+      orden: -190
     });
 
-    const dbPathSinCuenta = tempDbPath();
-    fs.copyFileSync(SOURCE_DB, dbPathSinCuenta);
-    try {
-      await prepareDb(dbPathSinCuenta, resetOperationalDataStatements());
-      await prepareDb(dbPathSinCuenta, [["UPDATE cuentas_cobro SET activo = 0 WHERE tipo_pago_codigo = 'efectivo'"]]);
-      await withServer(dbPathSinCuenta, async (baseUrl) => {
-        const token = await login(baseUrl, "admin", "admin123");
-        const proveedor = await crearProveedor(baseUrl, token);
-        const compra = await requestJson(baseUrl, "POST", "/compras", {
-          proveedor_id: proveedor.id,
-          fecha_compra: "2026-03-02",
-          concepto: "Compra sin cuenta efectivo CAJA02B",
-          tipo_impacto: "costo_variable_mercaderia",
-          total_compra: 100
-        }, token);
-        if (!compra.response.ok) throw new Error(`CAJA02B compra sin cuenta fallo: ${compra.data?.message || compra.response.status}`);
-        await abrirCaja(baseUrl, token, 1000);
-        const pagoSinCuenta = await requestJson(baseUrl, "POST", "/pagos", {
-          proveedor_id: proveedor.id,
-          concepto: "CAJA02B sin cuenta efectiva",
-          monto_total: 10,
-          tipo_pago: "efectivo",
-          estado: "registrado"
-        }, token);
-        assertEqual(pagoSinCuenta.response.status, 400, "CAJA02B pago efectivo sin cuenta configurada debe fallar");
-        const pagoCompraSinCuenta = await requestJson(baseUrl, "POST", `/compras/${compra.data.compra.id}/pagos`, {
-          monto_total: 10,
-          tipo_pago: "efectivo"
-        }, token);
-        assertEqual(pagoCompraSinCuenta.response.status, 400, "CAJA02B pago compra sin cuenta configurada debe fallar");
-        const pagos = await allSql(dbPathSinCuenta, "SELECT COUNT(*) AS total FROM pagos WHERE concepto LIKE 'CAJA02B sin cuenta%' OR compra_id = ?", [compra.data.compra.id]);
-        assertEqual(pagos[0].total, 0, "CAJA02B fallo de configuracion no inserta pagos");
-        const compraDb = (await allSql(dbPathSinCuenta, "SELECT saldo_pendiente, estado FROM compras WHERE id = ?", [compra.data.compra.id]))[0];
-        assertApprox(compraDb.saldo_pendiente, 100, "CAJA02B fallo no altera saldo de compra");
-        assertSame(compraDb.estado, "pendiente", "CAJA02B fallo no cambia estado de compra");
-        const resumen = await getCajaResumen(baseUrl, token);
-        assertApprox(resumen.resumen.total_pagos_general, 0, "CAJA02B fallo no impacta Caja");
-      });
-    } finally {
-      fs.rmSync(dbPathSinCuenta, { force: true });
-    }
+    await runSql(
+      dbPath,
+      `INSERT INTO pagos
+       (proveedor_id, concepto, monto_total, tipo_pago, monto_efectivo, monto_debito, fecha, hora, estado,
+        categoria_pago, caja_id, cuenta_cobro_id, es_cuenta_corriente, iva_credito_fiscal)
+       VALUES (?, 'Legacy NULL CAJA02B', 11, 'efectivo', 11, 0, '2026-01-01', '08:00:00', 'registrado',
+        'otro_no_computable', NULL, NULL, 0, 0)`,
+      [proveedor.id]
+    );
+    const legacyAntes = (await allSql(dbPath, "SELECT cuenta_cobro_id FROM pagos WHERE concepto = 'Legacy NULL CAJA02B'"))[0];
+    assertEqual(legacyAntes.cuenta_cobro_id || 0, 0, "CAJA02B fixture legacy inicia con cuenta NULL");
 
-    const dbPathSinDestino = tempDbPath();
-    fs.copyFileSync(SOURCE_DB, dbPathSinDestino);
-    try {
-      await prepareDb(dbPathSinDestino, resetOperationalDataStatements());
-      await prepareDb(dbPathSinDestino, [["UPDATE cuentas_cobro SET activo = 0 WHERE tipo_pago_codigo = 'efectivo'"]]);
-      await withServer(dbPathSinDestino, async (baseUrl) => {
-        const token = await login(baseUrl, "admin", "admin123");
-        const proveedor = await crearProveedor(baseUrl, token);
-        const cuentaSinDestino = await crearCuentaCobro(baseUrl, token, {
-          nombre: "CAJA02B efectivo sin destino",
-          tipo_pago_codigo: "efectivo",
-          cuenta_destino_id: null,
-          orden: -300
-        });
-        await abrirCaja(baseUrl, token, 1000);
-        const pagoSinDestino = await requestJson(baseUrl, "POST", "/pagos", {
-          proveedor_id: proveedor.id,
-          concepto: "CAJA02B cuenta efectiva sin destino",
-          monto_total: 10,
-          tipo_pago: "efectivo",
-          estado: "registrado"
-        }, token);
-        assertEqual(pagoSinDestino.response.status, 400, "CAJA02B cuenta efectiva sin destino debe fallar");
-        const pagoExplicitoSinDestino = await requestJson(baseUrl, "POST", "/pagos", {
-          proveedor_id: proveedor.id,
-          concepto: "CAJA02B cuenta efectiva explicita sin destino",
-          monto_total: 10,
-          tipo_pago: "efectivo",
-          estado: "registrado",
-          cuenta_cobro_id: cuentaSinDestino.id
-        }, token);
-        assertEqual(pagoExplicitoSinDestino.response.status, 400, "CAJA02B cuenta efectiva explicita sin destino debe fallar");
-        const pagos = await allSql(dbPathSinDestino, "SELECT COUNT(*) AS total FROM pagos WHERE concepto LIKE 'CAJA02B cuenta efectiva%'");
-        assertEqual(pagos[0].total, 0, "CAJA02B cuenta sin destino no inserta pagos");
-      });
-    } finally {
-      fs.rmSync(dbPathSinDestino, { force: true });
+    await abrirCaja(baseUrl, token, 1000);
+    const pagoExplicito = await registrarPago(baseUrl, token, {
+      proveedor_id: proveedor.id,
+      concepto: `CAJA02B efectivo explicito ${Date.now()}`,
+      monto_total: 31,
+      tipo_pago: "efectivo",
+      estado: "registrado",
+      cuenta_cobro_id: cuentaEfectivo.id
+    });
+    assertEqual(pagoExplicito.cuenta_cobro_id, cuentaEfectivo.id, "CAJA02B pago efectivo explicito conserva cuenta enviada");
+
+    const pagoAuto = await registrarPago(baseUrl, token, {
+      proveedor_id: proveedor.id,
+      concepto: `CAJA02B efectivo automatico ${Date.now()}`,
+      monto_total: 41,
+      tipo_pago: "efectivo",
+      estado: "registrado"
+    });
+    assertEqual(pagoAuto.cuenta_cobro_id, cuentaEfectivo.id, "CAJA02B pago efectivo sin cuenta resuelve cuenta efectiva activa");
+    const pagoAutoDestino = (await allSql(
+      dbPath,
+      "SELECT cc.cuenta_destino_id FROM pagos p LEFT JOIN cuentas_cobro cc ON cc.id = p.cuenta_cobro_id WHERE p.id = ?",
+      [pagoAuto.id]
+    ))[0];
+    assertEqual(pagoAutoDestino.cuenta_destino_id, destinoEfectivo.id, "CAJA02B pago automatico queda asociado a destino efectivo");
+
+    const compra = await requestJson(baseUrl, "POST", "/compras", {
+      proveedor_id: proveedor.id,
+      fecha_compra: "2026-03-01",
+      concepto: "Compra CAJA02B",
+      tipo_impacto: "costo_variable_mercaderia",
+      total_compra: 100
+    }, token);
+    if (!compra.response.ok) throw new Error(`CAJA02B crear compra fallo: ${compra.data?.message || compra.response.status}`);
+    const pagoCompra = await requestJson(baseUrl, "POST", `/compras/${compra.data.compra.id}/pagos`, {
+      monto_total: 40,
+      tipo_pago: "efectivo",
+      concepto: "Pago compra CAJA02B"
+    }, token);
+    if (!pagoCompra.response.ok) throw new Error(`CAJA02B pago compra efectivo fallo: ${pagoCompra.data?.message || pagoCompra.response.status}`);
+    assertEqual(pagoCompra.data.pago.cuenta_cobro_id, cuentaEfectivo.id, "CAJA02B pago de compra resuelve misma cuenta efectiva");
+
+    const pagoDebito = await registrarPago(baseUrl, token, {
+      proveedor_id: proveedor.id,
+      concepto: `CAJA02B debito intacto ${Date.now()}`,
+      monto_total: 25,
+      tipo_pago: "debito",
+      estado: "registrado",
+      cuenta_cobro_id: cuentaDebito.id
+    });
+    assertEqual(pagoDebito.cuenta_cobro_id, cuentaDebito.id, "CAJA02B pago no efectivo conserva contrato previo");
+
+    const resumenDestino = await getCajaResumenCuentasDestino(baseUrl, token);
+    const sinDestino = resumenDestino.cuentas.find((cuenta) => cuenta.sin_cuenta_destino);
+    if (sinDestino && Number(sinDestino.pagos || 0) > 0) {
+      throw new Error(`CAJA02B pago efectivo nuevo no debe aparecer como sin destino. Actual=${JSON.stringify(sinDestino)}`);
     }
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const destinoCaja = resumenDestino.cuentas.find((cuenta) => Number(cuenta.cuenta_destino_id) === Number(destinoEfectivo.id));
+    assertApprox(destinoCaja?.egresos, 112, "CAJA02B pagos efectivos nuevos deben restar en destino efectivo");
+
+    const legacyDespues = (await allSql(dbPath, "SELECT cuenta_cobro_id FROM pagos WHERE concepto = 'Legacy NULL CAJA02B'"))[0];
+    assertEqual(legacyDespues.cuenta_cobro_id || 0, 0, "CAJA02B pago legacy NULL permanece intacto");
+  });
+
+  await withFreshTestDb(async (baseUrl, dbPathSinCuenta) => {
+    await prepareDb(dbPathSinCuenta, [["UPDATE cuentas_cobro SET activo = 0 WHERE tipo_pago_codigo = 'efectivo'"]]);
+    const token = await login(baseUrl, "admin", "admin123");
+    const proveedor = await crearProveedor(baseUrl, token);
+    const compra = await requestJson(baseUrl, "POST", "/compras", {
+      proveedor_id: proveedor.id,
+      fecha_compra: "2026-03-02",
+      concepto: "Compra sin cuenta efectivo CAJA02B",
+      tipo_impacto: "costo_variable_mercaderia",
+      total_compra: 100
+    }, token);
+    if (!compra.response.ok) throw new Error(`CAJA02B compra sin cuenta fallo: ${compra.data?.message || compra.response.status}`);
+    await abrirCaja(baseUrl, token, 1000);
+    const pagoSinCuenta = await requestJson(baseUrl, "POST", "/pagos", {
+      proveedor_id: proveedor.id,
+      concepto: "CAJA02B sin cuenta efectiva",
+      monto_total: 10,
+      tipo_pago: "efectivo",
+      estado: "registrado"
+    }, token);
+    assertEqual(pagoSinCuenta.response.status, 400, "CAJA02B pago efectivo sin cuenta configurada debe fallar");
+    const pagoCompraSinCuenta = await requestJson(baseUrl, "POST", `/compras/${compra.data.compra.id}/pagos`, {
+      monto_total: 10,
+      tipo_pago: "efectivo"
+    }, token);
+    assertEqual(pagoCompraSinCuenta.response.status, 400, "CAJA02B pago compra sin cuenta configurada debe fallar");
+    const pagos = await allSql(dbPathSinCuenta, "SELECT COUNT(*) AS total FROM pagos WHERE concepto LIKE 'CAJA02B sin cuenta%' OR compra_id = ?", [compra.data.compra.id]);
+    assertEqual(pagos[0].total, 0, "CAJA02B fallo de configuracion no inserta pagos");
+    const compraDb = (await allSql(dbPathSinCuenta, "SELECT saldo_pendiente, estado FROM compras WHERE id = ?", [compra.data.compra.id]))[0];
+    assertApprox(compraDb.saldo_pendiente, 100, "CAJA02B fallo no altera saldo de compra");
+    assertSame(compraDb.estado, "pendiente", "CAJA02B fallo no cambia estado de compra");
+    const resumen = await getCajaResumen(baseUrl, token);
+    assertApprox(resumen.resumen.total_pagos_general, 0, "CAJA02B fallo no impacta Caja");
+  });
+
+  await withFreshTestDb(async (baseUrl, dbPathSinDestino) => {
+    await prepareDb(dbPathSinDestino, [["UPDATE cuentas_cobro SET activo = 0 WHERE tipo_pago_codigo = 'efectivo'"]]);
+    const token = await login(baseUrl, "admin", "admin123");
+    const proveedor = await crearProveedor(baseUrl, token);
+    const cuentaSinDestino = await crearCuentaCobro(baseUrl, token, {
+      nombre: "CAJA02B efectivo sin destino",
+      tipo_pago_codigo: "efectivo",
+      cuenta_destino_id: null,
+      orden: -300
+    });
+    await abrirCaja(baseUrl, token, 1000);
+    const pagoSinDestino = await requestJson(baseUrl, "POST", "/pagos", {
+      proveedor_id: proveedor.id,
+      concepto: "CAJA02B cuenta efectiva sin destino",
+      monto_total: 10,
+      tipo_pago: "efectivo",
+      estado: "registrado"
+    }, token);
+    assertEqual(pagoSinDestino.response.status, 400, "CAJA02B cuenta efectiva sin destino debe fallar");
+    const pagoExplicitoSinDestino = await requestJson(baseUrl, "POST", "/pagos", {
+      proveedor_id: proveedor.id,
+      concepto: "CAJA02B cuenta efectiva explicita sin destino",
+      monto_total: 10,
+      tipo_pago: "efectivo",
+      estado: "registrado",
+      cuenta_cobro_id: cuentaSinDestino.id
+    }, token);
+    assertEqual(pagoExplicitoSinDestino.response.status, 400, "CAJA02B cuenta efectiva explicita sin destino debe fallar");
+    const pagos = await allSql(dbPathSinDestino, "SELECT COUNT(*) AS total FROM pagos WHERE concepto LIKE 'CAJA02B cuenta efectiva%'");
+    assertEqual(pagos[0].total, 0, "CAJA02B cuenta sin destino no inserta pagos");
+  });
 }
 
 async function testCajaArqueoOperativoSchemaCaja03B() {
@@ -14510,10 +14495,8 @@ async function testCajaDenominacionesArqueoCaja03C() {
   const legacy = buildConteoBilletes({ 500: 5 });
   assertApprox(legacy.total, 2500, "CAJA03C no cambia motor legacy de conteo");
 
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  const dbPath = bootstrapFreshTestDb();
   try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
@@ -14608,8 +14591,6 @@ async function testCajaDenominacionesArqueoCaja03C() {
 }
 
 async function testCajaArqueoOperativoTrasladoCaja03D() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
   const conteoCanonico = {
     20: 50,
     50: 3,
@@ -14621,9 +14602,7 @@ async function testCajaArqueoOperativoTrasladoCaja03D() {
     10000: 1
   };
 
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       await prepareDb(dbPath, [
         ["DELETE FROM caja_traslados_internos"],
         ["DELETE FROM caja_arqueos"],
@@ -14822,10 +14801,7 @@ async function testCajaArqueoOperativoTrasladoCaja03D() {
         "SELECT COUNT(*) AS total FROM caja_traslados_internos WHERE observaciones = 'ROLLBACK03D'"
       ))[0].total;
       assertEqual(trasladoRollback, 0, "CAJA03D rollback no deja traslado parcial");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCajaEstadoEfectivoOperativoCaja03E() {
@@ -15212,11 +15188,7 @@ function buildDecisionesCierreDesdeEstado(estado, retirosPorCuenta = {}) {
 }
 
 async function testCajaEstadoEfectivoPorCuentaFisicaCaja03G() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       await prepareDb(dbPath, [
         ["DELETE FROM caja_traslados_internos"],
         ["DELETE FROM caja_arqueos"],
@@ -15403,16 +15375,9 @@ async function testCajaEstadoEfectivoPorCuentaFisicaCaja03G() {
         true,
         "CAJA03G expone cuenta no determinable"
       );
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 
-  const dbPathArrastre = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPathArrastre);
-  try {
-    await prepareDb(dbPathArrastre, resetOperationalDataStatements());
-    await withServer(dbPathArrastre, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPathArrastre) => {
       await prepareDb(dbPathArrastre, [
         ["DELETE FROM caja_traslados_internos"],
         ["DELETE FROM caja_arqueos"],
@@ -15477,33 +15442,19 @@ async function testCajaEstadoEfectivoPorCuentaFisicaCaja03G() {
       const estado = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
       assertApprox(findEstadoCuentaEfectivo(estado.data.estado, cajaArrastre.id, "CAJA03G arrastre").saldo_actual, 4321, "CAJA03G saldo arrastrado se scopea por cuenta exacta");
       assertApprox(findEstadoCuentaEfectivo(estado.data.estado, otraArrastre.id, "CAJA03G otro arrastre").saldo_actual, 9876, "CAJA03G no mezcla saldo arrastrado entre cuentas efectivas");
-    });
-  } finally {
-    fs.rmSync(dbPathArrastre, { force: true });
-  }
+  });
 }
 
 async function testCajaCierreOperativoEfectivoCaja03H() {
-  const dbPathLegacy = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPathLegacy);
-  try {
-    await prepareDb(dbPathLegacy, resetOperationalDataStatements());
-    await withServer(dbPathLegacy, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       const caja = await abrirCaja(baseUrl, token, 1000);
       const cierre = await cerrarCaja(baseUrl, token, 1000, 1000, 0);
       assertEqual(cierre.id, caja.id, "CAJA03H cierre legacy sigue usando misma caja");
       assertSame(cierre.estado, "cerrada", "CAJA03H cierre legacy sigue funcionando");
-    });
-  } finally {
-    fs.rmSync(dbPathLegacy, { force: true });
-  }
+  });
 
-  const dbPathErrores = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPathErrores);
-  try {
-    await prepareDb(dbPathErrores, resetOperationalDataStatements());
-    await withServer(dbPathErrores, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPathErrores) => {
       await prepareDb(dbPathErrores, [
         ["DELETE FROM caja_traslados_internos"],
         ["DELETE FROM caja_arqueos"],
@@ -15565,16 +15516,9 @@ async function testCajaCierreOperativoEfectivoCaja03H() {
       assertEqual(indeterminado.response.status, 409, "CAJA03H estado operativo no determinable falla");
       const cajaAbierta = (await allSql(dbPathErrores, "SELECT estado FROM caja_aperturas WHERE estado = 'abierta'"))[0];
       assertSame(cajaAbierta.estado, "abierta", "CAJA03H errores no cierran caja");
-    });
-  } finally {
-    fs.rmSync(dbPathErrores, { force: true });
-  }
+  });
 
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       await prepareDb(dbPath, [
         ["DELETE FROM caja_traslados_internos"],
         ["DELETE FROM caja_arqueos"],
@@ -15726,16 +15670,9 @@ async function testCajaCierreOperativoEfectivoCaja03H() {
       const estadoSiguiente = await requestJson(baseUrl, "GET", "/caja/estado-efectivo-operativo", null, token);
       assertApprox(findEstadoCuentaEfectivo(estadoSiguiente.data.estado, reserva.id, "CAJA03H continuidad").saldo_inicial, 30000, "CAJA03H siguiente jornada toma arrastre exacto Reserva");
       assertApprox(findEstadoCuentaEfectivo(estadoSiguiente.data.estado, cajaPagos.id, "CAJA03H continuidad").saldo_inicial, 0, "CAJA03H siguiente jornada toma arrastre exacto Caja pagos");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 
-  const dbPathManipulado = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPathManipulado);
-  try {
-    await prepareDb(dbPathManipulado, resetOperationalDataStatements());
-    await withServer(dbPathManipulado, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPathManipulado) => {
       await prepareDb(dbPathManipulado, [
         ["DELETE FROM caja_traslados_internos"],
         ["DELETE FROM caja_arqueos"],
@@ -15810,16 +15747,9 @@ async function testCajaCierreOperativoEfectivoCaja03H() {
       assertApprox(conciliacionReserva.monto_real, 110000, "CAJA03H ignora saldo_actual enviado por cliente");
       assertApprox(conciliacionReserva.monto_retiro, 50000, "CAJA03H respeta solo monto_retiro del usuario");
       assertApprox(conciliacionReserva.saldo_arrastrado, 60000, "CAJA03H calcula arrastre backend, no usa 450000 del cliente");
-    });
-  } finally {
-    fs.rmSync(dbPathManipulado, { force: true });
-  }
+  });
 
-  const dbPathArrastrarTodo = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPathArrastrarTodo);
-  try {
-    await prepareDb(dbPathArrastrarTodo, resetOperationalDataStatements());
-    await withServer(dbPathArrastrarTodo, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPathArrastrarTodo) => {
       await prepareDb(dbPathArrastrarTodo, [
         ["DELETE FROM caja_traslados_internos"],
         ["DELETE FROM caja_arqueos"],
@@ -15877,15 +15807,10 @@ async function testCajaCierreOperativoEfectivoCaja03H() {
       if (!cierre.response.ok) throw new Error(`CAJA03H cierre arrastrar todo fallo: ${cierre.data?.message || cierre.response.status}`);
       assertApprox(cierre.data.total_retiro_efectivo, 0, "CAJA03H arrastrar todo no retira efectivo");
       assertApprox(cierre.data.total_arrastrado_efectivo, 121000, "CAJA03H caso 121000 arrastra completo");
-    });
-  } finally {
-    fs.rmSync(dbPathArrastrarTodo, { force: true });
-  }
+  });
 }
 
 async function testCajaUiArqueoModeloOperativoCaja03I() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
   const cajaHtml = fs.readFileSync(path.join(ROOT, "frontend", "caja.html"), "utf8");
   if (cajaHtml.includes("Saldo aportado al cierre") || cajaHtml.includes("Resultado backend")) {
     throw new Error("CAJA03I UI de arqueo no debe mostrar conceptos de cierre ni resultado tecnico");
@@ -15910,9 +15835,7 @@ async function testCajaUiArqueoModeloOperativoCaja03I() {
     10000: 1
   };
 
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       await prepareDb(dbPath, [
         ["DELETE FROM caja_traslados_internos"],
         ["DELETE FROM caja_arqueos"],
@@ -16072,10 +15995,7 @@ async function testCajaUiArqueoModeloOperativoCaja03I() {
         200,
         "CAJA03I conteo persistido conserva cantidad por denominacion"
       );
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 
   const frontendCaja = fs.readFileSync(path.join(__dirname, "..", "frontend", "caja.html"), "utf8");
   assertEqual(frontendCaja.includes("function getCantidadConteoPersistido"), true, "CAJA03I frontend normaliza conteo persistido");
@@ -16091,11 +16011,7 @@ async function testCajaUiArqueoModeloOperativoCaja03I() {
 }
 
 async function testCajaCierreVisualFisicoCaja03K() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       await prepareDb(dbPath, [
         ["DELETE FROM caja_traslados_internos"],
         ["DELETE FROM caja_arqueos"],
@@ -16132,10 +16048,12 @@ async function testCajaCierreVisualFisicoCaja03K() {
           '2026-07-01', '08:00:00', 'admin')`,
         [apertura.id, reserva.id]
       );
-      const ventaEfectivo = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const productoEfectivo = await crearProductoParaReporteVentas(baseUrl, token, "CAJA03K", { precio_venta: 84450 });
+      const ventaEfectivo = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoEfectivo, {
         tipo_cobro: "efectivo",
         cuenta_cobro_id: cuentaEfectivo.id,
-        items: [{ producto_id: 11, nombre_producto: "Coca Cola 1250", cantidad: 1, precio_unitario: 84450 }]
+        cantidad: 1,
+        precioUnitario: 84450
       }), token);
       if (!ventaEfectivo.response.ok) throw new Error(`CAJA03K venta efectiva para esperado global fallo: ${ventaEfectivo.data?.message || ventaEfectivo.response.status}`);
 
@@ -16269,18 +16187,11 @@ async function testCajaCierreVisualFisicoCaja03K() {
       assertApprox(findEstadoCuentaEfectivo(estadoSiguiente.data.estado, cajaCambio.id, "CAJA03K siguiente").saldo_actual, 11000, "CAJA03K siguiente Caja cambio");
       assertApprox(findEstadoCuentaEfectivo(estadoSiguiente.data.estado, reserva.id, "CAJA03K siguiente").saldo_actual, 55000, "CAJA03K siguiente Reserva");
       assertApprox(estadoSiguiente.data.estado.total_disponible, 66000, "CAJA03K siguiente jornada total desde contado fisico arrastrado");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCajaControlOperativoGlobalEfectivo() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       await prepareDb(dbPath, [
         ["DELETE FROM caja_traslados_internos"],
         ["DELETE FROM caja_arqueos"],
@@ -16341,10 +16252,12 @@ async function testCajaControlOperativoGlobalEfectivo() {
         [apertura.id, reserva.id]
       );
 
-      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const productoEfectivo = await crearProductoParaReporteVentas(baseUrl, token, "ControlGlobalEfectivo", { precio_venta: 50000 });
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoEfectivo, {
         tipo_cobro: "efectivo",
         cuenta_cobro_id: cuentaEfectivo.id,
-        items: [{ producto_id: 11, nombre_producto: "Coca Cola 1250", cantidad: 1, precio_unitario: 50000 }]
+        cantidad: 1,
+        precioUnitario: 50000
       }), token);
       if (!venta.response.ok) throw new Error(`Control global venta efectivo fallo: ${venta.data?.message || venta.response.status}`);
 
@@ -16424,10 +16337,7 @@ async function testCajaControlOperativoGlobalEfectivo() {
       assertApprox(byCuenta.get(cajaPagos.id).monto_real, 190000, "Control global PAGOS contado fisico");
       assertApprox(byCuenta.get(cajaPagos.id).diferencia, 1000, "Control global PAGOS diferencia individual +1000");
       assertApprox(byCuenta.get(cajaPagos.id).saldo_arrastrado, 190000, "Control global arrastre sale del fisico real");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCajaSaldoInicialCuentaFisicaCaja03J() {
@@ -16918,11 +16828,7 @@ async function testCajaContinuidadDigitalRealConciliadoNoSePierde() {
 // en produccion (caja #27, Mercado Pago y Bancor). Casos A-D reproducen ese escenario y las
 // variantes que la correccion tiene que distinguir correctamente.
 async function testCajaCierreDigitalConfirmadoUsuario() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       await prepareDb(dbPath, [
         ["DELETE FROM caja_traslados_internos"],
         ["DELETE FROM caja_arqueos"],
@@ -17100,11 +17006,12 @@ async function testCajaCierreDigitalConfirmadoUsuario() {
         tipo_pago_codigo: "debito",
         cuenta_destino_id: cuentaD.id
       });
+      const productoTestCasoD = await crearProductoParaReporteVentas(baseUrl, token, "CierreDigitalConfirmadoCasoD");
       const cajaD = await abrirCaja(baseUrl, token, 0);
       const ventaD = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "debito",
         cuenta_cobro_id: cuentaCobroD.id,
-        items: [{ producto_id: 11, nombre_producto: "TEST CASOD", cantidad: 1, precio_unitario: 2000 }]
+        items: [{ producto_id: productoTestCasoD.productoId, nombre_producto: "TEST CASOD", cantidad: 1, precio_unitario: 2000 }]
       }), token);
       if (!ventaD.response.ok) throw new Error(`CASOD venta fallo: ${ventaD.data?.message || ventaD.response.status}`);
 
@@ -17123,10 +17030,7 @@ async function testCajaCierreDigitalConfirmadoUsuario() {
       ))[0];
       assertApprox(filaTrasCierreD?.monto_real, 2000, "CASOD sin confirmacion, el cierre usa el esperado calculado (2000), que ya incluye la venta del dia");
       assertApprox(filaTrasCierreD?.saldo_arrastrado, 2000, "CASOD cierre real arrastra el esperado 2000");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testConciliacionManualPorCuentaDestino() {
@@ -17231,13 +17135,11 @@ async function testConciliacionManualPorCuentaDestino() {
 }
 
 async function testCajaResumenPorCuentaCobro() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await configurarClaveAutorizacionTest(dbPath);
       const token = await login(baseUrl, "admin", "admin123");
       const apertura = await abrirCaja(baseUrl, token, 1000);
+      const productoTestResumenCuentaCobro = await crearProductoParaReporteVentas(baseUrl, token, "ResumenPorCuentaCobro");
       const destinoEfectivo = await crearCuentaDestino(baseUrl, token, {
         nombre: "Destino efectivo resumen cuenta TEST",
         tipo_destino: "efectivo",
@@ -17256,28 +17158,28 @@ async function testCajaResumenPorCuentaCobro() {
       });
       const proveedor = await crearProveedor(baseUrl, token);
 
-      const ventaEfectivo = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaEfectivo = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTestResumenCuentaCobro, {
         tipo_cobro: "efectivo",
         cuenta_cobro_id: cuentaEfectivo.id
       }), token);
       if (!ventaEfectivo.response.ok) throw new Error(`Venta efectivo con cuenta fallo: ${ventaEfectivo.data?.message || ventaEfectivo.response.status}`);
 
       await delay(1100);
-      const ventaDebito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaDebito = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTestResumenCuentaCobro, {
         tipo_cobro: "debito",
         cuenta_cobro_id: cuentaDebito.id
       }), token);
       if (!ventaDebito.response.ok) throw new Error(`Venta debito con cuenta fallo: ${ventaDebito.data?.message || ventaDebito.response.status}`);
 
       await delay(1100);
-      const ventaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTestResumenCuentaCobro, {
         tipo_cobro: "efectivo",
         cuenta_cobro_id: null
       }), token);
       if (!ventaSinCuenta.response.ok) throw new Error(`Venta sin cuenta fallo: ${ventaSinCuenta.data?.message || ventaSinCuenta.response.status}`);
 
       await delay(1100);
-      const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaAnular = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTestResumenCuentaCobro, {
         tipo_cobro: "efectivo",
         cuenta_cobro_id: cuentaEfectivo.id
       }), token);
@@ -17354,10 +17256,7 @@ async function testCajaResumenPorCuentaCobro() {
       assertEqual(resumenCerrada.caja.id, cajaCerrada.id, "Resumen por cuenta sin caja abierta debe usar ultima caja cerrada");
       const efectivoCerrada = resumenCerrada.cuentas.find((cuenta) => cuenta.cuenta_nombre === "Caja efectivo resumen TEST");
       assertApprox(efectivoCerrada?.balance, 330, "Resumen por cuenta de ultima caja cerrada debe conservar balance");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testConciliacionManualPorCuentaCobro() {
