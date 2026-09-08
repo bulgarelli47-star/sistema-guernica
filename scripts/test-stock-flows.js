@@ -2010,11 +2010,7 @@ async function testClientesTipoClienteClasificacion() {
 }
 
 async function testClientesHistorialProductosComprados() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
       const sufijo = Date.now().toString().slice(-8);
@@ -2030,6 +2026,15 @@ async function testClientesHistorialProductosComprados() {
       const clienteId = cliente.data.cliente.id;
 
       const categoriaId = await crearCategoria(baseUrl, token, `TEST Cliente Historial ${sufijo}`);
+      const productoAId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Producto Cliente A ${sufijo}`,
+        codigo: `CLIA-${sufijo}`,
+        categoria: `TEST Cliente Historial ${sufijo}`,
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        stock: 20,
+        maneja_stock: true
+      });
       const productoBId = await crearProducto(baseUrl, token, {
         nombre: `TEST Producto Cliente ${sufijo}`,
         codigo: `CLI-${sufijo}`,
@@ -2040,9 +2045,21 @@ async function testClientesHistorialProductosComprados() {
         maneja_stock: true
       });
 
-      const venta1 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({ cliente_id: clienteId }), token);
+      const venta1 = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        cliente_id: clienteId,
+        items: [{ producto_id: productoAId, nombre_producto: `TEST Producto Cliente A ${sufijo}`, cantidad: 2, precio_unitario: 100 }]
+      }, token);
       await delay(1100);
-      const venta2 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({ cliente_id: clienteId }), token);
+      const venta2 = await requestJson(baseUrl, "POST", "/ventas", {
+        usuario: "test",
+        tipo: "normal",
+        tipo_cobro: "efectivo",
+        cliente_id: clienteId,
+        items: [{ producto_id: productoAId, nombre_producto: `TEST Producto Cliente A ${sufijo}`, cantidad: 2, precio_unitario: 100 }]
+      }, token);
       const ventaProductoB = await requestJson(baseUrl, "POST", "/ventas", {
         usuario: "test",
         tipo: "normal",
@@ -2080,7 +2097,7 @@ async function testClientesHistorialProductosComprados() {
         dbPath,
         `INSERT INTO detalle_ventas (venta_id, producto_id, nombre_producto, cantidad, precio_unitario, subtotal)
          VALUES (?, ?, ?, ?, ?, ?)`,
-        [ventaTecnica.lastID, 11, "Coca Cola 1250", 9, 111, 999]
+        [ventaTecnica.lastID, productoAId, `TEST Producto Cliente A ${sufijo}`, 9, 111, 999]
       );
 
       const historial = await requestJson(baseUrl, "GET", `/clientes/${clienteId}/productos?limite=50`, null, token);
@@ -2096,11 +2113,11 @@ async function testClientesHistorialProductosComprados() {
       assertEqual(primero.veces_comprado, 1, "Producto distinto debe contar una venta");
       if (primero.ultima_compra !== "2026-01-05") throw new Error(`Ultima compra producto distinto incorrecta: ${primero.ultima_compra}`);
 
-      assertEqual(segundo.producto_id, 11, "El historial debe incluir Coca como segundo producto");
+      assertEqual(segundo.producto_id, productoAId, "El historial debe incluir el segundo producto comprado");
       assertApprox(segundo.cantidad_total, 4, "Varias compras del mismo producto deben sumar cantidades");
       assertApprox(segundo.total_comprado, 400, "Varias compras del mismo producto deben sumar subtotales");
       assertEqual(segundo.veces_comprado, 2, "Varias compras del mismo producto deben contar ventas distintas");
-      if (segundo.ultima_compra !== "2026-01-03") throw new Error(`Ultima compra Coca incorrecta: ${segundo.ultima_compra}`);
+      if (segundo.ultima_compra !== "2026-01-03") throw new Error(`Ultima compra producto fixture incorrecta: ${segundo.ultima_compra}`);
 
       const limitado = await requestJson(baseUrl, "GET", `/clientes/${clienteId}/productos?limite=1`, null, token);
       if (!limitado.response.ok) throw new Error(`GET productos cliente limitado fallo: ${limitado.data?.message || limitado.response.status}`);
@@ -2109,10 +2126,7 @@ async function testClientesHistorialProductosComprados() {
 
       const inexistente = await requestJson(baseUrl, "GET", "/clientes/999999/productos", null, token);
       assertEqual(inexistente.response.status, 404, "Cliente inexistente debe devolver 404");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testClientesDeudaActualizadaComparacionSegura() {
@@ -5398,18 +5412,7 @@ function assertColumnasIncluidas(columnas, requeridas, contexto) {
 }
 
 async function testCompraSchemaF3B() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await withServer(dbPath, async () => {
-      await prepareDb(dbPath, [
-        ["DELETE FROM compra_recepcion_items"],
-        ["DELETE FROM compra_recepciones"],
-        ["DELETE FROM compra_items"],
-        ["DELETE FROM compra_comprobante_iva"],
-        ["DELETE FROM compra_comprobantes"],
-        ["DELETE FROM compras"]
-      ]);
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const comprasCols = await allSql(dbPath, "PRAGMA table_info(compras)");
       const comprobantesCols = await allSql(dbPath, "PRAGMA table_info(compra_comprobantes)");
       const ivaCols = await allSql(dbPath, "PRAGMA table_info(compra_comprobante_iva)");
@@ -5488,10 +5491,7 @@ async function testCompraSchemaF3B() {
       const indicesIva = await allSql(dbPath, "PRAGMA index_list(compra_comprobante_iva)");
       const indiceUnico = indicesIva.find((indice) => indice.name === "idx_compra_comprobante_iva_unique");
       assertEqual(indiceUnico?.unique, 1, "F3B IVA por comprobante debe tener indice unico por alicuota");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCompraResumenIvaF3BHelper() {
@@ -5565,20 +5565,13 @@ async function testCompraResumenIvaF3BHelper() {
 }
 
 async function testCompraPagosRealesF3C() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      await prepareDb(dbPath, [
-        ["DELETE FROM compra_recepcion_items"],
-        ["DELETE FROM compra_recepciones"],
-        ["DELETE FROM compra_items"],
-        ["DELETE FROM compra_comprobante_iva"],
-        ["DELETE FROM compra_comprobantes"],
-        ["DELETE FROM compras"]
-      ]);
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
+      // Maestro de configuracion (no dato de desarrollo real): una DB desde cero no trae
+      // ninguna cuenta_cobro/cuenta_destino por defecto, a diferencia de SOURCE_DB que ya
+      // tenia una cargada.
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       const proveedor = await crearProveedor(baseUrl, token, {
         nombre: `Proveedor F3C ${Date.now()}`,
         tipo_impacto: "costo_variable_mercaderia",
@@ -5712,54 +5705,40 @@ async function testCompraPagosRealesF3C() {
         estado: "registrado"
       }, token);
       assertEqual(legacyInyectado.response.status, 400, "F3C POST /pagos no acepta compra_id inyectado");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCompraCompatibilidadPagosLegacyF3C() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      await prepareDb(dbPath, [
-        ["DELETE FROM compra_recepcion_items"],
-        ["DELETE FROM compra_recepciones"],
-        ["DELETE FROM compra_items"],
-        ["DELETE FROM compra_comprobante_iva"],
-        ["DELETE FROM compra_comprobantes"],
-        ["DELETE FROM compras"]
-      ]);
-      const token = await login(baseUrl, "admin", "admin123");
-      await abrirCaja(baseUrl, token, 1000);
-      const proveedor = await crearProveedor(baseUrl, token);
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    // Maestro de configuracion (no dato de desarrollo real): una DB desde cero no trae ninguna
+    // cuenta_cobro/cuenta_destino por defecto, a diferencia de SOURCE_DB que ya tenia una cargada.
+    const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+    await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
+    await abrirCaja(baseUrl, token, 1000);
+    const proveedor = await crearProveedor(baseUrl, token);
 
-      const pagoLegacy = await registrarPago(baseUrl, token, {
-        proveedor_id: proveedor.id,
-        concepto: "Pago legacy F3C registrado",
-        monto_total: 300,
-        tipo_pago: "efectivo",
-        estado: "registrado"
-      });
-      assertEqual(pagoLegacy.compra_id || 0, 0, "F3C pago legacy registrado conserva compra_id NULL");
-      assertApprox(pagoLegacy.iva_credito_fiscal, 52.07, "F3C pago legacy mantiene IVA credito estimado");
-
-      const pagoPendiente = await registrarPago(baseUrl, token, {
-        proveedor_id: proveedor.id,
-        concepto: "Pago legacy F3C pendiente",
-        monto_total: 400,
-        tipo_pago: "efectivo",
-        estado: "pendiente"
-      });
-      assertSame(pagoPendiente.estado, "pendiente", "F3C pago legacy pendiente sigue permitido");
-      assertEqual(pagoPendiente.caja_id || 0, 0, "F3C pago legacy pendiente no mueve caja");
-      assertEqual(pagoPendiente.compra_id || 0, 0, "F3C pago legacy pendiente conserva compra_id NULL");
+    const pagoLegacy = await registrarPago(baseUrl, token, {
+      proveedor_id: proveedor.id,
+      concepto: "Pago legacy F3C registrado",
+      monto_total: 300,
+      tipo_pago: "efectivo",
+      estado: "registrado"
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    assertEqual(pagoLegacy.compra_id || 0, 0, "F3C pago legacy registrado conserva compra_id NULL");
+    assertApprox(pagoLegacy.iva_credito_fiscal, 52.07, "F3C pago legacy mantiene IVA credito estimado");
+
+    const pagoPendiente = await registrarPago(baseUrl, token, {
+      proveedor_id: proveedor.id,
+      concepto: "Pago legacy F3C pendiente",
+      monto_total: 400,
+      tipo_pago: "efectivo",
+      estado: "pendiente"
+    });
+    assertSame(pagoPendiente.estado, "pendiente", "F3C pago legacy pendiente sigue permitido");
+    assertEqual(pagoPendiente.caja_id || 0, 0, "F3C pago legacy pendiente no mueve caja");
+    assertEqual(pagoPendiente.compra_id || 0, 0, "F3C pago legacy pendiente conserva compra_id NULL");
+  });
 }
 
 async function testCompraItemsRecepcionesF3D2Helper() {
@@ -9649,20 +9628,12 @@ async function testProductoRevisionPendientePermisosStockF3D4bis() {
 // existente (pagos legacy, ingreso manual de stock, reportes, caja, ventas). Casos A-J
 // del pedido, en orden.
 async function testCompraCierreEstadosF3E1() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      await prepareDb(dbPath, [
-        ["DELETE FROM compra_recepcion_items"],
-        ["DELETE FROM compra_recepciones"],
-        ["DELETE FROM compra_items"],
-        ["DELETE FROM compra_comprobante_iva"],
-        ["DELETE FROM compra_comprobantes"],
-        ["DELETE FROM compras"]
-      ]);
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
+      // Maestro de configuracion (no dato de desarrollo real): el caso H registra un pago en
+      // efectivo, y una DB desde cero no trae ninguna cuenta_cobro/cuenta_destino por defecto.
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       const proveedor = await crearProveedor(baseUrl, token, {
         nombre: `Proveedor F3E1 ${Date.now()}`,
         tipo_impacto: "costo_variable_mercaderia"
@@ -9846,10 +9817,7 @@ async function testCompraCierreEstadosF3E1() {
       }, token);
       assertEqual(recepcionEnAnulada.response.status, 400, "F3E1-J compra anulada rechaza nueva recepcion");
       assertSame(recepcionEnAnulada.data?.message, "La compra anulada no admite recepciones", "F3E1-J mensaje especifico de recepcion sobre compra anulada");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 // F3E-2 corregido: proteccion liviana (sin servidor) de que "Cargar compra" vive DENTRO
@@ -10674,19 +10642,7 @@ async function testProductosContratoPrecioCompraIncluyeIvaF3E2() {
 // de *Pagos (Completa/Reducida) y no del nombre del rol. Mismo rol, distinta configuracion,
 // distinto resultado (Casos A-D pedidos explicitamente).
 async function testCargarCompraVistaPagosF3E2Corregido() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      await prepareDb(dbPath, [
-        ["DELETE FROM compra_recepcion_items"],
-        ["DELETE FROM compra_recepciones"],
-        ["DELETE FROM compra_items"],
-        ["DELETE FROM compra_comprobante_iva"],
-        ["DELETE FROM compra_comprobantes"],
-        ["DELETE FROM compras"]
-      ]);
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
       const proveedor = await crearProveedor(baseUrl, adminToken, {
         nombre: `Proveedor Vista F3E2 ${Date.now()}`,
@@ -10743,30 +10699,19 @@ async function testCargarCompraVistaPagosF3E2Corregido() {
       // (confirma que la configuracion es por rol, no un interruptor global).
       const colabSigueRechazado = await requestJson(baseUrl, "GET", "/compras", null, colaboradorToken);
       if (!colabSigueRechazado.response.ok) throw new Error("Caso B/D: colaborador debia seguir con Pagos completa (no se toco su config), debe listar compras");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 // F3E-2 corregido: test de seguridad obligatorio (con servidor), cobertura completa de los
 // 10 endpoints F3 de "Cargar compra" bajo Pagos completa vs Pagos reducida, mismo rol
 // (colaborador), solo cambia la configuracion. Ocultar el boton no alcanza.
 async function testCargarCompraSeguridadF3E2Corregido() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      await prepareDb(dbPath, [
-        ["DELETE FROM compra_recepcion_items"],
-        ["DELETE FROM compra_recepciones"],
-        ["DELETE FROM compra_items"],
-        ["DELETE FROM compra_comprobante_iva"],
-        ["DELETE FROM compra_comprobantes"],
-        ["DELETE FROM compras"]
-      ]);
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
+      // Maestro de configuracion (no dato de desarrollo real): una DB desde cero no trae ninguna
+      // cuenta_cobro/cuenta_destino por defecto, a diferencia de SOURCE_DB que ya tenia una cargada.
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, adminToken, { tipo_destino: "efectivo" });
+      await crearCuentaCobro(baseUrl, adminToken, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, adminToken, 100000);
       const proveedor = await crearProveedor(baseUrl, adminToken, {
         nombre: `Proveedor Seguridad F3E2 ${Date.now()}`,
@@ -10868,10 +10813,7 @@ async function testCargarCompraSeguridadF3E2Corregido() {
 
       const anularCompraReducida = await requestJson(baseUrl, "POST", `/compras/${compraId}/anular`, { motivo: "Test" }, colaboradorToken);
       assertEqual(anularCompraReducida.response.status, 403, "Colaborador+reducida no debe anular compras");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 // F3E-2 corregido: equivalente de Stock. Mismo rol (colaborador), distinta configuracion de
@@ -11175,20 +11117,12 @@ async function testStockFlujoCompletoMultiEndpointF3E2Corregido() {
 // el ejemplo 205380/205300/80, pago=0 sin crear fila en pagos, pago parcial via el endpoint
 // F3 real, y que NUNCA se crea una Recepcion desde este flujo.
 async function testCargarCompraUxUnicaFlujoF3E2Corregido() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      await prepareDb(dbPath, [
-        ["DELETE FROM compra_recepcion_items"],
-        ["DELETE FROM compra_recepciones"],
-        ["DELETE FROM compra_items"],
-        ["DELETE FROM compra_comprobante_iva"],
-        ["DELETE FROM compra_comprobantes"],
-        ["DELETE FROM compras"]
-      ]);
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
+      // Maestro de configuracion (no dato de desarrollo real): una DB desde cero no trae ninguna
+      // cuenta_cobro/cuenta_destino por defecto, a diferencia de SOURCE_DB que ya tenia una cargada.
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, token, 500000);
       const proveedor = await crearProveedor(baseUrl, token, {
         nombre: `Proveedor UX Unica F3E2 ${Date.now()}`,
@@ -11282,30 +11216,19 @@ async function testCargarCompraUxUnicaFlujoF3E2Corregido() {
       const detalleSinPago = (await requestJson(baseUrl, "GET", `/compras/${compraSinPagoId}`, null, token)).data;
       assertApprox(detalleSinPago.resumen_pago.saldo_pendiente, 50000, "UX unica (H): saldo = total completo cuando no hubo pago");
       assertSame(String(detalleSinPago.resumen_pago.estado || "").toLowerCase(), "pendiente", "UX unica (H): estado economico 'pendiente', no fantasma");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 // F3E-2 corregido: test funcional obligatorio del flujo completo (compra parcial -> saldada),
 // confirmando ademas que dinero y stock se mueven solo por su mecanismo propio, sin duplicados
 // ni pago pendiente legacy fantasma, y que Salida rapida (POST /pagos) sigue intacta.
 async function testCargarCompraFlujoFuncionalF3E2Corregido() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      await prepareDb(dbPath, [
-        ["DELETE FROM compra_recepcion_items"],
-        ["DELETE FROM compra_recepciones"],
-        ["DELETE FROM compra_items"],
-        ["DELETE FROM compra_comprobante_iva"],
-        ["DELETE FROM compra_comprobantes"],
-        ["DELETE FROM compras"]
-      ]);
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
+      // Maestro de configuracion (no dato de desarrollo real): una DB desde cero no trae ninguna
+      // cuenta_cobro/cuenta_destino por defecto, a diferencia de SOURCE_DB que ya tenia una cargada.
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, token, 500000);
       const proveedor = await crearProveedor(baseUrl, token, {
         nombre: `Proveedor Funcional F3E2 ${Date.now()}`,
@@ -11447,10 +11370,7 @@ async function testCargarCompraFlujoFuncionalF3E2Corregido() {
       if (pagoLibre.compra_id) {
         throw new Error("F3E2-Func un pago libre (Salida rapida) no debe quedar asociado a ninguna compra");
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testProductosMasVendidosDevuelveClaves() {
