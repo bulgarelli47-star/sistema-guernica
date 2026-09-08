@@ -759,34 +759,62 @@ async function testRecetaSinStockBloqueaMovimientoManual() {
 }
 
 async function testRecetaSinStockComoComponenteNoDescuentaDirecto() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, [
-      ["UPDATE productos SET stock = 5000 WHERE id IN (3, 6)"],
-      ["UPDATE productos SET tipo = 'compuesto', maneja_stock = 0, stock = 0 WHERE id IN (4, 7)"],
-      ["UPDATE productos SET tipo = 'compuesto', maneja_stock = 1, stock = 71 WHERE id = 9"]
-    ]);
+  // HIGIENE-5D: fixture 100% API, sin SOURCE_DB. BOM equivalente al historico confirmado en
+  // HIGIENE-5C.1 (commit 0dc51da, producto 9 "Pizza Muzzarella"): un padre compuesto con stock
+  // propio que tiene un ingrediente fisico directo y dos "recetas sin stock" como componentes
+  // (compuesto + maneja_stock=false). Una de esas recetas (equivalente al historico id=4 "Salsa
+  // lista") tiene a su vez su propia hoja real (equivalente al historico id=3 "Tomate perita"):
+  // esa hoja es la que certifica la NO RECURSION -- si el endpoint alguna vez empezara a bajar por
+  // el BOM interno de una receta sin stock, esta hoja dejaria de quedar en 5000. No se recrean los
+  // equivalentes de los historicos id=1/2 (inertes para esta assertion, nunca alcanzados).
+  await withFreshTestDb(async (baseUrl) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    const categoriaId = await crearCategoria(baseUrl, token, "TEST BOM Receta Sin Stock");
 
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const result = await requestJson(baseUrl, "POST", "/productos/9/movimientos-stock", {
-        tipo_movimiento: "ingreso",
-        cantidad: 1,
-        motivo: "TEST ingreso pizza prearmada",
-        usuario: "test"
-      }, token);
-
-      if (!result.response.ok) throw new Error(`Ingreso pizza fallo: ${result.data?.message || result.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 9)).stock, 72, "Pizza Muzzarella debe ingresar 1 unidad");
-      assertEqual((await getProduct(baseUrl, token, 4)).stock, 0, "Salsa lista no debe usar stock como contador");
-      assertEqual((await getProduct(baseUrl, token, 7)).stock, 0, "Pre Pizza no debe usar stock como contador");
-      assertEqual((await getProduct(baseUrl, token, 3)).stock, 5000, "Receta sin stock como componente no debe consumir componentes directos");
-      assertEqual((await getProduct(baseUrl, token, 6)).stock, 4800, "Muzzarella Cremac debe consumir 200gr");
+    const hojaControlId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Hoja Control", categoria_id: categoriaId, tipo: "simple", maneja_stock: true, stock: 5000
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const ingredienteDirectoId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Ingrediente Fisico Directo", categoria_id: categoriaId, tipo: "simple", maneja_stock: true, stock: 5000
+    });
+    const intermedioAId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Intermedio A", categoria_id: categoriaId, tipo: "compuesto", maneja_stock: false, stock: 0,
+      componentes: [{ producto_id: hojaControlId, cantidad: 10 }]
+    });
+    const intermedioBId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Intermedio B", categoria_id: categoriaId, tipo: "compuesto", maneja_stock: false, stock: 0,
+      componentes: []
+    });
+    const padreId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Padre Compuesto Con Stock", categoria_id: categoriaId, tipo: "compuesto", maneja_stock: true, stock: 71,
+      componentes: [
+        { producto_id: ingredienteDirectoId, cantidad: 200 },
+        { producto_id: intermedioAId, cantidad: 1 },
+        { producto_id: intermedioBId, cantidad: 1 }
+      ]
+    });
+
+    // Preflight explicito del fixture: si esta relacion no existiera, el test no probaria nada.
+    const intermedioACompuesto = await requestJson(baseUrl, "GET", `/productos_compuestos/${intermedioAId}`, null, token);
+    const hojaComoComponente = (intermedioACompuesto.data.componentes || []).find((c) => Number(c.producto_id) === Number(hojaControlId));
+    if (!hojaComoComponente || Number(hojaComoComponente.cantidad) !== 10) {
+      throw new Error("Fixture invalida: INTERMEDIO A debe tener HOJA CONTROL como componente con cantidad 10");
+    }
+
+    const result = await requestJson(baseUrl, "POST", `/productos/${padreId}/movimientos-stock`, {
+      tipo_movimiento: "ingreso",
+      cantidad: 1,
+      motivo: "TEST ingreso pizza prearmada",
+      usuario: "test"
+    }, token);
+
+    if (!result.response.ok) throw new Error(`Ingreso pizza fallo: ${result.data?.message || result.response.status}`);
+    assertEqual((await getProduct(baseUrl, token, padreId)).stock, 72, "Padre compuesto debe ingresar 1 unidad");
+    assertEqual((await getProduct(baseUrl, token, intermedioAId)).stock, 0, "Intermedio A no debe usar stock como contador");
+    assertEqual((await getProduct(baseUrl, token, intermedioBId)).stock, 0, "Intermedio B no debe usar stock como contador");
+    assertEqual((await getProduct(baseUrl, token, hojaControlId)).stock, 5000, "Receta sin stock como componente no debe consumir componentes directos");
+    assertEqual((await getProduct(baseUrl, token, ingredienteDirectoId)).stock, 4800, "Ingrediente fisico directo debe consumir 200");
+  });
 }
 
 async function setupRecetaSinStockVenta(baseUrl, token) {
@@ -851,11 +879,8 @@ async function testVentaRecetaSinStockGeneraAjustePendiente() {
 }
 
 async function testAnularRecetaSinStockCancelaPendienteSinReponerAprobado() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await configurarClaveAutorizacionTest(dbPath);
       const token = await login(baseUrl, "admin", "admin123");
       const { componenteId, recetaId } = await setupRecetaSinStockVenta(baseUrl, token);
 
@@ -885,10 +910,7 @@ async function testAnularRecetaSinStockCancelaPendienteSinReponerAprobado() {
       }, token);
       if (!anularAprobada.response.ok) throw new Error(`Anular venta con ajuste aprobado fallo: ${anularAprobada.data?.message || anularAprobada.response.status}`);
       assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 98, "Anular venta con ajuste aprobado no debe reponer stock automatico");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testPermisosColaborador() {
@@ -1269,12 +1291,7 @@ async function testConsumoTeoricoAgrupadoPorInsumo() {
 }
 
 async function testAjustesPendientesStockInfraestructura() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
       await requestJson(baseUrl, "POST", "/usuarios", {
         nombre: "Colaborador Ajustes",
@@ -1286,11 +1303,19 @@ async function testAjustesPendientesStockInfraestructura() {
       }, adminToken);
 
       const colaboradorToken = await login(baseUrl, "colaborador_ajustes", "colaborador123");
-      const productoAntes = await getProduct(baseUrl, adminToken, 11);
-      const movimientosAntes = await getMovimientosStock(baseUrl, adminToken, 11);
+      const categoriaId = await crearCategoria(baseUrl, adminToken, "TEST Ajustes Pendientes");
+      const productoId = await crearProducto(baseUrl, adminToken, {
+        nombre: "TEST Producto Ajustes Pendientes",
+        categoria: "TEST Ajustes Pendientes",
+        categoria_id: categoriaId,
+        stock: 80,
+        maneja_stock: true
+      });
+      const productoAntes = await getProduct(baseUrl, adminToken, productoId);
+      const movimientosAntes = await getMovimientosStock(baseUrl, adminToken, productoId);
 
       const creado = await requestJson(baseUrl, "POST", "/stock/ajustes-pendientes", {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "ingreso",
         cantidad: 5,
         motivo: "TEST ajuste pendiente",
@@ -1299,16 +1324,16 @@ async function testAjustesPendientesStockInfraestructura() {
       if (!creado.response.ok) throw new Error(`Crear ajuste pendiente fallo: ${creado.data?.message || creado.response.status}`);
 
       assertEqual(creado.response.status, 201, "Crear ajuste pendiente debe responder 201");
-      assertEqual(creado.data.ajuste.producto_id, 11, "Ajuste pendiente debe devolver producto_id");
+      assertEqual(creado.data.ajuste.producto_id, productoId, "Ajuste pendiente debe devolver producto_id");
       assertEqual(creado.data.ajuste.cantidad, 5, "Ajuste pendiente debe devolver cantidad");
       assertEqual(creado.data.ajuste.estado === "pendiente" ? 1 : 0, 1, "Estado inicial debe ser pendiente");
       assertEqual(creado.data.ajuste.stock_actual_snapshot, productoAntes.stock, "Snapshot debe guardar stock actual");
       if (!creado.data.ajuste.producto_nombre) throw new Error("Ajuste pendiente debe devolver producto_nombre");
 
-      const productoDespues = await getProduct(baseUrl, adminToken, 11);
+      const productoDespues = await getProduct(baseUrl, adminToken, productoId);
       assertEqual(productoDespues.stock, productoAntes.stock, "Crear pendiente no debe modificar productos.stock");
 
-      const movimientosDespues = await getMovimientosStock(baseUrl, adminToken, 11);
+      const movimientosDespues = await getMovimientosStock(baseUrl, adminToken, productoId);
       assertEqual(movimientosDespues.length, movimientosAntes.length, "Crear pendiente no debe insertar movimientos_stock");
 
       const propio = await requestJson(baseUrl, "GET", `/stock/ajustes-pendientes/${creado.data.ajuste.id}`, null, colaboradorToken);
@@ -1321,14 +1346,14 @@ async function testAjustesPendientesStockInfraestructura() {
       assertEqual(encontrado.estado === "pendiente" ? 1 : 0, 1, "Listado debe conservar estado pendiente");
 
       const cantidadInvalida = await requestJson(baseUrl, "POST", "/stock/ajustes-pendientes", {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "ingreso",
         cantidad: 0
       }, colaboradorToken);
       assertEqual(cantidadInvalida.response.status, 400, "Cantidad invalida debe fallar");
 
       const tipoInvalido = await requestJson(baseUrl, "POST", "/stock/ajustes-pendientes", {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "rotura",
         cantidad: 1
       }, colaboradorToken);
@@ -1340,16 +1365,11 @@ async function testAjustesPendientesStockInfraestructura() {
         cantidad: 1
       }, colaboradorToken);
       assertEqual(productoInexistente.response.status, 404, "Producto inexistente debe fallar");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testAjustePendienteRequiereStockVer() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
     await prepareDb(dbPath, [
       [
         `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)
@@ -1359,8 +1379,15 @@ async function testAjustePendienteRequiereStockVer() {
       ]
     ]);
 
-    await withServer(dbPath, async (baseUrl) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
+      const categoriaId = await crearCategoria(baseUrl, adminToken, "TEST Stock Ver");
+      const productoId = await crearProducto(baseUrl, adminToken, {
+        nombre: "TEST Producto Stock Ver",
+        categoria: "TEST Stock Ver",
+        categoria_id: categoriaId,
+        stock: 80,
+        maneja_stock: true
+      });
       await requestJson(baseUrl, "POST", "/usuarios", {
         nombre: "Colaborador Sin Stock",
         usuario: "colaborador_sin_stock",
@@ -1372,24 +1399,16 @@ async function testAjustePendienteRequiereStockVer() {
 
       const colaboradorToken = await login(baseUrl, "colaborador_sin_stock", "colaborador123");
       const result = await requestJson(baseUrl, "POST", "/stock/ajustes-pendientes", {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "ingreso",
         cantidad: 1
       }, colaboradorToken);
       assertEqual(result.response.status, 403, "Usuario sin stock_ver no debe crear ajuste pendiente");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testAjustesPendientesAprobacionYRechazo() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
       await requestJson(baseUrl, "POST", "/usuarios", {
         nombre: "Colaborador Revisor",
@@ -1400,9 +1419,17 @@ async function testAjustesPendientesAprobacionYRechazo() {
         activo: true
       }, adminToken);
       const colaboradorToken = await login(baseUrl, "colaborador_revisor", "colaborador123");
+      const categoriaId = await crearCategoria(baseUrl, adminToken, "TEST Ajustes Revision");
+      const productoId = await crearProducto(baseUrl, adminToken, {
+        nombre: "TEST Producto Ajustes Revision",
+        categoria: "TEST Ajustes Revision",
+        categoria_id: categoriaId,
+        stock: 80,
+        maneja_stock: true
+      });
 
       const ingreso = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "ingreso",
         cantidad: 5,
         motivo: "TEST aprobar ingreso"
@@ -1411,11 +1438,11 @@ async function testAjustesPendientesAprobacionYRechazo() {
         observaciones_admin: "OK ingreso"
       }, adminToken);
       if (!aprobarIngreso.response.ok) throw new Error(`Aprobar ingreso fallo: ${aprobarIngreso.data?.message || aprobarIngreso.response.status}`);
-      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, 85, "Admin aprueba ingreso y aumenta stock");
+      assertEqual((await getProduct(baseUrl, adminToken, productoId)).stock, 85, "Admin aprueba ingreso y aumenta stock");
       assertEqual(aprobarIngreso.data.ajuste.estado === "aprobado" ? 1 : 0, 1, "Aprobar sin cambios debe dejar estado aprobado");
       if (!aprobarIngreso.data.ajuste.movimiento_stock_id) throw new Error("Aprobar debe guardar movimiento_stock_id");
       if (!String(aprobarIngreso.data.ajuste.observaciones_admin || "").includes("OK ingreso")) throw new Error("Observaciones admin deben quedar guardadas");
-      const movimientosIngreso = await getMovimientosStock(baseUrl, adminToken, 11);
+      const movimientosIngreso = await getMovimientosStock(baseUrl, adminToken, productoId);
       const movIngreso = movimientosIngreso.find((m) => Number(m.id) === Number(aprobarIngreso.data.ajuste.movimiento_stock_id));
       if (!movIngreso) throw new Error("Aprobar debe crear movimiento en movimientos_stock");
       assertEqual(movIngreso.tipo_movimiento === "ingreso" ? 1 : 0, 1, "Movimiento aprobado ingreso debe ser ingreso");
@@ -1423,20 +1450,20 @@ async function testAjustesPendientesAprobacionYRechazo() {
 
       const doble = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${ingreso.id}/aprobar`, {}, adminToken);
       assertEqual(doble.response.status, 409, "Aprobar dos veces debe fallar");
-      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, 85, "Aprobar dos veces no debe duplicar stock");
+      assertEqual((await getProduct(baseUrl, adminToken, productoId)).stock, 85, "Aprobar dos veces no debe duplicar stock");
 
       const egreso = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "egreso",
         cantidad: 3,
         motivo: "TEST aprobar egreso"
       });
       const aprobarEgreso = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${egreso.id}/aprobar`, {}, adminToken);
       if (!aprobarEgreso.response.ok) throw new Error(`Aprobar egreso fallo: ${aprobarEgreso.data?.message || aprobarEgreso.response.status}`);
-      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, 82, "Admin aprueba egreso y reduce stock");
+      assertEqual((await getProduct(baseUrl, adminToken, productoId)).stock, 82, "Admin aprueba egreso y reduce stock");
 
       const corregirCantidad = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "ingreso",
         cantidad: 2,
         motivo: "TEST corregir cantidad"
@@ -1448,10 +1475,10 @@ async function testAjustesPendientesAprobacionYRechazo() {
       if (!aprobarCantidad.response.ok) throw new Error(`Corregir cantidad fallo: ${aprobarCantidad.data?.message || aprobarCantidad.response.status}`);
       assertEqual(aprobarCantidad.data.ajuste.estado === "corregido" ? 1 : 0, 1, "Cambiar cantidad debe dejar estado corregido");
       assertEqual(aprobarCantidad.data.ajuste.cantidad_aprobada, 4, "Debe guardar cantidad corregida");
-      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, 86, "Corregir cantidad aplica cantidad corregida");
+      assertEqual((await getProduct(baseUrl, adminToken, productoId)).stock, 86, "Corregir cantidad aplica cantidad corregida");
 
       const corregirTipo = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "ingreso",
         cantidad: 6,
         motivo: "TEST corregir tipo"
@@ -1463,22 +1490,22 @@ async function testAjustesPendientesAprobacionYRechazo() {
       if (!aprobarTipo.response.ok) throw new Error(`Corregir tipo fallo: ${aprobarTipo.data?.message || aprobarTipo.response.status}`);
       assertEqual(aprobarTipo.data.ajuste.estado === "corregido" ? 1 : 0, 1, "Cambiar tipo debe dejar estado corregido");
       assertEqual(aprobarTipo.data.ajuste.tipo_movimiento_aprobado === "egreso" ? 1 : 0, 1, "Debe guardar tipo corregido");
-      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, 80, "Corregir tipo aplica tipo corregido");
+      assertEqual((await getProduct(baseUrl, adminToken, productoId)).stock, 80, "Corregir tipo aplica tipo corregido");
 
       const rechazo = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "ingreso",
         cantidad: 9,
         motivo: "TEST rechazar"
       });
-      const movimientosAntesRechazo = await getMovimientosStock(baseUrl, adminToken, 11);
+      const movimientosAntesRechazo = await getMovimientosStock(baseUrl, adminToken, productoId);
       const rechazar = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${rechazo.id}/rechazar`, {
         observaciones_admin: "No corresponde"
       }, adminToken);
       if (!rechazar.response.ok) throw new Error(`Rechazar fallo: ${rechazar.data?.message || rechazar.response.status}`);
       assertEqual(rechazar.data.ajuste.estado === "rechazado" ? 1 : 0, 1, "Rechazo debe dejar estado rechazado");
-      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, 80, "Rechazar no cambia stock");
-      const movimientosDespuesRechazo = await getMovimientosStock(baseUrl, adminToken, 11);
+      assertEqual((await getProduct(baseUrl, adminToken, productoId)).stock, 80, "Rechazar no cambia stock");
+      const movimientosDespuesRechazo = await getMovimientosStock(baseUrl, adminToken, productoId);
       assertEqual(movimientosDespuesRechazo.length, movimientosAntesRechazo.length, "Rechazar no crea movimiento");
       if (!String(rechazar.data.ajuste.observaciones_admin || "").includes("No corresponde")) throw new Error("Rechazo debe guardar observaciones admin");
 
@@ -1486,7 +1513,7 @@ async function testAjustesPendientesAprobacionYRechazo() {
       assertEqual(rechazarAprobado.response.status, 409, "Pendiente aprobado no puede rechazarse despues");
 
       const pendienteColaborador = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "ingreso",
         cantidad: 1,
         motivo: "TEST colaborador no aprueba"
@@ -1495,10 +1522,7 @@ async function testAjustesPendientesAprobacionYRechazo() {
       assertEqual(aprobarColaborador.response.status, 403, "Colaborador no puede aprobar");
       const rechazarColaborador = await requestJson(baseUrl, "POST", `/stock/ajustes-pendientes/${pendienteColaborador.id}/rechazar`, {}, colaboradorToken);
       assertEqual(rechazarColaborador.response.status, 403, "Colaborador no puede rechazar");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testReconciliarAjustesPendientesStock() {
@@ -1799,12 +1823,8 @@ async function testAjusteVentaRecetaConVentaIdEsAccionable() {
 }
 
 async function testResolverAjustePendienteConCuentaLocal() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-
-  try {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
     await prepareDb(dbPath, [
-      ...resetOperationalDataStatements(),
       [
         `INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en)
          VALUES ('cuenta_local_activa', 'false', 'cuentas_corrientes', datetime('now'))
@@ -1827,7 +1847,6 @@ async function testResolverAjustePendienteConCuentaLocal() {
       ]
     ]);
 
-    await withServer(dbPath, async (baseUrl) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
       await requestJson(baseUrl, "POST", "/usuarios", {
         nombre: "Colaborador Cuenta Local",
@@ -1838,9 +1857,19 @@ async function testResolverAjustePendienteConCuentaLocal() {
         activo: true
       }, adminToken);
       const colaboradorToken = await login(baseUrl, "colaborador_cuenta_local", "colaborador123");
+      const categoriaId = await crearCategoria(baseUrl, adminToken, "Cuenta Local Ajustes");
+      const productoNombre = "Producto Cuenta Local Ajustes";
+      const productoId = await crearProducto(baseUrl, adminToken, {
+        nombre: productoNombre,
+        categoria: "Cuenta Local Ajustes",
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        stock: 80,
+        maneja_stock: true
+      });
 
       const ajusteInactivo = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "egreso",
         cantidad: 1,
         motivo: "TEST cuenta local inactiva"
@@ -1860,7 +1889,7 @@ async function testResolverAjustePendienteConCuentaLocal() {
       );
 
       const ajusteProduccionOff = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "egreso",
         cantidad: 1,
         motivo: "TEST produccion off"
@@ -1900,11 +1929,11 @@ async function testResolverAjustePendienteConCuentaLocal() {
 
       const ventasAntes = await allSql(dbPath, "SELECT COUNT(*) AS total, COALESCE(SUM(saldo_pendiente), 0) AS saldo FROM ventas");
       const pagosCcAntes = await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos_cuenta_corriente");
-      const stockAntes = (await getProduct(baseUrl, adminToken, 11)).stock;
-      const movimientosAntes = await getMovimientosStock(baseUrl, adminToken, 11);
+      const stockAntes = (await getProduct(baseUrl, adminToken, productoId)).stock;
+      const movimientosAntes = await getMovimientosStock(baseUrl, adminToken, productoId);
 
       const ajusteCuentaLocal = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "egreso",
         cantidad: 3,
         motivo: "TEST cuenta local ok"
@@ -1916,7 +1945,7 @@ async function testResolverAjustePendienteConCuentaLocal() {
       }, adminToken);
       if (!resolver.response.ok) throw new Error(`Resolver Cuenta Local fallo: ${resolver.data?.message || resolver.response.status}`);
 
-      assertEqual((await getProduct(baseUrl, adminToken, 11)).stock, stockAntes - 3, "Cuenta Local debe descontar stock fisico");
+      assertEqual((await getProduct(baseUrl, adminToken, productoId)).stock, stockAntes - 3, "Cuenta Local debe descontar stock fisico");
       if (resolver.data.ajuste.tipo_resolucion !== "cuenta_local") throw new Error("Cuenta Local debe guardar tipo_resolucion");
       if (resolver.data.ajuste.estado !== "aprobado") throw new Error("Cuenta Local debe aprobar el ajuste fisico");
       assertEqual(resolver.data.ajuste.cantidad_aprobada, 3, "Cuenta Local debe guardar cantidad_aprobada");
@@ -1925,7 +1954,7 @@ async function testResolverAjustePendienteConCuentaLocal() {
       if (resolver.data.ajuste.cuenta_local_integracion !== "interno_cortesia") throw new Error("Cuenta Local debe guardar integracion");
       if (resolver.data.ajuste.cuenta_local_nombre_snapshot !== "Guernica Local") throw new Error("Cuenta Local debe guardar nombre snapshot");
 
-      const movimientosDespues = await getMovimientosStock(baseUrl, adminToken, 11);
+      const movimientosDespues = await getMovimientosStock(baseUrl, adminToken, productoId);
       assertEqual(movimientosDespues.length, movimientosAntes.length + 1, "Cuenta Local debe registrar movimiento stock");
 
       const ventasDespues = await allSql(dbPath, "SELECT COUNT(*) AS total, COALESCE(SUM(saldo_pendiente), 0) AS saldo FROM ventas");
@@ -1939,10 +1968,7 @@ async function testResolverAjustePendienteConCuentaLocal() {
       if (accionables.data.some((a) => Number(a.id) === Number(ajusteCuentaLocal.id))) {
         throw new Error("Cuenta Local no debe quedar como pendiente accionable");
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testClientesTipoClienteClasificacion() {
@@ -2508,38 +2534,50 @@ async function testPendienteNoImpactaCajaHastaCobro() {
 }
 
 async function testAnularPendienteReponeStock() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await configurarClaveAutorizacionTest(dbPath);
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const categoriaNombre = `TEST Anular Pendiente ${Date.now()}`;
+      const categoriaId = await crearCategoria(baseUrl, token, categoriaNombre);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: "TEST anular pendiente repone",
+        categoria: categoriaNombre,
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        stock: 80,
+        maneja_stock: true
+      });
+      const payload = ventaSimplePayload({
+        items: [{
+          producto_id: productoId,
+          nombre_producto: "TEST anular pendiente repone",
+          cantidad: 2,
+          precio_unitario: 100
+        }]
+      });
 
       const pendiente = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        ...payload,
         tipo: "pendiente",
         identificador_pendiente: "Mesa Anular",
         tipo_cobro: undefined
       }), token);
       if (!pendiente.response.ok) throw new Error(`Ticket pendiente para anular fallo: ${pendiente.data?.message || pendiente.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 78, "El pendiente a anular debe descontar stock al guardarse");
+      assertEqual((await getProduct(baseUrl, token, productoId)).stock, 78, "El pendiente a anular debe descontar stock al guardarse");
 
       const anulacion = await requestJson(baseUrl, "POST", `/ventas/${pendiente.data.venta_id}/anular`, {
         authorization_code: "1234"
       }, token);
       if (!anulacion.response.ok) throw new Error(`Anulacion pendiente fallo: ${anulacion.data?.message || anulacion.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 80, "Anular pendiente debe reponer stock");
+      assertEqual((await getProduct(baseUrl, token, productoId)).stock, 80, "Anular pendiente debe reponer stock");
 
       const ventas = await getVentas(baseUrl, token);
       const ventaAnulada = ventas.find((item) => Number(item.id) === Number(pendiente.data.venta_id));
       if (ventaAnulada?.estado !== "anulado") {
         throw new Error(`El pendiente anulado debe quedar en estado anulado. Estado=${ventaAnulada?.estado}`);
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testAnularVentaCobradaReponeStock() {
@@ -3382,50 +3420,48 @@ async function testCajaCerradaNoRecibeOperacionPosterior() {
 }
 
 async function testSimpleConRendimientoDescuentaStockFisicoUnaVez() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      await abrirCaja(baseUrl, token, 1000);
-      const categoriaId = await crearCategoria(baseUrl, token, "TEST Rendimiento Simple");
-      const productoId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Simple con rendimiento",
-        categoria: "TEST Rendimiento Simple",
-        categoria_id: categoriaId,
-        stock: 10,
-        rendimiento_receta: 5
-      });
-      await runSql(dbPath, "UPDATE productos SET rendimiento_receta = 5 WHERE id = ?", [productoId]);
-
-      const productoAntes = await getProduct(baseUrl, token, productoId);
-      assertEqual(productoAntes.rendimiento_receta, 5, "El producto simple de prueba debe tener rendimiento_receta cargado");
-
-      const venta = await requestJson(baseUrl, "POST", "/ventas", {
-        usuario: "test",
-        tipo: "normal",
-        tipo_cobro: "efectivo",
-        items: [{
-          producto_id: productoId,
-          nombre_producto: "TEST Simple con rendimiento",
-          cantidad: 2,
-          precio_unitario: 100
-        }]
-      }, token);
-      if (!venta.response.ok) throw new Error(`Venta simple con rendimiento fallo: ${venta.data?.message || venta.response.status}`);
-
-      assertEqual((await getProduct(baseUrl, token, productoId)).stock, 8, "Producto simple con rendimiento debe descontar solo stock fisico vendido");
-      const movimientos = await getMovimientosStock(baseUrl, token, productoId);
-      const movimientoVenta = movimientos.find((mov) => mov.tipo_movimiento === "venta" && Number(mov.stock_anterior) === 10);
-      if (!movimientoVenta) throw new Error("La venta simple con rendimiento debe registrar movimiento_stock de venta");
-      assertEqual(movimientoVenta.cantidad, 2, "Rendimiento_receta no debe duplicar cantidad descontada en producto simple");
-      assertEqual(movimientoVenta.stock_nuevo, 8, "Rendimiento_receta no debe alterar stock_nuevo de producto simple");
+  // HIGIENE-5E: fresh + API 100%. El UPDATE directo de rendimiento_receta se preserva -- no es
+  // resto historico: POST /productos fuerza rendimientoPost=1 para cualquier producto que no sea
+  // "receta sin stock fisico" (tipoProducto==='compuesto' && !maneja_stock), asi que un producto
+  // SIMPLE no puede recibir rendimiento_receta!=1 via payload de creacion. Es la unica forma
+  // contractual de reproducir el escenario (producto simple con rendimiento_receta=5 cargado por
+  // fuera del alta) sin tocar backend.
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    await abrirCaja(baseUrl, token, 1000);
+    const categoriaId = await crearCategoria(baseUrl, token, "TEST Rendimiento Simple");
+    const productoId = await crearProducto(baseUrl, token, {
+      nombre: "TEST Simple con rendimiento",
+      categoria: "TEST Rendimiento Simple",
+      categoria_id: categoriaId,
+      stock: 10,
+      rendimiento_receta: 5
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    await runSql(dbPath, "UPDATE productos SET rendimiento_receta = 5 WHERE id = ?", [productoId]);
+
+    const productoAntes = await getProduct(baseUrl, token, productoId);
+    assertEqual(productoAntes.rendimiento_receta, 5, "El producto simple de prueba debe tener rendimiento_receta cargado");
+
+    const venta = await requestJson(baseUrl, "POST", "/ventas", {
+      usuario: "test",
+      tipo: "normal",
+      tipo_cobro: "efectivo",
+      items: [{
+        producto_id: productoId,
+        nombre_producto: "TEST Simple con rendimiento",
+        cantidad: 2,
+        precio_unitario: 100
+      }]
+    }, token);
+    if (!venta.response.ok) throw new Error(`Venta simple con rendimiento fallo: ${venta.data?.message || venta.response.status}`);
+
+    assertEqual((await getProduct(baseUrl, token, productoId)).stock, 8, "Producto simple con rendimiento debe descontar solo stock fisico vendido");
+    const movimientos = await getMovimientosStock(baseUrl, token, productoId);
+    const movimientoVenta = movimientos.find((mov) => mov.tipo_movimiento === "venta" && Number(mov.stock_anterior) === 10);
+    if (!movimientoVenta) throw new Error("La venta simple con rendimiento debe registrar movimiento_stock de venta");
+    assertEqual(movimientoVenta.cantidad, 2, "Rendimiento_receta no debe duplicar cantidad descontada en producto simple");
+    assertEqual(movimientoVenta.stock_nuevo, 8, "Rendimiento_receta no debe alterar stock_nuevo de producto simple");
+  });
 }
 
 async function testCompuestoConComponenteFraccionadoDescuentaCantidadUsada() {
@@ -5385,14 +5421,15 @@ async function testResumenFiscalHistoricoF2EIntegracion() {
 }
 
 async function testMovimientoManualRegistraStockAnteriorYNuevo() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
-      const result = await requestJson(baseUrl, "POST", "/productos/11/movimientos-stock", {
+      const catId = await crearCategoria(baseUrl, token, `TEST MovimientoManualStock ${Date.now()}`);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: "TEST prod movimiento manual", categoria_id: catId,
+        precio_venta: 100, stock: 80, maneja_stock: true
+      });
+
+      const result = await requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, {
         tipo_movimiento: "ingreso",
         cantidad: 7,
         motivo: "TEST movimiento manual stock",
@@ -5400,17 +5437,14 @@ async function testMovimientoManualRegistraStockAnteriorYNuevo() {
       }, token);
       if (!result.response.ok) throw new Error(`Movimiento manual stock fallo: ${result.data?.message || result.response.status}`);
 
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 87, "Ingreso manual debe actualizar stock fisico");
-      const movimientos = await getMovimientosStock(baseUrl, token, 11);
+      assertEqual((await getProduct(baseUrl, token, productoId)).stock, 87, "Ingreso manual debe actualizar stock fisico");
+      const movimientos = await getMovimientosStock(baseUrl, token, productoId);
       const movimientoManual = movimientos.find((mov) => mov.motivo === "TEST movimiento manual stock");
       if (!movimientoManual) throw new Error("Ingreso manual debe registrar movimiento_stock");
       assertEqual(movimientoManual.cantidad, 7, "Movimiento manual debe guardar cantidad");
       assertEqual(movimientoManual.stock_anterior, 80, "Movimiento manual debe guardar stock_anterior");
       assertEqual(movimientoManual.stock_nuevo, 87, "Movimiento manual debe guardar stock_nuevo");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 function assertColumnasIncluidas(columnas, requeridas, contexto) {
@@ -11625,24 +11659,28 @@ async function testCuentaCorrienteConservaDetalleHistoricoSinModificadores() {
 }
 
 async function testComboActualGeneraAjusteTeoricoSinModificadores() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, [
-      ...resetOperationalDataStatements(),
-      ["UPDATE productos SET stock = 80, maneja_stock = 1, usa_costos_varios = 0, tipo = 'simple', es_combo = 0 WHERE id = 11"]
-    ]);
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
       const categoriaId = await crearCategoria(baseUrl, token, "TEST Combo Etapa 0");
+      const componenteId = await crearProducto(baseUrl, token, {
+        nombre: "TEST Componente Combo Etapa 0",
+        categoria: "TEST Combo Etapa 0",
+        categoria_id: categoriaId,
+        stock: 80,
+        maneja_stock: true,
+        usa_costos_varios: false,
+        tipo: "simple",
+        es_combo: false,
+        precio_venta: 100
+      });
 
       const combo = await requestJson(baseUrl, "POST", "/productos", {
         nombre: "TEST Combo Etapa 0",
         categoria: "TEST Combo Etapa 0",
         categoria_id: categoriaId,
         tipo: "compuesto",
-        componentes: [{ producto_id: 11, cantidad: 2 }],
+        componentes: [{ producto_id: componenteId, cantidad: 2 }],
         costos_extra: [],
         precio_compra: 100,
         precio_venta: 250,
@@ -11666,18 +11704,16 @@ async function testComboActualGeneraAjusteTeoricoSinModificadores() {
       }, token);
       if (!venta.response.ok) throw new Error(`Venta combo etapa 0 fallo: ${venta.data?.message || venta.response.status}`);
 
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 80, "Combo sin stock no debe descontar componentes al vender");
+      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 80, "Combo sin stock no debe descontar componentes al vender");
       const ajustes = await getAjustesPendientesStock(baseUrl, token, "pendiente");
       const ajuste = ajustes.find((item) => Number(item.venta_id) === Number(venta.data.venta_id) && item.origen === "venta_receta");
       if (!ajuste) throw new Error("Combo sin stock debe generar ajuste teorico pendiente");
+      assertEqual(ajuste.producto_id, componenteId, "Ajuste teorico de combo debe apuntar al componente fisico");
       assertApprox(ajuste.cantidad_teorica, 2, "Ajuste teorico de combo debe guardar consumo de componentes");
       const detalle = await getVentaDetalle(baseUrl, token, venta.data.venta_id);
       assertEqual(detalle.items.length, 1, "Combo debe quedar como una sola linea de detalle_ventas");
       assertEqual(detalle.items[0].producto_id, combo.data.id, "Detalle debe registrar el producto combo, no sus componentes como lineas vendidas");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testModificadoresEtapa1BackendAislado() {
@@ -18435,12 +18471,7 @@ async function testModificadorQuitarEdicionPendienteDiffCorrecto() {
 }
 
 async function testResumenAjustesPendientes() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
       await requestJson(baseUrl, "POST", "/usuarios", {
         nombre: "Colaborador Resumen",
@@ -18451,6 +18482,14 @@ async function testResumenAjustesPendientes() {
         activo: true
       }, adminToken);
       const colaboradorToken = await login(baseUrl, "colaborador_resumen", "colaborador123");
+      const categoriaId = await crearCategoria(baseUrl, adminToken, "TEST Ajustes Resumen");
+      const productoId = await crearProducto(baseUrl, adminToken, {
+        nombre: "TEST Producto Ajustes Resumen",
+        categoria: "TEST Ajustes Resumen",
+        categoria_id: categoriaId,
+        stock: 80,
+        maneja_stock: true
+      });
 
       // Sin pendientes devuelve 0
       const { response: r0, data: d0 } = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, adminToken);
@@ -18460,17 +18499,17 @@ async function testResumenAjustesPendientes() {
       assertEqual(d0.rechazados_hoy, 0, "Sin pendientes, rechazados_hoy debe ser 0");
 
       // Crear ajuste pendiente y verificar que NO modifica stock ni inserta movimiento
-      const productoAntes = await getProduct(baseUrl, adminToken, 11);
-      const movimientosAntes = await getMovimientosStock(baseUrl, adminToken, 11);
+      const productoAntes = await getProduct(baseUrl, adminToken, productoId);
+      const movimientosAntes = await getMovimientosStock(baseUrl, adminToken, productoId);
       const ajuste1 = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "ingreso",
         cantidad: 3,
         motivo: "TEST resumen pendiente"
       });
-      const productoDespues = await getProduct(baseUrl, adminToken, 11);
+      const productoDespues = await getProduct(baseUrl, adminToken, productoId);
       assertEqual(productoDespues.stock, productoAntes.stock, "Crear pendiente no debe modificar productos.stock");
-      const movimientosDespues = await getMovimientosStock(baseUrl, adminToken, 11);
+      const movimientosDespues = await getMovimientosStock(baseUrl, adminToken, productoId);
       assertEqual(movimientosDespues.length, movimientosAntes.length, "Crear pendiente no debe insertar movimientos_stock");
 
       // Resumen debe reflejar 1 pendiente
@@ -18480,7 +18519,7 @@ async function testResumenAjustesPendientes() {
 
       // Crear segundo ajuste
       const ajuste2 = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "egreso",
         cantidad: 1,
         motivo: "TEST resumen pendiente 2"
@@ -18508,10 +18547,7 @@ async function testResumenAjustesPendientes() {
       // Colaborador sin permiso no puede consultar el resumen
       const { response: rForbidden } = await requestJson(baseUrl, "GET", "/stock/ajustes-pendientes/resumen", null, colaboradorToken);
       assertEqual(rForbidden.status, 403, "Colaborador no debe consultar resumen de ajustes");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testTiendaIngredientesVisibles() {
@@ -18933,11 +18969,8 @@ function deshabilitarStockNegativo() { return setConfigStockNegativo(false); }
 
 async function testStockNegativoNoCreaPendienteSiConfigFalse() {
   // Con stock_permitir_negativo=false (default), la venta falla y no crea ajuste pendiente
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, [...resetOperationalDataStatements(), deshabilitarStockNegativo()]);
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await prepareDb(dbPath, [deshabilitarStockNegativo()]);
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
       const catId = await crearCategoria(baseUrl, token, "TEST SNConfigFalse");
@@ -18955,19 +18988,13 @@ async function testStockNegativoNoCreaPendienteSiConfigFalse() {
         `SELECT id FROM stock_ajustes_pendientes WHERE producto_id = ? AND origen = 'stock_negativo_venta'`, [pid]
       );
       assertEqual(ajustesPendientes.length, 0, "Config false: no debe crearse ajuste pendiente por stock negativo");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testStockNegativoCreaPendienteConConfigTrue() {
   // Con stock_permitir_negativo=true, la venta se registra y crea ajuste pendiente
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, [...resetOperationalDataStatements(), habilitarStockNegativo()]);
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await prepareDb(dbPath, [habilitarStockNegativo()]);
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
       const catId = await crearCategoria(baseUrl, token, "TEST SNConfigTrue");
@@ -18995,19 +19022,13 @@ async function testStockNegativoCreaPendienteConConfigTrue() {
       assertApprox(ajustes[0].cantidad, 3, "Ajuste debe registrar el deficit (3)", 0.01);
       assertEqual(Number(ajustes[0].venta_id), Number(ventaId), "Ajuste debe vincular al venta_id correcto");
       if (ajustes[0].estado !== "pendiente") throw new Error(`Ajuste debe estar pendiente, actual=${ajustes[0].estado}`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testStockExactoNoCreaPendiente() {
   // Venta exacta hasta stock=0 no crea ajuste pendiente
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, [...resetOperationalDataStatements(), habilitarStockNegativo()]);
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await prepareDb(dbPath, [habilitarStockNegativo()]);
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
       const catId = await crearCategoria(baseUrl, token, "TEST SNExacto");
@@ -19025,19 +19046,13 @@ async function testStockExactoNoCreaPendiente() {
         `SELECT id FROM stock_ajustes_pendientes WHERE producto_id = ? AND origen = 'stock_negativo_venta'`, [pid]
       );
       assertEqual(ajustes.length, 0, "Stock exacto en 0 no debe crear ajuste pendiente");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testStockNegativoNoDuplicaPendiente() {
   // Dos ventas del mismo producto, ambas dejan stock negativo → dos ajustes, uno por venta
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, [...resetOperationalDataStatements(), habilitarStockNegativo()]);
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await prepareDb(dbPath, [habilitarStockNegativo()]);
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
       const catId = await crearCategoria(baseUrl, token, "TEST SNDuplicado");
@@ -19066,10 +19081,7 @@ async function testStockNegativoNoDuplicaPendiente() {
       if (Number(ajustes[0].venta_id) === Number(ajustes[1].venta_id)) {
         throw new Error("Los dos ajustes no deben pertenecer a la misma venta");
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 function setConfigCC(params) {
@@ -19766,12 +19778,9 @@ async function testRecetaSnapshotNoGeneraParaProductoSimple() {
 }
 
 async function testRecetaSnapshotAnulacionPendienteLimpia() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
+      await configurarClaveAutorizacionTest(dbPath);
       const catId = await crearCategoria(baseUrl, token, `SnapPend ${Date.now()}`);
       const insumoId = await crearProducto(baseUrl, token, {
         nombre: "SnapPend insumo", categoria_id: catId, precio_venta: 50, stock: 200, maneja_stock: true
@@ -19801,19 +19810,13 @@ async function testRecetaSnapshotAnulacionPendienteLimpia() {
       if (!anularR.ok) throw new Error(`SnapPend: anulacion debe OK, dio ${anularR.status}`);
       const despues = await allSql(dbPath, "SELECT * FROM detalle_venta_receta_snapshot WHERE venta_id = ?", [ventaId]);
       assertEqual(despues.length, 0, "SnapPend: snapshot debe borrarse al anular pendiente");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testRecetaSnapshotAnulacionCobradaLimpia() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
+      await configurarClaveAutorizacionTest(dbPath);
       const catId = await crearCategoria(baseUrl, token, `SnapCob ${Date.now()}`);
       const insumoId = await crearProducto(baseUrl, token, {
         nombre: "SnapCob insumo", categoria_id: catId, precio_venta: 50, stock: 200, maneja_stock: true
@@ -19843,10 +19846,7 @@ async function testRecetaSnapshotAnulacionCobradaLimpia() {
       if (!anularR.ok) throw new Error(`SnapCob: anulacion cobrada debe OK, dio ${anularR.status}`);
       const despues = await allSql(dbPath, "SELECT * FROM detalle_venta_receta_snapshot WHERE venta_id = ?", [ventaId]);
       assertEqual(despues.length, 0, "SnapCob: snapshot debe borrarse al anular cobrada");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testEndpointRecetaSnapshotVenta() {
