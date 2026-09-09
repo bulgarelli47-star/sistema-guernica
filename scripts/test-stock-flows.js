@@ -1028,12 +1028,7 @@ async function testFinanzasResumenBackendV1() {
 }
 
 async function testProduccionV1DominioSeparado() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
       const categoriaId = await crearCategoria(baseUrl, adminToken, `Produccion TEST ${Date.now()}`);
       const insumoId = await crearProducto(baseUrl, adminToken, {
@@ -1118,30 +1113,23 @@ async function testProduccionV1DominioSeparado() {
       const cajaDespues = await getCajaResumen(baseUrl, adminToken);
       assertEqual(ventasDespues.length, ventasAntes.length, "Produccion no debe crear ventas");
       assertEqual(cajaDespues.resumen.total_general, cajaAntes.resumen.total_general, "Produccion no debe modificar caja");
-    });
 
-    const producciones = await allSql(dbPath, "SELECT * FROM producciones");
-    const snapshots = await allSql(dbPath, "SELECT * FROM produccion_componentes_snapshot");
-    const ventas = await allSql(dbPath, "SELECT * FROM ventas");
-    const pagosCuenta = await allSql(dbPath, "SELECT * FROM pagos_cuenta_corriente");
-    if (producciones.length !== 1) throw new Error("Debe persistir una produccion");
-    if (snapshots.length !== 1) throw new Error("Debe persistir un snapshot de componente");
-    if (ventas.length !== 0) throw new Error("Produccion no debe persistir ventas");
-    if (pagosCuenta.length !== 0) throw new Error("Produccion no debe persistir pagos de cuenta corriente");
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+      const producciones = await allSql(dbPath, "SELECT * FROM producciones");
+      const snapshots = await allSql(dbPath, "SELECT * FROM produccion_componentes_snapshot");
+      const ventas = await allSql(dbPath, "SELECT * FROM ventas");
+      const pagosCuenta = await allSql(dbPath, "SELECT * FROM pagos_cuenta_corriente");
+      if (producciones.length !== 1) throw new Error("Debe persistir una produccion");
+      if (snapshots.length !== 1) throw new Error("Debe persistir un snapshot de componente");
+      if (ventas.length !== 0) throw new Error("Produccion no debe persistir ventas");
+      if (pagosCuenta.length !== 0) throw new Error("Produccion no debe persistir pagos de cuenta corriente");
+  });
 }
 
 async function testConsumoTeoricoAgrupadoPorInsumo() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      await configurarClaveAutorizacionTest(dbPath);
       const categoriaId = await crearCategoria(baseUrl, token, `Consumo teorico TEST ${Date.now()}`);
       const insumoId = await crearProducto(baseUrl, token, {
         nombre: `Insumo consumo teorico TEST ${Date.now()}`,
@@ -1284,10 +1272,7 @@ async function testConsumoTeoricoAgrupadoPorInsumo() {
       if (!consumo.data.limitaciones?.some((item) => String(item).includes("receta actual"))) {
         throw new Error("Consumo teorico debe declarar la limitacion V1 de receta actual");
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testAjustesPendientesStockInfraestructura() {
@@ -3285,16 +3270,22 @@ async function testPagoHeredaCategoriaPagoDesdeImpactoProveedor() {
 }
 
 async function testCierreGuardaSnapshotsParseables() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      // ventaSimplePayload() referencia producto_id 11 historico (SOURCE_DB); en fresh no existe
+      // ningun producto por defecto, asi que se crea explicito y se sobreescriben los items
+      // conservando exactamente cantidad/precio_unitario/nombre_producto originales.
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST Cierre Snapshot ${Date.now()}`);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: `TEST Cierre Snapshot Producto ${Date.now()}`,
+        categoria_id: categoriaId,
+        stock: 10
+      });
 
-      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        items: [{ producto_id: productoId, nombre_producto: "Coca Cola 1250", cantidad: 2, precio_unitario: 100 }]
+      }), token);
       if (!venta.response.ok) throw new Error(`Venta para cierre fallo: ${venta.data?.message || venta.response.status}`);
 
       const cierre = await cerrarCaja(baseUrl, token, 1200, 1000, 200);
@@ -3316,10 +3307,7 @@ async function testCierreGuardaSnapshotsParseables() {
       assertEqual(detalle.resumen_snapshot.total_ventas, 200, "El snapshot de cierre debe conservar total de ventas");
       assertEqual(detalle.ventas_snapshot.length, 1, "El snapshot de cierre debe conservar la venta registrada");
       assertEqual(detalle.pagos_snapshot.length, 0, "El snapshot de cierre debe conservar pagos vacios si no hubo pagos");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCierreInmutableAnteVentaPosterior() {
@@ -3747,16 +3735,15 @@ async function testResumenReporteExcluyePagosPendientes() {
 }
 
 async function testResumenReporteCalculaBalanceGeneral() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
+      const cuentaDestinoEfectivo = await crearCuentaDestino(baseUrl, token, { tipo_destino: "efectivo" });
+      const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, { cuenta_destino_id: cuentaDestinoEfectivo.id });
       await abrirCaja(baseUrl, token, 1000);
       const proveedor = await crearProveedor(baseUrl, token);
+      const producto = await crearProductoParaReporteVentas(baseUrl, token, "Resumen Balance");
 
-      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(producto), token);
       if (!venta.response.ok) throw new Error(`Venta para balance fallo: ${venta.data?.message || venta.response.status}`);
 
       await registrarPago(baseUrl, token, {
@@ -3764,7 +3751,8 @@ async function testResumenReporteCalculaBalanceGeneral() {
         concepto: "TEST pago balance",
         monto_total: 80,
         tipo_pago: "efectivo",
-        estado: "registrado"
+        estado: "registrado",
+        cuenta_cobro_id: cuentaEfectivo.id
       });
 
       const { response, data } = await requestJson(baseUrl, "GET", "/reportes/resumen", null, token);
@@ -3774,28 +3762,22 @@ async function testResumenReporteCalculaBalanceGeneral() {
       assertApprox(data.pagos_totales, 80, "balance: pagos_totales debe ser 80");
       assertApprox(data.balance_general, 120, "balance_general debe ser ventas_totales - pagos_totales");
       assertApprox(data.balance_general, data.ventas_totales - data.pagos_totales, "balance_general debe coincidir con la resta de los totales devueltos");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testResumenReporteCalculaTicketPromedio() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const producto = await crearProductoParaReporteVentas(baseUrl, token, "Resumen Ticket");
 
-      const v1 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const v1 = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(producto), token);
       if (!v1.response.ok) throw new Error(`Venta 1 ticket promedio fallo: ${v1.data?.message || v1.response.status}`);
       await delay(1100);
-      const v2 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const v2 = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(producto), token);
       if (!v2.response.ok) throw new Error(`Venta 2 ticket promedio fallo: ${v2.data?.message || v2.response.status}`);
       await delay(1100);
-      const v3 = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const v3 = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(producto), token);
       if (!v3.response.ok) throw new Error(`Venta 3 ticket promedio fallo: ${v3.data?.message || v3.response.status}`);
 
       const { response, data } = await requestJson(baseUrl, "GET", "/reportes/resumen", null, token);
@@ -3804,22 +3786,16 @@ async function testResumenReporteCalculaTicketPromedio() {
       assertEqual(data.total_ventas, 3, "Resumen debe contar 3 ventas en total_ventas");
       assertApprox(data.ventas_totales, 600, "Resumen debe sumar 600 en ventas_totales (3 x 200)");
       assertApprox(data.ticket_promedio, 200, "ticket_promedio debe ser ventas_totales / total_ventas = 200");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testResumenReporteRespetaFiltroFechas() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const producto = await crearProductoParaReporteVentas(baseUrl, token, "Resumen Fechas");
 
-      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
+      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(producto), token);
       if (!venta.response.ok) throw new Error(`Venta filtro fechas fallo: ${venta.data?.message || venta.response.status}`);
 
       // Rango amplio: cubre cualquier fecha que el servidor pueda haber guardado
@@ -3833,10 +3809,7 @@ async function testResumenReporteRespetaFiltroFechas() {
       if (!r2.ok) throw new Error(`GET /reportes/resumen rango historico fallo: ${d2?.message || r2.status}`);
       assertApprox(d2.ventas_totales, 0, "Resumen con rango historico debe excluir la venta de hoy");
       assertEqual(d2.total_ventas, 0, "Resumen con rango historico debe contar 0 ventas");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testReporteStockValorizaSoloStockFisico() {
@@ -11587,17 +11560,30 @@ async function testProductosMasVendidosRespetaLimite() {
 }
 
 async function testModificadoresEtapa0SchemaYReporteNeutro() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      await abrirCaja(baseUrl, token, 1000);
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    await abrirCaja(baseUrl, token, 1000);
+    const categoriaIdFixtureMods = await crearCategoria(baseUrl, token, `TEST Mods Fresh ${Date.now()}`);
+    const productoBaseNombreFixture = "TEST Producto Base Mod";
+    const productoBaseIdFixture = await crearProducto(baseUrl, token, {
+      nombre: productoBaseNombreFixture,
+      categoria: "TEST Mods Fresh",
+      categoria_id: categoriaIdFixtureMods,
+      stock: 80,
+      precio_venta: 100,
+      maneja_stock: true
+    });
+    const fixture = {
+      categoriaId: categoriaIdFixtureMods,
+      productoBaseId: productoBaseIdFixture,
+      productoBaseNombre: productoBaseNombreFixture,
+      productoBasePrecio: 100,
+      productoBaseStock: 80
+    };
 
-      const tablas = await allSql(
-        dbPath,
-        `SELECT name FROM sqlite_master
+    const tablas = await allSql(
+      dbPath,
+      `SELECT name FROM sqlite_master
          WHERE type = 'table'
            AND name IN (
              'modificadores',
@@ -11606,35 +11592,39 @@ async function testModificadoresEtapa0SchemaYReporteNeutro() {
              'detalle_venta_modificadores',
              'detalle_venta_componentes_snapshot'
            )`
-      );
-      assertEqual(tablas.length, 5, "Etapa 0 debe asegurar las cinco tablas de modificadores");
+    );
+    assertEqual(tablas.length, 5, "Etapa 0 debe asegurar las cinco tablas de modificadores");
 
-      await runSql(
-        dbPath,
-        "INSERT INTO modificadores (codigo, nombre, tipo, precio_extra, activo, orden) VALUES (?, ?, ?, ?, 1, 1)",
-        ["extra_queso_test", "Extra queso TEST", "agregar", 500]
-      );
-      await runSql(
-        dbPath,
-        "INSERT INTO producto_modificadores (producto_id, modificador_id, activo) VALUES (?, (SELECT id FROM modificadores WHERE codigo = ?), 1)",
-        [11, "extra_queso_test"]
-      );
+    await runSql(
+      dbPath,
+      "INSERT INTO modificadores (codigo, nombre, tipo, precio_extra, activo, orden) VALUES (?, ?, ?, ?, 1, 1)",
+      ["extra_queso_test", "Extra queso TEST", "agregar", 500]
+    );
+    await runSql(
+      dbPath,
+      "INSERT INTO producto_modificadores (producto_id, modificador_id, activo) VALUES (?, (SELECT id FROM modificadores WHERE codigo = ?), 1)",
+      [fixture.productoBaseId, "extra_queso_test"]
+    );
 
-      const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
-      if (!venta.response.ok) throw new Error(`Venta con tablas de modificadores neutras fallo: ${venta.data?.message || venta.response.status}`);
+    const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      items: [{
+        producto_id: fixture.productoBaseId,
+        nombre_producto: fixture.productoBaseNombre,
+        cantidad: 2,
+        precio_unitario: fixture.productoBasePrecio
+      }]
+    }), token);
+    if (!venta.response.ok) throw new Error(`Venta con tablas de modificadores neutras fallo: ${venta.data?.message || venta.response.status}`);
 
-      const { response, data } = await requestJson(baseUrl, "GET", "/reportes/productos-mas-vendidos?limite=100", null, token);
-      if (!response.ok) throw new Error(`GET /reportes/productos-mas-vendidos fallo: ${data?.message || response.status}`);
-      if (data.some((item) => String(item.nombre || "").includes("Extra queso TEST"))) {
-        throw new Error(`Los modificadores no deben aparecer como productos vendidos. Reporte=${JSON.stringify(data)}`);
-      }
-      const producto = data.find((item) => Number(item.producto_id) === 11);
-      if (!producto) throw new Error("El producto vendido debe seguir apareciendo en productos mas vendidos");
-      assertApprox(producto.total_vendido, 200, "La tabla de modificadores sin uso no debe alterar total_vendido");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const { response, data } = await requestJson(baseUrl, "GET", "/reportes/productos-mas-vendidos?limite=100", null, token);
+    if (!response.ok) throw new Error(`GET /reportes/productos-mas-vendidos fallo: ${data?.message || response.status}`);
+    if (data.some((item) => String(item.nombre || "").includes("Extra queso TEST"))) {
+      throw new Error(`Los modificadores no deben aparecer como productos vendidos. Reporte=${JSON.stringify(data)}`);
+    }
+    const producto = data.find((item) => Number(item.producto_id) === Number(fixture.productoBaseId));
+    if (!producto) throw new Error("El producto vendido debe seguir apareciendo en productos mas vendidos");
+    assertApprox(producto.total_vendido, 200, "La tabla de modificadores sin uso no debe alterar total_vendido");
+  });
 }
 
 async function testCuentaCorrienteConservaDetalleHistoricoSinModificadores() {
@@ -11744,132 +11734,153 @@ async function testComboActualGeneraAjusteTeoricoSinModificadores() {
 }
 
 async function testModificadoresEtapa1BackendAislado() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      await abrirCaja(baseUrl, token, 1000);
-      const categoriaId = await crearCategoria(baseUrl, token, "TEST Mods Etapa 1");
-      const componenteId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Queso Extra Mod",
-        categoria: "TEST Mods Etapa 1",
-        categoria_id: categoriaId,
-        stock: 30,
-        precio_venta: 10
-      });
-      const suffix = Date.now().toString().slice(-8);
-
-      const libre = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
-        codigo: `libre_${suffix}`,
-        nombre: "TEST Libre Mod",
-        tipo: "libre",
-        precio_extra: 25,
-        orden: 1
-      }, token);
-      if (!libre.response.ok) throw new Error(`Crear modificador libre fallo: ${libre.data?.message || libre.response.status}`);
-
-      const observacion = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
-        codigo: `obs_${suffix}`,
-        nombre: "TEST Observacion Mod",
-        tipo: "observacion",
-        precio_extra: 99,
-        observacion_cocina: "Sin cebolla",
-        orden: 2
-      }, token);
-      if (!observacion.response.ok) throw new Error(`Crear modificador observacion fallo: ${observacion.data?.message || observacion.response.status}`);
-
-      const agregar = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
-        codigo: `agregar_${suffix}`,
-        nombre: "TEST Agregar Queso Mod",
-        tipo: "agregar",
-        precio_extra: 40,
-        componentes: [{ producto_id: componenteId, cantidad: 3 }],
-        orden: 3
-      }, token);
-      if (!agregar.response.ok) throw new Error(`Crear modificador agregar fallo: ${agregar.data?.message || agregar.response.status}`);
-
-      const listado = await requestJson(baseUrl, "GET", "/productos/11/modificadores", null, token);
-      if (!listado.response.ok) throw new Error(`GET modificadores fallo: ${listado.data?.message || listado.response.status}`);
-      if (listado.data.length < 3) throw new Error(`GET modificadores debe devolver los modificadores creados. Actual=${JSON.stringify(listado.data)}`);
-      const agregarListado = listado.data.find((item) => item.codigo === `agregar_${suffix}`);
-      if (!agregarListado?.componentes?.length) {
-        throw new Error(`Modificador agregar debe devolver componentes. Actual=${JSON.stringify(agregarListado)}`);
-      }
-
-      const stockBaseAntes = (await getProduct(baseUrl, token, 11)).stock;
-      const stockComponenteAntes = (await getProduct(baseUrl, token, componenteId)).stock;
-      const prueba = await requestJson(baseUrl, "POST", "/ventas/test-modificadores", {
-        usuario: "test",
-        item: {
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
-          cantidad: 1,
-          precio_unitario: 100,
-          modificadores: [
-            { modificador_id: libre.data.modificador.id },
-            { modificador_id: observacion.data.modificador.id },
-            { modificador_id: agregar.data.modificador.id }
-          ]
-        }
-      }, token);
-      if (!prueba.response.ok) throw new Error(`Venta test modificadores fallo: ${prueba.data?.message || prueba.response.status}`);
-
-      assertApprox(prueba.data.total, 165, "Modificador libre y agregar deben sumar precio; observacion no suma");
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, stockBaseAntes, "Venta test modificadores no debe mover stock del producto base");
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockComponenteAntes, "Venta test modificadores no debe mover stock del componente extra");
-
-      const ventasDespuesTest = await getVentas(baseUrl, token);
-      if (ventasDespuesTest.some((venta) => Number(venta.id) === Number(prueba.data.venta_id) || venta.tipo === "test_modificadores")) {
-        throw new Error(`GET /ventas no debe listar ventas tecnicas test_modificadores. Ventas=${JSON.stringify(ventasDespuesTest)}`);
-      }
-      const detalleListado = await requestJson(baseUrl, "GET", "/detalle-ventas", null, token);
-      if (!detalleListado.response.ok) throw new Error(`GET /detalle-ventas fallo: ${detalleListado.data?.message || detalleListado.response.status}`);
-      if (detalleListado.data.some((detalle) => Number(detalle.venta_id) === Number(prueba.data.venta_id))) {
-        throw new Error(`GET /detalle-ventas no debe listar detalles de ventas tecnicas. Detalles=${JSON.stringify(detalleListado.data)}`);
-      }
-
-      const modsSnapshot = await allSql(
-        dbPath,
-        "SELECT * FROM detalle_venta_modificadores WHERE detalle_venta_id = ? ORDER BY id ASC",
-        [prueba.data.detalle_venta_id]
-      );
-      assertEqual(modsSnapshot.length, 3, "Venta test debe guardar snapshot de los modificadores");
-      const obsSnapshot = modsSnapshot.find((item) => item.tipo === "observacion");
-      if (!obsSnapshot || Number(obsSnapshot.precio_extra) !== 0) {
-        throw new Error(`Modificador observacion debe quedar en historial sin precio. Actual=${JSON.stringify(obsSnapshot)}`);
-      }
-
-      const componentesSnapshot = await allSql(
-        dbPath,
-        "SELECT * FROM detalle_venta_componentes_snapshot WHERE detalle_venta_id = ? ORDER BY id ASC",
-        [prueba.data.detalle_venta_id]
-      );
-      assertEqual(componentesSnapshot.length, 1, "Modificador agregar debe preparar snapshot de componente extra");
-      assertEqual(componentesSnapshot[0].producto_id, componenteId, "Snapshot de componente debe referenciar el ingrediente extra");
-      assertApprox(componentesSnapshot[0].cantidad, 3, "Snapshot de componente debe guardar cantidad extra total");
-      if (!prueba.data.stock_delta.componentes.length) {
-        throw new Error("getStockDeltaVentaItem debe exponer componentes extra preparados");
-      }
-
-      const ventaNormal = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(), token);
-      if (!ventaNormal.response.ok) throw new Error(`Venta normal post modificadores fallo: ${ventaNormal.data?.message || ventaNormal.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, stockBaseAntes - 2, "Venta normal sin modificadores debe seguir descontando igual");
-      const ventasConNormal = await getVentas(baseUrl, token);
-      if (!ventasConNormal.some((venta) => Number(venta.id) === Number(ventaNormal.data.venta_id))) {
-        throw new Error("GET /ventas debe seguir listando ventas reales normales");
-      }
-
-      const reporte = await requestJson(baseUrl, "GET", "/reportes/productos-mas-vendidos?limite=100", null, token);
-      if (!reporte.response.ok) throw new Error(`GET reporte modificadores fallo: ${reporte.data?.message || reporte.response.status}`);
-      if (reporte.data.some((item) => String(item.nombre || "").includes("TEST Libre Mod") || String(item.nombre || "").includes("TEST Agregar Queso Mod"))) {
-        throw new Error(`Productos mas vendidos no debe incluir modificadores como productos. Reporte=${JSON.stringify(reporte.data)}`);
-      }
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+    const token = await login(baseUrl, "admin", "admin123");
+    await abrirCaja(baseUrl, token, 1000);
+    const categoriaIdFixtureMods = await crearCategoria(baseUrl, token, `TEST Mods Fresh ${Date.now()}`);
+    const productoBaseNombreFixture = "TEST Producto Base Mod";
+    const productoBaseIdFixture = await crearProducto(baseUrl, token, {
+      nombre: productoBaseNombreFixture,
+      categoria: "TEST Mods Fresh",
+      categoria_id: categoriaIdFixtureMods,
+      stock: 80,
+      precio_venta: 100,
+      maneja_stock: true
     });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+    const fixture = {
+      categoriaId: categoriaIdFixtureMods,
+      productoBaseId: productoBaseIdFixture,
+      productoBaseNombre: productoBaseNombreFixture,
+      productoBasePrecio: 100,
+      productoBaseStock: 80
+    };
+    fixture.componenteNombre = "TEST Queso Extra Mod";
+    fixture.componenteId = await crearProducto(baseUrl, token, {
+      nombre: fixture.componenteNombre,
+      categoria: "TEST Mods Fresh",
+      categoria_id: categoriaIdFixtureMods,
+      stock: 30,
+      precio_venta: 10,
+      maneja_stock: true
+    });
+    fixture.componenteStock = 30;
+    const productoBaseId = fixture.productoBaseId;
+    const componenteId = fixture.componenteId;
+    const suffix = Date.now().toString().slice(-8);
+
+    const libre = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
+      codigo: `libre_${suffix}`,
+      nombre: "TEST Libre Mod",
+      tipo: "libre",
+      precio_extra: 25,
+      orden: 1
+    }, token);
+    if (!libre.response.ok) throw new Error(`Crear modificador libre fallo: ${libre.data?.message || libre.response.status}`);
+
+    const observacion = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
+      codigo: `obs_${suffix}`,
+      nombre: "TEST Observacion Mod",
+      tipo: "observacion",
+      precio_extra: 99,
+      observacion_cocina: "Sin cebolla",
+      orden: 2
+    }, token);
+    if (!observacion.response.ok) throw new Error(`Crear modificador observacion fallo: ${observacion.data?.message || observacion.response.status}`);
+
+    const agregar = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
+      codigo: `agregar_${suffix}`,
+      nombre: "TEST Agregar Queso Mod",
+      tipo: "agregar",
+      precio_extra: 40,
+      componentes: [{ producto_id: componenteId, cantidad: 3 }],
+      orden: 3
+    }, token);
+    if (!agregar.response.ok) throw new Error(`Crear modificador agregar fallo: ${agregar.data?.message || agregar.response.status}`);
+
+    const listado = await requestJson(baseUrl, "GET", `/productos/${productoBaseId}/modificadores`, null, token);
+    if (!listado.response.ok) throw new Error(`GET modificadores fallo: ${listado.data?.message || listado.response.status}`);
+    if (listado.data.length < 3) throw new Error(`GET modificadores debe devolver los modificadores creados. Actual=${JSON.stringify(listado.data)}`);
+    const agregarListado = listado.data.find((item) => item.codigo === `agregar_${suffix}`);
+    if (!agregarListado?.componentes?.length) {
+      throw new Error(`Modificador agregar debe devolver componentes. Actual=${JSON.stringify(agregarListado)}`);
+    }
+
+    const stockBaseAntes = (await getProduct(baseUrl, token, productoBaseId)).stock;
+    const stockComponenteAntes = (await getProduct(baseUrl, token, componenteId)).stock;
+    const prueba = await requestJson(baseUrl, "POST", "/ventas/test-modificadores", {
+      usuario: "test",
+      item: {
+        producto_id: productoBaseId,
+        nombre_producto: fixture.productoBaseNombre,
+        cantidad: 1,
+        precio_unitario: fixture.productoBasePrecio,
+        modificadores: [
+          { modificador_id: libre.data.modificador.id },
+          { modificador_id: observacion.data.modificador.id },
+          { modificador_id: agregar.data.modificador.id }
+        ]
+      }
+    }, token);
+    if (!prueba.response.ok) throw new Error(`Venta test modificadores fallo: ${prueba.data?.message || prueba.response.status}`);
+
+    assertApprox(prueba.data.total, 165, "Modificador libre y agregar deben sumar precio; observacion no suma");
+    assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, stockBaseAntes, "Venta test modificadores no debe mover stock del producto base");
+    assertEqual((await getProduct(baseUrl, token, componenteId)).stock, stockComponenteAntes, "Venta test modificadores no debe mover stock del componente extra");
+
+    const ventasDespuesTest = await getVentas(baseUrl, token);
+    if (ventasDespuesTest.some((venta) => Number(venta.id) === Number(prueba.data.venta_id) || venta.tipo === "test_modificadores")) {
+      throw new Error(`GET /ventas no debe listar ventas tecnicas test_modificadores. Ventas=${JSON.stringify(ventasDespuesTest)}`);
+    }
+    const detalleListado = await requestJson(baseUrl, "GET", "/detalle-ventas", null, token);
+    if (!detalleListado.response.ok) throw new Error(`GET /detalle-ventas fallo: ${detalleListado.data?.message || detalleListado.response.status}`);
+    if (detalleListado.data.some((detalle) => Number(detalle.venta_id) === Number(prueba.data.venta_id))) {
+      throw new Error(`GET /detalle-ventas no debe listar detalles de ventas tecnicas. Detalles=${JSON.stringify(detalleListado.data)}`);
+    }
+
+    const modsSnapshot = await allSql(
+      dbPath,
+      "SELECT * FROM detalle_venta_modificadores WHERE detalle_venta_id = ? ORDER BY id ASC",
+      [prueba.data.detalle_venta_id]
+    );
+    assertEqual(modsSnapshot.length, 3, "Venta test debe guardar snapshot de los modificadores");
+    const obsSnapshot = modsSnapshot.find((item) => item.tipo === "observacion");
+    if (!obsSnapshot || Number(obsSnapshot.precio_extra) !== 0) {
+      throw new Error(`Modificador observacion debe quedar en historial sin precio. Actual=${JSON.stringify(obsSnapshot)}`);
+    }
+
+    const componentesSnapshot = await allSql(
+      dbPath,
+      "SELECT * FROM detalle_venta_componentes_snapshot WHERE detalle_venta_id = ? ORDER BY id ASC",
+      [prueba.data.detalle_venta_id]
+    );
+    assertEqual(componentesSnapshot.length, 1, "Modificador agregar debe preparar snapshot de componente extra");
+    assertEqual(componentesSnapshot[0].producto_id, componenteId, "Snapshot de componente debe referenciar el ingrediente extra");
+    assertApprox(componentesSnapshot[0].cantidad, 3, "Snapshot de componente debe guardar cantidad extra total");
+    if (!prueba.data.stock_delta.componentes.length) {
+      throw new Error("getStockDeltaVentaItem debe exponer componentes extra preparados");
+    }
+
+    const ventaNormal = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      items: [{
+        producto_id: productoBaseId,
+        nombre_producto: fixture.productoBaseNombre,
+        cantidad: 2,
+        precio_unitario: fixture.productoBasePrecio
+      }]
+    }), token);
+    if (!ventaNormal.response.ok) throw new Error(`Venta normal post modificadores fallo: ${ventaNormal.data?.message || ventaNormal.response.status}`);
+    assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, stockBaseAntes - 2, "Venta normal sin modificadores debe seguir descontando igual");
+    const ventasConNormal = await getVentas(baseUrl, token);
+    if (!ventasConNormal.some((venta) => Number(venta.id) === Number(ventaNormal.data.venta_id))) {
+      throw new Error("GET /ventas debe seguir listando ventas reales normales");
+    }
+
+    const reporte = await requestJson(baseUrl, "GET", "/reportes/productos-mas-vendidos?limite=100", null, token);
+    if (!reporte.response.ok) throw new Error(`GET reporte modificadores fallo: ${reporte.data?.message || reporte.response.status}`);
+    if (reporte.data.some((item) => String(item.nombre || "").includes("TEST Libre Mod") || String(item.nombre || "").includes("TEST Agregar Queso Mod"))) {
+      throw new Error(`Productos mas vendidos no debe incluir modificadores como productos. Reporte=${JSON.stringify(reporte.data)}`);
+    }
+  });
 }
 
 async function testModificadoresEtapa2AVentasNormales() {
@@ -12035,166 +12046,195 @@ async function testModificadoresEtapa2AVentasNormales() {
 }
 
 async function testModificadoresEtapa2AProteccionesAuditoria() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      await abrirCaja(baseUrl, token, 1000);
-      const categoriaId = await crearCategoria(baseUrl, token, "TEST Mods Auditoria 2A");
-      const componenteId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Componente Auditoria 2A",
-        categoria: "TEST Mods Auditoria 2A",
-        categoria_id: categoriaId,
-        stock: 30,
-        precio_venta: 10
-      });
-      const suffix = Date.now().toString().slice(-8);
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+    await configurarClaveAutorizacionTest(dbPath);
+    const token = await login(baseUrl, "admin", "admin123");
+    await abrirCaja(baseUrl, token, 1000);
+    const categoriaIdFixtureMods = await crearCategoria(baseUrl, token, `TEST Mods Fresh ${Date.now()}`);
+    const productoBaseNombreFixture = "TEST Producto Base Mod";
+    const productoBaseIdFixture = await crearProducto(baseUrl, token, {
+      nombre: productoBaseNombreFixture,
+      categoria: "TEST Mods Fresh",
+      categoria_id: categoriaIdFixtureMods,
+      stock: 80,
+      precio_venta: 100,
+      maneja_stock: true
+    });
+    const fixture = {
+      categoriaId: categoriaIdFixtureMods,
+      productoBaseId: productoBaseIdFixture,
+      productoBaseNombre: productoBaseNombreFixture,
+      productoBasePrecio: 100,
+      productoBaseStock: 80
+    };
+    fixture.componenteNombre = "TEST Queso Extra Mod";
+    fixture.componenteId = await crearProducto(baseUrl, token, {
+      nombre: fixture.componenteNombre,
+      categoria: "TEST Mods Fresh",
+      categoria_id: categoriaIdFixtureMods,
+      stock: 30,
+      precio_venta: 10,
+      maneja_stock: true
+    });
+    fixture.componenteStock = 30;
+    const productoBaseId = fixture.productoBaseId;
+    const componenteId = fixture.componenteId;
+    const suffix = Date.now().toString().slice(-8);
 
-      const agregar = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
-        codigo: `aud2a_agregar_${suffix}`,
-        nombre: "TEST Auditoria 2A Agregar",
-        tipo: "agregar",
-        precio_extra: 40,
-        componentes: [{ producto_id: componenteId, cantidad: 3 }]
-      }, token);
-      if (!agregar.response.ok) throw new Error(`Crear modificador agregar auditoria 2A fallo: ${agregar.data?.message || agregar.response.status}`);
+    const agregar = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
+      codigo: `aud2a_agregar_${suffix}`,
+      nombre: "TEST Auditoria 2A Agregar",
+      tipo: "agregar",
+      precio_extra: 40,
+      componentes: [{ producto_id: componenteId, cantidad: 3 }]
+    }, token);
+    if (!agregar.response.ok) throw new Error(`Crear modificador agregar auditoria 2A fallo: ${agregar.data?.message || agregar.response.status}`);
 
-      const venta = await requestJson(baseUrl, "POST", "/ventas", {
-        usuario: "test",
-        tipo: "normal",
-        tipo_cobro: "efectivo",
-        items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
-          cantidad: 1,
-          precio_unitario: 100,
-          modificadores: [{ modificador_id: agregar.data.modificador.id, cantidad: 1 }]
-        }]
-      }, token);
-      if (!venta.response.ok) throw new Error(`Venta auditoria 2A con modificador agregar fallo: ${venta.data?.message || venta.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 79, "Venta con agregar debe descontar stock base una vez");
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 27, "Venta con agregar debe descontar componente extra");
+    const venta = await requestJson(baseUrl, "POST", "/ventas", {
+      usuario: "test",
+      tipo: "normal",
+      tipo_cobro: "efectivo",
+      items: [{
+        producto_id: productoBaseId,
+        nombre_producto: fixture.productoBaseNombre,
+        cantidad: 1,
+        precio_unitario: fixture.productoBasePrecio,
+        modificadores: [{ modificador_id: agregar.data.modificador.id, cantidad: 1 }]
+      }]
+    }, token);
+    if (!venta.response.ok) throw new Error(`Venta auditoria 2A con modificador agregar fallo: ${venta.data?.message || venta.response.status}`);
+    assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, 79, "Venta con agregar debe descontar stock base una vez");
+    assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 27, "Venta con agregar debe descontar componente extra");
 
-      await runSql(dbPath, "UPDATE modificador_componentes SET cantidad = 99 WHERE modificador_id = ?", [agregar.data.modificador.id]);
-      await runSql(dbPath, "UPDATE modificadores SET precio_extra = 999 WHERE id = ?", [agregar.data.modificador.id]);
+    await runSql(dbPath, "UPDATE modificador_componentes SET cantidad = 99 WHERE modificador_id = ?", [agregar.data.modificador.id]);
+    await runSql(dbPath, "UPDATE modificadores SET precio_extra = 999 WHERE id = ?", [agregar.data.modificador.id]);
 
-      const anular = await requestJson(baseUrl, "POST", `/ventas/${venta.data.venta_id}/anular-cobrada`, {
-        authorization_code: "1234"
-      }, token);
-      if (!anular.response.ok) throw new Error(`Anular venta auditoria 2A fallo: ${anular.data?.message || anular.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 80, "Anular venta con agregar debe reponer stock base");
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 30, "Anular debe reponer componente desde snapshot historico sin recalcular configuracion actual");
+    const anular = await requestJson(baseUrl, "POST", `/ventas/${venta.data.venta_id}/anular-cobrada`, {
+      authorization_code: "1234"
+    }, token);
+    if (!anular.response.ok) throw new Error(`Anular venta auditoria 2A fallo: ${anular.data?.message || anular.response.status}`);
+    assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, 80, "Anular venta con agregar debe reponer stock base");
+    assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 30, "Anular debe reponer componente desde snapshot historico sin recalcular configuracion actual");
 
-      const agregarCantidad = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
-        codigo: `aud2a_agregar_cantidad_${suffix}`,
-        nombre: "TEST Auditoria 2A Agregar Cantidad",
-        tipo: "agregar",
-        precio_extra: 15,
-        componentes: [{ producto_id: componenteId, cantidad: 2 }]
-      }, token);
-      if (!agregarCantidad.response.ok) throw new Error(`Crear modificador cantidad=2 auditoria 2A fallo: ${agregarCantidad.data?.message || agregarCantidad.response.status}`);
+    const agregarCantidad = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
+      codigo: `aud2a_agregar_cantidad_${suffix}`,
+      nombre: "TEST Auditoria 2A Agregar Cantidad",
+      tipo: "agregar",
+      precio_extra: 15,
+      componentes: [{ producto_id: componenteId, cantidad: 2 }]
+    }, token);
+    if (!agregarCantidad.response.ok) throw new Error(`Crear modificador cantidad=2 auditoria 2A fallo: ${agregarCantidad.data?.message || agregarCantidad.response.status}`);
 
-      const ventaCantidadDos = await requestJson(baseUrl, "POST", "/ventas", {
-        usuario: "test",
-        tipo: "normal",
-        tipo_cobro: "efectivo",
-        items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
-          cantidad: 1,
-          precio_unitario: 100,
-          modificadores: [{ modificador_id: agregarCantidad.data.modificador.id, cantidad: 2 }]
-        }]
-      }, token);
-      if (!ventaCantidadDos.response.ok) throw new Error(`Venta auditoria 2A cantidad=2 fallo: ${ventaCantidadDos.data?.message || ventaCantidadDos.response.status}`);
-      assertApprox(ventaCantidadDos.data.total, 130, "Modificador cantidad=2 debe sumar precio multiplicado");
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 79, "Modificador cantidad=2 debe descontar stock base una vez");
-      assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 26, "Modificador cantidad=2 debe descontar componente extra multiplicado");
+    const ventaCantidadDos = await requestJson(baseUrl, "POST", "/ventas", {
+      usuario: "test",
+      tipo: "normal",
+      tipo_cobro: "efectivo",
+      items: [{
+        producto_id: productoBaseId,
+        nombre_producto: fixture.productoBaseNombre,
+        cantidad: 1,
+        precio_unitario: fixture.productoBasePrecio,
+        modificadores: [{ modificador_id: agregarCantidad.data.modificador.id, cantidad: 2 }]
+      }]
+    }, token);
+    if (!ventaCantidadDos.response.ok) throw new Error(`Venta auditoria 2A cantidad=2 fallo: ${ventaCantidadDos.data?.message || ventaCantidadDos.response.status}`);
+    assertApprox(ventaCantidadDos.data.total, 130, "Modificador cantidad=2 debe sumar precio multiplicado");
+    assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, 79, "Modificador cantidad=2 debe descontar stock base una vez");
+    assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 26, "Modificador cantidad=2 debe descontar componente extra multiplicado");
 
-      const inactivo = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
-        codigo: `aud2a_inactivo_${suffix}`,
-        nombre: "TEST Auditoria 2A Inactivo",
-        tipo: "libre",
+    const inactivo = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
+      codigo: `aud2a_inactivo_${suffix}`,
+      nombre: "TEST Auditoria 2A Inactivo",
+      tipo: "libre",
+      precio_extra: 5
+    }, token);
+    if (!inactivo.response.ok) throw new Error(`Crear modificador inactivo auditoria 2A fallo: ${inactivo.data?.message || inactivo.response.status}`);
+    await runSql(dbPath, "UPDATE modificadores SET activo = 0 WHERE id = ?", [inactivo.data.modificador.id]);
+    const ventaInactiva = await requestJson(baseUrl, "POST", "/ventas", {
+      usuario: "test",
+      tipo: "normal",
+      tipo_cobro: "efectivo",
+      items: [{
+        producto_id: productoBaseId,
+        nombre_producto: fixture.productoBaseNombre,
+        cantidad: 1,
+        precio_unitario: fixture.productoBasePrecio,
+        modificadores: [{ modificador_id: inactivo.data.modificador.id, cantidad: 1 }]
+      }]
+    }, token);
+    assertEqual(ventaInactiva.response.status, 400, "Modificador inactivo debe fallar en POST /ventas");
+
+    for (const tipoNoHabilitado of ["multiplicar", "reemplazar"]) {
+      const modNoHabilitado = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
+        codigo: `aud2a_${tipoNoHabilitado}_${suffix}`,
+        nombre: `TEST Auditoria 2A ${tipoNoHabilitado}`,
+        tipo: tipoNoHabilitado,
         precio_extra: 5
       }, token);
-      if (!inactivo.response.ok) throw new Error(`Crear modificador inactivo auditoria 2A fallo: ${inactivo.data?.message || inactivo.response.status}`);
-      await runSql(dbPath, "UPDATE modificadores SET activo = 0 WHERE id = ?", [inactivo.data.modificador.id]);
-      const ventaInactiva = await requestJson(baseUrl, "POST", "/ventas", {
+      if (!modNoHabilitado.response.ok) {
+        throw new Error(`Crear modificador ${tipoNoHabilitado} auditoria 2A fallo: ${modNoHabilitado.data?.message || modNoHabilitado.response.status}`);
+      }
+
+      const ventaNoHabilitada = await requestJson(baseUrl, "POST", "/ventas", {
         usuario: "test",
         tipo: "normal",
         tipo_cobro: "efectivo",
         items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
+          producto_id: productoBaseId,
+          nombre_producto: fixture.productoBaseNombre,
           cantidad: 1,
-          precio_unitario: 100,
-          modificadores: [{ modificador_id: inactivo.data.modificador.id, cantidad: 1 }]
+          precio_unitario: fixture.productoBasePrecio,
+          modificadores: [{ modificador_id: modNoHabilitado.data.modificador.id, cantidad: 1 }]
         }]
       }, token);
-      assertEqual(ventaInactiva.response.status, 400, "Modificador inactivo debe fallar en POST /ventas");
-
-      for (const tipoNoHabilitado of ["multiplicar", "reemplazar"]) {
-        const modNoHabilitado = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
-          codigo: `aud2a_${tipoNoHabilitado}_${suffix}`,
-          nombre: `TEST Auditoria 2A ${tipoNoHabilitado}`,
-          tipo: tipoNoHabilitado,
-          precio_extra: 5
-        }, token);
-        if (!modNoHabilitado.response.ok) {
-          throw new Error(`Crear modificador ${tipoNoHabilitado} auditoria 2A fallo: ${modNoHabilitado.data?.message || modNoHabilitado.response.status}`);
-        }
-
-        const ventaNoHabilitada = await requestJson(baseUrl, "POST", "/ventas", {
-          usuario: "test",
-          tipo: "normal",
-          tipo_cobro: "efectivo",
-          items: [{
-            producto_id: 11,
-            nombre_producto: "Coca Cola 1250",
-            cantidad: 1,
-            precio_unitario: 100,
-            modificadores: [{ modificador_id: modNoHabilitado.data.modificador.id, cantidad: 1 }]
-          }]
-        }, token);
-        assertEqual(ventaNoHabilitada.response.status, 400, `Modificador ${tipoNoHabilitado} no debe estar habilitado en Etapa 2A`);
-      }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+      assertEqual(ventaNoHabilitada.response.status, 400, `Modificador ${tipoNoHabilitado} no debe estar habilitado en Etapa 2A`);
+    }
+  });
 }
 
 async function testModificadoresEtapa2BPendientesNuevas() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
-      const categoriaId = await crearCategoria(baseUrl, token, "TEST Mods Etapa 2B");
+      await configurarClaveAutorizacionTest(dbPath);
+      const categoriaIdFixtureMods = await crearCategoria(baseUrl, token, `TEST Mods Fresh ${Date.now()}`);
+      const productoBaseNombre = "TEST Producto Base Mod";
+      const productoBaseId = await crearProducto(baseUrl, token, {
+        nombre: productoBaseNombre,
+        categoria: "TEST Mods Fresh",
+        categoria_id: categoriaIdFixtureMods,
+        stock: 80,
+        precio_venta: 100,
+        maneja_stock: true
+      });
+      const productoBasePrecio = 100;
       const componenteId = await crearProducto(baseUrl, token, {
-        nombre: "TEST Componente Etapa 2B",
-        categoria: "TEST Mods Etapa 2B",
-        categoria_id: categoriaId,
+        nombre: "TEST Queso Extra Mod",
+        categoria: "TEST Mods Fresh",
+        categoria_id: categoriaIdFixtureMods,
         stock: 30,
-        precio_venta: 10
+        precio_venta: 10,
+        maneja_stock: true
       });
       const suffix = Date.now().toString().slice(-8);
 
       const pendienteSinMods = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo: "pendiente",
         identificador_pendiente: `PEND-SIN-MODS-${suffix}`,
-        tipo_cobro: undefined
+        tipo_cobro: undefined,
+        items: [{
+          producto_id: productoBaseId,
+          nombre_producto: productoBaseNombre,
+          cantidad: 2,
+          precio_unitario: productoBasePrecio
+        }]
       }), token);
       if (!pendienteSinMods.response.ok) throw new Error(`Pendiente sin modificadores fallo: ${pendienteSinMods.data?.message || pendienteSinMods.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 78, "Pendiente sin modificadores debe seguir descontando stock base al guardar");
+      assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, 78, "Pendiente sin modificadores debe seguir descontando stock base al guardar");
       const resumenSinMods = await getCajaResumen(baseUrl, token);
       assertEqual(resumenSinMods.resumen.total_ventas, 0, "Pendiente sin modificadores no debe impactar caja hasta cobrar");
 
-      const libre = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
+      const libre = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
         codigo: `etapa2b_libre_${suffix}`,
         nombre: "TEST Etapa 2B Libre",
         tipo: "libre",
@@ -12202,7 +12242,7 @@ async function testModificadoresEtapa2BPendientesNuevas() {
       }, token);
       if (!libre.response.ok) throw new Error(`Crear modificador libre etapa 2B fallo: ${libre.data?.message || libre.response.status}`);
 
-      const observacion = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
+      const observacion = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
         codigo: `etapa2b_obs_${suffix}`,
         nombre: "TEST Etapa 2B Observacion",
         tipo: "observacion",
@@ -12211,7 +12251,7 @@ async function testModificadoresEtapa2BPendientesNuevas() {
       }, token);
       if (!observacion.response.ok) throw new Error(`Crear modificador observacion etapa 2B fallo: ${observacion.data?.message || observacion.response.status}`);
 
-      const agregar = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
+      const agregar = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
         codigo: `etapa2b_agregar_${suffix}`,
         nombre: "TEST Etapa 2B Agregar",
         tipo: "agregar",
@@ -12225,10 +12265,10 @@ async function testModificadoresEtapa2BPendientesNuevas() {
         tipo: "pendiente",
         identificador_pendiente: `PEND-MODS-${suffix}`,
         items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
+          producto_id: productoBaseId,
+          nombre_producto: productoBaseNombre,
           cantidad: 1,
-          precio_unitario: 100,
+          precio_unitario: productoBasePrecio,
           modificadores: [
             { modificador_id: libre.data.modificador.id, cantidad: 1 },
             { modificador_id: observacion.data.modificador.id, cantidad: 1 },
@@ -12238,7 +12278,7 @@ async function testModificadoresEtapa2BPendientesNuevas() {
       }, token);
       if (!pendienteConMods.response.ok) throw new Error(`Pendiente con modificadores fallo: ${pendienteConMods.data?.message || pendienteConMods.response.status}`);
       assertApprox(pendienteConMods.data.total, 165, "Pendiente con modificadores debe sumar libre y agregar, no observacion");
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 77, "Pendiente con modificadores debe descontar stock base al guardar");
+      assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, 77, "Pendiente con modificadores debe descontar stock base al guardar");
       assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 27, "Pendiente con modificador agregar debe descontar componente extra al guardar");
 
       const detallePendiente = await getVentaDetalle(baseUrl, token, pendienteConMods.data.venta_id);
@@ -12270,7 +12310,7 @@ async function testModificadoresEtapa2BPendientesNuevas() {
         tipo_cobro: "efectivo"
       }, token);
       if (!cobrar.response.ok) throw new Error(`Cobrar pendiente con modificadores fallo: ${cobrar.data?.message || cobrar.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 77, "Cobrar pendiente con modificadores no debe descontar stock base otra vez");
+      assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, 77, "Cobrar pendiente con modificadores no debe descontar stock base otra vez");
       assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 27, "Cobrar pendiente con modificadores no debe descontar componente extra otra vez");
       const resumenCobrado = await getCajaResumen(baseUrl, token);
       assertApprox(resumenCobrado.resumen.total_ventas, 165, "Caja debe tomar total final con modificadores al cobrar pendiente");
@@ -12287,22 +12327,22 @@ async function testModificadoresEtapa2BPendientesNuevas() {
         tipo: "pendiente",
         identificador_pendiente: `PEND-ANULAR-MODS-${suffix}`,
         items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
+          producto_id: productoBaseId,
+          nombre_producto: productoBaseNombre,
           cantidad: 1,
-          precio_unitario: 100,
+          precio_unitario: productoBasePrecio,
           modificadores: [{ modificador_id: agregar.data.modificador.id, cantidad: 1 }]
         }]
       }, token);
       if (!pendienteAAnular.response.ok) throw new Error(`Pendiente a anular con modificador fallo: ${pendienteAAnular.data?.message || pendienteAAnular.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 76, "Pendiente a anular debe descontar stock base antes de anular");
+      assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, 76, "Pendiente a anular debe descontar stock base antes de anular");
       assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 24, "Pendiente a anular debe descontar extra antes de anular");
       await runSql(dbPath, "UPDATE modificador_componentes SET cantidad = 99 WHERE modificador_id = ?", [agregar.data.modificador.id]);
       const anularPendiente = await requestJson(baseUrl, "POST", `/ventas/${pendienteAAnular.data.venta_id}/anular`, {
         authorization_code: "1234"
       }, token);
       if (!anularPendiente.response.ok) throw new Error(`Anular pendiente con modificador fallo: ${anularPendiente.data?.message || anularPendiente.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 77, "Anular pendiente con modificador debe reponer stock base");
+      assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, 77, "Anular pendiente con modificador debe reponer stock base");
       assertEqual((await getProduct(baseUrl, token, componenteId)).stock, 27, "Anular pendiente debe reponer extra desde snapshot sin recalcular configuracion actual");
 
       const modificadorOtroProducto = await requestJson(baseUrl, "POST", `/productos/${componenteId}/modificadores`, {
@@ -12317,16 +12357,16 @@ async function testModificadoresEtapa2BPendientesNuevas() {
         tipo: "pendiente",
         identificador_pendiente: `PEND-MOD-INVALIDO-${suffix}`,
         items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
+          producto_id: productoBaseId,
+          nombre_producto: productoBaseNombre,
           cantidad: 1,
-          precio_unitario: 100,
+          precio_unitario: productoBasePrecio,
           modificadores: [{ modificador_id: modificadorOtroProducto.data.modificador.id, cantidad: 1 }]
         }]
       }, token);
       assertEqual(pendienteModInvalido.response.status, 400, "Modificador no asociado debe fallar en pendiente");
 
-      const inactivo = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
+      const inactivo = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
         codigo: `etapa2b_inactivo_${suffix}`,
         nombre: "TEST Etapa 2B Inactivo",
         tipo: "libre",
@@ -12339,46 +12379,50 @@ async function testModificadoresEtapa2BPendientesNuevas() {
         tipo: "pendiente",
         identificador_pendiente: `PEND-INACTIVO-${suffix}`,
         items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
+          producto_id: productoBaseId,
+          nombre_producto: productoBaseNombre,
           cantidad: 1,
-          precio_unitario: 100,
+          precio_unitario: productoBasePrecio,
           modificadores: [{ modificador_id: inactivo.data.modificador.id, cantidad: 1 }]
         }]
       }, token);
       assertEqual(pendienteInactivo.response.status, 400, "Modificador inactivo debe fallar en pendiente");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testModificadoresEtapa2CEdicionPendientes() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
-      const categoriaId = await crearCategoria(baseUrl, token, "TEST Mods Etapa 2C");
+      await configurarClaveAutorizacionTest(dbPath);
+      const categoriaId = await crearCategoria(baseUrl, token, `TEST Mods Fresh ${Date.now()}`);
+      const productoBaseNombre = "TEST Producto Base Mod";
+      const productoBaseId = await crearProducto(baseUrl, token, {
+        nombre: productoBaseNombre,
+        categoria: "TEST Mods Fresh",
+        categoria_id: categoriaId,
+        stock: 80,
+        precio_venta: 100,
+        maneja_stock: true
+      });
+      const productoBasePrecio = 100;
       const componenteAId = await crearProducto(baseUrl, token, {
         nombre: "TEST Componente A Etapa 2C",
-        categoria: "TEST Mods Etapa 2C",
+        categoria: "TEST Mods Fresh",
         categoria_id: categoriaId,
         stock: 50,
         precio_venta: 10
       });
       const componenteBId = await crearProducto(baseUrl, token, {
         nombre: "TEST Componente B Etapa 2C",
-        categoria: "TEST Mods Etapa 2C",
+        categoria: "TEST Mods Fresh",
         categoria_id: categoriaId,
         stock: 60,
         precio_venta: 10
       });
       const suffix = Date.now().toString().slice(-8);
 
-      const modA = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
+      const modA = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
         codigo: `etapa2c_a_${suffix}`,
         nombre: "TEST Etapa 2C Agregar A",
         tipo: "agregar",
@@ -12387,7 +12431,7 @@ async function testModificadoresEtapa2CEdicionPendientes() {
       }, token);
       if (!modA.response.ok) throw new Error(`Crear modificador A etapa 2C fallo: ${modA.data?.message || modA.response.status}`);
 
-      const modB = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
+      const modB = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
         codigo: `etapa2c_b_${suffix}`,
         nombre: "TEST Etapa 2C Agregar B",
         tipo: "agregar",
@@ -12399,15 +12443,21 @@ async function testModificadoresEtapa2CEdicionPendientes() {
       const pendienteSinMods = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo: "pendiente",
         identificador_pendiente: `PEND-2C-SIN-${suffix}`,
-        tipo_cobro: undefined
+        tipo_cobro: undefined,
+        items: [{
+          producto_id: productoBaseId,
+          nombre_producto: productoBaseNombre,
+          cantidad: 2,
+          precio_unitario: productoBasePrecio
+        }]
       }), token);
       if (!pendienteSinMods.response.ok) throw new Error(`Crear pendiente sin mods etapa 2C fallo: ${pendienteSinMods.data?.message || pendienteSinMods.response.status}`);
       const editarSinMods = await requestJson(baseUrl, "PUT", `/ventas/${pendienteSinMods.data.venta_id}/pendiente`, {
         identificador_pendiente: `PEND-2C-SIN-EDIT-${suffix}`,
-        items: [{ producto_id: 11, nombre_producto: "Coca Cola 1250", cantidad: 3, precio_unitario: 100 }]
+        items: [{ producto_id: productoBaseId, nombre_producto: productoBaseNombre, cantidad: 3, precio_unitario: productoBasePrecio }]
       }, token);
       if (!editarSinMods.response.ok) throw new Error(`Editar pendiente sin mods fallo: ${editarSinMods.data?.message || editarSinMods.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 77, "Editar pendiente sin modificadores debe seguir aplicando diff de stock base");
+      assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, 77, "Editar pendiente sin modificadores debe seguir aplicando diff de stock base");
       assertApprox(editarSinMods.data.total, 300, "Editar pendiente sin modificadores debe recalcular total normal");
 
       const pendienteCantidad = await requestJson(baseUrl, "POST", "/ventas", {
@@ -12415,15 +12465,15 @@ async function testModificadoresEtapa2CEdicionPendientes() {
         tipo: "pendiente",
         identificador_pendiente: `PEND-2C-CANT-${suffix}`,
         items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
+          producto_id: productoBaseId,
+          nombre_producto: productoBaseNombre,
           cantidad: 1,
-          precio_unitario: 100,
+          precio_unitario: productoBasePrecio,
           modificadores: [{ modificador_id: modA.data.modificador.id, cantidad: 1 }]
         }]
       }, token);
       if (!pendienteCantidad.response.ok) throw new Error(`Crear pendiente cantidad etapa 2C fallo: ${pendienteCantidad.data?.message || pendienteCantidad.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 76, "Pendiente con mod A debe descontar base inicial");
+      assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, 76, "Pendiente con mod A debe descontar base inicial");
       assertEqual((await getProduct(baseUrl, token, componenteAId)).stock, 48, "Pendiente con mod A debe descontar extra inicial");
 
       const detalleViejoCantidad = await getVentaDetalle(baseUrl, token, pendienteCantidad.data.venta_id);
@@ -12431,16 +12481,16 @@ async function testModificadoresEtapa2CEdicionPendientes() {
       const editarCantidad = await requestJson(baseUrl, "PUT", `/ventas/${pendienteCantidad.data.venta_id}/pendiente`, {
         identificador_pendiente: `PEND-2C-CANT-EDIT-${suffix}`,
         items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
+          producto_id: productoBaseId,
+          nombre_producto: productoBaseNombre,
           cantidad: 2,
-          precio_unitario: 100,
+          precio_unitario: productoBasePrecio,
           modificadores: [{ modificador_id: modA.data.modificador.id, cantidad: 1 }]
         }]
       }, token);
       if (!editarCantidad.response.ok) throw new Error(`Editar pendiente cantidad etapa 2C fallo: ${editarCantidad.data?.message || editarCantidad.response.status}`);
       assertApprox(editarCantidad.data.total, 220, "Editar pendiente debe recalcular total final con modificador");
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 75, "Editar cantidad debe aplicar diff base nuevo-viejo");
+      assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, 75, "Editar cantidad debe aplicar diff base nuevo-viejo");
       assertEqual((await getProduct(baseUrl, token, componenteAId)).stock, 46, "Editar cantidad debe aplicar diff extra desde snapshots");
       const snapshotsViejosCantidad = await allSql(
         dbPath,
@@ -12457,27 +12507,27 @@ async function testModificadoresEtapa2CEdicionPendientes() {
 
       const editarQuitar = await requestJson(baseUrl, "PUT", `/ventas/${pendienteCantidad.data.venta_id}/pendiente`, {
         identificador_pendiente: `PEND-2C-QUITAR-${suffix}`,
-        items: [{ producto_id: 11, nombre_producto: "Coca Cola 1250", cantidad: 2, precio_unitario: 100 }]
+        items: [{ producto_id: productoBaseId, nombre_producto: productoBaseNombre, cantidad: 2, precio_unitario: productoBasePrecio }]
       }, token);
       if (!editarQuitar.response.ok) throw new Error(`Editar pendiente quitando modificador fallo: ${editarQuitar.data?.message || editarQuitar.response.status}`);
       assertApprox(editarQuitar.data.total, 200, "Quitar modificador debe recalcular total sin extra");
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 75, "Quitar modificador no debe cambiar stock base si cantidad no cambia");
+      assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, 75, "Quitar modificador no debe cambiar stock base si cantidad no cambia");
       assertEqual((await getProduct(baseUrl, token, componenteAId)).stock, 50, "Quitar modificador debe reponer extra final anterior");
 
       const pendienteAgregar = await requestJson(baseUrl, "POST", "/ventas", {
         usuario: "test",
         tipo: "pendiente",
         identificador_pendiente: `PEND-2C-AGREGAR-${suffix}`,
-        items: [{ producto_id: 11, nombre_producto: "Coca Cola 1250", cantidad: 1, precio_unitario: 100 }]
+        items: [{ producto_id: productoBaseId, nombre_producto: productoBaseNombre, cantidad: 1, precio_unitario: productoBasePrecio }]
       }, token);
       if (!pendienteAgregar.response.ok) throw new Error(`Crear pendiente para agregar mod fallo: ${pendienteAgregar.data?.message || pendienteAgregar.response.status}`);
       const editarAgregar = await requestJson(baseUrl, "PUT", `/ventas/${pendienteAgregar.data.venta_id}/pendiente`, {
         identificador_pendiente: `PEND-2C-AGREGAR-EDIT-${suffix}`,
         items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
+          producto_id: productoBaseId,
+          nombre_producto: productoBaseNombre,
           cantidad: 1,
-          precio_unitario: 100,
+          precio_unitario: productoBasePrecio,
           modificadores: [{ modificador_id: modA.data.modificador.id, cantidad: 1 }]
         }]
       }, token);
@@ -12490,10 +12540,10 @@ async function testModificadoresEtapa2CEdicionPendientes() {
         tipo: "pendiente",
         identificador_pendiente: `PEND-2C-CAMBIO-${suffix}`,
         items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
+          producto_id: productoBaseId,
+          nombre_producto: productoBaseNombre,
           cantidad: 1,
-          precio_unitario: 100,
+          precio_unitario: productoBasePrecio,
           modificadores: [{ modificador_id: modA.data.modificador.id, cantidad: 1 }]
         }]
       }, token);
@@ -12501,10 +12551,10 @@ async function testModificadoresEtapa2CEdicionPendientes() {
       const editarCambio = await requestJson(baseUrl, "PUT", `/ventas/${pendienteCambio.data.venta_id}/pendiente`, {
         identificador_pendiente: `PEND-2C-CAMBIO-EDIT-${suffix}`,
         items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
+          producto_id: productoBaseId,
+          nombre_producto: productoBaseNombre,
           cantidad: 1,
-          precio_unitario: 100,
+          precio_unitario: productoBasePrecio,
           modificadores: [{ modificador_id: modB.data.modificador.id, cantidad: 1 }]
         }]
       }, token);
@@ -12513,12 +12563,12 @@ async function testModificadoresEtapa2CEdicionPendientes() {
       assertEqual((await getProduct(baseUrl, token, componenteAId)).stock, 48, "Cambiar A por B debe reponer extra A");
       assertEqual((await getProduct(baseUrl, token, componenteBId)).stock, 55, "Cambiar A por B debe descontar extra B");
 
-      const stockBaseAntesCobrar = (await getProduct(baseUrl, token, 11)).stock;
+      const stockBaseAntesCobrar = (await getProduct(baseUrl, token, productoBaseId)).stock;
       const stockAAntesCobrar = (await getProduct(baseUrl, token, componenteAId)).stock;
       const stockBAntesCobrar = (await getProduct(baseUrl, token, componenteBId)).stock;
       const cobrar = await requestJson(baseUrl, "POST", `/ventas/${pendienteCambio.data.venta_id}/cobrar`, { tipo_cobro: "efectivo" }, token);
       if (!cobrar.response.ok) throw new Error(`Cobrar pendiente editada fallo: ${cobrar.data?.message || cobrar.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, stockBaseAntesCobrar, "Cobrar pendiente editada no debe descontar base otra vez");
+      assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, stockBaseAntesCobrar, "Cobrar pendiente editada no debe descontar base otra vez");
       assertEqual((await getProduct(baseUrl, token, componenteAId)).stock, stockAAntesCobrar, "Cobrar pendiente editada no debe tocar extra A");
       assertEqual((await getProduct(baseUrl, token, componenteBId)).stock, stockBAntesCobrar, "Cobrar pendiente editada no debe tocar extra B");
 
@@ -12526,25 +12576,25 @@ async function testModificadoresEtapa2CEdicionPendientes() {
         usuario: "test",
         tipo: "pendiente",
         identificador_pendiente: `PEND-2C-ANULAR-${suffix}`,
-        items: [{ producto_id: 11, nombre_producto: "Coca Cola 1250", cantidad: 1, precio_unitario: 100 }]
+        items: [{ producto_id: productoBaseId, nombre_producto: productoBaseNombre, cantidad: 1, precio_unitario: productoBasePrecio }]
       }, token);
       if (!pendienteAnular.response.ok) throw new Error(`Crear pendiente anular etapa 2C fallo: ${pendienteAnular.data?.message || pendienteAnular.response.status}`);
       const editarAnular = await requestJson(baseUrl, "PUT", `/ventas/${pendienteAnular.data.venta_id}/pendiente`, {
         identificador_pendiente: `PEND-2C-ANULAR-EDIT-${suffix}`,
         items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
+          producto_id: productoBaseId,
+          nombre_producto: productoBaseNombre,
           cantidad: 2,
-          precio_unitario: 100,
+          precio_unitario: productoBasePrecio,
           modificadores: [{ modificador_id: modB.data.modificador.id, cantidad: 1 }]
         }]
       }, token);
       if (!editarAnular.response.ok) throw new Error(`Editar pendiente para anular fallo: ${editarAnular.data?.message || editarAnular.response.status}`);
-      const stockBaseAntesAnular = (await getProduct(baseUrl, token, 11)).stock;
+      const stockBaseAntesAnular = (await getProduct(baseUrl, token, productoBaseId)).stock;
       const stockBAntesAnular = (await getProduct(baseUrl, token, componenteBId)).stock;
       const anular = await requestJson(baseUrl, "POST", `/ventas/${pendienteAnular.data.venta_id}/anular`, { authorization_code: "1234" }, token);
       if (!anular.response.ok) throw new Error(`Anular pendiente editada fallo: ${anular.data?.message || anular.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, stockBaseAntesAnular + 2, "Anular pendiente editada debe reponer stock base final");
+      assertEqual((await getProduct(baseUrl, token, productoBaseId)).stock, stockBaseAntesAnular + 2, "Anular pendiente editada debe reponer stock base final");
       assertEqual((await getProduct(baseUrl, token, componenteBId)).stock, stockBAntesAnular + 10, "Anular pendiente editada debe reponer extra final desde snapshot nuevo");
 
       const modificadorOtroProducto = await requestJson(baseUrl, "POST", `/productos/${componenteAId}/modificadores`, {
@@ -12557,16 +12607,16 @@ async function testModificadoresEtapa2CEdicionPendientes() {
       const editarInvalido = await requestJson(baseUrl, "PUT", `/ventas/${pendienteAgregar.data.venta_id}/pendiente`, {
         identificador_pendiente: `PEND-2C-INVALIDO-${suffix}`,
         items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
+          producto_id: productoBaseId,
+          nombre_producto: productoBaseNombre,
           cantidad: 1,
-          precio_unitario: 100,
+          precio_unitario: productoBasePrecio,
           modificadores: [{ modificador_id: modificadorOtroProducto.data.modificador.id, cantidad: 1 }]
         }]
       }, token);
       assertEqual(editarInvalido.response.status, 400, "Editar pendiente con modificador no asociado debe fallar");
 
-      const inactivo = await requestJson(baseUrl, "POST", "/productos/11/modificadores", {
+      const inactivo = await requestJson(baseUrl, "POST", `/productos/${productoBaseId}/modificadores`, {
         codigo: `etapa2c_inactivo_${suffix}`,
         nombre: "TEST Etapa 2C Inactivo",
         tipo: "libre",
@@ -12577,10 +12627,10 @@ async function testModificadoresEtapa2CEdicionPendientes() {
       const editarInactivo = await requestJson(baseUrl, "PUT", `/ventas/${pendienteAgregar.data.venta_id}/pendiente`, {
         identificador_pendiente: `PEND-2C-INACTIVO-${suffix}`,
         items: [{
-          producto_id: 11,
-          nombre_producto: "Coca Cola 1250",
+          producto_id: productoBaseId,
+          nombre_producto: productoBaseNombre,
           cantidad: 1,
-          precio_unitario: 100,
+          precio_unitario: productoBasePrecio,
           modificadores: [{ modificador_id: inactivo.data.modificador.id, cantidad: 1 }]
         }]
       }, token);
@@ -12591,10 +12641,7 @@ async function testModificadoresEtapa2CEdicionPendientes() {
       if (reporte.data.some((item) => String(item.nombre || "").includes("TEST Etapa 2C"))) {
         throw new Error(`Productos mas vendidos no debe mostrar modificadores en etapa 2C. Reporte=${JSON.stringify(reporte.data)}`);
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testModificadoresApiEdicionActivacionYSnapshots() {
@@ -13932,11 +13979,7 @@ async function testMercadoPagoPointIntentosInfraestructura() {
 }
 
 async function testCuentasDestinoEtapa3AInfraestructura() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
 
@@ -14001,15 +14044,13 @@ async function testCuentasDestinoEtapa3AInfraestructura() {
       });
       assertEqual(cuentaLegacy.cuenta_destino_id || 0, 0, "Canal sin cuenta_destino_id debe seguir funcionando");
 
-      const ventaLegacy = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const productoTest = await crearProductoParaReporteVentas(baseUrl, token, "CuentasDestinoInfra");
+      const ventaLegacy = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTest, {
         tipo_cobro: "efectivo",
         cuenta_cobro_id: null
       }), token);
       if (!ventaLegacy.response.ok) throw new Error(`Venta legacy sin cuenta destino fallo: ${ventaLegacy.data?.message || ventaLegacy.response.status}`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCajaResumenPorCuentaDestino() {
@@ -17338,13 +17379,10 @@ async function testCajaResumenPorCuentaCobro() {
 }
 
 async function testConciliacionManualPorCuentaCobro() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       const apertura = await abrirCaja(baseUrl, token, 1000);
+      const productoTestConciliacionCobro = await crearProductoParaReporteVentas(baseUrl, token, "ConciliacionCuentaCobro");
       const cuentaEfectivo = await crearCuentaCobro(baseUrl, token, {
         nombre: "Caja efectivo conciliacion TEST",
         tipo_pago_codigo: "efectivo",
@@ -17364,7 +17402,7 @@ async function testConciliacionManualPorCuentaCobro() {
       for (let i = 0; i < ventasConciliacion.length; i += 1) {
         if (i > 0) await delay(1100);
         const payload = ventasConciliacion[i];
-        const venta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload(payload), token);
+        const venta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTestConciliacionCobro, payload), token);
         if (!venta.response.ok) throw new Error(`Venta para conciliacion fallo: ${venta.data?.message || venta.response.status}`);
       }
 
@@ -17453,20 +17491,15 @@ async function testConciliacionManualPorCuentaCobro() {
       assertEqual(updateCerrada.caja.id, cajaCerrada.id, "POST conciliacion sin caja abierta debe usar ultima caja cerrada");
       assertEqual(updateCerrada.conciliacion.id, actualizada.conciliacion.id, "Actualizar ultima caja cerrada debe reutilizar conciliacion existente");
       assertApprox(updateCerrada.conciliacion.diferencia, 25, "Conciliacion sobre ultima caja cerrada debe recalcular diferencia");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testReporteCuentasCobro() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await configurarClaveAutorizacionTest(dbPath);
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const productoTestReporteCuentasCobro = await crearProductoParaReporteVentas(baseUrl, token, "ReporteCuentasCobro");
 
       const destinoEfectivo = await crearCuentaDestino(baseUrl, token, {
         nombre: "Destino efectivo reporte cuentas TEST",
@@ -17486,28 +17519,28 @@ async function testReporteCuentasCobro() {
       });
       const proveedor = await crearProveedor(baseUrl, token);
 
-      const ventaEfectivo = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaEfectivo = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTestReporteCuentasCobro, {
         tipo_cobro: "efectivo",
         cuenta_cobro_id: cuentaEfectivo.id
       }), token);
       if (!ventaEfectivo.response.ok) throw new Error(`Venta efectivo reporte cuentas fallo: ${ventaEfectivo.data?.message || ventaEfectivo.response.status}`);
 
       await delay(1100);
-      const ventaDebito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaDebito = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTestReporteCuentasCobro, {
         tipo_cobro: "debito",
         cuenta_cobro_id: cuentaDebito.id
       }), token);
       if (!ventaDebito.response.ok) throw new Error(`Venta debito reporte cuentas fallo: ${ventaDebito.data?.message || ventaDebito.response.status}`);
 
       await delay(1100);
-      const ventaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaSinCuenta = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTestReporteCuentasCobro, {
         tipo_cobro: "efectivo",
         cuenta_cobro_id: null
       }), token);
       if (!ventaSinCuenta.response.ok) throw new Error(`Venta sin cuenta reporte cuentas fallo: ${ventaSinCuenta.data?.message || ventaSinCuenta.response.status}`);
 
       await delay(1100);
-      const ventaAnulada = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+      const ventaAnulada = await requestJson(baseUrl, "POST", "/ventas", ventaProductoReportePayload(productoTestReporteCuentasCobro, {
         tipo_cobro: "efectivo",
         cuenta_cobro_id: cuentaEfectivo.id
       }), token);
@@ -17616,10 +17649,7 @@ async function testReporteCuentasCobro() {
       if (filtrado.data.length !== 0) {
         throw new Error(`Reporte debe respetar filtros de fecha. Actual=${JSON.stringify(filtrado.data)}`);
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testVentasPorDiaDevuelveClaves() {
@@ -18563,17 +18593,22 @@ async function testResumenAjustesPendientes() {
 }
 
 async function testTiendaIngredientesVisibles() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
-      const stockInicial = (await getProduct(baseUrl, adminToken, 11)).stock;
+      const categoriaId = await crearCategoria(baseUrl, adminToken, "Tienda Ingredientes");
+      const productoId = await crearProducto(baseUrl, adminToken, {
+        nombre: "Producto Tienda Ingredientes",
+        categoria: "Tienda Ingredientes",
+        categoria_id: categoriaId,
+        precio_venta: 100,
+        stock: 80,
+        maneja_stock: true
+      });
+      const stockInicial = (await getProduct(baseUrl, adminToken, productoId)).stock;
 
-      // Admin agrega ingredientes visibles al producto 11 (precio_venta=100)
+      // Admin agrega ingredientes visibles al producto fresh (precio_venta=100)
       const { response: rIng1, data: dIng1 } = await requestJson(
-        baseUrl, "POST", "/productos/11/ingredientes-visibles",
+        baseUrl, "POST", `/productos/${productoId}/ingredientes-visibles`,
         { nombre: "Cebolla", incluido_por_defecto: true, permite_quitar: true, permite_extra: false, precio_extra: 0, orden: 1 },
         adminToken
       );
@@ -18581,7 +18616,7 @@ async function testTiendaIngredientesVisibles() {
       const ingCebollaId = dIng1.id;
 
       const { response: rIng2, data: dIng2 } = await requestJson(
-        baseUrl, "POST", "/productos/11/ingredientes-visibles",
+        baseUrl, "POST", `/productos/${productoId}/ingredientes-visibles`,
         { nombre: "Queso extra", incluido_por_defecto: false, permite_quitar: false, permite_extra: true, precio_extra: 250, orden: 2 },
         adminToken
       );
@@ -18591,12 +18626,12 @@ async function testTiendaIngredientesVisibles() {
       // GET /tienda/publica/productos muestra tiene_ingredientes_visibles=true
       const { data: prodData } = await requestJson(baseUrl, "GET", "/tienda/publica/productos");
       const todosProds = Array.isArray(prodData) ? prodData : (prodData.productos || []);
-      const prod = todosProds.find(p => p.id === 11);
-      if (!prod) throw new Error("Producto 11 no encontrado en tienda publica");
+      const prod = todosProds.find(p => p.id === productoId);
+      if (!prod) throw new Error("Producto fresh no encontrado en tienda publica");
       if (!prod.tiene_ingredientes_visibles) throw new Error("tiene_ingredientes_visibles debe ser true");
 
       // GET /tienda/publica/productos/:id/ingredientes devuelve lista
-      const { response: rIngsPublic, data: ingsPublic } = await requestJson(baseUrl, "GET", "/tienda/publica/productos/11/ingredientes");
+      const { response: rIngsPublic, data: ingsPublic } = await requestJson(baseUrl, "GET", `/tienda/publica/productos/${productoId}/ingredientes`);
       if (!rIngsPublic.ok) throw new Error(`Error al cargar ingredientes publicos: ${rIngsPublic.status}`);
       if (!Array.isArray(ingsPublic) || ingsPublic.length !== 2) throw new Error(`Ingredientes publicos debe tener 2, actual=${ingsPublic.length}`);
       const cebolla = ingsPublic.find(i => i.id === ingCebollaId);
@@ -18605,7 +18640,7 @@ async function testTiendaIngredientesVisibles() {
       // Pedido con quitar ingrediente → precio sin cambio (quitar no suma)
       const { response: rPed1, data: dPed1 } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
         cliente_nombre: "Test Quitar",
-        items: [{ producto_id: 11, cantidad: 1, modificadores: [], ingredientes: [{ ingrediente_id: ingCebollaId, tipo: "quitar" }] }]
+        items: [{ producto_id: productoId, cantidad: 1, modificadores: [], ingredientes: [{ ingrediente_id: ingCebollaId, tipo: "quitar" }] }]
       });
       if (!rPed1.ok) throw new Error(`Pedido con quitar fallo: ${dPed1?.message}`);
       if (Math.abs(dPed1.total_estimado - 100) > 0.01) throw new Error(`total con quitar debe ser 100, actual=${dPed1.total_estimado}`);
@@ -18624,7 +18659,7 @@ async function testTiendaIngredientesVisibles() {
       // Pedido con extra ingrediente con precio → precio bakeado desde DB (no confiar en frontend)
       const { response: rPed2, data: dPed2 } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
         cliente_nombre: "Test Extra",
-        items: [{ producto_id: 11, cantidad: 2, modificadores: [], ingredientes: [{ ingrediente_id: ingQuesoId, tipo: "extra" }] }]
+        items: [{ producto_id: productoId, cantidad: 2, modificadores: [], ingredientes: [{ ingrediente_id: ingQuesoId, tipo: "extra" }] }]
       });
       if (!rPed2.ok) throw new Error(`Pedido con extra fallo: ${dPed2?.message}`);
       const totalEsperado = Number(((100 + 250) * 2).toFixed(2));
@@ -18641,45 +18676,45 @@ async function testTiendaIngredientesVisibles() {
       // ingrediente_id inválido → 400
       const { response: rInvalid } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
         cliente_nombre: "Test Invalid",
-        items: [{ producto_id: 11, cantidad: 1, modificadores: [], ingredientes: [{ ingrediente_id: 99999, tipo: "extra" }] }]
+        items: [{ producto_id: productoId, cantidad: 1, modificadores: [], ingredientes: [{ ingrediente_id: 99999, tipo: "extra" }] }]
       });
       if (rInvalid.status !== 400) throw new Error(`Ingrediente inválido debe dar 400, actual=${rInvalid.status}`);
 
       // tipo quitar en ingrediente que no permite_quitar → 400
       const { response: rNoPermite } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
         cliente_nombre: "Test No Permite",
-        items: [{ producto_id: 11, cantidad: 1, modificadores: [], ingredientes: [{ ingrediente_id: ingQuesoId, tipo: "quitar" }] }]
+        items: [{ producto_id: productoId, cantidad: 1, modificadores: [], ingredientes: [{ ingrediente_id: ingQuesoId, tipo: "quitar" }] }]
       });
       if (rNoPermite.status !== 400) throw new Error(`Quitar en no-permite_quitar debe dar 400, actual=${rNoPermite.status}`);
 
       // tipo extra en ingrediente que no permite_extra → 400
       const { response: rNoExtra } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
         cliente_nombre: "Test No Extra",
-        items: [{ producto_id: 11, cantidad: 1, modificadores: [], ingredientes: [{ ingrediente_id: ingCebollaId, tipo: "extra" }] }]
+        items: [{ producto_id: productoId, cantidad: 1, modificadores: [], ingredientes: [{ ingrediente_id: ingCebollaId, tipo: "extra" }] }]
       });
       if (rNoExtra.status !== 400) throw new Error(`Extra en no-permite_extra debe dar 400, actual=${rNoExtra.status}`);
 
       // tipo inválido → 400
       const { response: rTipoInvalido } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", {
         cliente_nombre: "Test Tipo",
-        items: [{ producto_id: 11, cantidad: 1, modificadores: [], ingredientes: [{ ingrediente_id: ingCebollaId, tipo: "invalido" }] }]
+        items: [{ producto_id: productoId, cantidad: 1, modificadores: [], ingredientes: [{ ingrediente_id: ingCebollaId, tipo: "invalido" }] }]
       });
       if (rTipoInvalido.status !== 400) throw new Error(`tipo inválido debe dar 400, actual=${rTipoInvalido.status}`);
 
       // Stock no cambia por pedidos tienda (solo ventas descuentan stock)
-      const stockTras = (await getProduct(baseUrl, adminToken, 11)).stock;
+      const stockTras = (await getProduct(baseUrl, adminToken, productoId)).stock;
       if (stockTras !== stockInicial) throw new Error(`Stock no debe cambiar por pedidos tienda: ${stockTras} vs ${stockInicial}`);
 
       // Admin CRUD: GET con todos=1 muestra ambos
       const { response: rListaAdmin, data: listaAdmin } = await requestJson(
-        baseUrl, "GET", "/productos/11/ingredientes-visibles?todos=1", null, adminToken
+        baseUrl, "GET", `/productos/${productoId}/ingredientes-visibles?todos=1`, null, adminToken
       );
       if (!rListaAdmin.ok) throw new Error(`Error al listar ingredientes admin: ${rListaAdmin.status}`);
       if (!Array.isArray(listaAdmin) || listaAdmin.length !== 2) throw new Error(`Lista admin debe tener 2, actual=${listaAdmin.length}`);
 
       // Admin CRUD: PUT actualiza ingrediente
       const { response: rUpdate, data: dUpdate } = await requestJson(
-        baseUrl, "PUT", `/productos/11/ingredientes-visibles/${ingCebollaId}`,
+        baseUrl, "PUT", `/productos/${productoId}/ingredientes-visibles/${ingCebollaId}`,
         { nombre: "Cebolla actualizada", incluido_por_defecto: true, permite_quitar: true, permite_extra: false, precio_extra: 0, orden: 1, activo: true },
         adminToken
       );
@@ -18688,15 +18723,15 @@ async function testTiendaIngredientesVisibles() {
 
       // Admin CRUD: DELETE (soft) — elimina cebolla
       const { response: rDel } = await requestJson(
-        baseUrl, "DELETE", `/productos/11/ingredientes-visibles/${ingCebollaId}`, null, adminToken
+        baseUrl, "DELETE", `/productos/${productoId}/ingredientes-visibles/${ingCebollaId}`, null, adminToken
       );
       if (!rDel.ok) throw new Error(`Error al eliminar ingrediente: ${rDel.status}`);
 
       // Después de eliminar: GET sin todos → 1 (queso activo)
-      const { data: listaTras } = await requestJson(baseUrl, "GET", "/productos/11/ingredientes-visibles", null, adminToken);
+      const { data: listaTras } = await requestJson(baseUrl, "GET", `/productos/${productoId}/ingredientes-visibles`, null, adminToken);
       if (!Array.isArray(listaTras) || listaTras.length !== 1) throw new Error(`Lista tras eliminar debe tener 1, actual=${listaTras?.length}`);
       // Con todos=1 → 2 (uno inactivo)
-      const { data: listaTodosTras } = await requestJson(baseUrl, "GET", "/productos/11/ingredientes-visibles?todos=1", null, adminToken);
+      const { data: listaTodosTras } = await requestJson(baseUrl, "GET", `/productos/${productoId}/ingredientes-visibles?todos=1`, null, adminToken);
       if (!Array.isArray(listaTodosTras) || listaTodosTras.length !== 2) throw new Error(`Lista todos tras eliminar debe tener 2, actual=${listaTodosTras?.length}`);
       const cebollaElim = listaTodosTras.find(i => i.id === ingCebollaId);
       if (!cebollaElim || cebollaElim.activo) throw new Error("Cebolla debe estar inactiva tras DELETE");
@@ -18704,12 +18739,9 @@ async function testTiendaIngredientesVisibles() {
       // Con cebolla inactiva, tiene_ingredientes_visibles sigue true (queso activo)
       const { data: prodData2 } = await requestJson(baseUrl, "GET", "/tienda/publica/productos");
       const todosProds2 = Array.isArray(prodData2) ? prodData2 : (prodData2.productos || []);
-      const prod2 = todosProds2.find(p => p.id === 11);
+      const prod2 = todosProds2.find(p => p.id === productoId);
       if (!prod2.tiene_ingredientes_visibles) throw new Error("tiene_ingredientes_visibles debe seguir true con queso activo");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testTiendaConvertirVenta() {
@@ -18905,11 +18937,7 @@ async function testCompuestosLegacyEndpointSDManejaStock0() {
 async function testBatchLegacyLimitadoAManeja0RendimientoMayor1() {
   // compuesto + maneja_stock=1 + rendimiento>1 = semielaborado con stock propio, NO batch legacy
   // compuesto + maneja_stock=0 + rendimiento>1 = batch legacy (calcula por componentes * rendimiento)
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       const catId = await crearCategoria(baseUrl, token, "TEST BatchLegacy");
       const ingId = await crearProducto(baseUrl, token, {
@@ -18933,10 +18961,7 @@ async function testBatchLegacyLimitadoAManeja0RendimientoMayor1() {
       assertEqual(batchData.stock, 0, "Batch legacy: receta maneja_stock=0 stock debe ser 0");
       // 100 stock / 2 por batch = 50 batches * rendimiento 5 = 250
       assertEqual(batchData.stock_disponible, 250, "Batch legacy: receta maneja_stock=0 stock_disponible debe ser 250 (100/2*5)");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testProduccionExcluyeCombos() {
@@ -19105,14 +19130,8 @@ function setConfigCC(params) {
 }
 
 async function testSuspensionAutomaticaPorMora() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, [
-      ...resetOperationalDataStatements(),
-      ...setConfigCC({ cuentas_desactivar_por_vencimiento: false, cuentas_dias_vencimiento: 30 })
-    ]);
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await prepareDb(dbPath, setConfigCC({ cuentas_desactivar_por_vencimiento: false, cuentas_dias_vencimiento: 30 }));
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
       const suf = Date.now();
@@ -19165,22 +19184,13 @@ async function testSuspensionAutomaticaPorMora() {
         }, token);
         if (!r5.ok) throw new Error(`Test5: cobro de cliente suspendido debe ser posible, dio ${r5.status}`);
       }
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testHerenciaReglasGeneralVsPersonalizada() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    // Config global: limite activo = 100
-    await prepareDb(dbPath, [
-      ...resetOperationalDataStatements(),
-      ...setConfigCC({ cuentas_limite_global_activo: true, cuentas_limite_global_monto: 100, cuentas_dias_vencimiento: 30 })
-    ]);
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      // Config global: limite activo = 100
+      await prepareDb(dbPath, setConfigCC({ cuentas_limite_global_activo: true, cuentas_limite_global_monto: 100, cuentas_dias_vencimiento: 30 }));
       const token = await login(baseUrl, "admin", "admin123");
       await requestJson(baseUrl, "POST", "/usuarios", {
         nombre: "Colab Herencia", usuario: "colab_herencia",
@@ -19250,10 +19260,7 @@ async function testHerenciaReglasGeneralVsPersonalizada() {
         total: 50, concepto: "Test req auth general colab", autorizar_excedido: false
       }, colabToken);
       if (!r5.ok) throw new Error(`Test5: usa_reglas_personalizadas=0 requiere_autorizacion propio ignorado, colab debe OK, dio ${r5.status}`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testUsaReglasPersonalizadas() {
@@ -19572,10 +19579,13 @@ async function testGuardarComponentesDuplicadosSumaYDedup() {
 }
 
 async function testConsolidacionComponentesDuplicadosExistentes() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  // HIGIENE-5F: requiere DOS lifecycles de servidor reales contra el MISMO dbPath (crear via API,
+  // apagar, ensuciar con SQL directo, volver a levantar para disparar la consolidacion de
+  // startup) -- no reducible a un unico withFreshTestDb. Se usa bootstrapFreshTestDb() +
+  // withServer(dbPath, fn) directamente, mismo patron ya usado en Carril A (MT-1C.2B.1) para
+  // escenarios que necesitan mas de un arranque de servidor sobre la misma DB.
+  const dbPath = bootstrapFreshTestDb();
   try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
     let compId, ingId;
     // Fase 1: crear producto via API
     await withServer(dbPath, async (baseUrl) => {
