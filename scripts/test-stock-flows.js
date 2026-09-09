@@ -1511,12 +1511,7 @@ async function testAjustesPendientesAprobacionYRechazo() {
 }
 
 async function testReconciliarAjustesPendientesStock() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const adminToken = await login(baseUrl, "admin", "admin123");
       await requestJson(baseUrl, "POST", "/usuarios", {
         nombre: "Colaborador Reconciliar",
@@ -1537,33 +1532,41 @@ async function testReconciliarAjustesPendientesStock() {
 
       const colaboradorToken = await login(baseUrl, "colaborador_reconciliar", "colaborador123");
       const ajenoToken = await login(baseUrl, "colaborador_ajeno", "colaborador123");
+      const categoriaId = await crearCategoria(baseUrl, adminToken, "TEST Ajustes Reconciliar");
+      const productoId = await crearProducto(baseUrl, adminToken, {
+        nombre: "TEST Producto Ajustes Reconciliar",
+        categoria: "TEST Ajustes Reconciliar",
+        categoria_id: categoriaId,
+        stock: 80,
+        maneja_stock: true
+      });
 
       const pendiente = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "ingreso",
         cantidad: 1,
         motivo: "TEST reconciliar pendiente"
       });
       const aprobado = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "ingreso",
         cantidad: 2,
         motivo: "TEST reconciliar aprobado"
       });
       const corregido = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "ingreso",
         cantidad: 3,
         motivo: "TEST reconciliar corregido"
       });
       const rechazado = await crearAjustePendienteStock(baseUrl, colaboradorToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "ingreso",
         cantidad: 4,
         motivo: "TEST reconciliar rechazado"
       });
       const ajeno = await crearAjustePendienteStock(baseUrl, ajenoToken, {
-        producto_id: 11,
+        producto_id: productoId,
         tipo_movimiento: "ingreso",
         cantidad: 5,
         motivo: "TEST reconciliar ajeno"
@@ -1600,10 +1603,7 @@ async function testReconciliarAjustesPendientesStock() {
       const localesPendientes = locales.filter((ajuste) => String(ajuste.estado) === "pendiente");
       assertEqual(localesPendientes.length, 1, "Frontend debe conservar solo pendientes al filtrar la respuesta reconciliada");
       assertEqual(localesPendientes[0].id, pendiente.id, "Frontend debe conservar el ID pendiente correcto");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testResolverAjustePendienteConVenta() {
@@ -2669,14 +2669,19 @@ async function testVentaNormalAnuladaNoBloqueaRepeticionDuplicada() {
 }
 
 async function testVentaNormalConRecargoDuplicadoUsaSubtotalComercial() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await configurarClaveAutorizacionTest(dbPath);
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const categoriaNombre = `TEST Recargo Duplicado ${Date.now()}`;
+      const categoriaId = await crearCategoria(baseUrl, token, categoriaNombre);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: "TEST recargo duplicado subtotal",
+        categoria: categoriaNombre,
+        categoria_id: categoriaId,
+        stock: 20,
+        precio_venta: 100
+      });
       await requestJson(baseUrl, "POST", "/tipos_pago", {
         codigo: "credito_dup_recargo_test",
         nombre: "Credito duplicado recargo TEST",
@@ -2690,7 +2695,13 @@ async function testVentaNormalConRecargoDuplicadoUsaSubtotalComercial() {
       });
       const payload = ventaSimplePayload({
         tipo_cobro: "credito_dup_recargo_test",
-        cuenta_cobro_id: cuentaCredito.id
+        cuenta_cobro_id: cuentaCredito.id,
+        items: [{
+          producto_id: productoId,
+          nombre_producto: "TEST recargo duplicado subtotal",
+          cantidad: 2,
+          precio_unitario: 100
+        }]
       });
 
       const venta = await requestJson(baseUrl, "POST", "/ventas", payload, token);
@@ -2713,10 +2724,7 @@ async function testVentaNormalConRecargoDuplicadoUsaSubtotalComercial() {
         throw new Error(`Venta normal con recargo anulada no debe bloquear repeticion. Mensaje=${repetida.data?.message || "sin mensaje"}`);
       }
       if (!repetida.response.ok) throw new Error(`Venta normal con recargo repetida fallo: ${repetida.data?.message || repetida.response.status}`);
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCuentaCorrienteAnuladaNoBloqueaDuplicado() {
@@ -5905,19 +5913,7 @@ async function testCompraItemsRecepcionesF3D2Helper() {
 }
 
 async function testCompraItemsRecepcionesF3D2Schema() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await withServer(dbPath, async () => {
-      await prepareDb(dbPath, [
-        ["DELETE FROM compra_recepcion_items"],
-        ["DELETE FROM compra_recepciones"],
-        ["DELETE FROM compra_items"],
-        ["DELETE FROM compra_comprobante_iva"],
-        ["DELETE FROM compra_comprobantes"],
-        ["DELETE FROM compras"]
-      ]);
-
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       assertColumnasIncluidas(await allSql(dbPath, "PRAGMA table_info(compra_items)"), [
         "id", "compra_id", "producto_id", "descripcion_snapshot", "cantidad_comprada",
         "unidad_snapshot", "costo_unitario", "subtotal", "afecta_stock",
@@ -6005,26 +6001,11 @@ async function testCompraItemsRecepcionesF3D2Schema() {
       assertApprox(productoDespues.costo_economico, productoAntes.costo_economico, "F3D-2 no modifica costo_economico");
       assertApprox(productoDespues.precio_venta, productoAntes.precio_venta, "F3D-2 no modifica precio_venta");
       assertEqual(movimientosDespues, movimientosAntes, "F3D-2 no genera movimientos_stock");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testCompraRecepcionOperativaF3D3() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      await prepareDb(dbPath, [
-        ["DELETE FROM compra_recepcion_items"],
-        ["DELETE FROM compra_recepciones"],
-        ["DELETE FROM compra_items"],
-        ["DELETE FROM compra_comprobante_iva"],
-        ["DELETE FROM compra_comprobantes"],
-        ["DELETE FROM compras"]
-      ]);
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       const proveedor = await crearProveedor(baseUrl, token, {
         nombre: `Proveedor F3D3 ${Date.now()}`,
@@ -6276,8 +6257,6 @@ async function testCompraRecepcionOperativaF3D3() {
       assertApprox(productoDespues.costo_economico, productoAntes.costo_economico, "F3D3 no modifica productos.costo_economico");
       assertApprox(productoDespues.precio_venta, productoAntes.precio_venta, "F3D3 no modifica productos.precio_venta");
       assertApprox(proveedorPrecioAntes.precio_compra, 12, "F3D3 fixture conserva baseline proveedor");
-      // F3D-4bis: la recepcion es NUEVA (creada via este endpoint, sin el parche historico) y
-      // ya no debe tocar producto_proveedores.precio_compra -- se mantiene igual al baseline.
       assertApprox(proveedorPrecioDespues.precio_compra, 12, "F3D4bis recepcion nueva NO actualiza producto_proveedores.precio_compra");
 
       const pagosDespues = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM pagos WHERE compra_id = ?", [compraId]))[0].total;
@@ -6288,10 +6267,7 @@ async function testCompraRecepcionOperativaF3D3() {
       assertApprox(cajaDespues.resumen.total_pagos_general, cajaAntes.resumen.total_pagos_general, "F3D3 recepcion no mueve caja");
       const ivaDespues = (await allSql(dbPath, "SELECT iva_total FROM compra_comprobantes WHERE compra_id = ?", [compraId]))[0].iva_total;
       assertApprox(ivaDespues, ivaAntes, "F3D3 recepcion no modifica IVA documental");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 // F3D-4bis: las recepciones NUEVAS ya no actualizan producto_proveedores.precio_compra
@@ -6301,20 +6277,7 @@ async function testCompraRecepcionOperativaF3D3() {
 // y el snapshot correspondiente) el estado que una recepcion habria dejado con el mecanismo
 // F3D-4 original, y confirma que la reversa al anular sigue funcionando identico.
 async function testCompraRecepcionReversaCostoReferencialF3D4() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
-      await prepareDb(dbPath, [
-        ["DELETE FROM compra_recepcion_items"],
-        ["DELETE FROM compra_recepciones"],
-        ["DELETE FROM compra_items"],
-        ["DELETE FROM compra_comprobante_iva"],
-        ["DELETE FROM compra_comprobantes"],
-        ["DELETE FROM compras"],
-        ["DELETE FROM producto_proveedores"]
-      ]);
+  await withFreshTestDb(async (baseUrl, dbPath) => {
       const token = await login(baseUrl, "admin", "admin123");
       const proveedor = await crearProveedor(baseUrl, token, {
         nombre: `Proveedor F3D4 ${Date.now()}`,
@@ -6611,10 +6574,7 @@ async function testCompraRecepcionReversaCostoReferencialF3D4() {
       assertApprox(cajaDespues.resumen.total_pagos_general, cajaAntes.resumen.total_pagos_general, "F3D4 anular recepcion no mueve caja");
       const ivaDespues = (await allSql(dbPath, "SELECT iva_total FROM compra_comprobantes WHERE compra_id = ?", [compraId]))[0].iva_total;
       assertApprox(ivaDespues, ivaAntes, "F3D4 anular recepcion no modifica IVA documental");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 // F3D-4bis (M/N): confirma con el flujo HTTP real que una recepcion NUEVA mueve stock pero
@@ -13186,13 +13146,25 @@ async function testTiposPagoRecargosYCuotasCrud() {
 }
 
 async function testVentasAplicanRecargosMetodosPago() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await configurarClaveAutorizacionTest(dbPath);
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const categoriaNombre = `TEST Recargos Metodos ${Date.now()}`;
+      const categoriaId = await crearCategoria(baseUrl, token, categoriaNombre);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: "TEST recargos venta metodo pago",
+        categoria: categoriaNombre,
+        categoria_id: categoriaId,
+        stock: 80,
+        precio_venta: 100
+      });
+      const itemVenta = {
+        producto_id: productoId,
+        nombre_producto: "TEST recargos venta metodo pago",
+        cantidad: 2,
+        precio_unitario: 100
+      };
 
       await requestJson(baseUrl, "POST", "/tipos_pago", {
         codigo: "credito_general_test",
@@ -13210,14 +13182,18 @@ async function testVentasAplicanRecargosMetodosPago() {
         tipo_pago_codigo: "credito_general_test"
       });
 
-      const efectivo = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({ tipo_cobro: "efectivo" }), token);
+      const efectivo = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "efectivo",
+        items: [itemVenta]
+      }), token);
       if (!efectivo.response.ok) throw new Error(`Venta efectivo sin recargo fallo: ${efectivo.data?.message || efectivo.response.status}`);
       assertApprox(efectivo.data.total, 200, "Venta efectivo sin recargo conserva total");
 
       await esperarNuevoSegundo();
       const debito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "debito",
-        cuenta_cobro_id: cuentaDebito.id
+        cuenta_cobro_id: cuentaDebito.id,
+        items: [itemVenta]
       }), token);
       if (!debito.response.ok) throw new Error(`Venta debito sin recargo fallo: ${debito.data?.message || debito.response.status}`);
       assertApprox(debito.data.total, 200, "Venta debito sin recargo conserva total");
@@ -13227,7 +13203,8 @@ async function testVentasAplicanRecargosMetodosPago() {
         tipo_cobro: "credito_general_test",
         cuenta_cobro_id: cuentaCredito.id,
         recargo_porcentaje: 99,
-        recargo_monto: 999
+        recargo_monto: 999,
+        items: [itemVenta]
       }), token);
       if (!credito.response.ok) throw new Error(`Venta credito con recargo fallo: ${credito.data?.message || credito.response.status}`);
       assertApprox(credito.data.subtotal, 200, "Venta credito debe informar subtotal base");
@@ -13243,21 +13220,29 @@ async function testVentasAplicanRecargosMetodosPago() {
         authorization_code: "1234"
       }, token);
       if (!anulacion.response.ok) throw new Error(`Anulacion de venta con recargo fallo: ${anulacion.data?.message || anulacion.response.status}`);
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 76, "Anulacion de venta con recargo debe reponer stock sin romper caja");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+      assertEqual((await getProduct(baseUrl, token, productoId)).stock, 76, "Anulacion de venta con recargo debe reponer stock sin romper caja");
+  });
 }
 
 async function testRecargoPersistenteEnVentas() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 0);
+      const categoriaNombre = `TEST Recargo Persistente ${Date.now()}`;
+      const categoriaId = await crearCategoria(baseUrl, token, categoriaNombre);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: "TEST recargo persistente ventas",
+        categoria: categoriaNombre,
+        categoria_id: categoriaId,
+        stock: 20,
+        precio_venta: 100
+      });
+      const itemVenta = {
+        producto_id: productoId,
+        nombre_producto: "TEST recargo persistente ventas",
+        cantidad: 2,
+        precio_unitario: 100
+      };
 
       await requestJson(baseUrl, "POST", "/tipos_pago", {
         codigo: "credito_persist_test",
@@ -13272,7 +13257,10 @@ async function testRecargoPersistenteEnVentas() {
       });
 
       // Test 1: venta efectivo sin recargo guarda 0/0
-      const ventaEfectivo = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({ tipo_cobro: "efectivo" }), token);
+      const ventaEfectivo = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
+        tipo_cobro: "efectivo",
+        items: [itemVenta]
+      }), token);
       if (!ventaEfectivo.response.ok) throw new Error(`Venta efectivo persist fallo: ${ventaEfectivo.data?.message}`);
       const detalleEfectivo = await getVentaDetalle(baseUrl, token, ventaEfectivo.data.venta_id);
       assertApprox(detalleEfectivo.venta.recargo_porcentaje, 0, "persist: venta efectivo guarda recargo_porcentaje=0");
@@ -13283,7 +13271,8 @@ async function testRecargoPersistenteEnVentas() {
       await delay(1100);
       const ventaCredito = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "credito_persist_test",
-        cuenta_cobro_id: cuentaCredito.id
+        cuenta_cobro_id: cuentaCredito.id,
+        items: [itemVenta]
       }), token);
       if (!ventaCredito.response.ok) throw new Error(`Venta credito persist fallo: ${ventaCredito.data?.message}`);
       const detalleCredito = await getVentaDetalle(baseUrl, token, ventaCredito.data.venta_id);
@@ -13294,7 +13283,8 @@ async function testRecargoPersistenteEnVentas() {
       // Test 3: pendiente se crea sin recargo
       const pendiente = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo: "pendiente",
-        identificador_pendiente: "Mesa persist TEST"
+        identificador_pendiente: "Mesa persist TEST",
+        items: [itemVenta]
       }), token);
       if (!pendiente.response.ok) throw new Error(`Pendiente persist fallo: ${pendiente.data?.message}`);
       const detallePend = await getVentaDetalle(baseUrl, token, pendiente.data.venta_id);
@@ -13313,20 +13303,28 @@ async function testRecargoPersistenteEnVentas() {
 
       // Test 5: recargo no se duplica — total es subtotal + recargo una sola vez
       assertApprox(detalleCobrado.venta.total, 200 + detalleCobrado.venta.recargo_monto, "persist: total = subtotal + recargo_monto sin duplicar");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testVentasCuotasYPendientesNoDuplicanRecargo() {
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl) => {
       const token = await login(baseUrl, "admin", "admin123");
       await abrirCaja(baseUrl, token, 1000);
+      const categoriaNombre = `TEST Recargo Cuotas ${Date.now()}`;
+      const categoriaId = await crearCategoria(baseUrl, token, categoriaNombre);
+      const productoId = await crearProducto(baseUrl, token, {
+        nombre: "TEST recargo cuotas pendientes",
+        categoria: categoriaNombre,
+        categoria_id: categoriaId,
+        stock: 80,
+        precio_venta: 100
+      });
+      const itemVenta = {
+        producto_id: productoId,
+        nombre_producto: "TEST recargo cuotas pendientes",
+        cantidad: 2,
+        precio_unitario: 100
+      };
 
       await requestJson(baseUrl, "POST", "/tipos_pago", {
         codigo: "credito_cuotas_test",
@@ -13359,7 +13357,8 @@ async function testVentasCuotasYPendientesNoDuplicanRecargo() {
       const ventaCuotas = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "credito_cuotas_test",
         cuenta_cobro_id: cuentaCreditoCuotas.id,
-        cuotas: 3
+        cuotas: 3,
+        items: [itemVenta]
       }), token);
       if (!ventaCuotas.response.ok) throw new Error(`Venta credito cuotas fallo: ${ventaCuotas.data?.message || ventaCuotas.response.status}`);
       assertApprox(ventaCuotas.data.recargo_monto, 20, "Venta credito con cuotas debe aplicar recargo de la cuota");
@@ -13369,7 +13368,8 @@ async function testVentasCuotasYPendientesNoDuplicanRecargo() {
       const ventaSinCuotas = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo_cobro: "credito_sin_cuotas_test",
         cuenta_cobro_id: cuentaCreditoSinCuotas.id,
-        cuotas: 6
+        cuotas: 6,
+        items: [itemVenta]
       }), token);
       if (!ventaSinCuotas.response.ok) throw new Error(`Venta tipo sin cuotas fallo: ${ventaSinCuotas.data?.message || ventaSinCuotas.response.status}`);
       assertApprox(ventaSinCuotas.data.recargo_monto, 14, "Tipo sin cuotas debe ignorar cuotas enviadas y usar recargo general");
@@ -13378,7 +13378,8 @@ async function testVentasCuotasYPendientesNoDuplicanRecargo() {
       const pendiente = await requestJson(baseUrl, "POST", "/ventas", ventaSimplePayload({
         tipo: "pendiente",
         identificador_pendiente: "Mesa recargo TEST",
-        tipo_cobro: undefined
+        tipo_cobro: undefined,
+        items: [itemVenta]
       }), token);
       if (!pendiente.response.ok) throw new Error(`Pendiente con recargo fallo: ${pendiente.data?.message || pendiente.response.status}`);
       assertApprox(pendiente.data.total, 200, "Pendiente debe guardarse sin recargo hasta cobrar");
@@ -13393,11 +13394,8 @@ async function testVentasCuotasYPendientesNoDuplicanRecargo() {
       const detallePendiente = await getVentaDetalle(baseUrl, token, pendiente.data.venta_id);
       assertApprox(detallePendiente.venta.total, 220, "Cobrar pendiente con cuotas aplica recargo una sola vez");
       assertApprox(detallePendiente.venta.monto_debito, 220, "Cobrar pendiente con cuotas registra monto final");
-      assertEqual((await getProduct(baseUrl, token, 11)).stock, 74, "Cobrar pendiente con recargo no descuenta stock nuevamente");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+      assertEqual((await getProduct(baseUrl, token, productoId)).stock, 74, "Cobrar pendiente con recargo no descuenta stock nuevamente");
+  });
 }
 
 async function testTipoPagoDesactiva() {
@@ -18112,11 +18110,8 @@ async function testModificadorQuitarCantidadSuperiorBaseCapea() {
 
 async function testModificadorQuitarAnulacionReponeExacto() {
   // receta=30, quitar=15 → venta neto -15; anulación debe reponer exactamente +15
-  const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
-  try {
-    await prepareDb(dbPath, resetOperationalDataStatements());
-    await withServer(dbPath, async (baseUrl) => {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+      await configurarClaveAutorizacionTest(dbPath);
       const token = await login(baseUrl, "admin", "admin123");
       const { componenteId, compuestoId, modId } = await setupQuitarTest(dbPath, baseUrl, token, 30, 15);
       const stockInicial = (await getProduct(baseUrl, token, componenteId)).stock;
@@ -18132,10 +18127,7 @@ async function testModificadorQuitarAnulacionReponeExacto() {
 
       const stockFinal = (await getProduct(baseUrl, token, componenteId)).stock;
       assertEqual(stockFinal, stockInicial, "Anulación de venta con quitar debe reponer exactamente lo descontado");
-    });
-  } finally {
-    fs.rmSync(dbPath, { force: true });
-  }
+  });
 }
 
 async function testModificadorQuitarPendienteDescuentaMenos() {
