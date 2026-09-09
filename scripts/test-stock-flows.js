@@ -10387,10 +10387,67 @@ function normalizarEol(texto) {
 }
 
 function ccfExtraerFuncion(html, nombre) {
-  const inicio = html.indexOf(`function ${nombre}(`);
+  const texto = normalizarEol(html);
+  const inicio = texto.indexOf(`function ${nombre}(`);
   if (inicio === -1) throw new Error(`F3E2-ajuste: no se encontro ${nombre} en pagos.html`);
-  const fin = html.indexOf("\n    }\n", inicio) + 6;
-  return html.slice(inicio, fin);
+  const llaveInicial = texto.indexOf("{", inicio);
+  if (llaveInicial === -1) throw new Error(`F3E2-ajuste: no se encontro el cuerpo de ${nombre} en pagos.html`);
+
+  let profundidad = 0;
+  let estado = "code";
+  let templateExprDepth = 0;
+  for (let i = llaveInicial; i < texto.length; i++) {
+    const ch = texto[i];
+    const next = texto[i + 1];
+    const prev = texto[i - 1];
+
+    if (estado === "line-comment") {
+      if (ch === "\n") estado = "code";
+      continue;
+    }
+    if (estado === "block-comment") {
+      if (ch === "*" && next === "/") { estado = "code"; i++; }
+      continue;
+    }
+    if (estado === "single" || estado === "double") {
+      if (ch === "\\" && next) { i++; continue; }
+      if ((estado === "single" && ch === "'") || (estado === "double" && ch === '"')) estado = "code";
+      continue;
+    }
+    if (estado === "template") {
+      if (ch === "\\" && next) { i++; continue; }
+      if (ch === "`") { estado = "code"; continue; }
+      if (ch === "$" && next === "{") { estado = "template-expr"; templateExprDepth = 1; i++; continue; }
+      continue;
+    }
+    if (estado === "template-expr") {
+      if (ch === "\\" && next) { i++; continue; }
+      if (ch === "'" && prev !== "\\") { estado = "single"; continue; }
+      if (ch === '"' && prev !== "\\") { estado = "double"; continue; }
+      if (ch === "`" && prev !== "\\") { estado = "template"; continue; }
+      if (ch === "/" && next === "/") { estado = "line-comment"; i++; continue; }
+      if (ch === "/" && next === "*") { estado = "block-comment"; i++; continue; }
+      if (ch === "{") templateExprDepth++;
+      if (ch === "}") {
+        templateExprDepth--;
+        if (templateExprDepth === 0) estado = "template";
+      }
+      continue;
+    }
+
+    if (ch === "/" && next === "/") { estado = "line-comment"; i++; continue; }
+    if (ch === "/" && next === "*") { estado = "block-comment"; i++; continue; }
+    if (ch === "'") { estado = "single"; continue; }
+    if (ch === '"') { estado = "double"; continue; }
+    if (ch === "`") { estado = "template"; continue; }
+    if (ch === "{") profundidad++;
+    if (ch === "}") {
+      profundidad--;
+      if (profundidad === 0) return texto.slice(inicio, i + 1);
+    }
+  }
+
+  throw new Error(`F3E2-ajuste: no se pudo extraer ${nombre} por llaves balanceadas`);
 }
 
 async function testBootstrapDbTemporalDesdeCeroHigiene2B() {
