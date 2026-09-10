@@ -48,6 +48,7 @@ const { resolverIdentidadCentralPorLocal, abrirControlDbSoloLectura, revalidarSe
 const { resolverTenantDbRegistrado } = require("../backend/tenantDbRegistry");
 const { verificarTenantDbIdentity } = require("../backend/tenantDbIdentity");
 const { autenticarCredencialCentral } = require("../backend/centralAuthSecurity");
+const { provisionarTenantIdentity, TENANT_IDENTITY_SCHEMA_SQL } = require("../database/provision-tenant-identity");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -20452,6 +20453,13 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1D1BIdentitySchemaRechazaSlugNoCanonico);
   await _run(testMT1D1BIdentityMalformedDbDevuelveInvalid);
   await _run(testMT1D1BRegistryIdentityDobleGarantia);
+  await _run(testMT1D2ASchemaMissingCreaTablaYSembraExacto);
+  await _run(testMT1D2AIdentityExactaEsIdempotente);
+  await _run(testMT1D2AIdMismatchFallaSinOverwrite);
+  await _run(testMT1D2ASlugMismatchFallaSinOverwrite);
+  await _run(testMT1D2ARegistryPathMismatchFallaAntesDeEscribir);
+  await _run(testMT1D2AEmpresaInexistenteFalla);
+  await _run(testMT1D2AEmpresaInactivaPermiteProvisioning);
   await _run(testBootstrapDbTemporalDesdeCeroHigiene2B);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
@@ -25575,5 +25583,254 @@ async function testMT1D1BRegistryIdentityDobleGarantia() {
     if (controlDbPathB) fs.rmSync(controlDbPathB, { force: true });
     fs.rmSync(businessPathA, { force: true });
     fs.rmSync(businessPathB, { force: true });
+  }
+}
+
+// MT-1D.2A: tests del provisioner explicito de tenant_identity (database/provision-tenant-identity.js).
+// Cubren P1-P8 del contrato certificado en MTF1. Nunca tocan database/guernica.db ni
+// database/atlas_control.db reales -- control DB siempre en tempDbPath() (os.tmpdir()), business
+// DB siempre un archivo unico creado/limpiado dentro del propio test bajo el path que
+// resolveEmpresaDbPath resuelve (la unica autoridad de canonicalizacion, no reimplementada aca).
+async function testMT1D2ASchemaMissingCreaTablaYSembraExacto() {
+  const slug = `mt1d2a-schema-${Date.now()}`;
+  const businessName = `mt1d2a-schema-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D2A Schema Missing",
+      dbPath: businessName
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    await runSql(businessPath, "SELECT 1");
+    const tablasAntes = await allSql(businessPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='tenant_identity'");
+    assertEqual(tablasAntes.length, 0, "fixture debe iniciar sin tabla tenant_identity");
+
+    const resultado = await provisionarTenantIdentity({
+      controlDbPath,
+      empresaSlug: slug,
+      businessDbPath: businessPath
+    });
+
+    assertSame(resultado.status, "PROVISIONED", "schema missing debe resultar en PROVISIONED");
+    assertEqual(resultado.empresaId, fixture.empresa.id, "empresaId debe ser exacto");
+    assertSame(resultado.empresaSlug, slug, "empresaSlug debe ser exacto");
+
+    const filas = await allSql(businessPath, "SELECT id, empresa_control_id, tenant_slug FROM tenant_identity");
+    assertEqual(filas.length, 1, "debe sembrar exactamente una fila");
+    assertEqual(filas[0].id, 1, "id debe ser singleton 1");
+    assertEqual(filas[0].empresa_control_id, fixture.empresa.id, "empresa_control_id debe coincidir");
+    assertSame(filas[0].tenant_slug, slug, "tenant_slug debe coincidir");
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(businessPath, { force: true });
+  }
+}
+
+async function testMT1D2AIdentityExactaEsIdempotente() {
+  const slug = `mt1d2a-exacta-${Date.now()}`;
+  const businessName = `mt1d2a-exacta-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D2A Exacta",
+      dbPath: businessName
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    await runSql(businessPath, TENANT_IDENTITY_SCHEMA_SQL);
+    await insertarTenantIdentityTest(businessPath, fixture.empresa.id, slug);
+
+    const resultado = await provisionarTenantIdentity({
+      controlDbPath,
+      empresaSlug: slug,
+      businessDbPath: businessPath
+    });
+
+    assertSame(resultado.status, "ALREADY_PROVISIONED", "identity exacta debe ser idempotente");
+
+    const filas = await allSql(businessPath, "SELECT id, empresa_control_id, tenant_slug FROM tenant_identity");
+    assertEqual(filas.length, 1, "no debe duplicar filas");
+    assertEqual(filas[0].empresa_control_id, fixture.empresa.id, "empresa_control_id no debe cambiar");
+    assertSame(filas[0].tenant_slug, slug, "tenant_slug no debe cambiar");
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(businessPath, { force: true });
+  }
+}
+
+async function testMT1D2AIdMismatchFallaSinOverwrite() {
+  const slug = `mt1d2a-idmis-${Date.now()}`;
+  const businessName = `mt1d2a-idmis-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D2A Id Mismatch",
+      dbPath: businessName
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    await runSql(businessPath, TENANT_IDENTITY_SCHEMA_SQL);
+    const idExistente = fixture.empresa.id + 1000;
+    await insertarTenantIdentityTest(businessPath, idExistente, slug);
+
+    let error = null;
+    try {
+      await provisionarTenantIdentity({
+        controlDbPath,
+        empresaSlug: slug,
+        businessDbPath: businessPath
+      });
+    } catch (err) {
+      error = err;
+    }
+    assertSame(Boolean(error), true, "id mismatch debe fallar");
+    assertSame(error.code, "TENANT_IDENTITY_MISMATCH", "debe clasificar como TENANT_IDENTITY_MISMATCH");
+
+    const filas = await allSql(businessPath, "SELECT id, empresa_control_id, tenant_slug FROM tenant_identity");
+    assertEqual(filas.length, 1, "fila existente debe conservarse intacta");
+    assertEqual(filas[0].empresa_control_id, idExistente, "empresa_control_id no debe sobrescribirse");
+    assertSame(filas[0].tenant_slug, slug, "tenant_slug no debe modificarse");
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(businessPath, { force: true });
+  }
+}
+
+async function testMT1D2ASlugMismatchFallaSinOverwrite() {
+  const slug = `mt1d2a-slugmis-${Date.now()}`;
+  const slugExistente = `${slug}-otro`;
+  const businessName = `mt1d2a-slugmis-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D2A Slug Mismatch",
+      dbPath: businessName
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    await runSql(businessPath, TENANT_IDENTITY_SCHEMA_SQL);
+    await insertarTenantIdentityTest(businessPath, fixture.empresa.id, slugExistente);
+
+    let error = null;
+    try {
+      await provisionarTenantIdentity({
+        controlDbPath,
+        empresaSlug: slug,
+        businessDbPath: businessPath
+      });
+    } catch (err) {
+      error = err;
+    }
+    assertSame(Boolean(error), true, "slug mismatch debe fallar");
+    assertSame(error.code, "TENANT_IDENTITY_MISMATCH", "debe clasificar como TENANT_IDENTITY_MISMATCH");
+
+    const filas = await allSql(businessPath, "SELECT id, empresa_control_id, tenant_slug FROM tenant_identity");
+    assertEqual(filas.length, 1, "fila existente debe conservarse intacta");
+    assertEqual(filas[0].empresa_control_id, fixture.empresa.id, "empresa_control_id no debe modificarse");
+    assertSame(filas[0].tenant_slug, slugExistente, "tenant_slug no debe sobrescribirse");
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(businessPath, { force: true });
+  }
+}
+
+async function testMT1D2ARegistryPathMismatchFallaAntesDeEscribir() {
+  const slug = `mt1d2a-pathmis-${Date.now()}`;
+  const registeredName = `mt1d2a-pathmis-registrada-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessDbPath = tempDbPath();
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D2A Path Mismatch",
+      dbPath: registeredName
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    let error = null;
+    try {
+      await provisionarTenantIdentity({
+        controlDbPath,
+        empresaSlug: slug,
+        businessDbPath
+      });
+    } catch (err) {
+      error = err;
+    }
+    assertSame(Boolean(error), true, "path distinto al registry debe fallar");
+    assertSame(error.code, "BUSINESS_DB_PATH_MISMATCH", "debe clasificar como BUSINESS_DB_PATH_MISMATCH");
+    assertSame(fs.existsSync(businessDbPath), false, "no debe crearse ningun archivo en el path no coincidente");
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(businessDbPath, { force: true });
+  }
+}
+
+async function testMT1D2AEmpresaInexistenteFalla() {
+  const slug = `mt1d2a-noexiste-${Date.now()}`;
+  const businessDbPath = tempDbPath();
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    await closeControlDb(controlDb);
+
+    let error = null;
+    try {
+      await provisionarTenantIdentity({
+        controlDbPath,
+        empresaSlug: slug,
+        businessDbPath
+      });
+    } catch (err) {
+      error = err;
+    }
+    assertSame(Boolean(error), true, "empresa inexistente debe fallar");
+    assertSame(error.code, "EMPRESA_NOT_FOUND", "debe clasificar como EMPRESA_NOT_FOUND");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(businessDbPath, { force: true });
+  }
+}
+
+async function testMT1D2AEmpresaInactivaPermiteProvisioning() {
+  const slug = `mt1d2a-inactiva-${Date.now()}`;
+  const businessName = `mt1d2a-inactiva-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D2A Inactiva",
+      dbPath: businessName,
+      activa: 0
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    await runSql(businessPath, "SELECT 1");
+
+    const resultado = await provisionarTenantIdentity({
+      controlDbPath,
+      empresaSlug: slug,
+      businessDbPath: businessPath
+    });
+
+    assertSame(resultado.status, "PROVISIONED", "empresa inactiva debe permitir provisioning (P7)");
+
+    const filas = await allSql(businessPath, "SELECT id, empresa_control_id, tenant_slug FROM tenant_identity");
+    assertEqual(filas.length, 1, "debe sembrar la identidad aunque la empresa este inactiva");
+    assertEqual(filas[0].empresa_control_id, fixture.empresa.id, "empresa_control_id debe coincidir");
+    assertSame(filas[0].tenant_slug, slug, "tenant_slug debe coincidir");
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(businessPath, { force: true });
   }
 }
