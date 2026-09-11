@@ -508,6 +508,21 @@ function cerrarDb(db) {
   });
 }
 
+// MT-1E2C2A: evaluacion pura sobre una conexion YA ABIERTA por el caller. No abre, no cierra,
+// no inicia transaccion, no escribe -- deja la conexion exactamente como la recibio, usable
+// despues de retornar. Es la MISMA logica (evaluarTablasYColumnas/evaluarIndices/evaluarDatos/
+// evaluarDefaults sobre LEGACY_BASELINE_INVARIANTS) que ejecutarVerificacion ya corria entre su
+// open y su close; se extrae para que MT-1E2C2B pueda invocarla dentro de un BEGIN IMMEDIATE
+// sobre la misma business DB connection, sin abrir una segunda conexion como autoridad final.
+async function verificarLegacyBaselineEnConexion(db) {
+  const failures = [];
+  await evaluarTablasYColumnas(db, failures);
+  await evaluarIndices(db, failures);
+  await evaluarDatos(db, failures);
+  await evaluarDefaults(db, failures);
+  return { ready: failures.length === 0, failures };
+}
+
 async function ejecutarVerificacion(dbPath) {
   if (!fs.existsSync(dbPath)) {
     return {
@@ -543,12 +558,7 @@ async function ejecutarVerificacion(dbPath) {
   }
 
   try {
-    const failures = [];
-    await evaluarTablasYColumnas(db, failures);
-    await evaluarIndices(db, failures);
-    await evaluarDatos(db, failures);
-    await evaluarDefaults(db, failures);
-    return { ready: failures.length === 0, failures };
+    return await verificarLegacyBaselineEnConexion(db);
   } finally {
     await cerrarDb(db);
   }
@@ -565,5 +575,6 @@ function verificarLegacyBaseline(dbPath) {
 
 module.exports = {
   LEGACY_BASELINE_INVARIANTS,
-  verificarLegacyBaseline
+  verificarLegacyBaseline,
+  verificarLegacyBaselineEnConexion
 };

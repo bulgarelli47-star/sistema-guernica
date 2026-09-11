@@ -188,6 +188,40 @@ async function tablaEsCompatible(db) {
   return true;
 }
 
+// MT-1E2C2A: evaluacion pura sobre una conexion YA ABIERTA por el caller. No abre, no cierra, no
+// escribe -- deja la conexion usable despues de retornar. Es la MISMA logica (deteccion de tabla
+// metadata, tablaEsCompatible, lectura de history ORDER BY sequence ASC, clasificarHistorialMigraciones)
+// que verificarBusinessSchemaVersion ya corria entre su open y su close; se extrae para que
+// MT-1E2C2B pueda invocarla dentro de un BEGIN IMMEDIATE sobre la misma business DB connection.
+// DB_ERROR es un estado de TARGET (archivo/conexion), no aplica aqui: cualquier fallo de query
+// sobre una conexion ya validada como SQLite se propaga tal cual (el caller within-transaction
+// decide como tratarlo).
+async function verificarBusinessSchemaVersionEnConexion(db) {
+  const expectedMigrationId = ultimoIdCatalogo(BUSINESS_SCHEMA_MIGRATIONS);
+
+  const tablaRow = await getQuery(
+    db,
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    [MIGRATIONS_TABLE]
+  );
+
+  if (!tablaRow) {
+    return { state: "UNVERSIONED", currentMigrationId: null, expectedMigrationId };
+  }
+
+  const compatible = await tablaEsCompatible(db);
+  if (!compatible) {
+    return { state: "INVALID_HISTORY", currentMigrationId: null, expectedMigrationId };
+  }
+
+  const rows = await allQuery(
+    db,
+    `SELECT sequence, migration_id FROM ${MIGRATIONS_TABLE} ORDER BY sequence ASC`
+  );
+
+  return clasificarHistorialMigraciones(rows, BUSINESS_SCHEMA_MIGRATIONS);
+}
+
 // Punto de entrada unico y READONLY. dbPath es obligatorio y explicito -- nunca GUERNICA_DB_PATH,
 // nunca ATLAS_EMPRESA_SLUG/ATLAS_AUTH_MODE, nunca un default a database/guernica.db. Abre
 // exclusivamente sqlite3.OPEN_READONLY (jamas OPEN_CREATE): un dbPath inexistente falla ANTES de
@@ -212,49 +246,29 @@ async function verificarBusinessSchemaVersion(dbPath) {
   }
 
   try {
-    let tablaRow;
-    try {
-      tablaRow = await getQuery(
-        db,
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-        [MIGRATIONS_TABLE]
-      );
-    } catch (error) {
-      return { state: "DB_ERROR", currentMigrationId: null, expectedMigrationId };
-    }
-
-    if (!tablaRow) {
-      return { state: "UNVERSIONED", currentMigrationId: null, expectedMigrationId };
-    }
-
-    let compatible;
-    try {
-      compatible = await tablaEsCompatible(db);
-    } catch (error) {
-      return { state: "DB_ERROR", currentMigrationId: null, expectedMigrationId };
-    }
-    if (!compatible) {
-      return { state: "INVALID_HISTORY", currentMigrationId: null, expectedMigrationId };
-    }
-
-    let rows;
-    try {
-      rows = await allQuery(
-        db,
-        `SELECT sequence, migration_id FROM ${MIGRATIONS_TABLE} ORDER BY sequence ASC`
-      );
-    } catch (error) {
-      return { state: "DB_ERROR", currentMigrationId: null, expectedMigrationId };
-    }
-
-    return clasificarHistorialMigraciones(rows, BUSINESS_SCHEMA_MIGRATIONS);
+    return await verificarBusinessSchemaVersionEnConexion(db);
+  } catch (error) {
+    return { state: "DB_ERROR", currentMigrationId: null, expectedMigrationId };
   } finally {
     await cerrarDb(db);
   }
 }
 
+// MT-1E2C2A: puro, sin I/O. clasificarHistorialMigraciones ya valida posicion-por-posicion contra
+// BUSINESS_SCHEMA_MIGRATIONS ANTES de resolver CURRENT/BEHIND/AHEAD (limiteConocido cubre siempre
+// la posicion 0 cuando appliedHistory.length >= 1), y BUSINESS_SCHEMA_MIGRATIONS[0] es siempre
+// "001_legacy_runtime_baseline". Por lo tanto, alcanzar cualquiera de esos tres estados YA certifica
+// que sequence=1/migration_id="001_legacy_runtime_baseline" esta presente -- sin re-inspeccionar
+// el history. Valido para cualquier crecimiento futuro del catalogo mientras su primera entrada
+// no cambie.
+function baselinePresent(state) {
+  return state === "CURRENT" || state === "BEHIND" || state === "AHEAD";
+}
+
 module.exports = {
   BUSINESS_SCHEMA_MIGRATIONS,
   clasificarHistorialMigraciones,
-  verificarBusinessSchemaVersion
+  verificarBusinessSchemaVersion,
+  verificarBusinessSchemaVersionEnConexion,
+  baselinePresent
 };

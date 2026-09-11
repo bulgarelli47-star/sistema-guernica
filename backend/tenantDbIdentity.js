@@ -29,22 +29,17 @@ function abrirBusinessDbSoloLectura(dbPath) {
   });
 }
 
-async function verificarTenantDbIdentity({ dbPath, empresaId, empresaSlug } = {}) {
+// MT-1E2C2A: evaluacion pura sobre una conexion YA ABIERTA por el caller. No abre, no cierra, no
+// escribe -- deja la conexion usable despues de retornar. Reutiliza exactamente normalizarId/
+// esIdentityValida y los mismos 4 resultados de error (missing/invalid/mismatch/query error) mas
+// el exito, para que MT-1E2C2B pueda invocarla dentro de un BEGIN IMMEDIATE sobre la misma
+// business DB connection. empresaId/empresaSlug ya deben venir normalizados por el caller (el
+// wrapper path-based sigue siendo quien valida argumentos crudos).
+async function verificarTenantDbIdentityEnConexion(db, { empresaId, empresaSlug } = {}) {
   const id = normalizarId(empresaId);
   const slug = String(empresaSlug || "").trim();
-  if (typeof dbPath !== "string" || !dbPath.trim() || !id || !slug) {
+  if (!id || !slug) {
     return resultadoError("TENANT_DB_IDENTITY_ARGUMENTOS_INVALIDOS", "verificarTenantDbIdentity: argumentos invalidos");
-  }
-
-  if (!fs.existsSync(dbPath)) {
-    return resultadoError("TENANT_DB_AUSENTE", `Business DB no encontrada: ${dbPath}`);
-  }
-
-  let db;
-  try {
-    db = await abrirBusinessDbSoloLectura(dbPath);
-  } catch (error) {
-    return resultadoError("TENANT_DB_INACCESIBLE", error.message);
   }
 
   try {
@@ -75,11 +70,35 @@ async function verificarTenantDbIdentity({ dbPath, empresaId, empresaSlug } = {}
     return { ok: true, identity };
   } catch (error) {
     return resultadoError("TENANT_DB_IDENTITY_QUERY_ERROR", error.message);
+  }
+}
+
+async function verificarTenantDbIdentity({ dbPath, empresaId, empresaSlug } = {}) {
+  const id = normalizarId(empresaId);
+  const slug = String(empresaSlug || "").trim();
+  if (typeof dbPath !== "string" || !dbPath.trim() || !id || !slug) {
+    return resultadoError("TENANT_DB_IDENTITY_ARGUMENTOS_INVALIDOS", "verificarTenantDbIdentity: argumentos invalidos");
+  }
+
+  if (!fs.existsSync(dbPath)) {
+    return resultadoError("TENANT_DB_AUSENTE", `Business DB no encontrada: ${dbPath}`);
+  }
+
+  let db;
+  try {
+    db = await abrirBusinessDbSoloLectura(dbPath);
+  } catch (error) {
+    return resultadoError("TENANT_DB_INACCESIBLE", error.message);
+  }
+
+  try {
+    return await verificarTenantDbIdentityEnConexion(db, { empresaId: id, empresaSlug: slug });
   } finally {
     await closeDb(db);
   }
 }
 
 module.exports = {
-  verificarTenantDbIdentity
+  verificarTenantDbIdentity,
+  verificarTenantDbIdentityEnConexion
 };

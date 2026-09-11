@@ -47,18 +47,21 @@ const userControlBridge = require("../backend/userControlBridge");
 const { reconcileShadowUsers } = require("../database/reconcile-shadow-users");
 const { resolverIdentidadCentralPorLocal, abrirControlDbSoloLectura, revalidarSesionCentral } = require("../backend/centralAuthResolver");
 const { resolverTenantDbRegistrado } = require("../backend/tenantDbRegistry");
-const { verificarTenantDbIdentity } = require("../backend/tenantDbIdentity");
+const { verificarTenantDbIdentity, verificarTenantDbIdentityEnConexion } = require("../backend/tenantDbIdentity");
 const { autenticarCredencialCentral } = require("../backend/centralAuthSecurity");
 const { provisionarTenantIdentity, TENANT_IDENTITY_SCHEMA_SQL } = require("../database/provision-tenant-identity");
 const { parseTenantHost } = require("../backend/tenantHostContext");
 const {
   BUSINESS_SCHEMA_MIGRATIONS,
   clasificarHistorialMigraciones,
-  verificarBusinessSchemaVersion
+  verificarBusinessSchemaVersion,
+  verificarBusinessSchemaVersionEnConexion,
+  baselinePresent
 } = require("../backend/businessSchemaVersion");
 const {
   LEGACY_BASELINE_INVARIANTS,
-  verificarLegacyBaseline
+  verificarLegacyBaseline,
+  verificarLegacyBaselineEnConexion
 } = require("../backend/legacyBaselineVerifier");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -20554,6 +20557,9 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1E2C1MultipleFailuresReported);
   await _run(testMT1E2C1DbTargetFailures);
   await _run(testMT1E2C1ModuleSinSideEffects);
+  await _run(testMT1E2C2ALegacyVerifierEnConexion);
+  await _run(testMT1E2C2ASchemaVersionEnConexion);
+  await _run(testMT1E2C2ATenantIdentityEnConexion);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -26980,5 +26986,217 @@ async function testMT1E2C1ModuleSinSideEffects() {
     assertEqual(fs.existsSync(fakeBusinessDb), false, "require de legacyBaselineVerifier no debe crear la fake business DB");
   } finally {
     fs.rmSync(fakeBusinessDb, { force: true });
+  }
+}
+
+// MT-1E2C2A: helpers locales para tests que abren una conexion SQLite explicita y la mantienen
+// viva a lo largo de varias operaciones (a diferencia de runSql/allSql, que abren y cierran por
+// cada llamada) -- necesarios para probar los helpers *EnConexion sobre la MISMA conexion.
+function abrirConexionTestReadOnly(dbPath) {
+  return new Promise((resolve, reject) => {
+    const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY, (error) => {
+      if (error) reject(error);
+      else resolve(db);
+    });
+  });
+}
+
+function cerrarConexionTest(db) {
+  return new Promise((resolve, reject) => {
+    db.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+function selectUnoSobreConexion(db) {
+  return new Promise((resolve, reject) => {
+    db.get("SELECT 1 AS uno", (error, row) => {
+      if (error) reject(error);
+      else resolve(row);
+    });
+  });
+}
+
+async function testMT1E2C2ALegacyVerifierEnConexion() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  try {
+    const antes = fs.readFileSync(dbPath);
+
+    const resultadoPath = await verificarLegacyBaseline(dbPath);
+
+    const db = await abrirConexionTestReadOnly(dbPath);
+    const resultadoConexion = await verificarLegacyBaselineEnConexion(db);
+
+    assertSame(resultadoConexion.ready, resultadoPath.ready, "EnConexion y path API deben resolver el mismo ready");
+    assertEqual(
+      resultadoConexion.failures.length,
+      resultadoPath.failures.length,
+      "EnConexion y path API deben resolver la misma cantidad de failures"
+    );
+    assertSame(resultadoConexion.ready, true, "fixture lista debe resolver ready=true");
+    assertEqual(
+      resultadoConexion.failures.length,
+      0,
+      `fixture lista no debe tener failures: ${JSON.stringify(resultadoConexion.failures)}`
+    );
+
+    const sanity = await selectUnoSobreConexion(db);
+    assertEqual(sanity.uno, 1, "la conexion debe seguir usable despues del helper EnConexion");
+
+    await cerrarConexionTest(db);
+
+    const despues = fs.readFileSync(dbPath);
+    assertSame(Buffer.compare(antes, despues), 0, "el helper EnConexion no debe modificar la business DB");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+  }
+}
+
+async function testMT1E2C2ASchemaVersionEnConexion() {
+  const dbPath = tempDbPath();
+  try {
+    await runSql(
+      dbPath,
+      `CREATE TABLE atlas_schema_migrations (
+        sequence INTEGER NOT NULL UNIQUE CHECK(sequence >= 1),
+        migration_id TEXT PRIMARY KEY NOT NULL,
+        applied_at TEXT NOT NULL
+      )`
+    );
+    await runSql(
+      dbPath,
+      "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (1, '001_legacy_runtime_baseline', datetime('now'))"
+    );
+
+    const resultadoPath = await verificarBusinessSchemaVersion(dbPath);
+
+    const db = await abrirConexionTestReadOnly(dbPath);
+    const resultadoConexion = await verificarBusinessSchemaVersionEnConexion(db);
+
+    assertSame(resultadoConexion.state, resultadoPath.state, "EnConexion y path API deben resolver el mismo state");
+    assertSame(
+      resultadoConexion.currentMigrationId,
+      resultadoPath.currentMigrationId,
+      "EnConexion y path API deben resolver el mismo currentMigrationId"
+    );
+    assertSame(resultadoConexion.state, "CURRENT", "fixture certificada debe resolver CURRENT");
+    assertSame(resultadoConexion.currentMigrationId, "001_legacy_runtime_baseline", "currentMigrationId debe ser el baseline real");
+
+    const sanity = await selectUnoSobreConexion(db);
+    assertEqual(sanity.uno, 1, "la conexion debe seguir usable despues del helper EnConexion");
+
+    await cerrarConexionTest(db);
+
+    assertSame(baselinePresent("UNVERSIONED"), false, "baselinePresent(UNVERSIONED) debe ser false");
+    assertSame(baselinePresent("INVALID_HISTORY"), false, "baselinePresent(INVALID_HISTORY) debe ser false");
+    assertSame(baselinePresent("DB_NOT_FOUND"), false, "baselinePresent(DB_NOT_FOUND) debe ser false");
+    assertSame(baselinePresent("DB_ERROR"), false, "baselinePresent(DB_ERROR) debe ser false");
+    assertSame(baselinePresent("CURRENT"), true, "baselinePresent(CURRENT) debe ser true");
+    assertSame(baselinePresent("BEHIND"), true, "baselinePresent(BEHIND) debe ser true");
+    assertSame(baselinePresent("AHEAD"), true, "baselinePresent(AHEAD) debe ser true");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E2C2ATenantIdentityEnConexion() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await insertarTenantIdentityTest(dbPath, 123, "tenant-a");
+
+    const resultadoPath = await verificarTenantDbIdentity({ dbPath, empresaId: 123, empresaSlug: "tenant-a" });
+
+    const db = await abrirConexionTestReadOnly(dbPath);
+    const resultadoConexion = await verificarTenantDbIdentityEnConexion(db, { empresaId: 123, empresaSlug: "tenant-a" });
+
+    assertSame(resultadoConexion.ok, resultadoPath.ok, "EnConexion y path API deben resolver el mismo ok");
+    assertSame(resultadoConexion.ok, true, "identity exacta debe resolver ok=true");
+    assertSame(resultadoConexion.identity.empresaId, resultadoPath.identity.empresaId, "identity.empresaId debe coincidir");
+    assertSame(resultadoConexion.identity.slug, resultadoPath.identity.slug, "identity.slug debe coincidir");
+
+    const sanity = await selectUnoSobreConexion(db);
+    assertEqual(sanity.uno, 1, "la conexion debe seguir usable despues del helper EnConexion");
+
+    const mismatchConexion = await verificarTenantDbIdentityEnConexion(db, { empresaId: 999, empresaSlug: "tenant-a" });
+    const mismatchPath = await verificarTenantDbIdentity({ dbPath, empresaId: 999, empresaSlug: "tenant-a" });
+    assertSame(mismatchConexion.ok, false, "mismatch debe resolver ok=false");
+    assertSame(
+      mismatchConexion.errorCode,
+      mismatchPath.errorCode,
+      "EnConexion y path API deben resolver el mismo errorCode ante mismatch"
+    );
+    assertSame(mismatchConexion.errorCode, "TENANT_DB_IDENTITY_MISMATCH", "mismatch debe tener el codigo esperado");
+
+    // Subcases A/B/D: argumentos invalidos deben rechazarse ANTES de tocar SQLite. Se usa un fake
+    // db (nunca la conexion real) instrumentado con un contador de `get` para probarlo.
+    let getCallCount = 0;
+    const fakeDbSinQuery = {
+      get: (...args) => {
+        getCallCount += 1;
+        const callback = args[args.length - 1];
+        callback(null, undefined);
+      }
+    };
+
+    const resultadoEmpresaIdInvalido = await verificarTenantDbIdentityEnConexion(fakeDbSinQuery, {
+      empresaId: "x",
+      empresaSlug: "tenant-a"
+    });
+    assertSame(resultadoEmpresaIdInvalido.ok, false, "subcase A: empresaId invalido debe resolver ok=false");
+    assertSame(
+      resultadoEmpresaIdInvalido.errorCode,
+      "TENANT_DB_IDENTITY_ARGUMENTOS_INVALIDOS",
+      "subcase A: code esperado para empresaId invalido"
+    );
+
+    const resultadoSlugEnBlanco = await verificarTenantDbIdentityEnConexion(fakeDbSinQuery, {
+      empresaId: 123,
+      empresaSlug: "   "
+    });
+    assertSame(resultadoSlugEnBlanco.ok, false, "subcase B: empresaSlug en blanco debe resolver ok=false");
+    assertSame(
+      resultadoSlugEnBlanco.errorCode,
+      "TENANT_DB_IDENTITY_ARGUMENTOS_INVALIDOS",
+      "subcase B: code esperado para empresaSlug en blanco"
+    );
+
+    for (const empresaIdInvalido of [null, 0]) {
+      const resultado = await verificarTenantDbIdentityEnConexion(fakeDbSinQuery, {
+        empresaId: empresaIdInvalido,
+        empresaSlug: "tenant-a"
+      });
+      assertSame(resultado.ok, false, `subcase A: empresaId=${JSON.stringify(empresaIdInvalido)} debe resolver ok=false`);
+      assertSame(
+        resultado.errorCode,
+        "TENANT_DB_IDENTITY_ARGUMENTOS_INVALIDOS",
+        `subcase A: code esperado para empresaId=${JSON.stringify(empresaIdInvalido)}`
+      );
+    }
+
+    assertEqual(getCallCount, 0, "subcase D: ningun argumento invalido debe haber consultado SQLite");
+
+    // Subcase C: normalizacion -- empresaId string numerico + slug con whitespace exterior deben
+    // producir el MISMO resultado exacto que los valores ya normalizados (misma conexion real).
+    const resultadoNormalizado = await verificarTenantDbIdentityEnConexion(db, {
+      empresaId: "123",
+      empresaSlug: " tenant-a "
+    });
+    assertSame(resultadoNormalizado.ok, true, "subcase C: normalizacion debe resolver ok=true");
+    assertSame(
+      resultadoNormalizado.identity.empresaId,
+      resultadoConexion.identity.empresaId,
+      "subcase C: empresaId debe coincidir tras normalizar"
+    );
+    assertSame(
+      resultadoNormalizado.identity.slug,
+      resultadoConexion.identity.slug,
+      "subcase C: slug debe coincidir tras normalizar"
+    );
+
+    await cerrarConexionTest(db);
+  } finally {
+    fs.rmSync(dbPath, { force: true });
   }
 }
