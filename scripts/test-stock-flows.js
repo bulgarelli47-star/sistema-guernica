@@ -51,6 +51,11 @@ const { verificarTenantDbIdentity } = require("../backend/tenantDbIdentity");
 const { autenticarCredencialCentral } = require("../backend/centralAuthSecurity");
 const { provisionarTenantIdentity, TENANT_IDENTITY_SCHEMA_SQL } = require("../database/provision-tenant-identity");
 const { parseTenantHost } = require("../backend/tenantHostContext");
+const {
+  BUSINESS_SCHEMA_MIGRATIONS,
+  clasificarHistorialMigraciones,
+  verificarBusinessSchemaVersion
+} = require("../backend/businessSchemaVersion");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -20525,6 +20530,16 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1E1AHostLocalDevValido);
   await _run(testMT1E1AHostMalformadoRechazado);
   await _run(testMT1E1ALegacySinCambioPorHostParser);
+  await _run(testMT1E2BSchemaClassifierCurrent);
+  await _run(testMT1E2BSchemaClassifierBehind);
+  await _run(testMT1E2BSchemaClassifierAhead);
+  await _run(testMT1E2BSchemaClassifierInvalidHistory);
+  await _run(testMT1E2BSchemaVerifierUnversioned);
+  await _run(testMT1E2BSchemaVerifierCurrent);
+  await _run(testMT1E2BSchemaVerifierInvalidTable);
+  await _run(testMT1E2BSchemaVerifierDbFailures);
+  await _run(testMT1E2BSchemaVerifierRequiereDbPathExplicito);
+  await _run(testMT1E2BSchemaVersionModuleSinSideEffects);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -26372,5 +26387,196 @@ async function testMT1E1ALegacySinCambioPorHostParser() {
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// ==================================================================================
+// MT-1E2B (GAP-1): Schema Migration Catalog + Read-Only State Verifier. Deliberadamente SIN
+// integracion con backend/server.js, backend/db.js, database/init-db.js, tenant attach,
+// connection registry ni tenant identity -- este slice no migra, no crea schema, no escribe
+// metadata, no adopta ningun baseline. Solo interpreta el estado de una business DB explicita.
+// ==================================================================================
+
+async function testMT1E2BSchemaClassifierCurrent() {
+  const catalogo = ["001", "002"];
+  const historial = [
+    { sequence: 1, migration_id: "001" },
+    { sequence: 2, migration_id: "002" }
+  ];
+  const resultado = clasificarHistorialMigraciones(historial, catalogo);
+  assertSame(JSON.stringify(resultado), JSON.stringify({ state: "CURRENT", currentMigrationId: "002", expectedMigrationId: "002" }), "historial exacto al catalogo debe resolver CURRENT");
+}
+
+async function testMT1E2BSchemaClassifierBehind() {
+  const catalogo = ["001", "002"];
+  const historial = [{ sequence: 1, migration_id: "001" }];
+  const resultado = clasificarHistorialMigraciones(historial, catalogo);
+  assertSame(JSON.stringify(resultado), JSON.stringify({ state: "BEHIND", currentMigrationId: "001", expectedMigrationId: "002" }), "historial prefijo incompleto debe resolver BEHIND");
+}
+
+async function testMT1E2BSchemaClassifierAhead() {
+  const catalogo = ["001", "002"];
+  const historial = [
+    { sequence: 1, migration_id: "001" },
+    { sequence: 2, migration_id: "002" },
+    { sequence: 3, migration_id: "003_future" }
+  ];
+  const resultado = clasificarHistorialMigraciones(historial, catalogo);
+  assertSame(JSON.stringify(resultado), JSON.stringify({ state: "AHEAD", currentMigrationId: "003_future", expectedMigrationId: "002" }), "historial que excede el catalogo conocido debe resolver AHEAD");
+}
+
+async function testMT1E2BSchemaClassifierInvalidHistory() {
+  const catalogo = ["001", "002"];
+  const casos = [
+    { nombre: "sequence gap", historial: [{ sequence: 1, migration_id: "001" }, { sequence: 3, migration_id: "003" }] },
+    { nombre: "sequence empieza en 0", historial: [{ sequence: 0, migration_id: "001" }] },
+    { nombre: "sequence negativa", historial: [{ sequence: -1, migration_id: "001" }] },
+    { nombre: "array desordenado (sequence2 antes de sequence1)", historial: [{ sequence: 2, migration_id: "002" }, { sequence: 1, migration_id: "001" }] },
+    { nombre: "migration IDs reordenados contra catalogo", historial: [{ sequence: 1, migration_id: "002" }, { sequence: 2, migration_id: "001" }] },
+    { nombre: "unknown intercalado", historial: [{ sequence: 1, migration_id: "001" }, { sequence: 2, migration_id: "999_unknown" }, { sequence: 3, migration_id: "002" }] },
+    { nombre: "duplicate migration_id", historial: [{ sequence: 1, migration_id: "001" }, { sequence: 2, migration_id: "001" }] },
+    { nombre: "migration_id vacio", historial: [{ sequence: 1, migration_id: "" }] }
+  ];
+  for (const caso of casos) {
+    const original = JSON.stringify(caso.historial);
+    const resultado = clasificarHistorialMigraciones(caso.historial, catalogo);
+    assertSame(resultado.state, "INVALID_HISTORY", `${caso.nombre} debe resolver INVALID_HISTORY`);
+    assertEqual(resultado.currentMigrationId, null, `${caso.nombre}: currentMigrationId debe ser null`);
+    assertSame(JSON.stringify(caso.historial), original, `${caso.nombre}: el classifier no debe mutar ni ordenar appliedHistory`);
+  }
+}
+
+async function testMT1E2BSchemaVerifierUnversioned() {
+  // Subcase A: DB SQLite valida, sin la tabla en absoluto.
+  const dbPathA = tempDbPath();
+  try {
+    await runSql(dbPathA, "SELECT 1");
+    const resultadoA = await verificarBusinessSchemaVersion(dbPathA);
+    assertSame(resultadoA.state, "UNVERSIONED", "DB sin tabla atlas_schema_migrations debe resolver UNVERSIONED");
+    assertEqual(resultadoA.currentMigrationId, null, "UNVERSIONED debe tener currentMigrationId null");
+  } finally {
+    fs.rmSync(dbPathA, { force: true });
+  }
+
+  // Subcase B: tabla contractual valida pero vacia.
+  const dbPathB = tempDbPath();
+  try {
+    await runSql(dbPathB, `
+      CREATE TABLE atlas_schema_migrations (
+        sequence INTEGER NOT NULL UNIQUE CHECK(sequence >= 1),
+        migration_id TEXT PRIMARY KEY NOT NULL,
+        applied_at TEXT NOT NULL
+      )
+    `);
+    const resultadoB = await verificarBusinessSchemaVersion(dbPathB);
+    assertSame(resultadoB.state, "UNVERSIONED", "tabla contractual vacia debe resolver UNVERSIONED");
+    assertEqual(resultadoB.currentMigrationId, null, "UNVERSIONED debe tener currentMigrationId null");
+  } finally {
+    fs.rmSync(dbPathB, { force: true });
+  }
+}
+
+async function testMT1E2BSchemaVerifierCurrent() {
+  const dbPath = tempDbPath();
+  try {
+    await runSql(dbPath, `
+      CREATE TABLE atlas_schema_migrations (
+        sequence INTEGER NOT NULL UNIQUE CHECK(sequence >= 1),
+        migration_id TEXT PRIMARY KEY NOT NULL,
+        applied_at TEXT NOT NULL
+      )
+    `);
+    await runSql(
+      dbPath,
+      "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (1, '001_legacy_runtime_baseline', datetime('now'))"
+    );
+    const resultado = await verificarBusinessSchemaVersion(dbPath);
+    assertSame(resultado.state, "CURRENT", "tabla contractual con el baseline real debe resolver CURRENT");
+    assertSame(resultado.currentMigrationId, "001_legacy_runtime_baseline", "currentMigrationId debe ser el baseline real");
+    assertSame(resultado.expectedMigrationId, "001_legacy_runtime_baseline", "expectedMigrationId debe ser el baseline real");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E2BSchemaVerifierInvalidTable() {
+  const casos = [
+    { nombre: "falta sequence", sql: "CREATE TABLE atlas_schema_migrations (migration_id TEXT PRIMARY KEY NOT NULL, applied_at TEXT NOT NULL)" },
+    { nombre: "sequence no UNIQUE", sql: "CREATE TABLE atlas_schema_migrations (sequence INTEGER NOT NULL, migration_id TEXT PRIMARY KEY NOT NULL, applied_at TEXT NOT NULL)" },
+    { nombre: "migration_id no PK", sql: "CREATE TABLE atlas_schema_migrations (sequence INTEGER NOT NULL UNIQUE, migration_id TEXT NOT NULL, applied_at TEXT NOT NULL)" },
+    { nombre: "migration_id PK sin NOT NULL", sql: "CREATE TABLE atlas_schema_migrations (sequence INTEGER NOT NULL UNIQUE, migration_id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)" },
+    { nombre: "falta applied_at", sql: "CREATE TABLE atlas_schema_migrations (sequence INTEGER NOT NULL UNIQUE, migration_id TEXT PRIMARY KEY NOT NULL)" }
+  ];
+  for (const caso of casos) {
+    const dbPath = tempDbPath();
+    try {
+      await runSql(dbPath, caso.sql);
+      const resultado = await verificarBusinessSchemaVersion(dbPath);
+      assertSame(resultado.state, "INVALID_HISTORY", `${caso.nombre} debe resolver INVALID_HISTORY`);
+      assertEqual(resultado.currentMigrationId, null, `${caso.nombre}: currentMigrationId debe ser null`);
+      const tablas = await allSql(dbPath, "SELECT sql FROM sqlite_master WHERE type='table' AND name='atlas_schema_migrations'");
+      assertSame(tablas[0].sql, caso.sql, `${caso.nombre}: el verifier no debe reparar/alterar la tabla`);
+    } finally {
+      fs.rmSync(dbPath, { force: true });
+    }
+  }
+}
+
+async function testMT1E2BSchemaVerifierDbFailures() {
+  // Subcase A: path inexistente.
+  const dbPathInexistente = tempDbPath();
+  const resultadoA = await verificarBusinessSchemaVersion(dbPathInexistente);
+  assertSame(resultadoA.state, "DB_NOT_FOUND", "path inexistente debe resolver DB_NOT_FOUND");
+  assertEqual(resultadoA.currentMigrationId, null, "DB_NOT_FOUND debe tener currentMigrationId null");
+  assertEqual(fs.existsSync(dbPathInexistente), false, "DB_NOT_FOUND no debe crear el archivo");
+
+  // Subcase B: archivo existente cuyo contenido no es una DB SQLite valida.
+  const dbPathNoSqlite = tempDbPath();
+  try {
+    const contenidoOriginal = "esto no es una base de datos SQLite";
+    fs.writeFileSync(dbPathNoSqlite, contenidoOriginal, "utf8");
+    const antes = fs.readFileSync(dbPathNoSqlite);
+    const resultadoB = await verificarBusinessSchemaVersion(dbPathNoSqlite);
+    assertSame(resultadoB.state, "DB_ERROR", "archivo no-SQLite debe resolver DB_ERROR");
+    assertEqual(resultadoB.currentMigrationId, null, "DB_ERROR debe tener currentMigrationId null");
+    const despues = fs.readFileSync(dbPathNoSqlite);
+    assertSame(Buffer.compare(antes, despues), 0, "DB_ERROR no debe modificar el contenido del archivo");
+  } finally {
+    fs.rmSync(dbPathNoSqlite, { force: true });
+  }
+}
+
+async function testMT1E2BSchemaVerifierRequiereDbPathExplicito() {
+  for (const valor of [undefined, null, ""]) {
+    let lanzo = false;
+    let codigo = null;
+    try {
+      await verificarBusinessSchemaVersion(valor);
+    } catch (error) {
+      lanzo = true;
+      codigo = error.code;
+    }
+    assertEqual(lanzo, true, `dbPath=${JSON.stringify(valor)} debe lanzar error`);
+    assertSame(codigo, "INVALID_ARGUMENT", `dbPath=${JSON.stringify(valor)} debe lanzar con code INVALID_ARGUMENT`);
+  }
+}
+
+async function testMT1E2BSchemaVersionModuleSinSideEffects() {
+  const fakeBusinessDb = path.join(os.tmpdir(), `mt1e2b-fake-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+  const businessSchemaVersionPath = path.join(ROOT, "backend", "businessSchemaVersion.js");
+  try {
+    const resultado = spawnSync(
+      process.execPath,
+      ["-e", `require(${JSON.stringify(businessSchemaVersionPath)});`],
+      {
+        cwd: ROOT,
+        env: { ...process.env, GUERNICA_DB_PATH: fakeBusinessDb },
+        encoding: "utf8"
+      }
+    );
+    assertEqual(resultado.status, 0, `require aislado de businessSchemaVersion debe salir 0\n${resultado.stderr || resultado.stdout}`);
+    assertEqual(fs.existsSync(fakeBusinessDb), false, "require de businessSchemaVersion no debe crear la fake business DB");
+  } finally {
+    fs.rmSync(fakeBusinessDb, { force: true });
   }
 }
