@@ -56,6 +56,10 @@ const {
   clasificarHistorialMigraciones,
   verificarBusinessSchemaVersion
 } = require("../backend/businessSchemaVersion");
+const {
+  LEGACY_BASELINE_INVARIANTS,
+  verificarLegacyBaseline
+} = require("../backend/legacyBaselineVerifier");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -20540,6 +20544,16 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1E2BSchemaVerifierDbFailures);
   await _run(testMT1E2BSchemaVerifierRequiereDbPathExplicito);
   await _run(testMT1E2BSchemaVersionModuleSinSideEffects);
+  await _run(testMT1E2C1ReferenceReady);
+  await _run(testMT1E2C1MissingRequiredTable);
+  await _run(testMT1E2C1MissingRequiredColumn);
+  await _run(testMT1E2C1InvalidRequiredIndexContract);
+  await _run(testMT1E2C1PendingDataMigrations);
+  await _run(testMT1E2C1ComponentDuplicatesPending);
+  await _run(testMT1E2C1CanonicalDefaultsMissing);
+  await _run(testMT1E2C1MultipleFailuresReported);
+  await _run(testMT1E2C1DbTargetFailures);
+  await _run(testMT1E2C1ModuleSinSideEffects);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -26576,6 +26590,394 @@ async function testMT1E2BSchemaVersionModuleSinSideEffects() {
     );
     assertEqual(resultado.status, 0, `require aislado de businessSchemaVersion debe salir 0\n${resultado.stderr || resultado.stdout}`);
     assertEqual(fs.existsSync(fakeBusinessDb), false, "require de businessSchemaVersion no debe crear la fake business DB");
+  } finally {
+    fs.rmSync(fakeBusinessDb, { force: true });
+  }
+}
+
+// MT-1E2C1: fixture "lista" real -- init-db.js (proceso hijo) + arranque legacy real de
+// backend/server.js (via withServer, que espera readiness y despues mata el proceso). El
+// resultado es la MISMA DB que produce un boot legacy real, ya cerrada/idle, apta para abrir
+// con legacyBaselineVerifier en modo OPEN_READONLY.
+async function bootstrapReadyLegacyFixture() {
+  const dbPath = bootstrapFreshTestDb();
+  await withServer(dbPath, async () => {});
+  return dbPath;
+}
+
+function limpiarLegacyFixture(dbPath) {
+  fs.rmSync(dbPath, { force: true });
+  fs.rmSync(`${dbPath}-wal`, { force: true });
+  fs.rmSync(`${dbPath}-shm`, { force: true });
+}
+
+async function testMT1E2C1ReferenceReady() {
+  assertEqual(LEGACY_BASELINE_INVARIANTS.length, 252, "manifest debe tener exactamente 252 invariantes");
+  assertSame(Object.isFrozen(LEGACY_BASELINE_INVARIANTS), true, "manifest root debe estar frozen");
+  const ids = LEGACY_BASELINE_INVARIANTS.map((entry) => entry.id);
+  assertEqual(new Set(ids).size, ids.length, "todos los IDs del manifest deben ser unicos");
+
+  const porCategoria = {};
+  for (const entry of LEGACY_BASELINE_INVARIANTS) {
+    assertSame(Object.isFrozen(entry), true, `entry ${entry.id} debe estar frozen`);
+    for (const clave of Object.keys(entry)) {
+      const valor = entry[clave];
+      if (valor !== null && typeof valor === "object") {
+        assertSame(Object.isFrozen(valor), true, `campo ${clave} de ${entry.id} debe estar frozen`);
+      }
+    }
+    porCategoria[entry.category] = (porCategoria[entry.category] || 0) + 1;
+  }
+  assertEqual(porCategoria.SCHEMA_TABLE, 39, "SCHEMA_TABLE debe ser 39");
+  assertEqual(porCategoria.SCHEMA_COLUMN, 147, "SCHEMA_COLUMN debe ser 147");
+  assertEqual(porCategoria.SCHEMA_INDEX, 53, "SCHEMA_INDEX debe ser 53");
+  const dataTotal = (porCategoria.DATA_MIGRATION_COMPLETE || 0) + (porCategoria.DATA_NORMALIZATION_COMPLETE || 0);
+  assertEqual(dataTotal, 10, "DATA total debe ser 10");
+  assertEqual(porCategoria.REQUIRED_RUNTIME_DEFAULT, 3, "DEFAULT debe ser 3");
+
+  const indexEntries = LEGACY_BASELINE_INVARIANTS.filter((entry) => entry.category === "SCHEMA_INDEX");
+  const indexNames = new Set(indexEntries.map((entry) => entry.indexName));
+  assertEqual(indexNames.size, 53, "los 53 indexName del manifest deben ser unicos (0 manifest conflicts)");
+
+  const variantesConocidas = LEGACY_BASELINE_INVARIANTS.filter((entry) => Array.isArray(entry.acceptedPredicates));
+  assertEqual(variantesConocidas.length, 1, "KNOWN_COMPATIBLE_INDEX_VARIANTS_COUNT debe ser 1");
+  assertSame(variantesConocidas[0].indexName, "idx_clientes_dni_cuit_unique", "la unica variante conocida debe ser idx_clientes_dni_cuit_unique");
+  assertSame(Object.isFrozen(variantesConocidas[0].acceptedPredicates), true, "acceptedPredicates debe estar frozen");
+  assertSame(
+    Object.prototype.hasOwnProperty.call(variantesConocidas[0], "predicate"),
+    false,
+    "no debe coexistir predicate junto a acceptedPredicates en la misma entry"
+  );
+
+  // Intentos de mutacion: deben ser rechazados silenciosamente o lanzar TypeError, nunca alterar
+  // el snapshot final del manifest.
+  const longitudAntes = LEGACY_BASELINE_INVARIANTS.length;
+  try {
+    LEGACY_BASELINE_INVARIANTS.push({ fake: true });
+  } catch (error) {
+    // aceptado: TypeError por array frozen
+  }
+  const indiceEjemplo = LEGACY_BASELINE_INVARIANTS.find((entry) => entry.category === "SCHEMA_INDEX" && Array.isArray(entry.columns));
+  try {
+    indiceEjemplo.columns[0] = "HACKED";
+  } catch (error) {
+    // aceptado: TypeError por array frozen
+  }
+  try {
+    indiceEjemplo.resource = "HACKED";
+  } catch (error) {
+    // aceptado: TypeError por objeto frozen
+  }
+  assertEqual(LEGACY_BASELINE_INVARIANTS.length, longitudAntes, "el manifest no debe cambiar de longitud tras intentos de mutacion");
+  assertSame(indiceEjemplo.columns[0] !== "HACKED", true, "columns[0] no debe haber sido alterado");
+
+  const dbPath = await bootstrapReadyLegacyFixture();
+  try {
+    const antes = fs.readFileSync(dbPath);
+    const resultado = await verificarLegacyBaseline(dbPath);
+    const despues = fs.readFileSync(dbPath);
+    assertSame(resultado.ready, true, "fixture fresca de arranque legacy real debe resolver ready=true");
+    assertEqual(resultado.failures.length, 0, `fixture fresca no debe tener failures: ${JSON.stringify(resultado.failures)}`);
+    assertSame(Buffer.compare(antes, despues), 0, "verificarLegacyBaseline no debe modificar la business DB (READONLY)");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+  }
+}
+
+async function testMT1E2C1MissingRequiredTable() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  try {
+    await runSql(dbPath, "DROP TABLE stock_ajustes_pendientes");
+    const resultado = await verificarLegacyBaseline(dbPath);
+    assertSame(resultado.ready, false, "tabla requerida ausente debe resolver ready=false");
+    const falla = resultado.failures.find(
+      (f) => f.code === "BASELINE_TABLE_MISSING" && f.resource === "stock_ajustes_pendientes"
+    );
+    assertSame(!!falla, true, "debe reportarse BASELINE_TABLE_MISSING para stock_ajustes_pendientes");
+    assertSame(falla.category, "SCHEMA_TABLE", "categoria debe ser SCHEMA_TABLE");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+  }
+}
+
+async function testMT1E2C1MissingRequiredColumn() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  try {
+    await runSql(dbPath, "ALTER TABLE sesiones DROP COLUMN auth_mode");
+    const resultado = await verificarLegacyBaseline(dbPath);
+    assertSame(resultado.ready, false, "columna requerida ausente debe resolver ready=false");
+    const falla = resultado.failures.find(
+      (f) => f.code === "BASELINE_COLUMN_MISSING" && f.resource === "sesiones.auth_mode"
+    );
+    assertSame(!!falla, true, "debe reportarse BASELINE_COLUMN_MISSING para sesiones.auth_mode");
+    assertSame(falla.category, "SCHEMA_COLUMN", "categoria debe ser SCHEMA_COLUMN");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+  }
+}
+
+async function testMT1E2C1InvalidRequiredIndexContract() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  try {
+    // A: indice ausente por completo.
+    await runSql(dbPath, "DROP INDEX idx_ventas_cliente");
+
+    // B: mismo nombre, columnas incorrectas.
+    await runSql(dbPath, "DROP INDEX idx_caja_movimientos_caja");
+    await runSql(dbPath, "CREATE INDEX idx_caja_movimientos_caja ON caja_movimientos(id)");
+
+    // C: mismo nombre, UNIQUE incorrecto (el baseline exige NO unique).
+    await runSql(dbPath, "DROP INDEX idx_venta_cobros_venta");
+    await runSql(dbPath, "CREATE UNIQUE INDEX idx_venta_cobros_venta ON venta_cobros(venta_id)");
+
+    // D: indice parcial con predicate incorrecto.
+    await runSql(dbPath, "DROP INDEX idx_caja_arqueo_denominaciones_activa");
+    await runSql(
+      dbPath,
+      "CREATE UNIQUE INDEX idx_caja_arqueo_denominaciones_activa ON caja_arqueo_denominaciones(denominacion) WHERE activo = 0"
+    );
+
+    // E (no suma test): certifica que la variante NO-TRIM de idx_clientes_dni_cuit_unique
+    // tambien es aceptada via acceptedPredicates (la fixture fresca ya trae la variante TRIM).
+    await runSql(dbPath, "DROP INDEX idx_clientes_dni_cuit_unique");
+    await runSql(
+      dbPath,
+      "CREATE UNIQUE INDEX idx_clientes_dni_cuit_unique ON clientes(dni_cuit) WHERE dni_cuit IS NOT NULL AND dni_cuit != ''"
+    );
+
+    const resultado = await verificarLegacyBaseline(dbPath);
+    assertSame(resultado.ready, false, "fixture con contratos de indice invalidos debe resolver ready=false");
+
+    const buscarIndice = (resource) => resultado.failures.find((f) => f.category === "SCHEMA_INDEX" && f.resource === resource);
+
+    const faltanteA = buscarIndice("idx_ventas_cliente");
+    assertSame(!!faltanteA, true, "subcase A: indice ausente debe reportarse");
+    assertSame(faltanteA.code, "BASELINE_INDEX_MISSING", "subcase A: code debe ser BASELINE_INDEX_MISSING");
+
+    const mismatchB = buscarIndice("idx_caja_movimientos_caja");
+    assertSame(!!mismatchB, true, "subcase B: columnas incorrectas debe reportarse");
+    assertSame(mismatchB.code, "BASELINE_INDEX_MISMATCH", "subcase B: code debe ser BASELINE_INDEX_MISMATCH");
+
+    const mismatchC = buscarIndice("idx_venta_cobros_venta");
+    assertSame(!!mismatchC, true, "subcase C: UNIQUE incorrecto debe reportarse");
+    assertSame(mismatchC.code, "BASELINE_INDEX_MISMATCH", "subcase C: code debe ser BASELINE_INDEX_MISMATCH");
+
+    const mismatchD = buscarIndice("idx_caja_arqueo_denominaciones_activa");
+    assertSame(!!mismatchD, true, "subcase D: predicado parcial incorrecto debe reportarse");
+    assertSame(mismatchD.code, "BASELINE_INDEX_MISMATCH", "subcase D: code debe ser BASELINE_INDEX_MISMATCH");
+
+    const variantesE = buscarIndice("idx_clientes_dni_cuit_unique");
+    assertSame(variantesE, undefined, "subcase E: la variante NO-TRIM tambien debe aceptarse via acceptedPredicates");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+  }
+}
+
+async function testMT1E2C1PendingDataMigrations() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  try {
+    // Subcase A: provenance de recepcion de compra pendiente.
+    const movA = await runSql(
+      dbPath,
+      "INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, fecha, hora) VALUES (1, 'entrada', 1, 0, 1, '2026-01-01', '00:00')"
+    );
+    await runSql(
+      dbPath,
+      "INSERT INTO compra_recepcion_items (recepcion_id, compra_item_id, producto_id, cantidad_recibida, movimiento_stock_id) VALUES (1, 1, 1, 1, ?)",
+      [movA.lastID]
+    );
+
+    // Subcase B: provenance de reversa de recepcion pendiente.
+    const movB = await runSql(
+      dbPath,
+      "INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, fecha, hora) VALUES (1, 'salida', 1, 1, 0, '2026-01-01', '00:00')"
+    );
+    await runSql(
+      dbPath,
+      "INSERT INTO compra_recepcion_items (recepcion_id, compra_item_id, producto_id, cantidad_recibida, movimiento_stock_reversa_id) VALUES (1, 1, 1, 1, ?)",
+      [movB.lastID]
+    );
+
+    // Subcase C: otro backfill real -- snapshot de venta_cobros pendiente.
+    const cc = await runSql(dbPath, "INSERT INTO cuentas_cobro (nombre, tipo_pago_codigo) VALUES ('Cuenta Test MT1E2C1', 'efectivo')");
+    await runSql(
+      dbPath,
+      "INSERT INTO venta_cobros (venta_id, tipo_cobro, cuenta_cobro_id, monto) VALUES (1, 'efectivo', ?, 100)",
+      [cc.lastID]
+    );
+
+    const resultado = await verificarLegacyBaseline(dbPath);
+    assertSame(resultado.ready, false, "fixture con backfills pendientes debe resolver ready=false");
+
+    const tieneCodigo = (code) => resultado.failures.some((f) => f.code === code);
+    assertSame(
+      tieneCodigo("BASELINE_STOCK_PROVENANCE_COMPRA_PENDING"),
+      true,
+      "subcase A: provenance de compra pendiente debe reportarse"
+    );
+    assertSame(
+      tieneCodigo("BASELINE_STOCK_PROVENANCE_REVERSA_PENDING"),
+      true,
+      "subcase B: provenance de reversa pendiente debe reportarse"
+    );
+    assertSame(
+      tieneCodigo("BASELINE_VENTA_COBROS_SNAPSHOT_PENDING"),
+      true,
+      "subcase C: snapshot de venta_cobros pendiente debe reportarse"
+    );
+  } finally {
+    limpiarLegacyFixture(dbPath);
+  }
+}
+
+async function testMT1E2C1ComponentDuplicatesPending() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  try {
+    await runSql(dbPath, "INSERT INTO producto_componentes (producto_compuesto_id, producto_id, cantidad) VALUES (1, 2, 1)");
+    await runSql(dbPath, "INSERT INTO producto_componentes (producto_compuesto_id, producto_id, cantidad) VALUES (1, 2, 2)");
+
+    const resultado = await verificarLegacyBaseline(dbPath);
+    assertSame(resultado.ready, false, "duplicado real en producto_componentes debe resolver ready=false");
+    const falla = resultado.failures.find((f) => f.code === "BASELINE_COMPONENT_DUPLICATES_PENDING");
+    assertSame(!!falla, true, "debe reportarse BASELINE_COMPONENT_DUPLICATES_PENDING");
+    assertSame(falla.category, "DATA_NORMALIZATION_COMPLETE", "categoria debe ser DATA_NORMALIZATION_COMPLETE");
+    assertSame(falla.resource, "producto_componentes", "resource debe ser producto_componentes (agregado, sin IDs de fila)");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+  }
+}
+
+async function testMT1E2C1CanonicalDefaultsMissing() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  try {
+    // Subcase A: falta una denominacion canonica (2000) con las otras 9 presentes.
+    await runSql(dbPath, "DELETE FROM caja_arqueo_denominaciones WHERE denominacion = 2000");
+
+    // Subcase B: falta un tipo_pago canonico (transferencia) con filas NO-canonicas suficientes
+    // presentes -- prueba que el check no usa COUNT(*).
+    await runSql(dbPath, "DELETE FROM tipos_pago WHERE codigo = 'transferencia'");
+    await runSql(
+      dbPath,
+      "INSERT INTO tipos_pago (codigo, nombre, activo, impacta_caja, impacta_digital, permite_mixto, requiere_caja_abierta, orden) VALUES ('noncanon1', 'No Canonico 1', 1, 0, 1, 0, 0, 90)"
+    );
+    await runSql(
+      dbPath,
+      "INSERT INTO tipos_pago (codigo, nombre, activo, impacta_caja, impacta_digital, permite_mixto, requiere_caja_abierta, orden) VALUES ('noncanon2', 'No Canonico 2', 1, 0, 1, 0, 0, 91)"
+    );
+
+    // Subcase C: falta una cuenta_destino canonica (mercado pago) con filas extra presentes.
+    await runSql(dbPath, "DELETE FROM cuentas_destino WHERE lower(nombre) = 'mercado pago'");
+    await runSql(
+      dbPath,
+      "INSERT INTO cuentas_destino (nombre, tipo_destino, alias, cbu_cvu, activo, orden) VALUES ('Cuenta Extra Test', 'otro', '', '', 1, 99)"
+    );
+
+    const resultado = await verificarLegacyBaseline(dbPath);
+    assertSame(resultado.ready, false, "faltan defaults canonicos, debe resolver ready=false");
+
+    const buscarDefault = (resource) =>
+      resultado.failures.find((f) => f.code === "BASELINE_DEFAULT_MISSING" && f.resource === resource);
+
+    assertSame(
+      !!buscarDefault("denominacion:2000"),
+      true,
+      "subcase A: denominacion 2000 faltante debe reportarse pese a otras filas presentes"
+    );
+    assertSame(
+      !!buscarDefault("tipo_pago:transferencia"),
+      true,
+      "subcase B: tipo_pago transferencia faltante debe reportarse pese a filas no-canonicas suficientes"
+    );
+    assertSame(
+      !!buscarDefault("cuenta_destino:mercado pago"),
+      true,
+      "subcase C: cuenta_destino mercado pago faltante debe reportarse pese a filas extra"
+    );
+  } finally {
+    limpiarLegacyFixture(dbPath);
+  }
+}
+
+async function testMT1E2C1MultipleFailuresReported() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  try {
+    await runSql(dbPath, "DROP TABLE mercado_pago_intentos");
+    await runSql(dbPath, "DELETE FROM tipos_pago WHERE codigo = 'mixto'");
+
+    const resultado = await verificarLegacyBaseline(dbPath);
+    assertSame(resultado.ready, false, "multiples fallas simultaneas en categorias distintas debe resolver ready=false");
+
+    const idxTabla = resultado.failures.findIndex(
+      (f) => f.code === "BASELINE_TABLE_MISSING" && f.resource === "mercado_pago_intentos"
+    );
+    const idxDefault = resultado.failures.findIndex(
+      (f) => f.code === "BASELINE_DEFAULT_MISSING" && f.resource === "tipo_pago:mixto"
+    );
+    assertSame(idxTabla >= 0, true, "debe reportarse la tabla faltante");
+    assertSame(idxDefault >= 0, true, "debe reportarse el default faltante");
+    assertSame(idxTabla < idxDefault, true, "orden deterministico: SCHEMA_TABLE debe preceder a REQUIRED_RUNTIME_DEFAULT");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+  }
+}
+
+async function testMT1E2C1DbTargetFailures() {
+  // A-C: argumentos invalidos deben lanzar sincronicamente, sin abrir ningun sqlite.
+  for (const valor of [undefined, null, ""]) {
+    let lanzo = false;
+    let codigo = null;
+    try {
+      verificarLegacyBaseline(valor);
+    } catch (error) {
+      lanzo = true;
+      codigo = error.code;
+    }
+    assertSame(lanzo, true, `dbPath=${JSON.stringify(valor)} debe lanzar sincronicamente`);
+    assertSame(codigo, "INVALID_ARGUMENT", `dbPath=${JSON.stringify(valor)} debe lanzar con code INVALID_ARGUMENT`);
+  }
+
+  // D: path inexistente.
+  const dbPathInexistente = tempDbPath();
+  const resultadoD = await verificarLegacyBaseline(dbPathInexistente);
+  assertSame(resultadoD.ready, false, "path inexistente debe resolver ready=false");
+  assertEqual(resultadoD.failures.length, 1, "path inexistente debe tener exactamente 1 failure");
+  assertSame(resultadoD.failures[0].code, "DB_NOT_FOUND", "path inexistente debe resolver DB_NOT_FOUND");
+  assertSame(resultadoD.failures[0].category, "TARGET", "DB_NOT_FOUND debe ser categoria TARGET");
+  assertSame(resultadoD.failures[0].resource, "business_db", "DB_NOT_FOUND debe tener resource business_db");
+  assertEqual(fs.existsSync(dbPathInexistente), false, "DB_NOT_FOUND no debe crear el archivo");
+
+  // E: archivo existente pero no es una DB SQLite valida.
+  const dbPathNoSqlite = tempDbPath();
+  try {
+    fs.writeFileSync(dbPathNoSqlite, "esto no es una base de datos SQLite", "utf8");
+    const antes = fs.readFileSync(dbPathNoSqlite);
+    const resultadoE = await verificarLegacyBaseline(dbPathNoSqlite);
+    assertSame(resultadoE.ready, false, "archivo no-SQLite debe resolver ready=false");
+    assertEqual(resultadoE.failures.length, 1, "archivo no-SQLite debe tener exactamente 1 failure");
+    assertSame(resultadoE.failures[0].code, "DB_ERROR", "archivo no-SQLite debe resolver DB_ERROR");
+    assertSame(resultadoE.failures[0].category, "TARGET", "DB_ERROR debe ser categoria TARGET");
+    const despues = fs.readFileSync(dbPathNoSqlite);
+    assertSame(Buffer.compare(antes, despues), 0, "DB_ERROR no debe modificar el contenido del archivo");
+  } finally {
+    fs.rmSync(dbPathNoSqlite, { force: true });
+  }
+}
+
+async function testMT1E2C1ModuleSinSideEffects() {
+  const fakeBusinessDb = path.join(os.tmpdir(), `mt1e2c1-fake-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+  const legacyBaselineVerifierPath = path.join(ROOT, "backend", "legacyBaselineVerifier.js");
+  try {
+    const resultado = spawnSync(
+      process.execPath,
+      ["-e", `require(${JSON.stringify(legacyBaselineVerifierPath)});`],
+      {
+        cwd: ROOT,
+        env: { ...process.env, GUERNICA_DB_PATH: fakeBusinessDb },
+        encoding: "utf8"
+      }
+    );
+    assertEqual(resultado.status, 0, `require aislado de legacyBaselineVerifier debe salir 0\n${resultado.stderr || resultado.stdout}`);
+    assertEqual(fs.existsSync(fakeBusinessDb), false, "require de legacyBaselineVerifier no debe crear la fake business DB");
   } finally {
     fs.rmSync(fakeBusinessDb, { force: true });
   }
