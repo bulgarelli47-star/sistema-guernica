@@ -96,6 +96,42 @@ async function resolverTenantDbRegistrado({ empresaId, empresaSlug, controlDbPat
   }
 }
 
+// MT-1D.2B: el boot gate central conoce ATLAS_EMPRESA_SLUG pero no un empresaId -- este resolver
+// agrega unicamente el lookup de id por slug y delega integramente en resolverTenantDbRegistrado
+// (binding id+slug, empresa activa, path validation, canonical path) para no reimplementar esa
+// logica ni debilitarla.
+async function resolverTenantDbRegistradoPorSlug({ empresaSlug, controlDbPath } = {}) {
+  const slug = String(empresaSlug || "").trim();
+  if (!slug) {
+    return resultadoError("TENANT_REGISTRY_BINDING_INVALID", "resolverTenantDbRegistradoPorSlug: empresaSlug invalido");
+  }
+
+  const resolvedControlDbPath = controlDbPath || DEFAULT_DB_PATH;
+  if (!fs.existsSync(resolvedControlDbPath)) {
+    return resultadoError("TENANT_REGISTRY_CONTROL_DB_AUSENTE", `Control plane no encontrado: ${resolvedControlDbPath}`);
+  }
+
+  let controlDb;
+  try {
+    controlDb = await abrirControlDbSoloLectura(resolvedControlDbPath);
+  } catch (error) {
+    return resultadoError("TENANT_REGISTRY_CONTROL_DB_INACCESIBLE", error.message);
+  }
+
+  let empresaId;
+  try {
+    const row = await getQuery(controlDb, "SELECT id FROM empresas WHERE slug = ?", [slug]);
+    empresaId = row ? row.id : null;
+  } catch (error) {
+    return resultadoError("TENANT_REGISTRY_CONTROL_DB_QUERY_ERROR", error.message);
+  } finally {
+    await closeDb(controlDb);
+  }
+
+  return resolverTenantDbRegistrado({ empresaId, empresaSlug: slug, controlDbPath });
+}
+
 module.exports = {
-  resolverTenantDbRegistrado
+  resolverTenantDbRegistrado,
+  resolverTenantDbRegistradoPorSlug
 };

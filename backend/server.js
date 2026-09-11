@@ -9,6 +9,9 @@ const { runQuery, getQuery, allQuery } = require("./db");
 const userControlBridge = require("./userControlBridge");
 const { autenticarCredencialCentral } = require("./centralAuthSecurity");
 const { revalidarSesionCentral } = require("./centralAuthResolver");
+const { resolverTenantDbRegistradoPorSlug } = require("./tenantDbRegistry");
+const { verificarTenantDbIdentity } = require("./tenantDbIdentity");
+const { resolveBusinessDbPath } = require("./resolveBusinessDbPath");
 const {
   CONFIGURACION_DEFAULTS,
   getConfiguracionGlobal,
@@ -266,6 +269,38 @@ const ATLAS_EMPRESA_SLUG = String(process.env.ATLAS_EMPRESA_SLUG || "").trim();
 if (ATLAS_AUTH_MODE === "central" && !ATLAS_EMPRESA_SLUG) {
   console.error("[FATAL] ATLAS_AUTH_MODE=central requiere ATLAS_EMPRESA_SLUG configurado.");
   process.exit(1);
+}
+
+// MT-1D.2B: Central Boot Identity Gate. En legacy no hace nada (ni Control DB ni tenant_identity).
+// En central, verifica que la business DB configurada (GUERNICA_DB_PATH) pertenezca exactamente a
+// la empresa declarada por ATLAS_EMPRESA_SLUG -- registry (empresa activa + path canonico) primero,
+// tenant_identity READONLY despues -- ANTES de que el primer runQuery/getQuery/allQuery dispare la
+// apertura lazy de backend/db.js. Cualquier fallo lanza (nunca hace fallback a legacy); el llamador
+// es responsable de tratarlo como fail-closed antes de tocar la business DB.
+async function validarTenantCentralAntesDeAbrirDb() {
+  if (ATLAS_AUTH_MODE !== "central") return;
+
+  const registry = await resolverTenantDbRegistradoPorSlug({
+    empresaSlug: ATLAS_EMPRESA_SLUG,
+    controlDbPath: process.env.ATLAS_CONTROL_DB_PATH || undefined
+  });
+  if (!registry.ok) {
+    throw new Error(`Tenant registry invalido para ATLAS_EMPRESA_SLUG="${ATLAS_EMPRESA_SLUG}": ${registry.errorCode} - ${registry.message}`);
+  }
+
+  const configuredPath = resolveBusinessDbPath();
+  if (configuredPath !== registry.db.resolvedPath) {
+    throw new Error(`GUERNICA_DB_PATH configurado (${configuredPath}) no coincide con el path registrado para la empresa (${registry.db.resolvedPath})`);
+  }
+
+  const identity = await verificarTenantDbIdentity({
+    dbPath: configuredPath,
+    empresaId: registry.empresa.id,
+    empresaSlug: registry.empresa.slug
+  });
+  if (!identity.ok) {
+    throw new Error(`tenant_identity invalida en ${configuredPath}: ${identity.errorCode} - ${identity.message}`);
+  }
 }
 
 async function getClaveAutorizacion() {
@@ -12499,53 +12534,54 @@ app.use((err, req, res, _next) => {
   }
 });
 
-Promise.all([
-  ensureUsuariosSchema(),
-  ensureCajaMovimientosTable(),
-  ensureCajaArqueosTable(),
-  ensureCajaDenominacionesArqueoTable(),
-  ensureCajaTrasladosInternosTable(),
-  ensureProveedoresSchema(),
-  ensureComprasSchema(),
-  ensureTiposPagoSchema(),
-  ensureCuentasCobroSchema(),
-  ensureConciliacionesCuentasCobroTable(),
-  ensureConciliacionesCuentasDestinoTable(),
-  ensureModificadoresSchema(),
-  ensureRecalculosCuentaCorrienteTable(),
-  ensureStockAjustesPendientesSchema(),
-  ensureMercadoPagoPointSchema(),
-  ensureProductosSchema(),
-  ensureClientesSchema(),
-  ensureConfiguracionSchema(),
-  ensureTiendaSchema(),
-  ensureVentaRecetaSnapshotSchema(),
-  ensureVentaCobrosSchema(),
-  ensureVentaFiscalSnapshotSchema()
-])
-  .then(() => migrarVentaCobrosLegacy())
-  .then(async () => {
-    await ensureMovimientosStockProvenanceSchema();
-    await Promise.all([
-      runQuery("CREATE INDEX IF NOT EXISTS idx_usuarios_usuario ON usuarios(usuario)"),
-      runQuery("CREATE INDEX IF NOT EXISTS idx_productos_activo ON productos(activo)"),
-      runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_estado ON ventas(estado)"),
-      runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_cliente ON ventas(cliente_id)"),
-      runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_caja ON ventas(caja_id)"),
-      runQuery("CREATE INDEX IF NOT EXISTS idx_detalle_ventas_venta ON detalle_ventas(venta_id)"),
-      runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_producto ON movimientos_stock(producto_id)"),
-      runQuery("CREATE INDEX IF NOT EXISTS idx_caja_movimientos_caja ON caja_movimientos(caja_id)"),
-      runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_productos_codigo_unique ON productos(codigo) WHERE codigo IS NOT NULL AND codigo != '' AND eliminado = 0"),
-      runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_dni_cuit_unique ON clientes(dni_cuit) WHERE dni_cuit IS NOT NULL AND dni_cuit != ''"),
-      runQuery("CREATE INDEX IF NOT EXISTS idx_venta_cobros_venta ON venta_cobros(venta_id)"),
-      runQuery("CREATE INDEX IF NOT EXISTS idx_venta_cobros_cuenta ON venta_cobros(cuenta_cobro_id)")
-    ]);
-    await consolidarComponentesDuplicados();
-    app.listen(PORT, () => {
-      console.log(`Servidor corriendo en http://localhost:${PORT}`);
-    });
-  })
-  .catch((error) => {
-    logError("Error al preparar la base de datos:", error);
-    process.exit(1);
+(async () => {
+  await validarTenantCentralAntesDeAbrirDb();
+
+  await Promise.all([
+    ensureUsuariosSchema(),
+    ensureCajaMovimientosTable(),
+    ensureCajaArqueosTable(),
+    ensureCajaDenominacionesArqueoTable(),
+    ensureCajaTrasladosInternosTable(),
+    ensureProveedoresSchema(),
+    ensureComprasSchema(),
+    ensureTiposPagoSchema(),
+    ensureCuentasCobroSchema(),
+    ensureConciliacionesCuentasCobroTable(),
+    ensureConciliacionesCuentasDestinoTable(),
+    ensureModificadoresSchema(),
+    ensureRecalculosCuentaCorrienteTable(),
+    ensureStockAjustesPendientesSchema(),
+    ensureMercadoPagoPointSchema(),
+    ensureProductosSchema(),
+    ensureClientesSchema(),
+    ensureConfiguracionSchema(),
+    ensureTiendaSchema(),
+    ensureVentaRecetaSnapshotSchema(),
+    ensureVentaCobrosSchema(),
+    ensureVentaFiscalSnapshotSchema()
+  ]);
+  await migrarVentaCobrosLegacy();
+  await ensureMovimientosStockProvenanceSchema();
+  await Promise.all([
+    runQuery("CREATE INDEX IF NOT EXISTS idx_usuarios_usuario ON usuarios(usuario)"),
+    runQuery("CREATE INDEX IF NOT EXISTS idx_productos_activo ON productos(activo)"),
+    runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_estado ON ventas(estado)"),
+    runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_cliente ON ventas(cliente_id)"),
+    runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_caja ON ventas(caja_id)"),
+    runQuery("CREATE INDEX IF NOT EXISTS idx_detalle_ventas_venta ON detalle_ventas(venta_id)"),
+    runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_producto ON movimientos_stock(producto_id)"),
+    runQuery("CREATE INDEX IF NOT EXISTS idx_caja_movimientos_caja ON caja_movimientos(caja_id)"),
+    runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_productos_codigo_unique ON productos(codigo) WHERE codigo IS NOT NULL AND codigo != '' AND eliminado = 0"),
+    runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_dni_cuit_unique ON clientes(dni_cuit) WHERE dni_cuit IS NOT NULL AND dni_cuit != ''"),
+    runQuery("CREATE INDEX IF NOT EXISTS idx_venta_cobros_venta ON venta_cobros(venta_id)"),
+    runQuery("CREATE INDEX IF NOT EXISTS idx_venta_cobros_cuenta ON venta_cobros(cuenta_cobro_id)")
+  ]);
+  await consolidarComponentesDuplicados();
+  app.listen(PORT, () => {
+    console.log(`Servidor corriendo en http://localhost:${PORT}`);
   });
+})().catch((error) => {
+  logError("Error al preparar la base de datos:", error);
+  process.exit(1);
+});

@@ -5,7 +5,7 @@ const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const sqlite3 = require("sqlite3").verbose();
 const bcrypt = require("bcrypt");
-const { db: backendDb } = require("../backend/db");
+const { closeDb: closeBackendDb } = require("../backend/db");
 const { buildDetalleVentaSnapshotFiscal, buildResumenFiscalVenta } = require("../backend/services/ventaService");
 const {
   buildResumenItemsCompra,
@@ -53,10 +53,6 @@ const { provisionarTenantIdentity, TENANT_IDENTITY_SCHEMA_SQL } = require("../da
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
 
-function closeBackendDb() {
-  return new Promise((resolve) => backendDb.close(() => resolve()));
-}
-
 function tempDbPath() {
   return path.join(os.tmpdir(), `guernica-test-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
 }
@@ -89,6 +85,54 @@ function bootstrapFreshTestDb() {
     throw new Error("bootstrapFreshTestDb: database/init-db.js termino OK pero no se creo el archivo esperado");
   }
   return dbPath;
+}
+
+const REAL_ATLAS_CONTROL_DB = path.join(ROOT, "database", "atlas_control.db");
+
+// MT-1D.2B: TEST-ONLY. resolveEmpresaDbPath (autoridad de canonicalizacion/anti-path-traversal de
+// database/init-control-db.js) solo acepta paths registrados que resuelvan dentro de ROOT/database/
+// -- una business DB en os.tmpdir() (como tempDbPath()/bootstrapFreshTestDb() generan) nunca puede
+// registrarse como tenant DB real, asi que ningun test que necesite que el Central Boot Identity
+// Gate compare paths exitosamente puede usar esas dos. Este helper crea una business DB efimera,
+// completamente seedeada (mismo camino que bootstrapFreshTestDb: database/init-db.js como proceso
+// hijo, nunca copia guernica.db), pero DIRECTAMENTE dentro de ROOT/database/, con nombre unico.
+// bootstrapFreshTestDb() en si NO se toca -- el resto de la suite sigue usando os.tmpdir() sin
+// cambios.
+function bootstrapFreshRegisteredTenantDb() {
+  const nombre = `tenant-test-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const dbPath = path.join(ROOT, "database", nombre);
+
+  if (path.resolve(dbPath) === path.resolve(SOURCE_DB)) {
+    throw new Error("bootstrapFreshRegisteredTenantDb: el path generado coincide con database/guernica.db real");
+  }
+  if (path.resolve(dbPath) === path.resolve(REAL_ATLAS_CONTROL_DB)) {
+    throw new Error("bootstrapFreshRegisteredTenantDb: el path generado coincide con database/atlas_control.db real");
+  }
+  if (fs.existsSync(dbPath)) fs.rmSync(dbPath, { force: true });
+
+  const resultado = spawnSync(process.execPath, ["database/init-db.js"], {
+    cwd: ROOT,
+    env: { ...process.env, GUERNICA_DB_PATH: dbPath },
+    encoding: "utf8"
+  });
+  if (resultado.error) {
+    throw new Error(`bootstrapFreshRegisteredTenantDb: no se pudo ejecutar database/init-db.js: ${resultado.error.message}`);
+  }
+  if (resultado.status !== 0) {
+    throw new Error(`bootstrapFreshRegisteredTenantDb: database/init-db.js termino con status=${resultado.status}\n${resultado.stderr || resultado.stdout}`);
+  }
+  if (!fs.existsSync(dbPath)) {
+    throw new Error("bootstrapFreshRegisteredTenantDb: database/init-db.js termino OK pero no se creo el archivo esperado");
+  }
+  return dbPath;
+}
+
+// Cleanup obligatorio para bootstrapFreshRegisteredTenantDb(): .db + los sidecar de WAL (-wal/-shm)
+// que sqlite3 puede dejar en database/ si el proceso hijo no cerro en modo journal por defecto.
+function limpiarTenantTestDb(dbPath) {
+  for (const sufijo of ["", "-wal", "-shm"]) {
+    fs.rmSync(`${dbPath}${sufijo}`, { force: true });
+  }
 }
 
 async function withFreshTestDb(fn) {
@@ -20461,6 +20505,16 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1D2AEmpresaInexistenteFalla);
   await _run(testMT1D2AEmpresaInactivaPermiteProvisioning);
   await _run(testBootstrapDbTemporalDesdeCeroHigiene2B);
+  await _run(testMT1D2BCentralIdentityExactaArranca);
+  await _run(testMT1D2BSchemaMissingNoLevanta);
+  await _run(testMT1D2BIdentityRowMissingNoLevanta);
+  await _run(testMT1D2BIdMismatchNoLevanta);
+  await _run(testMT1D2BSlugMismatchNoLevanta);
+  await _run(testMT1D2BRegistryPathMismatchNoLevanta);
+  await _run(testMT1D2BBusinessDbMissingNoLevantaNoCrea);
+  await _run(testMT1D2BBackupCentralIdentityExactaCopia);
+  await _run(testMT1D2BBackupCentralFailClosedNoCopia);
+  await _run(testMT1D2BBackupLegacySinControlPlaneSigueIgual);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -23891,9 +23945,15 @@ async function testMT1C2B2AControlDbWriteErrorRollback() {
 // setupCentralFixture: composicion local de helpers ya existentes (registrarEmpresa,
 // crearUsuarioCentral, crearMembership) para dejar en UN llamado el escenario minimo que todos
 // estos tests necesitan: un control plane temporal con empresa+central+membership resolviendo
-// correctamente contra el usuario local "admin" YA sembrado por bootstrapFreshTestDb(). No
-// reemplaza ni envuelve autenticarCredencialCentral/resolverIdentidadCentralPorLocal -- solo arma
+// correctamente contra el usuario local "admin" YA sembrado por bootstrapFreshRegisteredTenantDb().
+// No reemplaza ni envuelve autenticarCredencialCentral/resolverIdentidadCentralPorLocal -- solo arma
 // el estado sobre el que /login (rama central) los invoca de verdad via HTTP.
+//
+// MT-1D.2B: businessDbPath DEBE venir de bootstrapFreshRegisteredTenantDb() (vive dentro de
+// database/, no de os.tmpdir()) -- registra el db_path REAL del fixture (antes un literal
+// "guernica.db" que no correspondia a ningun archivo real) y siembra tenant_identity TEST-ONLY
+// (INSERT directo, nunca via database/provision-tenant-identity.js) para que el Central Boot
+// Identity Gate de backend/server.js encuentre una identidad valida al arrancar.
 async function setupCentralFixture({
   businessDbPath,
   localPassword = "LocalDefault123",
@@ -23913,7 +23973,7 @@ async function setupCentralFixture({
   const controlDbPath = tempDbPath();
   const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
   const empresaSlug = `mt1c2b2b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "MT1C2B2B Cutover Test", dbPath: "guernica.db", activa: empresaActiva });
+  const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "MT1C2B2B Cutover Test", dbPath: path.basename(businessDbPath), activa: empresaActiva });
   const centralHash = await bcrypt.hash(centralPassword, 10);
   const central = await crearUsuarioCentral(controlDb, {
     nombre: "MT1C2B2B Central", usuarioReferencia: "mt1c2b2b-central", passwordHash: centralHash, activo: centralActivo
@@ -23922,6 +23982,7 @@ async function setupCentralFixture({
     usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: localUser.id, rol: membershipRol, activo: membershipActivo
   });
   await closeControlDb(controlDb);
+  await insertarTenantIdentityTest(businessDbPath, empresa.id, empresaSlug);
 
   return { controlDbPath, empresaSlug, empresa, central, membership, localUserId: localUser.id, localPassword, centralPassword };
 }
@@ -23991,7 +24052,7 @@ async function testMT1C2B2BLegacyDefaultSigueIdentico() {
 }
 
 async function testMT1C2B2BCentralSuccessSesionYEndpoint() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     const fixture = await setupCentralFixture({ businessDbPath: dbPath });
@@ -24029,13 +24090,13 @@ async function testMT1C2B2BCentralSuccessSesionYEndpoint() {
       assertEqual(protegido.response.status, 200, "endpoint protegido debe aceptar sesion central en runtime central");
     }, extraEnvCentral(fixture));
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
 async function testMT1C2B2BCentralPasswordActivoRolNoSonAutoridadLocal() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     const fixture = await setupCentralFixture({
@@ -24053,13 +24114,13 @@ async function testMT1C2B2BCentralPasswordActivoRolNoSonAutoridadLocal() {
       assertSame(sesionRow.rol, "admin", "rol persistido en sesion debe venir de membership");
     }, extraEnvCentral(fixture));
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
 async function testMT1C2B2BCentralPasswordLocalCorrectaNoAutentica() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     const fixture = await setupCentralFixture({
@@ -24073,13 +24134,13 @@ async function testMT1C2B2BCentralPasswordLocalCorrectaNoAutentica() {
       assertSame(data.message, "Contrasena incorrecta", "mensaje debe ser el mapeo estandar de CREDENCIAL_INVALIDA");
     }, extraEnvCentral(fixture));
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
 async function testMT1C2B2BCentralNoMutaSeguridadLocal() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   let antes;
   try {
@@ -24087,7 +24148,7 @@ async function testMT1C2B2BCentralNoMutaSeguridadLocal() {
     controlDbPath = fixture.controlDbPath;
     await withServer(dbPath, async (baseUrl) => {
       // La columna intentos_fallidos/bloqueado_hasta la agrega ensureUsuariosSchema() al
-      // arrancar el server (ensureColumn), no bootstrapFreshTestDb() -- capturar "antes" tiene
+      // arrancar el server (ensureColumn), no bootstrapFreshRegisteredTenantDb() -- capturar "antes" tiene
       // que ocurrir con el server ya arriba, nunca antes.
       antes = (await allSql(dbPath, "SELECT activo, password, intentos_fallidos, bloqueado_hasta, ultimo_acceso FROM usuarios WHERE usuario = ?", ["admin"]))[0];
       await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "claveIncorrectaTotal1" }, null);
@@ -24100,13 +24161,13 @@ async function testMT1C2B2BCentralNoMutaSeguridadLocal() {
     assertSame(despues.bloqueado_hasta, antes.bloqueado_hasta, "bloqueado_hasta local no debe cambiar por login central");
     assertSame(despues.ultimo_acceso, antes.ultimo_acceso, "ultimo_acceso local no debe cambiar por login central");
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
 async function testMT1C2B2BCentralHttpMappingPasswordYBloqueo() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     const fixture = await setupCentralFixture({ businessDbPath: dbPath });
@@ -24130,13 +24191,13 @@ async function testMT1C2B2BCentralHttpMappingPasswordYBloqueo() {
       if (!/Reintentar en \d+ min\./.test(sexto.data.message)) throw new Error(`mensaje de bloqueo vigente no matchea formato esperado: ${sexto.data.message}`);
     }, extraEnvCentral(fixture));
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
 async function testMT1C2B2BCentralMembershipInactiva403() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     const fixture = await setupCentralFixture({ businessDbPath: dbPath, membershipActivo: 0 });
@@ -24148,13 +24209,13 @@ async function testMT1C2B2BCentralMembershipInactiva403() {
       if (/membership|central_id/i.test(JSON.stringify(data))) throw new Error("no debe exponer membership/central IDs en el mensaje publico");
     }, extraEnvCentral(fixture));
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
 async function testMT1C2B2BCentralInactiva403() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     const fixture = await setupCentralFixture({ businessDbPath: dbPath, centralActivo: 0 });
@@ -24165,20 +24226,20 @@ async function testMT1C2B2BCentralInactiva403() {
       assertSame(data.message, "Usuario inactivo", "mensaje debe ser el estandar");
     }, extraEnvCentral(fixture));
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
+// MT-1D.2B: reescrito de runtime-503 a startup-fail. Con el Central Boot Identity Gate, un Control
+// DB ausente ya no permite que el servidor llegue a escuchar -- falla ANTES de app.listen(), asi
+// que la superficie observable pasa de "503 en /login" a "el proceso nunca arranca" (fail-closed
+// estrictamente mas fuerte: ni siquiera hay un socket al que preguntarle nada).
 async function testMT1C2B2BCentralControlDbFailCerrado503() {
   const dbPath = bootstrapFreshTestDb();
   const controlDbPathInexistente = path.join(os.tmpdir(), `mt1c2b2b-ausente-${Date.now()}-${Math.random().toString(16).slice(2)}`, "atlas_control.db");
   try {
-    await withServer(dbPath, async (baseUrl) => {
-      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "cualquiera" }, null);
-      assertEqual(response.status, 503, "control DB ausente debe fallar cerrado con 503");
-      assertSame(data.message, "Servicio de autenticacion no disponible", "mensaje debe ser el generico de fallo operacional");
-    }, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: "empresa-inexistente-mt1c2b2b", ATLAS_CONTROL_DB_PATH: controlDbPathInexistente });
+    await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: "empresa-inexistente-mt1c2b2b", ATLAS_CONTROL_DB_PATH: controlDbPathInexistente });
     assertEqual(fs.existsSync(controlDbPathInexistente), false, "el fallo de control DB ausente no debe crear el archivo");
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -24186,7 +24247,7 @@ async function testMT1C2B2BCentralControlDbFailCerrado503() {
 }
 
 async function testMT1C2B2BCentralRechazaSesionLegacy() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   let tokenLegacy;
   let filaAntes;
@@ -24209,13 +24270,13 @@ async function testMT1C2B2BCentralRechazaSesionLegacy() {
     if (!filaDespues) throw new Error("el rechazo por barrera de procedencia no debe borrar la fila de sesion legacy");
     assertSame(JSON.stringify(filaDespues), JSON.stringify(filaAntes), "la fila de sesion legacy debe quedar byte-identica tras ser rechazada por runtime central (no se migra, no se muta)");
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
 async function testMT1C2B2BLegacyRechazaSesionCentral() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   let tokenCentral;
   try {
@@ -24240,13 +24301,13 @@ async function testMT1C2B2BLegacyRechazaSesionCentral() {
     if (!filaDespues) throw new Error("el rechazo por barrera de procedencia no debe borrar la fila de sesion central");
     assertSame(JSON.stringify(filaDespues), JSON.stringify(filaAntes), "la fila de sesion central debe quedar byte-identica tras ser rechazada por runtime legacy (no se migra, no se muta)");
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
 async function testMT1C2B2BSesionCentralMalformadaRechazada() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   let tokenCentral;
   try {
@@ -24265,14 +24326,14 @@ async function testMT1C2B2BSesionCentralMalformadaRechazada() {
       assertSame(data.message, "Sesión incompatible. Iniciá sesión nuevamente.", "mensaje debe ser el de incompatibilidad de sesion");
     }, extraEnvCentral(fixture));
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
 async function testMT1C2B2BLogoutFuncionaEnAmbosModos() {
   const dbPathLegacy = bootstrapFreshTestDb();
-  const dbPathCentral = bootstrapFreshTestDb();
+  const dbPathCentral = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     await withServer(dbPathLegacy, async (baseUrl) => {
@@ -24294,7 +24355,7 @@ async function testMT1C2B2BLogoutFuncionaEnAmbosModos() {
     }, extraEnvCentral(fixture));
   } finally {
     fs.rmSync(dbPathLegacy, { force: true });
-    fs.rmSync(dbPathCentral, { force: true });
+    limpiarTenantTestDb(dbPathCentral);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
@@ -24322,7 +24383,7 @@ async function testMT1C2B2BCentralSinSlugNoLevanta() {
 }
 
 async function testMT1C2B2BCentralRememberExpiracion() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     const fixture = await setupCentralFixture({ businessDbPath: dbPath });
@@ -24343,7 +24404,7 @@ async function testMT1C2B2BCentralRememberExpiracion() {
       assertEqual(respTrue.data.remember, true, "remember debe reflejarse en la respuesta (true)");
     }, extraEnvCentral(fixture));
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
@@ -24404,7 +24465,7 @@ async function testMT1C2B2BAuthModeNormalizacion() {
 
   const casosCentral = ["  central  ", "CENTRAL"];
   for (const valor of casosCentral) {
-    const dbPath = bootstrapFreshTestDb();
+    const dbPath = bootstrapFreshRegisteredTenantDb();
     let controlDbPath;
     try {
       const fixture = await setupCentralFixture({ businessDbPath: dbPath });
@@ -24416,33 +24477,36 @@ async function testMT1C2B2BAuthModeNormalizacion() {
         assertSame(sesionRow.auth_mode, "central", `ATLAS_AUTH_MODE=${JSON.stringify(valor)} debe resultar en sesion central`);
       }, { ATLAS_AUTH_MODE: valor, ATLAS_EMPRESA_SLUG: fixture.empresaSlug, ATLAS_CONTROL_DB_PATH: fixture.controlDbPath });
     } finally {
-      fs.rmSync(dbPath, { force: true });
+      limpiarTenantTestDb(dbPath);
       if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
     }
   }
 }
 
+// MT-1D.2B: reescrito de login-403 a startup-fail. Autoridad MTF1/P7 (provisioning): empresa
+// inactiva es "ALLOW_PROVISION_BUT_NOT_RUNTIME" -- "runtime" incluye el arranque del proceso, no
+// solo el login, asi que el Central Boot Identity Gate debe rechazar el boot completo (BOOT FAIL),
+// nunca degradar a un 403 de login. Cubre exactamente B8 del plan de tests nuevos (2B0/2B0.1): no
+// hizo falta agregar un test nuevo, esta reescritura ya certifica ese escenario.
 async function testMT1C2B2BCentralEmpresaInactiva403() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     const fixture = await setupCentralFixture({ businessDbPath: dbPath, empresaActiva: 0 });
     controlDbPath = fixture.controlDbPath;
-    await withServer(dbPath, async (baseUrl) => {
-      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword }, null);
-      assertEqual(response.status, 403, "empresa inactiva debe mapear a 403");
-      assertSame(data.message, "Empresa inactiva", "mensaje debe ser el estandar");
-      const sesiones = await allSql(dbPath, "SELECT * FROM sesiones");
-      assertEqual(sesiones.length, 0, "empresa inactiva no debe emitir ninguna sesion");
-    }, extraEnvCentral(fixture));
+    await esperarStartupFallido(dbPath, extraEnvCentral(fixture));
+    // El gate falla ANTES de ensureUsuariosSchema() (que es quien crea "sesiones"), asi que la
+    // tabla ni siquiera llega a existir -- prueba mas fuerte que "0 filas" de que no hubo mutacion.
+    const tablas = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='sesiones'");
+    assertEqual(tablas.length, 0, "empresa inactiva no debe crear la tabla sesiones (el proceso nunca llega a ensureXSchema)");
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
 async function testMT1C2B2BCentralMembershipNoExiste403() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     const fixture = await setupCentralFixture({ businessDbPath: dbPath, sinMembership: true });
@@ -24455,11 +24519,13 @@ async function testMT1C2B2BCentralMembershipNoExiste403() {
       assertEqual(sesiones.length, 0, "membership inexistente no debe emitir ninguna sesion");
     }, extraEnvCentral(fixture));
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
+// MT-1D.2B: reescrito de runtime-503 a startup-fail, misma razon que ControlDbFailCerrado503 --
+// empresa inexistente ya es un fallo del registry del gate, ocurre antes de app.listen().
 async function testMT1C2B2BCentralEmpresaNoExiste503() {
   const dbPath = bootstrapFreshTestDb();
   const controlDbPath = tempDbPath();
@@ -24468,13 +24534,11 @@ async function testMT1C2B2BCentralEmpresaNoExiste503() {
     const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
     await closeControlDb(controlDb);
 
-    await withServer(dbPath, async (baseUrl) => {
-      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "cualquiera" }, null);
-      assertEqual(response.status, 503, "empresa inexistente en un control plane por lo demas valido debe fallar cerrado con 503");
-      assertSame(data.message, "Servicio de autenticacion no disponible", "mensaje debe ser el generico de fallo operacional, nunca un 404/403 que confirme o niegue la existencia del slug");
-      const sesiones = await allSql(dbPath, "SELECT * FROM sesiones");
-      assertEqual(sesiones.length, 0, "empresa inexistente no debe emitir ninguna sesion");
-    }, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: "slug-que-no-existe-mt1c2b2b", ATLAS_CONTROL_DB_PATH: controlDbPath });
+    await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: "slug-que-no-existe-mt1c2b2b", ATLAS_CONTROL_DB_PATH: controlDbPath });
+    // El gate falla ANTES de ensureUsuariosSchema() (que es quien crea "sesiones"), asi que la
+    // tabla ni siquiera llega a existir -- prueba mas fuerte que "0 filas" de que no hubo mutacion.
+    const tablas = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='sesiones'");
+    assertEqual(tablas.length, 0, "empresa inexistente no debe crear la tabla sesiones (el proceso nunca llega a ensureXSchema)");
   } finally {
     fs.rmSync(dbPath, { force: true });
     fs.rmSync(controlDbPath, { force: true });
@@ -24485,8 +24549,8 @@ async function testMT1C2B2BLogoutRevocaCrossMode() {
   // Contrato mas fuerte que el logout same-mode ya certificado: /logout debe poder revocar una
   // credencial incompatible con el runtime actual SIN autenticarla -- no es RUTAS_PUBLICAS por
   // accidente, es porque revocar no requiere validar procedencia, solo el token exacto.
-  const dbPathA = bootstrapFreshTestDb();
-  const dbPathB = bootstrapFreshTestDb();
+  const dbPathA = bootstrapFreshRegisteredTenantDb();
+  const dbPathB = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     // A: sesion legacy creada, luego revocada bajo runtime CENTRAL.
@@ -24519,8 +24583,8 @@ async function testMT1C2B2BLogoutRevocaCrossMode() {
 
     if (fixtureB.controlDbPath) fs.rmSync(fixtureB.controlDbPath, { force: true });
   } finally {
-    fs.rmSync(dbPathA, { force: true });
-    fs.rmSync(dbPathB, { force: true });
+    limpiarTenantTestDb(dbPathA);
+    limpiarTenantTestDb(dbPathB);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
@@ -24556,8 +24620,21 @@ async function mt1c2b3AssertSesionNoExiste(dbPath, token, mensaje) {
   if (row) throw new Error(mensaje);
 }
 
+// MT-1D.2B: este helper compartido (no un test* en si) tambien bootea backend/server.js en modo
+// central via setupCentralFixture+withServer -- se paso por alto en el barrido inicial de 26 tests
+// porque el escaneo estatico solo miraba cuerpos de funciones test*, no helpers intermedios. Los 6
+// tests que lo llaman (testMT1C2B3MembershipInactivaRevocaSesion, CentralInactivaRevocaSesion,
+// EmpresaInactivaRevocaSesion, MembershipMissingRevocaSesion, MembershipRecreadaNoRebind,
+// MembershipRelinkCentralNoRebind) heredan la correccion con este unico cambio.
+//
+// Ademas: el mutateControl de EmpresaInactivaRevocaSesion pone empresas.activa=0 -- si eso
+// ocurriera ENTRE dos withServer separados (como en el original pre-2B), el SEGUNDO boot
+// tropezaria con el Central Boot Identity Gate (empresa inactiva = BOOT FAIL, ver P7) antes de
+// llegar al codigo de revalidacion por-request que este helper certifica. Mismo criterio que los 3
+// tests de Control DB: un unico withServer, la mutacion ocurre DENTRO del callback, contra el mismo
+// proceso que ya paso el gate una vez.
 async function mt1c2b3AssertAuthorityRevocation(mutateControl, detalle) {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   let token;
   try {
@@ -24566,11 +24643,9 @@ async function mt1c2b3AssertAuthorityRevocation(mutateControl, detalle) {
     await withServer(dbPath, async (baseUrl) => {
       token = await mt1c2b3LoginCentral(baseUrl, fixture);
       await mt1c2b3AssertSesionExiste(dbPath, token, "la sesion central debe existir antes de la invalidacion");
-    }, extraEnvCentral(fixture));
 
-    await mutateControl(fixture);
+      await mutateControl(fixture);
 
-    await withServer(dbPath, async (baseUrl) => {
       const { response, data } = await requestJson(baseUrl, "GET", "/configuracion", null, token);
       assertEqual(response.status, 401, `${detalle}: la request debe ser rechazada como sesion invalida`);
       assertSame(data.message, "Sesión inválida. Iniciá sesión nuevamente.", `${detalle}: mensaje publico debe ser angosto`);
@@ -24578,7 +24653,7 @@ async function mt1c2b3AssertAuthorityRevocation(mutateControl, detalle) {
 
     await mt1c2b3AssertSesionNoExiste(dbPath, token, `${detalle}: authority invalidation debe borrar la fila local`);
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
@@ -24739,7 +24814,7 @@ async function testMT1C2B3RevalidadorQueryError() {
 }
 
 async function testMT1C2B3CentralSesionVigentePreservaSesion() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     const fixture = await setupCentralFixture({ businessDbPath: dbPath, membershipRol: "admin" });
@@ -24752,13 +24827,13 @@ async function testMT1C2B3CentralSesionVigentePreservaSesion() {
       assertSame(row.rol, "admin", "snapshot de sesion emitida debe conservar rol original");
     }, extraEnvCentral(fixture));
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
 async function testMT1C2B3RoleDowngradeInmediato() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     const fixture = await setupCentralFixture({ businessDbPath: dbPath, membershipRol: "admin" });
@@ -24778,13 +24853,13 @@ async function testMT1C2B3RoleDowngradeInmediato() {
       assertEqual(rowDespues.empresa_id, fixture.empresa.id, "downgrade no debe cambiar empresa_id de sesion");
     }, extraEnvCentral(fixture));
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
 async function testMT1C2B3RoleUpgradeInmediato() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     const fixture = await setupCentralFixture({ businessDbPath: dbPath, membershipRol: "colaborador" });
@@ -24804,7 +24879,7 @@ async function testMT1C2B3RoleUpgradeInmediato() {
       assertEqual(rowDespues.empresa_id, fixture.empresa.id, "upgrade no debe cambiar empresa_id de sesion");
     }, extraEnvCentral(fixture));
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
@@ -24861,7 +24936,7 @@ async function testMT1C2B3MembershipRelinkCentralNoRebind() {
 }
 
 async function testMT1C2B3DeleteFailureDeniegaAcceso() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     const fixture = await setupCentralFixture({ businessDbPath: dbPath });
@@ -24890,13 +24965,20 @@ async function testMT1C2B3DeleteFailureDeniegaAcceso() {
 
     await mt1c2b3AssertSesionExiste(dbPath, token, "si el trigger aborta DELETE la fila puede quedar preservada");
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
+// MT-1D.2B: reescrito de doble-boot a proceso-persistente. Un segundo withServer contra el mismo
+// Control DB ya ausente ahora tropezaria con el Central Boot Identity Gate (que exige Control DB
+// presente para arrancar en central) ANTES de llegar al codigo de revalidacion por-request que este
+// test certifica. La rotura de Control DB ahora ocurre DENTRO del unico callback de withServer,
+// contra el mismo proceso ya arrancado (que ya paso el gate una vez, con Control DB sano) -- el
+// gate nunca se re-ejecuta durante la vida del proceso, asi que la cobertura runtime se preserva
+// intacta sin un segundo boot.
 async function testMT1C2B3ControlDbAusente503PreservaSesion() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   let fixture;
   let token;
@@ -24905,10 +24987,9 @@ async function testMT1C2B3ControlDbAusente503PreservaSesion() {
     controlDbPath = fixture.controlDbPath;
     await withServer(dbPath, async (baseUrl) => {
       token = await mt1c2b3LoginCentral(baseUrl, fixture);
-    }, extraEnvCentral(fixture));
-    fs.rmSync(controlDbPath, { force: true });
 
-    await withServer(dbPath, async (baseUrl) => {
+      fs.rmSync(controlDbPath, { force: true });
+
       const { response, data } = await requestJson(baseUrl, "GET", "/configuracion", null, token);
       assertEqual(response.status, 503, "control DB ausente en request protegida central debe mapear a 503");
       assertSame(data.message, "Servicio de autenticacion no disponible", "mensaje operacional debe ser generico");
@@ -24917,13 +24998,15 @@ async function testMT1C2B3ControlDbAusente503PreservaSesion() {
     await mt1c2b3AssertSesionExiste(dbPath, token, "error operacional debe preservar sesion central");
     assertEqual(fs.existsSync(controlDbPath), false, "revalidacion readonly no debe recrear control DB ausente");
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
+// MT-1D.2B: mismo criterio que ControlDbAusente503PreservaSesion -- proceso persistente, la rotura
+// de schema ocurre dentro del unico callback de withServer, contra el proceso que ya paso el gate.
 async function testMT1C2B3ControlDbQueryError503PreservaSesion() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   let fixture;
   let token;
@@ -24932,11 +25015,10 @@ async function testMT1C2B3ControlDbQueryError503PreservaSesion() {
     controlDbPath = fixture.controlDbPath;
     await withServer(dbPath, async (baseUrl) => {
       token = await mt1c2b3LoginCentral(baseUrl, fixture);
-    }, extraEnvCentral(fixture));
-    fs.rmSync(controlDbPath, { force: true });
-    await runSql(controlDbPath, "CREATE TABLE roto (id INTEGER)");
 
-    await withServer(dbPath, async (baseUrl) => {
+      fs.rmSync(controlDbPath, { force: true });
+      await runSql(controlDbPath, "CREATE TABLE roto (id INTEGER)");
+
       const { response, data } = await requestJson(baseUrl, "GET", "/configuracion", null, token);
       assertEqual(response.status, 503, "schema roto del control DB debe mapear a 503");
       assertSame(data.message, "Servicio de autenticacion no disponible", "mensaje query error debe ser generico");
@@ -24944,13 +25026,16 @@ async function testMT1C2B3ControlDbQueryError503PreservaSesion() {
 
     await mt1c2b3AssertSesionExiste(dbPath, token, "query error operacional debe preservar sesion central");
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
 
+// MT-1D.2B: mismo criterio -- proceso persistente. Nota arquitectonica preservada de 2B0.1: esto
+// certifica que /logout sigue funcionando sin Control DB DENTRO de un proceso ya arrancado; no
+// certifica (ni puede, bajo el gate) que un proceso pueda reiniciarse con Control DB ya caido.
 async function testMT1C2B3LogoutSinControlDb() {
-  const dbPath = bootstrapFreshTestDb();
+  const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   let fixture;
   let token;
@@ -24959,16 +25044,15 @@ async function testMT1C2B3LogoutSinControlDb() {
     controlDbPath = fixture.controlDbPath;
     await withServer(dbPath, async (baseUrl) => {
       token = await mt1c2b3LoginCentral(baseUrl, fixture);
-    }, extraEnvCentral(fixture));
-    fs.rmSync(controlDbPath, { force: true });
 
-    await withServer(dbPath, async (baseUrl) => {
+      fs.rmSync(controlDbPath, { force: true });
+
       const logout = await requestJson(baseUrl, "POST", "/logout", {}, token);
       assertEqual(logout.response.status, 200, "logout central debe funcionar aunque el control plane este ausente");
     }, extraEnvCentral(fixture));
     await mt1c2b3AssertSesionNoExiste(dbPath, token, "logout sin control DB debe eliminar la fila local");
   } finally {
-    fs.rmSync(dbPath, { force: true });
+    limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
@@ -25832,5 +25916,304 @@ async function testMT1D2AEmpresaInactivaPermiteProvisioning() {
   } finally {
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
     fs.rmSync(businessPath, { force: true });
+  }
+}
+
+// ==================================================================================
+// MT-1D.2B: Central Boot Identity Gate -- tests del gate de arranque (backend/server.js) y del
+// contrato de backup (scripts/backup-db.js). Nunca tocan database/guernica.db ni
+// database/atlas_control.db reales. Los que necesitan bootear backend/server.js con exito bajo
+// central usan bootstrapFreshRegisteredTenantDb() (unica forma de tener una business DB registrable
+// bajo ROOT/database/); los que solo necesitan probar un rechazo de boot antes de cualquier schema
+// usan un archivo minimo (o inexistente) via resolveEmpresaDbPath(), igual que los tests de
+// MT-1D.2A. tenant_identity siempre se siembra con insertarTenantIdentityTest (INSERT directo),
+// nunca via database/provision-tenant-identity.js.
+// ==================================================================================
+
+function ejecutarBackupDb(extraEnv = {}) {
+  const baseEnv = { ...process.env };
+  delete baseEnv.ATLAS_AUTH_MODE;
+  delete baseEnv.ATLAS_EMPRESA_SLUG;
+  delete baseEnv.ATLAS_CONTROL_DB_PATH;
+  return spawnSync(process.execPath, ["scripts/backup-db.js"], {
+    cwd: ROOT,
+    env: { ...baseEnv, ...extraEnv },
+    encoding: "utf8"
+  });
+}
+
+async function testMT1D2BCentralIdentityExactaArranca() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const slug = `mt1d2b-exacta-${Date.now()}`;
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D2B Identity Exacta",
+      dbPath: path.basename(dbPath)
+    });
+    controlDbPath = fixture.controlDbPath;
+    await insertarTenantIdentityTest(dbPath, fixture.empresa.id, slug);
+
+    await withServer(dbPath, async (baseUrl) => {
+      // /login (GET) sirve el HTML estatico, no JSON -- requestJson forzaria un JSON.parse
+      // invalido. waitForServer (dentro de withServer) ya probo que respondio 200 antes de llegar
+      // aca; esta segunda comprobacion explicita es solo para que el test deje evidencia propia.
+      const response = await fetch(`${baseUrl}/login`);
+      assertEqual(response.status, 200, "con identidad exacta el servidor debe arrancar y responder /login");
+    }, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1D2BSchemaMissingNoLevanta() {
+  const slug = `mt1d2b-schema-${Date.now()}`;
+  const businessName = `tenant-test-schema-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D2B Schema Missing",
+      dbPath: businessName
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    await runSql(businessPath, "SELECT 1");
+    const tablas = await allSql(businessPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='tenant_identity'");
+    assertEqual(tablas.length, 0, "fixture debe iniciar sin tabla tenant_identity");
+
+    await esperarStartupFallido(businessPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(businessPath, { force: true });
+  }
+}
+
+async function testMT1D2BIdentityRowMissingNoLevanta() {
+  const slug = `mt1d2b-rowmissing-${Date.now()}`;
+  const businessName = `tenant-test-rowmissing-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D2B Identity Row Missing",
+      dbPath: businessName
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    await runSql(businessPath, TENANT_IDENTITY_SCHEMA_SQL);
+    const filas = await allSql(businessPath, "SELECT * FROM tenant_identity");
+    assertEqual(filas.length, 0, "fixture debe iniciar con tabla tenant_identity presente pero vacia");
+
+    await esperarStartupFallido(businessPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(businessPath, { force: true });
+  }
+}
+
+async function testMT1D2BIdMismatchNoLevanta() {
+  const slug = `mt1d2b-idmismatch-${Date.now()}`;
+  const businessName = `tenant-test-idmismatch-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D2B Id Mismatch",
+      dbPath: businessName
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    await runSql(businessPath, TENANT_IDENTITY_SCHEMA_SQL);
+    await insertarTenantIdentityTest(businessPath, fixture.empresa.id + 1000, slug);
+
+    await esperarStartupFallido(businessPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(businessPath, { force: true });
+  }
+}
+
+async function testMT1D2BSlugMismatchNoLevanta() {
+  const slug = `mt1d2b-slugmismatch-${Date.now()}`;
+  const businessName = `tenant-test-slugmismatch-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D2B Slug Mismatch",
+      dbPath: businessName
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    await runSql(businessPath, TENANT_IDENTITY_SCHEMA_SQL);
+    await insertarTenantIdentityTest(businessPath, fixture.empresa.id, `${slug}-otro`);
+
+    await esperarStartupFallido(businessPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(businessPath, { force: true });
+  }
+}
+
+async function testMT1D2BRegistryPathMismatchNoLevanta() {
+  const slug = `mt1d2b-pathmismatch-${Date.now()}`;
+  const nombreRegistrado = `tenant-test-pathmismatch-registrado-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const nombreReal = `tenant-test-pathmismatch-real-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const pathRegistrado = resolveEmpresaDbPath(nombreRegistrado);
+  const pathReal = resolveEmpresaDbPath(nombreReal);
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D2B Path Mismatch",
+      dbPath: nombreRegistrado
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    // pathReal es la business DB REAL que el proceso usaria (GUERNICA_DB_PATH), con identidad
+    // exacta -- pero el registry apunta a pathRegistrado, un archivo DISTINTO. El gate debe
+    // rechazar por mismatch de path ANTES de siquiera abrir pathReal para verificar identity.
+    await runSql(pathReal, TENANT_IDENTITY_SCHEMA_SQL);
+    await insertarTenantIdentityTest(pathReal, fixture.empresa.id, slug);
+
+    await esperarStartupFallido(pathReal, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(pathReal, { force: true });
+    fs.rmSync(pathRegistrado, { force: true });
+  }
+}
+
+async function testMT1D2BBusinessDbMissingNoLevantaNoCrea() {
+  const slug = `mt1d2b-dbmissing-${Date.now()}`;
+  const businessName = `tenant-test-dbmissing-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D2B Business DB Missing",
+      dbPath: businessName
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    assertEqual(fs.existsSync(businessPath), false, "fixture debe iniciar sin el archivo de business DB");
+
+    // Ejercita el camino real (backend/server.js -> require("./db") lazy -> gate central), no una
+    // llamada aislada -- si el gate o el require de backend/db.js crearan el archivo, esta
+    // asercion posterior al intento de boot lo detectaria.
+    await esperarStartupFallido(businessPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+
+    assertEqual(fs.existsSync(businessPath), false, "el fallo por business DB ausente no debe crear el archivo (ni el gate ni el require lazy de backend/db.js)");
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(businessPath, { force: true });
+  }
+}
+
+async function testMT1D2BBackupCentralIdentityExactaCopia() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  const backupDir = path.join(os.tmpdir(), `mt1d2b-backup-ok-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  try {
+    const slug = `mt1d2b-backup-ok-${Date.now()}`;
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D2B Backup Identity Exacta",
+      dbPath: path.basename(dbPath)
+    });
+    controlDbPath = fixture.controlDbPath;
+    await insertarTenantIdentityTest(dbPath, fixture.empresa.id, slug);
+
+    const resultado = ejecutarBackupDb({
+      GUERNICA_DB_PATH: dbPath,
+      GUERNICA_BACKUP_DIR: backupDir,
+      ATLAS_AUTH_MODE: "central",
+      ATLAS_EMPRESA_SLUG: slug,
+      ATLAS_CONTROL_DB_PATH: controlDbPath
+    });
+    assertEqual(resultado.status, 0, `backup central con identidad exacta debe salir 0\n${resultado.stderr || resultado.stdout}`);
+
+    const archivos = fs.existsSync(backupDir) ? fs.readdirSync(backupDir).filter((n) => n.startsWith("guernica-") && n.endsWith(".db")) : [];
+    assertEqual(archivos.length, 1, "debe crear exactamente un backup");
+
+    const backupPath = path.join(backupDir, archivos[0]);
+    const original = fs.readFileSync(dbPath);
+    const copiado = fs.readFileSync(backupPath);
+    assertEqual(Buffer.compare(original, copiado), 0, "el contenido del backup debe corresponder byte a byte a la business DB correcta");
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(backupDir, { recursive: true, force: true });
+  }
+}
+
+async function testMT1D2BBackupCentralFailClosedNoCopia() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  const backupDirA = path.join(os.tmpdir(), `mt1d2b-backup-mismatch-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const backupDirB = path.join(os.tmpdir(), `mt1d2b-backup-invalido-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  try {
+    // SUBCASE A: " CENTRAL " debe normalizar a central igual que backend/server.js, pero la
+    // identity declarada en la business DB no coincide con el slug real -- debe fallar cerrado.
+    const slug = `mt1d2b-backup-mismatch-${Date.now()}`;
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1D2B Backup Mismatch",
+      dbPath: path.basename(dbPath)
+    });
+    controlDbPath = fixture.controlDbPath;
+    await insertarTenantIdentityTest(dbPath, fixture.empresa.id, `${slug}-otro`);
+
+    const resultadoA = ejecutarBackupDb({
+      GUERNICA_DB_PATH: dbPath,
+      GUERNICA_BACKUP_DIR: backupDirA,
+      ATLAS_AUTH_MODE: " CENTRAL ",
+      ATLAS_EMPRESA_SLUG: slug,
+      ATLAS_CONTROL_DB_PATH: controlDbPath
+    });
+    assertEqual(resultadoA.status === 0, false, "SUBCASE A: identity mismatch bajo ' CENTRAL ' normalizado debe salir con codigo != 0");
+    assertEqual(fs.existsSync(backupDirA), false, "SUBCASE A: no debe crear el directorio de backup");
+
+    // SUBCASE B: ATLAS_AUTH_MODE invalido debe fallar cerrado ANTES de copiar.
+    const resultadoB = ejecutarBackupDb({
+      GUERNICA_DB_PATH: dbPath,
+      GUERNICA_BACKUP_DIR: backupDirB,
+      ATLAS_AUTH_MODE: "banana"
+    });
+    assertEqual(resultadoB.status === 0, false, "SUBCASE B: ATLAS_AUTH_MODE invalido debe salir con codigo != 0");
+    assertEqual(fs.existsSync(backupDirB), false, "SUBCASE B: no debe crear el directorio de backup");
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(backupDirA, { recursive: true, force: true });
+    fs.rmSync(backupDirB, { recursive: true, force: true });
+  }
+}
+
+async function testMT1D2BBackupLegacySinControlPlaneSigueIgual() {
+  const dbPath = bootstrapFreshTestDb();
+  const backupDir = path.join(os.tmpdir(), `mt1d2b-backup-legacy-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const controlDbPathInexistente = path.join(os.tmpdir(), `mt1d2b-backup-legacy-control-${Date.now()}-${Math.random().toString(16).slice(2)}`, "atlas_control.db");
+  try {
+    const resultado = ejecutarBackupDb({
+      GUERNICA_DB_PATH: dbPath,
+      GUERNICA_BACKUP_DIR: backupDir,
+      ATLAS_CONTROL_DB_PATH: controlDbPathInexistente
+    });
+    assertEqual(resultado.status, 0, `backup legacy sin Control DB debe seguir funcionando igual\n${resultado.stderr || resultado.stdout}`);
+
+    const archivos = fs.existsSync(backupDir) ? fs.readdirSync(backupDir).filter((n) => n.startsWith("guernica-") && n.endsWith(".db")) : [];
+    assertEqual(archivos.length, 1, "legacy debe crear exactamente un backup, sin requerir tenant_identity ni Control DB");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(backupDir, { recursive: true, force: true });
   }
 }

@@ -1,15 +1,42 @@
-const path = require("path");
 const sqlite3 = require("sqlite3").verbose();
+const { resolveBusinessDbPath } = require("./resolveBusinessDbPath");
 
-const dbPath = process.env.GUERNICA_DB_PATH
-  ? path.resolve(process.env.GUERNICA_DB_PATH)
-  : path.join(__dirname, "../database/guernica.db");
+const dbPath = resolveBusinessDbPath();
 
-const db = new sqlite3.Database(dbPath);
+// MT-1D.2B: apertura lazy. require("./db") por si solo NO debe abrir ni crear la business DB --
+// eso permitiria que un proceso en modo central mutara/creara la DB de un tenant antes de que el
+// gate de identidad (backend/server.js) tuviera oportunidad de rechazarlo. La conexion real recien
+// se crea en el primer uso de runQuery/getQuery/allQuery (via getDb()), nunca al cargar el modulo.
+let dbInstance = null;
+
+function getDb() {
+  if (!dbInstance) {
+    dbInstance = new sqlite3.Database(dbPath);
+  }
+  return dbInstance;
+}
+
+function closeDb() {
+  return new Promise((resolve, reject) => {
+    if (!dbInstance) {
+      resolve();
+      return;
+    }
+    const instance = dbInstance;
+    dbInstance = null;
+    instance.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
 
 function runQuery(sql, params = []) {
   return new Promise((resolve, reject) => {
-    db.run(sql, params, function (err) {
+    getDb().run(sql, params, function (err) {
       if (err) {
         reject(err);
         return;
@@ -22,7 +49,7 @@ function runQuery(sql, params = []) {
 
 function getQuery(sql, params = []) {
   return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
+    getDb().get(sql, params, (err, row) => {
       if (err) {
         reject(err);
         return;
@@ -35,7 +62,7 @@ function getQuery(sql, params = []) {
 
 function allQuery(sql, params = []) {
   return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
+    getDb().all(sql, params, (err, rows) => {
       if (err) {
         reject(err);
         return;
@@ -47,8 +74,9 @@ function allQuery(sql, params = []) {
 }
 
 module.exports = {
-  db,
   dbPath,
+  getDb,
+  closeDb,
   runQuery,
   getQuery,
   allQuery
