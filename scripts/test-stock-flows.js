@@ -1,4 +1,5 @@
 const fs = require("fs");
+const http = require("http");
 const net = require("net");
 const os = require("os");
 const path = require("path");
@@ -49,6 +50,7 @@ const { resolverTenantDbRegistrado } = require("../backend/tenantDbRegistry");
 const { verificarTenantDbIdentity } = require("../backend/tenantDbIdentity");
 const { autenticarCredencialCentral } = require("../backend/centralAuthSecurity");
 const { provisionarTenantIdentity, TENANT_IDENTITY_SCHEMA_SQL } = require("../database/provision-tenant-identity");
+const { parseTenantHost } = require("../backend/tenantHostContext");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -20515,6 +20517,14 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1D2BBackupCentralIdentityExactaCopia);
   await _run(testMT1D2BBackupCentralFailClosedNoCopia);
   await _run(testMT1D2BBackupLegacySinControlPlaneSigueIgual);
+  await _run(testMT1E1AHostTenantNormal);
+  await _run(testMT1E1AHostTenantUppercaseConPuerto);
+  await _run(testMT1E1AHostApexReservado);
+  await _run(testMT1E1AHostSubdominiosReservados);
+  await _run(testMT1E1AHostMultiNivelInvalido);
+  await _run(testMT1E1AHostLocalDevValido);
+  await _run(testMT1E1AHostMalformadoRechazado);
+  await _run(testMT1E1ALegacySinCambioPorHostParser);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -26215,5 +26225,152 @@ async function testMT1D2BBackupLegacySinControlPlaneSigueIgual() {
   } finally {
     fs.rmSync(dbPath, { force: true });
     fs.rmSync(backupDir, { recursive: true, force: true });
+  }
+}
+
+// ==================================================================================
+// MT-1E1 (GAP-1 Slice 1): Host Tenant Context -- tests del parser puro parseTenantHost y del
+// middleware que lo instala en req.tenantHostContext. Este slice NO autoriza nada: no consulta
+// Control DB, no abre business DB, no compara contra ATLAS_EMPRESA_SLUG. Los tests de esta
+// seccion certifican exactamente eso -- interpretacion del Host, sin ningun efecto de negocio.
+// ==================================================================================
+
+async function testMT1E1AHostTenantNormal() {
+  const casos = [
+    ["guernica.atlasos.com.ar", "guernica"],
+    ["a.atlasos.com.ar", "a"],
+    ["mi-negocio.atlasos.com.ar", "mi-negocio"]
+  ];
+  for (const [host, esperado] of casos) {
+    const resultado = parseTenantHost(host);
+    assertSame(resultado.kind, "TENANT", `${host} debe resolver TENANT`);
+    assertSame(resultado.tenantSlug, esperado, `${host} debe resolver slug "${esperado}"`);
+  }
+}
+
+async function testMT1E1AHostTenantUppercaseConPuerto() {
+  const casos = ["GUERNICA.atlasos.com.ar", "guernica.atlasos.com.ar:443", "GUERNICA.atlasos.com.ar:443"];
+  for (const host of casos) {
+    const resultado = parseTenantHost(host);
+    assertSame(resultado.kind, "TENANT", `${host} debe resolver TENANT`);
+    assertSame(resultado.tenantSlug, "guernica", `${host} debe normalizar a slug "guernica"`);
+  }
+}
+
+async function testMT1E1AHostApexReservado() {
+  const resultado = parseTenantHost("atlasos.com.ar");
+  assertSame(resultado.kind, "RESERVED", "apex debe resolver RESERVED");
+  assertEqual(resultado.tenantSlug, null, "apex no debe tener tenantSlug");
+}
+
+async function testMT1E1AHostSubdominiosReservados() {
+  for (const host of ["www.atlasos.com.ar", "app.atlasos.com.ar", "api.atlasos.com.ar"]) {
+    const resultado = parseTenantHost(host);
+    assertSame(resultado.kind, "RESERVED", `${host} debe resolver RESERVED`);
+    assertEqual(resultado.tenantSlug, null, `${host} no debe tener tenantSlug`);
+  }
+}
+
+async function testMT1E1AHostMultiNivelInvalido() {
+  for (const host of ["foo.bar.atlasos.com.ar", ".atlasos.com.ar"]) {
+    const resultado = parseTenantHost(host);
+    assertSame(resultado.kind, "INVALID", `${host} debe resolver INVALID`);
+    assertEqual(resultado.tenantSlug, null, `${host} no debe tener tenantSlug`);
+  }
+}
+
+async function testMT1E1AHostLocalDevValido() {
+  for (const host of ["localhost", "localhost:3000", "127.0.0.1", "127.0.0.1:3000"]) {
+    const resultado = parseTenantHost(host);
+    assertSame(resultado.kind, "LOCAL", `${host} debe resolver LOCAL`);
+    assertEqual(resultado.tenantSlug, null, `${host} no debe tener tenantSlug`);
+  }
+}
+
+async function testMT1E1AHostMalformadoRechazado() {
+  const casos = [
+    null,
+    undefined,
+    "",
+    "  guernica.atlasos.com.ar  ",
+    "https://guernica.atlasos.com.ar",
+    "guernica.atlasos.com.ar/foo",
+    "user@guernica.atlasos.com.ar",
+    "a.com,b.com",
+    "guernica.atlasos.com.ar:banana",
+    "guernica.atlasos.com.ar:",
+    "guernica.atlasos.com.ar:0",
+    "guernica.atlasos.com.ar:65536",
+    "guernica.atlasos.com.ar:443:444"
+  ];
+  for (const host of casos) {
+    const resultado = parseTenantHost(host);
+    assertSame(resultado.kind, "INVALID", `${JSON.stringify(host)} debe resolver INVALID`);
+    assertEqual(resultado.tenantSlug, null, `${JSON.stringify(host)} no debe tener tenantSlug`);
+  }
+}
+
+async function testMT1E1ALegacySinCambioPorHostParser() {
+  // SUBCASE A -- PURE MODULE REQUIRE: cargar tenantHostContext.js en un proceso completamente
+  // aislado, con GUERNICA_DB_PATH/ATLAS_CONTROL_DB_PATH apuntando a paths fake fuera de las DBs
+  // reales. Prueba que CARGAR el modulo no toca disco, independiente de cualquier arranque de
+  // servidor (esta es la evidencia fuerte de pureza -- no el test HTTP de abajo).
+  const fakeBusinessDb = path.join(os.tmpdir(), `mt1e1a-fake-business-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+  const fakeControlDb = path.join(os.tmpdir(), `mt1e1a-fake-control-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+  const tenantHostContextPath = path.join(ROOT, "backend", "tenantHostContext.js");
+  try {
+    const resultado = spawnSync(
+      process.execPath,
+      ["-e", `require(${JSON.stringify(tenantHostContextPath)});`],
+      {
+        cwd: ROOT,
+        env: { ...process.env, GUERNICA_DB_PATH: fakeBusinessDb, ATLAS_CONTROL_DB_PATH: fakeControlDb },
+        encoding: "utf8"
+      }
+    );
+    assertEqual(resultado.status, 0, `require aislado de tenantHostContext debe salir 0\n${resultado.stderr || resultado.stdout}`);
+    assertEqual(fs.existsSync(fakeBusinessDb), false, "require de tenantHostContext no debe crear la fake business DB");
+    assertEqual(fs.existsSync(fakeControlDb), false, "require de tenantHostContext no debe crear la fake Control DB");
+  } finally {
+    fs.rmSync(fakeBusinessDb, { force: true });
+    fs.rmSync(fakeControlDb, { force: true });
+  }
+
+  // SUBCASE B -- LEGACY HTTP STATIC: el parser instalado en server.js no debe cambiar el
+  // comportamiento observable de un asset estatico. Compara Host normal (el que arma withServer)
+  // vs Host de tenant valido -- misma conexion TCP, mismo servidor, unico Host distinto via
+  // http.request crudo (fetch de Node no permite overridear el header Host, confirmado). La
+  // conclusion permitida es solo "el parser no cambia el comportamiento de assets estaticos", NO
+  // "el servidor nunca abrio DB" (el arranque legacy ya usa business DB independientemente de
+  // este parser).
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const url = new URL(baseUrl);
+      const pedirConHost = (hostHeader) => new Promise((resolve, reject) => {
+        const req = http.request({
+          host: url.hostname,
+          port: url.port,
+          path: "/auth-interceptor.js",
+          method: "GET",
+          headers: hostHeader ? { Host: hostHeader } : {}
+        }, (res) => {
+          let data = "";
+          res.on("data", (chunk) => { data += chunk; });
+          res.on("end", () => resolve({ status: res.statusCode, body: data }));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+
+      const normal = await pedirConHost(null);
+      const conTenant = await pedirConHost("guernica.atlasos.com.ar");
+
+      assertEqual(normal.status, 200, "asset estatico debe responder 200 con Host normal");
+      assertEqual(conTenant.status, 200, "asset estatico debe responder 200 con Host de tenant valido");
+      assertSame(conTenant.body, normal.body, "el contenido del asset estatico no debe cambiar segun el Host recibido");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
   }
 }

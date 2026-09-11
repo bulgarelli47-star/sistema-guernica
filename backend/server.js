@@ -12,6 +12,7 @@ const { revalidarSesionCentral } = require("./centralAuthResolver");
 const { resolverTenantDbRegistradoPorSlug } = require("./tenantDbRegistry");
 const { verificarTenantDbIdentity } = require("./tenantDbIdentity");
 const { resolveBusinessDbPath } = require("./resolveBusinessDbPath");
+const { parseTenantHost } = require("./tenantHostContext");
 const {
   CONFIGURACION_DEFAULTS,
   getConfiguracionGlobal,
@@ -235,6 +236,17 @@ const {
 const app = express();
 app.disable("x-powered-by");
 app.use(helmet({ contentSecurityPolicy: false }));
+
+// GAP-1 Slice 1 (MT-1E1): contexto CANDIDATO de tenant a partir del Host, una vez por request.
+// Deliberadamente NO enforcement -- no rechaza nada, no consulta Control DB, no abre business DB,
+// no compara contra ATLAS_EMPRESA_SLUG. INVALID/RESERVED/LOCAL quedan disponibles en
+// req.tenantHostContext exactamente igual que TENANT; la autorizacion real es de un slice
+// posterior. Fuente exacta: req.headers.host (nunca req.hostname/req.host, que dependerian de
+// trust proxy; nunca X-Forwarded-Host/Proto, que hoy nadie configura ni valida).
+app.use((req, res, next) => {
+  req.tenantHostContext = parseTenantHost(req.headers.host);
+  next();
+});
 
 const RL_MSG = { message: "Demasiados intentos. Esperá unos minutos e intentá nuevamente." };
 const rateLimitAutorizacion = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, message: RL_MSG, standardHeaders: true, legacyHeaders: false });
