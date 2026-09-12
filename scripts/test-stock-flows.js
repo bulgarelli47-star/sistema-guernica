@@ -64,6 +64,7 @@ const {
   verificarLegacyBaselineEnConexion
 } = require("../backend/legacyBaselineVerifier");
 const { adoptarLegacyBaseline } = require("../database/adopt-legacy-baseline");
+const { crearBackupSQLite } = require("../backend/sqliteBackup");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -20576,6 +20577,9 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1E2C2BConcurrencyAndIdempotency);
   await _run(testMT1E2C2BSameConnectionAuthority);
   await _run(testMT1E2C2BModuleSinSideEffects);
+  await _run(testMT1E2C3ASharedBackupHappyPath);
+  await _run(testMT1E2C3ASharedBackupLifecycle);
+  await _run(testMT1E2C3AAdopterUsesSharedBackup);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -28055,5 +28059,182 @@ async function testMT1E2C2BModuleSinSideEffects() {
     assertEqual(fs.existsSync(fakeBusinessDb), false, "require de adopt-legacy-baseline no debe crear la fake business DB");
   } finally {
     fs.rmSync(fakeBusinessDb, { force: true });
+  }
+}
+
+async function testMT1E2C3ASharedBackupHappyPath() {
+  const sourcePath = path.join(os.tmpdir(), `mt1e2c3a-shared-src-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+  const backupPath = path.join(os.tmpdir(), `mt1e2c3a-shared-bak-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+  try {
+    await runSql(sourcePath, "CREATE TABLE t (id INTEGER PRIMARY KEY, valor TEXT NOT NULL)");
+    await runSql(sourcePath, "INSERT INTO t (id, valor) VALUES (1, 'PRE')");
+
+    const source = await abrirConexionTestReadOnly(sourcePath);
+    await crearBackupSQLite(source, backupPath);
+    await cerrarConexionTest(source);
+
+    assertSame(fs.existsSync(backupPath), true, "el backup debe existir tras crearBackupSQLite");
+
+    const backupDb = await abrirConexionTestReadOnly(backupPath);
+    const integridad = await new Promise((res, rej) =>
+      backupDb.get("PRAGMA integrity_check", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertSame(integridad.integrity_check, "ok", "el backup debe pasar integrity_check");
+    const fila = await new Promise((res, rej) =>
+      backupDb.get("SELECT valor FROM t WHERE id = 1", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertSame(fila.valor, "PRE", "el backup debe contener el dato exacto de la fuente");
+    await cerrarConexionTest(backupDb);
+  } finally {
+    for (const sufijo of ["", "-wal", "-shm", "-journal"]) {
+      fs.rmSync(sourcePath + sufijo, { force: true });
+      fs.rmSync(backupPath + sufijo, { force: true });
+    }
+  }
+}
+
+function crearFakeBackupSource(control) {
+  return {
+    backup(destPath, initCb) {
+      const emitter = new (require("events").EventEmitter)();
+      emitter.step = (pages, cb) => {
+        control.stepCallCount = (control.stepCallCount || 0) + 1;
+        control.pendingStepCb = cb;
+        control.onStep && control.onStep(cb, control.stepCallCount);
+      };
+      emitter.finish = (cb) => {
+        control.finishCallCount = (control.finishCallCount || 0) + 1;
+        setImmediate(() => cb(null));
+      };
+      control.emitter = emitter;
+      setImmediate(() => initCb(null));
+      return emitter;
+    }
+  };
+}
+
+async function testMT1E2C3ASharedBackupLifecycle() {
+  // Subcase A: step error, INMEDIATAMENTE error event (antes del finish callback).
+  {
+    const control = {};
+    const fakeDb = crearFakeBackupSource(control);
+    let resultado = null;
+    const promise = crearBackupSQLite(fakeDb, "/fake/backup.db").then(
+      () => { resultado = "RESOLVED"; },
+      () => { resultado = "REJECTED"; }
+    );
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    control.pendingStepCb(Object.assign(new Error("IOERR"), { code: "SQLITE_IOERR" }));
+    control.emitter.emit("error", Object.assign(new Error("EXTRA"), { code: "SQLITE_MISUSE" }));
+    await promise;
+    assertEqual(control.finishCallCount, 1, "subcase A: finish debe llamarse exactamente 1 vez");
+    assertSame(resultado, "REJECTED", "subcase A: debe rechazar");
+  }
+
+  // Subcase B: error event PRIMERO, luego step callback error.
+  {
+    const control = {};
+    const fakeDb = crearFakeBackupSource(control);
+    let resultado = null;
+    const promise = crearBackupSQLite(fakeDb, "/fake/backup.db").then(
+      () => { resultado = "RESOLVED"; },
+      () => { resultado = "REJECTED"; }
+    );
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    const stepCb = control.pendingStepCb;
+    control.emitter.emit("error", Object.assign(new Error("EXTRA"), { code: "SQLITE_MISUSE" }));
+    stepCb(Object.assign(new Error("IOERR"), { code: "SQLITE_IOERR" }));
+    await promise;
+    assertEqual(control.finishCallCount, 1, "subcase B: finish debe llamarse exactamente 1 vez");
+    assertSame(resultado, "REJECTED", "subcase B: debe rechazar");
+  }
+
+  // Subcase C: retry timer programado (BUSY), luego error event fuerza finish antes de que dispare.
+  {
+    const control = {};
+    const fakeDb = crearFakeBackupSource(control);
+    let resultado = null;
+    const promise = crearBackupSQLite(fakeDb, "/fake/backup.db").then(
+      () => { resultado = "RESOLVED"; },
+      () => { resultado = "REJECTED"; }
+    );
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    control.pendingStepCb(Object.assign(new Error("BUSY"), { code: "SQLITE_BUSY" }));
+    control.emitter.emit("error", Object.assign(new Error("EXTRA"), { code: "SQLITE_MISUSE" }));
+    await promise;
+    const stepCountAntes = control.stepCallCount;
+    await new Promise((r) => setTimeout(r, 60));
+    assertEqual(control.stepCallCount, stepCountAntes, "subcase C: el timer tardio no debe disparar un step adicional");
+    assertEqual(control.finishCallCount, 1, "subcase C: finish debe llamarse exactamente 1 vez");
+    assertSame(resultado, "REJECTED", "subcase C: debe rechazar");
+  }
+
+  // Subcase D: success (done=true) y error event TARDIO -- no debe revertir el exito.
+  {
+    const control = {};
+    const fakeDb = crearFakeBackupSource(control);
+    let resultado = null;
+    const promise = crearBackupSQLite(fakeDb, "/fake/backup.db").then(
+      () => { resultado = "RESOLVED"; },
+      () => { resultado = "REJECTED"; }
+    );
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    control.pendingStepCb(null, true);
+    control.emitter.emit("error", Object.assign(new Error("LATE"), { code: "SQLITE_MISUSE" }));
+    await promise;
+    assertEqual(control.finishCallCount, 1, "subcase D: finish debe llamarse exactamente 1 vez");
+    assertSame(resultado, "RESOLVED", "subcase D: el exito no debe revertirse por un error tardio");
+  }
+}
+
+async function testMT1E2C3AAdopterUsesSharedBackup() {
+  const codigoAdopter = fs.readFileSync(path.join(ROOT, "database", "adopt-legacy-baseline.js"), "utf8");
+  assertSame(
+    codigoAdopter.includes('require("../backend/sqliteBackup")'),
+    true,
+    "el adopter debe importar crearBackupSQLite desde backend/sqliteBackup"
+  );
+  assertSame(
+    /^function crearBackupSQLite/m.test(codigoAdopter),
+    false,
+    "el adopter NO debe definir localmente crearBackupSQLite"
+  );
+
+  const codigoShared = fs.readFileSync(path.join(ROOT, "backend", "sqliteBackup.js"), "utf8");
+  assertSame(
+    /^function crearBackupSQLite/m.test(codigoShared),
+    true,
+    "backend/sqliteBackup.js debe definir crearBackupSQLite"
+  );
+  assertSame(
+    Object.keys(require(path.join(ROOT, "backend", "sqliteBackup.js"))).length,
+    1,
+    "backend/sqliteBackup.js debe exportar EXACTAMENTE 1 simbolo"
+  );
+
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const backupPath = `${dbPath}.backup`;
+  try {
+    const resultado = await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath });
+    assertSame(resultado.status, "ADOPTED", "el adopter debe seguir funcionando tras delegar el backup al modulo compartido");
+    assertSame(fs.existsSync(backupPath), true, "el backup debe existir");
+
+    const backupDb = await abrirConexionTestReadOnly(backupPath);
+    const integridad = await new Promise((res, rej) =>
+      backupDb.get("PRAGMA integrity_check", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertSame(integridad.integrity_check, "ok", "el backup debe seguir siendo valido");
+    await cerrarConexionTest(backupDb);
+
+    const filas = await allSql(dbPath, "SELECT sequence, migration_id FROM atlas_schema_migrations");
+    assertEqual(filas.length, 1, "debe existir exactamente 1 fila de baseline");
+    assertSame(filas[0].migration_id, "001_legacy_runtime_baseline", "migration_id debe ser exacto");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(backupPath, { force: true });
   }
 }
