@@ -287,7 +287,7 @@ async function ejecutarPreparacion(options) {
       const history = await verificarBusinessSchemaVersionEnConexion(dbA);
       if (history.state !== "UNVERSIONED") {
         await rollbackSeguro(dbA, transactionStartedRef);
-        return { status: "ALREADY_VERSIONED" };
+        throw crearError("ALREADY_VERSIONED", "La business DB ya posee historial de versionado.");
       }
 
       // Baseline precheck sobre A (misma conexion).

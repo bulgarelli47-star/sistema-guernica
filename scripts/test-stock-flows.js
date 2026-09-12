@@ -29495,8 +29495,13 @@ async function testMT1E3BVersionedRejected() {
     const backupPath = `${dbPath}.backup`;
     try {
       await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
-      const resultado = await prepararLegacyParaBaseline001({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
-      assertSame(resultado.status, "ALREADY_VERSIONED", "subcase A: DB ya adoptada (CURRENT) debe rechazarse");
+      let errorCapturado = null;
+      try {
+        await prepararLegacyParaBaseline001({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+      } catch (error) {
+        errorCapturado = error;
+      }
+      assertSame(errorCapturado?.code, "ALREADY_VERSIONED", "subcase A: DB ya adoptada (CURRENT) debe rechazarse con throw");
       assertSame(fs.existsSync(backupPath), false, "subcase A: no debe crearse backup");
     } finally {
       limpiarLegacyFixture(dbPath);
@@ -29511,8 +29516,13 @@ async function testMT1E3BVersionedRejected() {
     const backupPath = `${dbPath}.backup`;
     try {
       await runSql(dbPath, "CREATE TABLE atlas_schema_migrations (sequence INTEGER, migration_id TEXT)");
-      const resultado = await prepararLegacyParaBaseline001({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
-      assertSame(resultado.status, "ALREADY_VERSIONED", "subcase B: metadata presente (INVALID_HISTORY) debe rechazarse igual");
+      let errorCapturado = null;
+      try {
+        await prepararLegacyParaBaseline001({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+      } catch (error) {
+        errorCapturado = error;
+      }
+      assertSame(errorCapturado?.code, "ALREADY_VERSIONED", "subcase B: metadata presente (INVALID_HISTORY) debe rechazarse con throw");
       assertSame(fs.existsSync(backupPath), false, "subcase B: no debe crearse backup");
     } finally {
       limpiarLegacyFixture(dbPath);
