@@ -1,894 +1,108 @@
 const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 const bcrypt = require("bcrypt");
+const { crearBaseline001EnConexion } = require("./business-schema-baseline");
+const { TENANT_IDENTITY_SCHEMA_SQL } = require("./provision-tenant-identity");
+const { verificarLegacyBaselineEnConexion } = require("../backend/legacyBaselineVerifier");
 
 const dbPath = process.env.GUERNICA_DB_PATH || path.join(__dirname, "guernica.db");
 const db = new sqlite3.Database(dbPath);
 
-const CAJA_DENOMINACIONES_ARQUEO_DEFAULTS = [
-  { denominacion: 10, modo: "conservar_todo", tamano_grupo: null, orden: 10 },
-  { denominacion: 20, modo: "conservar_todo", tamano_grupo: null, orden: 20 },
-  { denominacion: 50, modo: "conservar_todo", tamano_grupo: null, orden: 30 },
-  { denominacion: 100, modo: "conservar_todo", tamano_grupo: null, orden: 40 },
-  { denominacion: 200, modo: "conservar_todo", tamano_grupo: null, orden: 50 },
-  { denominacion: 500, modo: "agrupar", tamano_grupo: 2, orden: 60 },
-  { denominacion: 1000, modo: "extraer_todo", tamano_grupo: null, orden: 70 },
-  { denominacion: 2000, modo: "extraer_todo", tamano_grupo: null, orden: 80 },
-  { denominacion: 10000, modo: "extraer_todo", tamano_grupo: null, orden: 90 },
-  { denominacion: 20000, modo: "extraer_todo", tamano_grupo: null, orden: 100 }
-];
+function runQuery(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (err) {
+      if (err) { reject(err); return; }
+      resolve(this);
+    });
+  });
+}
+
+function getQuery(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => {
+      if (err) { reject(err); return; }
+      resolve(row);
+    });
+  });
+}
+
+function allQuery(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) { reject(err); return; }
+      resolve(rows);
+    });
+  });
+}
+
+function closeDb() {
+  return new Promise((resolve) => {
+    db.close((err) => {
+      if (err) console.error("Error cerrando la base de datos:", err.message);
+      resolve();
+    });
+  });
+}
+
+// MT-1E4C: guard fail-closed contra uso accidental sobre una DB no vacia. init-db.js es
+// ONE-SHOT: solo opera sobre un archivo sin ninguna tabla de aplicacion todavia. Ignora
+// unicamente objetos internos de SQLite (p.ej. sqlite_sequence, que SQLite crea junto con la
+// primera tabla AUTOINCREMENT) -- cualquier tabla real preexistente detiene la ejecucion sin
+// tocar nada. NO repair, NO ensure, NO reentrant schema healing.
+async function verificarDbVacia() {
+  const filas = await allQuery(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT IN ('sqlite_sequence')"
+  );
+  return filas.length === 0;
+}
 
 async function initDatabase() {
   try {
+    const vacia = await verificarDbVacia();
+    if (!vacia) {
+      throw new Error(
+        `init-db.js: la base de datos en ${dbPath} ya contiene tablas de aplicacion. ` +
+        "init-db.js es one-shot y solo opera sobre una DB nueva/vacia -- no repara ni completa una DB existente."
+      );
+    }
+
     console.log("Creando base de datos...");
 
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS tenant_identity (
-        id INTEGER PRIMARY KEY CHECK(id = 1),
-        empresa_control_id INTEGER NOT NULL CHECK(typeof(empresa_control_id) = 'integer' AND empresa_control_id > 0),
-        tenant_slug TEXT NOT NULL CHECK(typeof(tenant_slug) = 'text' AND length(tenant_slug) > 0 AND tenant_slug = trim(tenant_slug)),
-        creado_en TEXT NOT NULL DEFAULT (datetime('now'))
-      )
-    `);
+    await runQuery("BEGIN IMMEDIATE");
+    let transactionStarted = true;
+    try {
+      await crearBaseline001EnConexion(db);
+      await runQuery(TENANT_IDENTITY_SCHEMA_SQL);
 
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS usuarios (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nombre TEXT NOT NULL,
-        usuario TEXT NOT NULL UNIQUE,
-        password TEXT NOT NULL,
-        rol TEXT NOT NULL,
-        activo INTEGER NOT NULL DEFAULT 1
-      )
-    `);
-    await ensureColumn("usuarios", "email", "TEXT");
-    await ensureColumn("usuarios", "telefono", "TEXT");
-    await ensureColumn("usuarios", "ultimo_acceso", "TEXT");
-    await ensureColumn("usuarios", "creado_en", "TEXT");
-    await ensureColumn("usuarios", "actualizado_en", "TEXT");
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS productos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nombre TEXT NOT NULL,
-        categoria TEXT,
-        precio_compra REAL NOT NULL DEFAULT 0,
-        precio_venta REAL NOT NULL DEFAULT 0,
-        stock REAL NOT NULL DEFAULT 0,
-        maneja_stock INTEGER NOT NULL DEFAULT 1,
-        proveedor_principal TEXT,
-        activo INTEGER NOT NULL DEFAULT 1
-      )
-    `);
-
-    await ensureColumn("productos", "proveedor_id", "INTEGER");
-    await ensureColumn("productos", "activo", "INTEGER NOT NULL DEFAULT 1");
-    await ensureColumn("productos", "eliminado", "INTEGER NOT NULL DEFAULT 0");
-    await ensureColumn("productos", "observaciones", "TEXT");
-    await ensureColumn("productos", "imagen_url", "TEXT");
-    await ensureColumn("productos", "iva_porcentaje", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("productos", "precio_compra_incluye_iva", "INTEGER NOT NULL DEFAULT 0");
-    await ensureColumn("productos", "costo_final", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("productos", "categoria_id", "INTEGER");
-    await ensureColumn("productos", "redondeo", "INTEGER NOT NULL DEFAULT 0");
-    await ensureColumn("productos", "codigo", "TEXT");
-    await ensureColumn("productos", "descripcion", "TEXT");
-    await ensureColumn("productos", "stock_minimo", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("productos", "unidad_medida", "TEXT NOT NULL DEFAULT 'unidad'");
-    await ensureColumn("productos", "codigo_barras", "TEXT");
-    await ensureColumn("productos", "marca", "TEXT");
-    await ensureColumn("productos", "presentacion", "TEXT");
-    await ensureColumn("productos", "ubicacion", "TEXT");
-    await ensureColumn("productos", "vencimiento", "TEXT");
-    await ensureColumn("productos", "alerta_stock_minimo", "INTEGER NOT NULL DEFAULT 1");
-    await ensureColumn("productos", "usa_costos_varios", "INTEGER NOT NULL DEFAULT 0");
-    await ensureColumn("productos", "precio_referencial_proveedor", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("productos", "agregar_proveedor_info", "INTEGER NOT NULL DEFAULT 0");
-    await ensureColumn("productos", "costo_economico", "REAL");
-    await ensureColumn("productos", "iva_venta_tratamiento", "TEXT");
-    await ensureColumn("productos", "iva_venta_alicuota", "REAL");
-    await ensureColumn("productos", "modelo_fiscal", "TEXT NOT NULL DEFAULT 'legacy'");
-    await ensureColumn("productos", "precio_venta_modo", "TEXT NOT NULL DEFAULT 'manual'");
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS categorias (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nombre TEXT NOT NULL,
-        margen_porcentaje REAL NOT NULL DEFAULT 0,
-        activo INTEGER NOT NULL DEFAULT 1
-      )
-    `);
-    await ensureColumn("categorias", "maneja_stock", "INTEGER NOT NULL DEFAULT 1");
-    await ensureColumn("categorias", "usa_costos_varios", "INTEGER NOT NULL DEFAULT 0");
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS producto_costos_insumos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        producto_id INTEGER NOT NULL,
-        nombre TEXT NOT NULL,
-        costo_total REAL NOT NULL DEFAULT 0,
-        cantidad_rinde REAL NOT NULL DEFAULT 1,
-        unidad TEXT NOT NULL DEFAULT 'un',
-        cantidad_usada REAL NOT NULL DEFAULT 1,
-        costo_unitario REAL NOT NULL DEFAULT 0,
-        costo_aplicado REAL NOT NULL DEFAULT 0,
-        FOREIGN KEY (producto_id) REFERENCES productos(id)
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS producto_proveedores (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        producto_id INTEGER NOT NULL,
-        proveedor_id INTEGER NOT NULL,
-        precio_compra REAL NOT NULL DEFAULT 0,
-        fecha_actualizacion TEXT NOT NULL,
-        es_principal INTEGER NOT NULL DEFAULT 0,
-        FOREIGN KEY (producto_id) REFERENCES productos(id),
-        FOREIGN KEY (proveedor_id) REFERENCES proveedores(id)
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS movimientos_stock (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        producto_id INTEGER NOT NULL,
-        tipo_movimiento TEXT NOT NULL,
-        cantidad REAL NOT NULL DEFAULT 0,
-        stock_anterior REAL NOT NULL DEFAULT 0,
-        stock_nuevo REAL NOT NULL DEFAULT 0,
-        motivo TEXT,
-        proveedor_id INTEGER,
-        usuario TEXT,
-        fecha TEXT NOT NULL,
-        hora TEXT NOT NULL,
-        origen_tipo TEXT,
-        origen_id INTEGER,
-        idempotency_key TEXT,
-        movimiento_stock_reversa_id INTEGER,
-        FOREIGN KEY (producto_id) REFERENCES productos(id),
-        FOREIGN KEY (proveedor_id) REFERENCES proveedores(id),
-        FOREIGN KEY (movimiento_stock_reversa_id) REFERENCES movimientos_stock(id)
-      )
-    `);
-    await ensureColumn("movimientos_stock", "origen_tipo", "TEXT");
-    await ensureColumn("movimientos_stock", "origen_id", "INTEGER");
-    await ensureColumn("movimientos_stock", "idempotency_key", "TEXT");
-    await ensureColumn("movimientos_stock", "movimiento_stock_reversa_id", "INTEGER");
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS historial_productos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        producto_id INTEGER NOT NULL,
-        campo_modificado TEXT NOT NULL,
-        valor_anterior TEXT,
-        valor_nuevo TEXT,
-        usuario TEXT,
-        fecha TEXT NOT NULL,
-        hora TEXT NOT NULL,
-        motivo TEXT,
-        FOREIGN KEY (producto_id) REFERENCES productos(id)
-      )
-    `);
-
-    await ensureColumn("productos", "es_combo", "INTEGER NOT NULL DEFAULT 0");
-    await ensureColumn("productos", "aplica_para_combo", "INTEGER NOT NULL DEFAULT 0");
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS combo_componentes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        combo_producto_id INTEGER NOT NULL,
-        producto_id INTEGER NOT NULL,
-        cantidad REAL NOT NULL DEFAULT 1,
-        FOREIGN KEY (combo_producto_id) REFERENCES productos(id),
-        FOREIGN KEY (producto_id) REFERENCES productos(id)
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS clientes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nombre TEXT NOT NULL,
-        tipo_cliente TEXT NOT NULL DEFAULT 'cliente',
-        telefono TEXT,
-        direccion TEXT,
-        alias TEXT,
-        observaciones TEXT,
-        limite_fiado REAL NOT NULL DEFAULT 0,
-        activo INTEGER NOT NULL DEFAULT 1
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS ventas (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        fecha TEXT NOT NULL,
-        hora TEXT NOT NULL,
-        usuario TEXT NOT NULL,
-        total REAL NOT NULL DEFAULT 0,
-        tipo TEXT NOT NULL,
-        estado TEXT NOT NULL,
-        identificador_pendiente TEXT,
-        metodo_pago TEXT,
-        tipo_cobro TEXT,
-        monto_efectivo REAL NOT NULL DEFAULT 0,
-        monto_debito REAL NOT NULL DEFAULT 0,
-        cliente_id INTEGER,
-        es_cuenta_corriente INTEGER NOT NULL DEFAULT 0,
-        saldo_pendiente REAL NOT NULL DEFAULT 0,
-        total_venta_original REAL,
-        FOREIGN KEY (cliente_id) REFERENCES clientes(id)
-      )
-    `);
-
-    await ensureColumn("ventas", "identificador_pendiente", "TEXT");
-    await ensureColumn("ventas", "metodo_pago", "TEXT");
-    await ensureColumn("ventas", "tipo_cobro", "TEXT");
-    await ensureColumn("ventas", "monto_efectivo", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("ventas", "monto_debito", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("ventas", "cliente_id", "INTEGER");
-    await ensureColumn("ventas", "es_cuenta_corriente", "INTEGER NOT NULL DEFAULT 0");
-    await ensureColumn("ventas", "saldo_pendiente", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("ventas", "caja_id", "INTEGER");
-    await ensureColumn("ventas", "total_venta_original", "REAL");
-    await ensureColumn("clientes", "direccion", "TEXT");
-    await ensureColumn("clientes", "alias", "TEXT");
-    await ensureColumn("clientes", "observaciones", "TEXT");
-    await ensureColumn("clientes", "limite_fiado", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("clientes", "dni_cuit", "TEXT");
-    await ensureColumn("clientes", "tipo_persona", "TEXT NOT NULL DEFAULT 'fisica'");
-    await ensureColumn("clientes", "tipo_cliente", "TEXT NOT NULL DEFAULT 'cliente'");
-    await ensureColumn("clientes", "email", "TEXT");
-    await ensureColumn("clientes", "contacto", "TEXT");
-    await ensureColumn("clientes", "localidad", "TEXT");
-    await ensureColumn("clientes", "codigo_postal", "TEXT");
-    await ensureColumn("clientes", "dias_vencimiento", "INTEGER NOT NULL DEFAULT 30");
-    await ensureColumn("clientes", "dia_vencimiento_fijo", "INTEGER");
-    await ensureColumn("clientes", "moneda", "TEXT NOT NULL DEFAULT 'ARS'");
-    await ensureColumn("clientes", "habilita_cuenta_corriente", "INTEGER NOT NULL DEFAULT 1");
-    await ensureColumn("clientes", "notas", "TEXT");
-    await ensureColumn("clientes", "suspendido", "INTEGER NOT NULL DEFAULT 0");
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS detalle_ventas (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        venta_id INTEGER NOT NULL,
-        producto_id INTEGER,
-        nombre_producto TEXT NOT NULL,
-        cantidad REAL NOT NULL DEFAULT 0,
-        precio_unitario REAL NOT NULL DEFAULT 0,
-        subtotal REAL NOT NULL DEFAULT 0,
-        modelo_fiscal_snapshot TEXT,
-        costo_economico_snapshot REAL,
-        iva_venta_tratamiento_snapshot TEXT,
-        iva_venta_alicuota_snapshot REAL,
-        subtotal_neto_snapshot REAL,
-        iva_monto_snapshot REAL,
-        FOREIGN KEY (venta_id) REFERENCES ventas(id)
-      )
-    `);
-    await ensureColumn("detalle_ventas", "modelo_fiscal_snapshot", "TEXT");
-    await ensureColumn("detalle_ventas", "costo_economico_snapshot", "REAL");
-    await ensureColumn("detalle_ventas", "iva_venta_tratamiento_snapshot", "TEXT");
-    await ensureColumn("detalle_ventas", "iva_venta_alicuota_snapshot", "REAL");
-    await ensureColumn("detalle_ventas", "subtotal_neto_snapshot", "REAL");
-    await ensureColumn("detalle_ventas", "iva_monto_snapshot", "REAL");
-
-    // Modificadores: no son productos vendidos. Deben quedar pegados al detalle
-    // de venta y guardar snapshot historico para anulaciones y reportes.
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS modificadores (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        codigo TEXT UNIQUE,
-        nombre TEXT NOT NULL,
-        tipo TEXT NOT NULL DEFAULT 'libre',
-        precio_extra REAL NOT NULL DEFAULT 0,
-        activo INTEGER NOT NULL DEFAULT 1,
-        orden INTEGER NOT NULL DEFAULT 0,
-        observacion_cocina TEXT,
-        created_at TEXT,
-        updated_at TEXT
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS producto_modificadores (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        producto_id INTEGER NOT NULL,
-        modificador_id INTEGER NOT NULL,
-        obligatorio INTEGER NOT NULL DEFAULT 0,
-        max_usos INTEGER NOT NULL DEFAULT 1,
-        orden INTEGER NOT NULL DEFAULT 0,
-        activo INTEGER NOT NULL DEFAULT 1,
-        UNIQUE(producto_id, modificador_id),
-        FOREIGN KEY (producto_id) REFERENCES productos(id),
-        FOREIGN KEY (modificador_id) REFERENCES modificadores(id)
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS modificador_componentes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        modificador_id INTEGER NOT NULL,
-        producto_id INTEGER,
-        cantidad REAL NOT NULL DEFAULT 0,
-        operacion TEXT NOT NULL DEFAULT 'agregar',
-        metadata_json TEXT,
-        FOREIGN KEY (modificador_id) REFERENCES modificadores(id),
-        FOREIGN KEY (producto_id) REFERENCES productos(id)
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS detalle_venta_modificadores (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        detalle_venta_id INTEGER NOT NULL,
-        modificador_id INTEGER,
-        nombre TEXT NOT NULL,
-        tipo TEXT NOT NULL,
-        precio_extra REAL NOT NULL DEFAULT 0,
-        cantidad REAL NOT NULL DEFAULT 1,
-        metadata_json TEXT,
-        FOREIGN KEY (detalle_venta_id) REFERENCES detalle_ventas(id),
-        FOREIGN KEY (modificador_id) REFERENCES modificadores(id)
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS detalle_venta_componentes_snapshot (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        detalle_venta_id INTEGER NOT NULL,
-        producto_id INTEGER,
-        nombre_producto TEXT,
-        cantidad REAL NOT NULL DEFAULT 0,
-        operacion TEXT NOT NULL DEFAULT 'base',
-        origen TEXT NOT NULL DEFAULT 'producto',
-        modificador_id INTEGER,
-        metadata_json TEXT,
-        FOREIGN KEY (detalle_venta_id) REFERENCES detalle_ventas(id),
-        FOREIGN KEY (producto_id) REFERENCES productos(id),
-        FOREIGN KEY (modificador_id) REFERENCES modificadores(id)
-      )
-    `);
-
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_producto_modificadores_producto ON producto_modificadores(producto_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_detalle_venta_modificadores_detalle ON detalle_venta_modificadores(detalle_venta_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_detalle_venta_componentes_snapshot_detalle ON detalle_venta_componentes_snapshot(detalle_venta_id)");
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS detalle_venta_receta_snapshot (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        venta_id INTEGER NOT NULL,
-        detalle_venta_id INTEGER NOT NULL,
-        producto_vendido_id INTEGER NOT NULL,
-        componente_id INTEGER NOT NULL,
-        componente_nombre_snapshot TEXT NOT NULL,
-        cantidad_por_porcion REAL NOT NULL DEFAULT 0,
-        cantidad_total REAL NOT NULL DEFAULT 0,
-        unidad TEXT NOT NULL DEFAULT 'un',
-        costo_unitario_snapshot REAL NOT NULL DEFAULT 0,
-        costo_total_snapshot REAL NOT NULL DEFAULT 0,
-        FOREIGN KEY (venta_id) REFERENCES ventas(id),
-        FOREIGN KEY (detalle_venta_id) REFERENCES detalle_ventas(id)
-      )
-    `);
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_dvrs_venta ON detalle_venta_receta_snapshot(venta_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_dvrs_detalle ON detalle_venta_receta_snapshot(detalle_venta_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_dvrs_componente ON detalle_venta_receta_snapshot(componente_id)");
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS pagos_cuenta_corriente (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        venta_id INTEGER NOT NULL,
-        cliente_id INTEGER NOT NULL,
-        fecha TEXT NOT NULL,
-        hora TEXT NOT NULL,
-        monto_pagado REAL NOT NULL DEFAULT 0,
-        tipo_cobro TEXT NOT NULL,
-        monto_efectivo REAL NOT NULL DEFAULT 0,
-        monto_debito REAL NOT NULL DEFAULT 0,
-        FOREIGN KEY (venta_id) REFERENCES ventas(id),
-        FOREIGN KEY (cliente_id) REFERENCES clientes(id)
-      )
-    `);
-
-    await ensureColumn("pagos_cuenta_corriente", "caja_id", "INTEGER");
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS recalculos_cuenta_corriente (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        cliente_id INTEGER NOT NULL,
-        deuda_historica REAL NOT NULL DEFAULT 0,
-        deuda_actualizada REAL NOT NULL DEFAULT 0,
-        diferencia REAL NOT NULL DEFAULT 0,
-        usuario TEXT,
-        motivo TEXT,
-        fecha TEXT NOT NULL,
-        hora TEXT NOT NULL,
-        detalle_json TEXT,
-        FOREIGN KEY (cliente_id) REFERENCES clientes(id)
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS proveedores (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nombre TEXT NOT NULL,
-        alias TEXT,
-        telefono TEXT,
-        cuit TEXT,
-        observaciones TEXT,
-        activo INTEGER NOT NULL DEFAULT 1
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS pagos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        proveedor_id INTEGER,
-        concepto TEXT NOT NULL,
-        monto_total REAL NOT NULL DEFAULT 0,
-        tipo_pago TEXT NOT NULL,
-        monto_efectivo REAL NOT NULL DEFAULT 0,
-        monto_debito REAL NOT NULL DEFAULT 0,
-        fecha TEXT NOT NULL,
-        hora TEXT NOT NULL,
-        estado TEXT NOT NULL DEFAULT 'registrado',
-        FOREIGN KEY (proveedor_id) REFERENCES proveedores(id)
-      )
-    `);
-
-    await ensureColumn("proveedores", "alias", "TEXT");
-    await ensureColumn("proveedores", "telefono", "TEXT");
-    await ensureColumn("proveedores", "cuit", "TEXT");
-    await ensureColumn("proveedores", "observaciones", "TEXT");
-    await ensureColumn("proveedores", "activo", "INTEGER NOT NULL DEFAULT 1");
-    await ensureColumn("proveedores", "email", "TEXT");
-    await ensureColumn("proveedores", "contacto", "TEXT");
-    await ensureColumn("proveedores", "direccion", "TEXT");
-    await ensureColumn("proveedores", "localidad", "TEXT");
-    await ensureColumn("proveedores", "codigo_postal", "TEXT");
-    await ensureColumn("proveedores", "tipo_persona", "TEXT NOT NULL DEFAULT 'juridica'");
-    await ensureColumn("proveedores", "maneja_cuenta_corriente", "INTEGER NOT NULL DEFAULT 0");
-    await ensureColumn("proveedores", "limite_credito", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("proveedores", "dias_vencimiento", "INTEGER NOT NULL DEFAULT 0");
-    await ensureColumn("proveedores", "dia_vencimiento_fijo", "INTEGER");
-    await ensureColumn("proveedores", "moneda", "TEXT NOT NULL DEFAULT 'ARS'");
-    await ensureColumn("proveedores", "tipo_impacto", "TEXT NOT NULL DEFAULT 'otro_no_computable'");
-    await ensureColumn("proveedores", "categoria_id", "INTEGER");
-    await ensureColumn("proveedores", "categoria_especial", "TEXT");
-    await ensureColumn("proveedores", "condicion_iva", "TEXT NOT NULL DEFAULT 'no_informado'");
-    await ensureColumn("proveedores", "tipo_comprobante", "TEXT NOT NULL DEFAULT 'otro'");
-    await ensureColumn("proveedores", "iva_alicuota", "REAL NOT NULL DEFAULT 21");
-    await ensureColumn("pagos", "proveedor_id", "INTEGER");
-    await ensureColumn("pagos", "concepto", "TEXT NOT NULL DEFAULT ''");
-    await ensureColumn("pagos", "monto_total", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("pagos", "tipo_pago", "TEXT NOT NULL DEFAULT 'efectivo'");
-    await ensureColumn("pagos", "monto_efectivo", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("pagos", "monto_debito", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("pagos", "fecha", "TEXT");
-    await ensureColumn("pagos", "hora", "TEXT");
-    await ensureColumn("pagos", "estado", "TEXT NOT NULL DEFAULT 'registrado'");
-    await ensureColumn("pagos", "caja_id", "INTEGER");
-    await ensureColumn("pagos", "categoria_pago", "TEXT NOT NULL DEFAULT 'otro_no_computable'");
-    await ensureColumn("pagos", "comprobante", "TEXT");
-    await ensureColumn("pagos", "numero_comprobante", "TEXT");
-    await ensureColumn("pagos", "cuenta_destino", "TEXT");
-    await ensureColumn("pagos", "referencia", "TEXT");
-    await ensureColumn("pagos", "observaciones", "TEXT");
-    await ensureColumn("pagos", "es_cuenta_corriente", "INTEGER NOT NULL DEFAULT 0");
-    await ensureColumn("pagos", "iva_credito_fiscal", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("pagos", "compra_id", "INTEGER");
-    await ensureColumn("pagos", "cuenta_destino_id_snapshot", "INTEGER");
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS compras (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        proveedor_id INTEGER NOT NULL,
-        fecha_compra TEXT NOT NULL,
-        hora TEXT,
-        concepto TEXT,
-        tipo_impacto TEXT NOT NULL DEFAULT 'otro_no_computable',
-        moneda TEXT NOT NULL DEFAULT 'ARS',
-        total_compra REAL NOT NULL DEFAULT 0,
-        saldo_pendiente REAL NOT NULL DEFAULT 0,
-        estado TEXT NOT NULL DEFAULT 'pendiente',
-        observaciones TEXT,
-        usuario TEXT,
-        created_at TEXT,
-        updated_at TEXT,
-        FOREIGN KEY (proveedor_id) REFERENCES proveedores(id)
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS compra_comprobantes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        compra_id INTEGER NOT NULL,
-        tipo_comprobante TEXT NOT NULL,
-        punto_venta TEXT,
-        numero_comprobante TEXT,
-        fecha_emision TEXT,
-        fecha_recepcion TEXT,
-        proveedor_nombre_snapshot TEXT,
-        proveedor_cuit_snapshot TEXT,
-        condicion_iva_proveedor_snapshot TEXT,
-        moneda TEXT NOT NULL DEFAULT 'ARS',
-        neto_gravado REAL,
-        iva_total REAL,
-        monto_exento REAL,
-        monto_no_gravado REAL,
-        otros_tributos REAL,
-        total_comprobante REAL NOT NULL DEFAULT 0,
-        estado TEXT NOT NULL DEFAULT 'registrado',
-        observaciones TEXT,
-        created_at TEXT,
-        updated_at TEXT,
-        FOREIGN KEY (compra_id) REFERENCES compras(id)
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS compra_comprobante_iva (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        comprobante_id INTEGER NOT NULL,
-        alicuota REAL NOT NULL,
-        neto_gravado REAL NOT NULL DEFAULT 0,
-        iva_monto REAL NOT NULL DEFAULT 0,
-        FOREIGN KEY (comprobante_id) REFERENCES compra_comprobantes(id)
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS compra_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        compra_id INTEGER NOT NULL,
-        producto_id INTEGER,
-        descripcion_snapshot TEXT NOT NULL,
-        cantidad_comprada REAL NOT NULL,
-        unidad_snapshot TEXT,
-        costo_unitario REAL NOT NULL DEFAULT 0,
-        subtotal REAL NOT NULL DEFAULT 0,
-        afecta_stock INTEGER NOT NULL DEFAULT 0,
-        observaciones TEXT,
-        created_at TEXT,
-        updated_at TEXT,
-        FOREIGN KEY (compra_id) REFERENCES compras(id),
-        FOREIGN KEY (producto_id) REFERENCES productos(id)
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS compra_recepciones (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        compra_id INTEGER NOT NULL,
-        fecha TEXT NOT NULL,
-        hora TEXT,
-        observaciones TEXT,
-        usuario TEXT,
-        estado TEXT NOT NULL DEFAULT 'registrada',
-        idempotency_key TEXT,
-        created_at TEXT,
-        anulada_at TEXT,
-        anulada_por TEXT,
-        motivo_anulacion TEXT,
-        FOREIGN KEY (compra_id) REFERENCES compras(id)
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS compra_recepcion_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        recepcion_id INTEGER NOT NULL,
-        compra_item_id INTEGER NOT NULL,
-        producto_id INTEGER NOT NULL,
-        cantidad_recibida REAL NOT NULL,
-        unidad_snapshot TEXT,
-        modo_stock TEXT NOT NULL DEFAULT 'generado',
-        movimiento_stock_id INTEGER,
-        movimiento_stock_vinculado_id INTEGER,
-        movimiento_stock_reversa_id INTEGER,
-        precio_proveedor_anterior_snapshot REAL,
-        fecha_precio_proveedor_anterior_snapshot TEXT,
-        costo_referencial_actualizado INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT,
-        FOREIGN KEY (recepcion_id) REFERENCES compra_recepciones(id),
-        FOREIGN KEY (compra_item_id) REFERENCES compra_items(id),
-        FOREIGN KEY (producto_id) REFERENCES productos(id),
-        FOREIGN KEY (movimiento_stock_id) REFERENCES movimientos_stock(id),
-        FOREIGN KEY (movimiento_stock_vinculado_id) REFERENCES movimientos_stock(id),
-        FOREIGN KEY (movimiento_stock_reversa_id) REFERENCES movimientos_stock(id)
-      )
-    `);
-    await ensureColumn("compra_recepcion_items", "modo_stock", "TEXT NOT NULL DEFAULT 'generado'");
-    await ensureColumn("compra_recepcion_items", "movimiento_stock_vinculado_id", "INTEGER");
-    await ensureColumn("compra_recepcion_items", "movimiento_stock_reversa_id", "INTEGER");
-    await ensureColumn("compra_recepcion_items", "precio_proveedor_anterior_snapshot", "REAL");
-    await ensureColumn("compra_recepcion_items", "fecha_precio_proveedor_anterior_snapshot", "TEXT");
-    await ensureColumn("compra_recepcion_items", "costo_referencial_actualizado", "INTEGER NOT NULL DEFAULT 0");
-    await ensureColumn("compras", "anulada_at", "TEXT");
-    await ensureColumn("compras", "anulada_por", "TEXT");
-    await ensureColumn("compras", "motivo_anulacion", "TEXT");
-    await ensureColumn("compra_comprobantes", "anulado_at", "TEXT");
-    await ensureColumn("compra_comprobantes", "anulado_por", "TEXT");
-    await ensureColumn("compra_comprobantes", "motivo_anulacion", "TEXT");
-
-    // F3D-4bis: revision de configuracion (costo de proveedor) separada de
-    // stock_ajustes_pendientes -- nunca mueve stock, nunca crea movimientos_stock.
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS producto_revisiones_pendientes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        tipo_revision TEXT NOT NULL DEFAULT 'costo_proveedor',
-        estado TEXT NOT NULL DEFAULT 'pendiente',
-        producto_id INTEGER NOT NULL,
-        proveedor_id INTEGER NOT NULL,
-        compra_id INTEGER NOT NULL,
-        compra_item_id INTEGER NOT NULL,
-        comprobante_id INTEGER,
-        valor_actual REAL NOT NULL,
-        valor_propuesto REAL NOT NULL,
-        motivo TEXT,
-        creado_at TEXT NOT NULL,
-        creado_por TEXT,
-        revisado_at TEXT,
-        revisado_por TEXT,
-        decision TEXT,
-        UNIQUE (tipo_revision, compra_item_id),
-        FOREIGN KEY (producto_id) REFERENCES productos(id),
-        FOREIGN KEY (proveedor_id) REFERENCES proveedores(id),
-        FOREIGN KEY (compra_id) REFERENCES compras(id),
-        FOREIGN KEY (compra_item_id) REFERENCES compra_items(id),
-        FOREIGN KEY (comprobante_id) REFERENCES compra_comprobantes(id)
-      )
-    `);
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_producto_revisiones_pendientes_estado ON producto_revisiones_pendientes(estado)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_producto_revisiones_pendientes_producto ON producto_revisiones_pendientes(producto_id)");
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS configuracion_global (
-        clave TEXT PRIMARY KEY,
-        valor TEXT NOT NULL,
-        seccion TEXT NOT NULL,
-        actualizado_en TEXT NOT NULL
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS caja_aperturas (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        fecha TEXT NOT NULL,
-        hora TEXT NOT NULL,
-        monto_apertura REAL NOT NULL DEFAULT 0,
-        usuario TEXT NOT NULL,
-        estado TEXT NOT NULL DEFAULT 'abierta',
-        hora_cierre TEXT,
-        efectivo_esperado REAL NOT NULL DEFAULT 0,
-        efectivo_contado REAL NOT NULL DEFAULT 0,
-        diferencia REAL NOT NULL DEFAULT 0,
-        monto_caja_apertura REAL NOT NULL DEFAULT 0,
-        monto_caja_fondo REAL NOT NULL DEFAULT 0,
-        conteo_detalle TEXT,
-        resumen_snapshot TEXT,
-        ventas_snapshot TEXT
-      )
-    `);
-
-    await ensureColumn("caja_aperturas", "hora_cierre", "TEXT");
-    await ensureColumn("caja_aperturas", "efectivo_esperado", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("caja_aperturas", "efectivo_contado", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("caja_aperturas", "diferencia", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("caja_aperturas", "monto_caja_apertura", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("caja_aperturas", "monto_caja_fondo", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("caja_aperturas", "saldo_inicial_mp", "REAL NOT NULL DEFAULT 0");
-    await ensureColumn("caja_aperturas", "conteo_detalle", "TEXT");
-    await ensureColumn("caja_aperturas", "resumen_snapshot", "TEXT");
-    await ensureColumn("caja_aperturas", "ventas_snapshot", "TEXT");
-    await ensureColumn("caja_aperturas", "pagos_snapshot", "TEXT");
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS caja_movimientos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        caja_id INTEGER NOT NULL,
-        tipo TEXT NOT NULL,
-        concepto TEXT NOT NULL,
-        monto REAL NOT NULL,
-        usuario TEXT NOT NULL DEFAULT 'admin',
-        fecha TEXT NOT NULL,
-        hora TEXT NOT NULL
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS caja_arqueos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        caja_id INTEGER NOT NULL,
-        fecha TEXT NOT NULL,
-        hora TEXT NOT NULL,
-        usuario TEXT NOT NULL DEFAULT 'admin',
-        efectivo_esperado REAL NOT NULL DEFAULT 0,
-        efectivo_contado REAL NOT NULL DEFAULT 0,
-        diferencia_efectivo REAL NOT NULL DEFAULT 0,
-        digital_esperado REAL NOT NULL DEFAULT 0,
-        digital_real REAL NOT NULL DEFAULT 0,
-        diferencia_digital REAL NOT NULL DEFAULT 0,
-        resultado_final REAL NOT NULL DEFAULT 0,
-        estado TEXT NOT NULL DEFAULT 'Sobra',
-        observaciones TEXT,
-        conteo_detalle TEXT,
-        cuentas_detalle TEXT,
-        resumen_snapshot TEXT,
-        modelo_arqueo_version INTEGER,
-        cambio_retenido REAL,
-        monto_extraido REAL,
-        cuenta_origen_id INTEGER,
-        cuenta_reserva_id INTEGER,
-        idempotency_key TEXT
-      )
-    `);
-    await ensureColumn("caja_arqueos", "registrado_cierre", "INTEGER NOT NULL DEFAULT 1");
-    await ensureColumn("caja_arqueos", "modelo_arqueo_version", "INTEGER");
-    await ensureColumn("caja_arqueos", "cambio_retenido", "REAL");
-    await ensureColumn("caja_arqueos", "monto_extraido", "REAL");
-    await ensureColumn("caja_arqueos", "cuenta_origen_id", "INTEGER");
-    await ensureColumn("caja_arqueos", "cuenta_reserva_id", "INTEGER");
-    await ensureColumn("caja_arqueos", "idempotency_key", "TEXT");
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS caja_traslados_internos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        caja_id INTEGER NOT NULL,
-        arqueo_id INTEGER,
-        cuenta_origen_id INTEGER NOT NULL,
-        cuenta_destino_id INTEGER NOT NULL,
-        monto REAL NOT NULL,
-        tipo TEXT NOT NULL,
-        estado TEXT NOT NULL DEFAULT 'activo',
-        fecha TEXT NOT NULL,
-        hora TEXT NOT NULL,
-        usuario TEXT NOT NULL DEFAULT 'admin',
-        observaciones TEXT,
-        created_at TEXT,
-        anulada_at TEXT,
-        anulada_por TEXT,
-        motivo_anulacion TEXT,
-        FOREIGN KEY (caja_id) REFERENCES caja_aperturas(id),
-        FOREIGN KEY (arqueo_id) REFERENCES caja_arqueos(id),
-        FOREIGN KEY (cuenta_origen_id) REFERENCES cuentas_destino(id),
-        FOREIGN KEY (cuenta_destino_id) REFERENCES cuentas_destino(id)
-      )
-    `);
-
-    await runQuery(`
-      CREATE TABLE IF NOT EXISTS caja_arqueo_denominaciones (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        denominacion INTEGER NOT NULL,
-        modo TEXT NOT NULL,
-        tamano_grupo INTEGER,
-        activo INTEGER NOT NULL DEFAULT 1,
-        orden INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT,
-        updated_at TEXT
-      )
-    `);
-
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_usuarios_usuario ON usuarios(usuario)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_productos_codigo ON productos(codigo)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_productos_activo ON productos(activo)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_estado ON ventas(estado)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_cliente ON ventas(cliente_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_caja ON ventas(caja_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_detalle_ventas_venta ON detalle_ventas(venta_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_producto ON movimientos_stock(producto_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_origen ON movimientos_stock(origen_tipo, origen_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_reversa ON movimientos_stock(movimiento_stock_reversa_id)");
-    await runQuery(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_movimientos_stock_manual_idempotency
-      ON movimientos_stock(origen_tipo, idempotency_key)
-      WHERE idempotency_key IS NOT NULL AND idempotency_key != ''
-    `);
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_movimientos_caja ON caja_movimientos(caja_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_traslados_caja ON caja_traslados_internos(caja_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_traslados_arqueo ON caja_traslados_internos(arqueo_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_traslados_origen ON caja_traslados_internos(cuenta_origen_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_traslados_destino ON caja_traslados_internos(cuenta_destino_id)");
-    await runQuery(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_caja_traslados_arqueo_extraccion_activa
-      ON caja_traslados_internos(arqueo_id, tipo)
-      WHERE arqueo_id IS NOT NULL AND tipo = 'arqueo_extraccion' AND estado = 'activo'
-    `);
-    const idempotencyIndex = await allQuery("PRAGMA index_info(idx_caja_arqueos_modelo1_idempotency)");
-    if (idempotencyIndex.length && idempotencyIndex.map((column) => column.name).join(",") !== "caja_id,idempotency_key") {
-      await runQuery("DROP INDEX IF EXISTS idx_caja_arqueos_modelo1_idempotency");
-    }
-    await runQuery(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_caja_arqueos_modelo1_idempotency
-      ON caja_arqueos(caja_id, idempotency_key)
-      WHERE modelo_arqueo_version = 1 AND idempotency_key IS NOT NULL
-    `);
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_caja_arqueo_denominaciones_orden ON caja_arqueo_denominaciones(orden)");
-    await runQuery(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_caja_arqueo_denominaciones_activa
-      ON caja_arqueo_denominaciones(denominacion)
-      WHERE activo = 1
-    `);
-    await runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_dni_cuit_unique ON clientes(dni_cuit) WHERE dni_cuit IS NOT NULL AND TRIM(dni_cuit) != ''");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_compras_proveedor_estado ON compras(proveedor_id, estado)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobantes_compra ON compra_comprobantes(compra_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_comprobante_iva_comprobante ON compra_comprobante_iva(comprobante_id)");
-    await runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_compra_comprobante_iva_unique ON compra_comprobante_iva(comprobante_id, alicuota)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_pagos_compra ON pagos(compra_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_items_compra ON compra_items(compra_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_items_producto ON compra_items(producto_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_recepciones_compra ON compra_recepciones(compra_id)");
-    await runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_compra_recepciones_idempotency ON compra_recepciones(compra_id, idempotency_key)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_recepcion_items_recepcion ON compra_recepcion_items(recepcion_id)");
-    await runQuery("CREATE INDEX IF NOT EXISTS idx_compra_recepcion_items_item ON compra_recepcion_items(compra_item_id)");
-    await runQuery(`
-      UPDATE movimientos_stock
-      SET origen_tipo = 'compra_recepcion',
-          origen_id = (
-            SELECT cri.recepcion_id
-            FROM compra_recepcion_items cri
-            WHERE cri.movimiento_stock_id = movimientos_stock.id
-            LIMIT 1
-          )
-      WHERE origen_tipo IS NULL
-        AND EXISTS (
-          SELECT 1
-          FROM compra_recepcion_items cri
-          WHERE cri.movimiento_stock_id = movimientos_stock.id
-        )
-    `);
-    await runQuery(`
-      UPDATE movimientos_stock
-      SET origen_tipo = 'reversa_recepcion',
-          origen_id = (
-            SELECT cri.recepcion_id
-            FROM compra_recepcion_items cri
-            WHERE cri.movimiento_stock_reversa_id = movimientos_stock.id
-            LIMIT 1
-          )
-      WHERE origen_tipo IS NULL
-        AND EXISTS (
-          SELECT 1
-          FROM compra_recepcion_items cri
-          WHERE cri.movimiento_stock_reversa_id = movimientos_stock.id
-        )
-    `);
-
-    for (const regla of CAJA_DENOMINACIONES_ARQUEO_DEFAULTS) {
-      const existente = await getQuery(
-        "SELECT id FROM caja_arqueo_denominaciones WHERE denominacion = ?",
-        [regla.denominacion]
-      );
-      if (!existente) {
-        await runQuery(
-          `INSERT INTO caja_arqueo_denominaciones
-           (denominacion, modo, tamano_grupo, activo, orden, created_at, updated_at)
-           VALUES (?, ?, ?, 1, ?, datetime('now'), datetime('now'))`,
-          [regla.denominacion, regla.modo, regla.tamano_grupo, regla.orden]
+      const readiness = await verificarLegacyBaselineEnConexion(db);
+      if (!readiness.ready) {
+        throw new Error(
+          `init-db.js: el schema construido no paso la verificacion de baseline 001 (failures=${JSON.stringify(readiness.failures)})`
         );
       }
+
+      await runQuery("COMMIT");
+      transactionStarted = false;
+    } catch (error) {
+      if (transactionStarted) {
+        await runQuery("ROLLBACK").catch(() => {});
+      }
+      throw error;
     }
 
-    const existingUser = await getQuery(
-      "SELECT * FROM usuarios WHERE usuario = ?",
-      ["admin"]
-    );
-
-    const existingClient = await getQuery(
-      "SELECT * FROM clientes WHERE nombre = ?",
-      ["Consumidor Final"]
-    );
+    // Demo/dev seed -- fuera de la transaccion de baseline. Preserva el comportamiento
+    // historico exacto (SELECT-then-INSERT condicional, sin recalcular el hash en reruns
+    // porque init-db.js ya no corre sobre una DB existente).
+    const existingUser = await getQuery("SELECT * FROM usuarios WHERE usuario = ?", ["admin"]);
+    const existingClient = await getQuery("SELECT * FROM clientes WHERE nombre = ?", ["Consumidor Final"]);
 
     if (!existingUser) {
       const passwordHash = await bcrypt.hash("admin123", 10);
-
       await runQuery(
         `INSERT INTO usuarios (nombre, usuario, password, rol, activo, creado_en, actualizado_en)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         ["Administrador", "admin", passwordHash, "admin", 1, new Date().toISOString(), new Date().toISOString()]
       );
-
       console.log("Usuario admin creado.");
       console.log("Usuario: admin");
       console.log("Contrasena: admin123");
@@ -902,7 +116,6 @@ async function initDatabase() {
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         ["Consumidor Final", "", "", "", "", 0, 1]
       );
-
       await runQuery(
         `INSERT INTO clientes (nombre, telefono, direccion, alias, observaciones, limite_fiado, activo)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -913,77 +126,9 @@ async function initDatabase() {
     console.log("Base de datos lista.");
   } catch (error) {
     console.error("Error inicializando la base de datos:", error.message);
+    process.exitCode = 1;
   } finally {
-    db.close((err) => {
-      if (err) {
-        console.error("Error cerrando la base de datos:", err.message);
-      }
-    });
-  }
-}
-
-function runQuery(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function (err) {
-      if (err) {
-        reject(err);
-        return;
-      }
-
-      resolve(this);
-    });
-  });
-}
-
-function getQuery(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-
-      resolve(row);
-    });
-  });
-}
-
-function allQuery(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-
-      resolve(rows);
-    });
-  });
-}
-
-async function ensureColumn(tableName, columnName, columnDefinition) {
-  const columns = await allQuery(`PRAGMA table_info(${tableName})`);
-  const exists = columns.some((column) => column.name === columnName);
-
-  if (!exists) {
-    await runQuery(
-      `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`
-    );
-  }
-}
-
-async function dropColumnIfExists(tableName, columnName) {
-  const columns = await allQuery(`PRAGMA table_info(${tableName})`);
-  const exists = columns.some((column) => column.name === columnName);
-
-  if (!exists) {
-    return;
-  }
-
-  try {
-    await runQuery(`ALTER TABLE ${tableName} DROP COLUMN ${columnName}`);
-  } catch (error) {
-    console.warn(`No se pudo eliminar la columna ${columnName} de ${tableName}: ${error.message}`);
+    await closeDb();
   }
 }
 

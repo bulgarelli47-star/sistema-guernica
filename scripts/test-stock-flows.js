@@ -3,6 +3,7 @@ const http = require("http");
 const net = require("net");
 const os = require("os");
 const path = require("path");
+const crypto = require("crypto");
 const { spawn, spawnSync } = require("child_process");
 const sqlite3 = require("sqlite3").verbose();
 const bcrypt = require("bcrypt");
@@ -68,6 +69,7 @@ const { crearBackupSQLite } = require("../backend/sqliteBackup");
 const { migrarTenantDb } = require("../database/migrate-tenant-db");
 const { BUSINESS_MIGRATIONS } = require("../database/business-migrations");
 const { prepararLegacyParaBaseline001 } = require("../database/prepare-legacy-baseline");
+const { crearBaseline001EnConexion } = require("../database/business-schema-baseline");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -20616,6 +20618,20 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1E3BConcurrencyAndIdempotency);
   await _run(testMT1E3BSameConnectionAuthority);
   await _run(testMT1E3BModuleSinSideEffects);
+  await _run(testMT1E4CBaselineBuilderFreshReady);
+  await _run(testMT1E4CBaselineBuilderRequiredDefaults);
+  await _run(testMT1E4CBaselineBuilderNoDemoData);
+  await _run(testMT1E4CBaselineBuilderNoHistory);
+  await _run(testMT1E4CBaselineBuilderNoTenantIdentity);
+  await _run(testMT1E4CBaselineBuilderCriticalConstraints);
+  await _run(testMT1E4CBaselineBuilderSameConnection);
+  await _run(testMT1E4CBaselineBuilderNoTransactionOwnership);
+  await _run(testMT1E4CBaselineBuilderModuleSinSideEffects);
+  await _run(testMT1E4CInitDbConsumesBuilder);
+  await _run(testMT1E4CInitDbBaselineReadyBeforeServer);
+  await _run(testMT1E4CInitDbTenantIdentityTableNoRow);
+  await _run(testMT1E4CInitDbDemoSeedPreserved);
+  await _run(testMT1E4CInitDbRejectsNonEmptyDb);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -24589,17 +24605,26 @@ async function testMT1C2B2BAuthModeNormalizacion() {
 // solo el login, asi que el Central Boot Identity Gate debe rechazar el boot completo (BOOT FAIL),
 // nunca degradar a un 403 de login. Cubre exactamente B8 del plan de tests nuevos (2B0/2B0.1): no
 // hizo falta agregar un test nuevo, esta reescritura ya certifica ese escenario.
+// MT-1E4C.1: witness de no-mutacion basado en SHA256 fisico del archivo, en vez de la ausencia de
+// una tabla puntual -- desde MT-1E4C, database/init-db.js ya deja el baseline 001 completo (sesiones
+// incluida) antes de que backend/server.js arranque, asi que "sesiones ausente" dejo de ser un
+// testigo valido de que el Central Boot Gate rechazo el arranque ANTES de tocar la business DB.
+// El hash fisico es un testigo mas fuerte y agnostico de que tabla en particular crea el gate vs.
+// el self-healing: cualquier mutacion, de cualquier tabla, se detecta igual.
+function sha256Archivo(rutaArchivo) {
+  return crypto.createHash("sha256").update(fs.readFileSync(rutaArchivo)).digest("hex");
+}
+
 async function testMT1C2B2BCentralEmpresaInactiva403() {
   const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     const fixture = await setupCentralFixture({ businessDbPath: dbPath, empresaActiva: 0 });
     controlDbPath = fixture.controlDbPath;
+    const shaAntes = sha256Archivo(dbPath);
     await esperarStartupFallido(dbPath, extraEnvCentral(fixture));
-    // El gate falla ANTES de ensureUsuariosSchema() (que es quien crea "sesiones"), asi que la
-    // tabla ni siquiera llega a existir -- prueba mas fuerte que "0 filas" de que no hubo mutacion.
-    const tablas = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='sesiones'");
-    assertEqual(tablas.length, 0, "empresa inactiva no debe crear la tabla sesiones (el proceso nunca llega a ensureXSchema)");
+    const shaDespues = sha256Archivo(dbPath);
+    assertSame(shaDespues, shaAntes, "el rechazo del Central Boot Gate no debe mutar la business DB (empresa inactiva)");
   } finally {
     limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
@@ -24635,11 +24660,10 @@ async function testMT1C2B2BCentralEmpresaNoExiste503() {
     const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
     await closeControlDb(controlDb);
 
+    const shaAntes = sha256Archivo(dbPath);
     await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: "slug-que-no-existe-mt1c2b2b", ATLAS_CONTROL_DB_PATH: controlDbPath });
-    // El gate falla ANTES de ensureUsuariosSchema() (que es quien crea "sesiones"), asi que la
-    // tabla ni siquiera llega a existir -- prueba mas fuerte que "0 filas" de que no hubo mutacion.
-    const tablas = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='sesiones'");
-    assertEqual(tablas.length, 0, "empresa inexistente no debe crear la tabla sesiones (el proceso nunca llega a ensureXSchema)");
+    const shaDespues = sha256Archivo(dbPath);
+    assertSame(shaDespues, shaAntes, "el rechazo del Central Boot Gate no debe mutar la business DB (empresa inexistente)");
   } finally {
     fs.rmSync(dbPath, { force: true });
     fs.rmSync(controlDbPath, { force: true });
@@ -30046,4 +30070,341 @@ async function testMT1E3BModuleSinSideEffects() {
     false,
     "no debe escribir jamas en atlas_schema_migrations -- esta herramienta no adopta"
   );
+}
+
+// MT-1E4C: helpers para tests del fresh baseline builder. abrirDbEfimeraVacia crea un archivo
+// SQLite completamente vacio (sin pasar por init-db.js ni server.js) para probar el builder en
+// aislamiento total.
+const BUSINESS_SCHEMA_BASELINE_PATH = path.join(ROOT, "database", "business-schema-baseline.js");
+const INIT_DB_PATH = path.join(ROOT, "database", "init-db.js");
+
+function abrirDbEfimeraVacia() {
+  const dbPath = path.join(os.tmpdir(), `mt1e4c-builder-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+  return new Promise((resolve, reject) => {
+    const db = new sqlite3.Database(dbPath, (error) => {
+      if (error) { reject(error); return; }
+      resolve({ db, dbPath });
+    });
+  });
+}
+
+async function testMT1E4CBaselineBuilderFreshReady() {
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  try {
+    await new Promise((res, rej) => db.run("BEGIN IMMEDIATE", (e) => (e ? rej(e) : res())));
+    await crearBaseline001EnConexion(db);
+    const readiness = await verificarLegacyBaselineEnConexion(db);
+    assertSame(readiness.ready, true, "el builder debe dejar el baseline ready:true");
+    assertEqual(readiness.failures.length, 0, "no debe haber failures");
+    await new Promise((res) => db.run("ROLLBACK", () => res()));
+  } finally {
+    await cerrarConexionTest(db);
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E4CBaselineBuilderRequiredDefaults() {
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  try {
+    await new Promise((res, rej) => db.run("BEGIN IMMEDIATE", (e) => (e ? rej(e) : res())));
+    await crearBaseline001EnConexion(db);
+
+    const denominaciones = await new Promise((res, rej) =>
+      db.all("SELECT denominacion FROM caja_arqueo_denominaciones ORDER BY orden ASC", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertSame(
+      JSON.stringify(denominaciones.map((d) => d.denominacion)),
+      JSON.stringify([10, 20, 50, 100, 200, 500, 1000, 2000, 10000, 20000]),
+      "las 10 denominaciones canonicas deben estar presentes en orden"
+    );
+
+    const tiposPago = await new Promise((res, rej) =>
+      db.all("SELECT codigo FROM tipos_pago ORDER BY orden ASC", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertSame(
+      JSON.stringify(tiposPago.map((t) => t.codigo)),
+      JSON.stringify(["efectivo", "debito", "transferencia", "mixto"]),
+      "los 4 tipos de pago canonicos deben estar presentes en orden"
+    );
+
+    const cuentasDestino = await new Promise((res, rej) =>
+      db.all("SELECT lower(nombre) AS nombre FROM cuentas_destino ORDER BY orden ASC", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertSame(
+      JSON.stringify(cuentasDestino.map((c) => c.nombre)),
+      JSON.stringify(["caja efectivo", "mercado pago"]),
+      "las 2 cuentas destino canonicas deben estar presentes en orden"
+    );
+
+    await new Promise((res) => db.run("ROLLBACK", () => res()));
+  } finally {
+    await cerrarConexionTest(db);
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E4CBaselineBuilderNoDemoData() {
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  try {
+    await new Promise((res, rej) => db.run("BEGIN IMMEDIATE", (e) => (e ? rej(e) : res())));
+    await crearBaseline001EnConexion(db);
+
+    const usuarios = await new Promise((res, rej) => db.all("SELECT * FROM usuarios", (e, r) => (e ? rej(e) : res(r))));
+    assertEqual(usuarios.length, 0, "el builder no debe crear ningun usuario (admin incluido)");
+
+    const clientes = await new Promise((res, rej) => db.all("SELECT * FROM clientes", (e, r) => (e ? rej(e) : res(r))));
+    assertEqual(clientes.length, 0, "el builder no debe crear ningun cliente demo");
+
+    await new Promise((res) => db.run("ROLLBACK", () => res()));
+  } finally {
+    await cerrarConexionTest(db);
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E4CBaselineBuilderNoHistory() {
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  try {
+    await new Promise((res, rej) => db.run("BEGIN IMMEDIATE", (e) => (e ? rej(e) : res())));
+    await crearBaseline001EnConexion(db);
+
+    const tabla = await new Promise((res, rej) =>
+      db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='atlas_schema_migrations'", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertSame(!!tabla, false, "el builder NO debe crear atlas_schema_migrations");
+
+    await new Promise((res) => db.run("ROLLBACK", () => res()));
+  } finally {
+    await cerrarConexionTest(db);
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E4CBaselineBuilderNoTenantIdentity() {
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  try {
+    await new Promise((res, rej) => db.run("BEGIN IMMEDIATE", (e) => (e ? rej(e) : res())));
+    await crearBaseline001EnConexion(db);
+
+    const tabla = await new Promise((res, rej) =>
+      db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='tenant_identity'", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertSame(!!tabla, false, "el builder NO debe crear tenant_identity -- no pertenece al baseline 001");
+
+    await new Promise((res) => db.run("ROLLBACK", () => res()));
+  } finally {
+    await cerrarConexionTest(db);
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E4CBaselineBuilderCriticalConstraints() {
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  try {
+    await new Promise((res, rej) => db.run("BEGIN IMMEDIATE", (e) => (e ? rej(e) : res())));
+    await crearBaseline001EnConexion(db);
+
+    // PRIMARY KEY: productos.id
+    const pkProductos = await new Promise((res, rej) => db.all("PRAGMA table_info(productos)", (e, r) => (e ? rej(e) : res(r))));
+    const pkCol = pkProductos.find((c) => c.pk === 1);
+    assertSame(pkCol && pkCol.name, "id", "productos.id debe ser la PRIMARY KEY");
+
+    // FOREIGN KEY: movimientos_stock.producto_id -> productos.id
+    const fks = await new Promise((res, rej) => db.all("PRAGMA foreign_key_list(movimientos_stock)", (e, r) => (e ? rej(e) : res(r))));
+    const fkProducto = fks.find((f) => f.from === "producto_id" && f.table === "productos");
+    assertSame(!!fkProducto, true, "movimientos_stock.producto_id debe referenciar productos(id)");
+
+    // UNIQUE: tipos_pago.codigo (column-level UNIQUE) + idx_productos_codigo_unique (index-level)
+    const tiposPagoInfo = await new Promise((res, rej) => db.all("PRAGMA index_list(tipos_pago)", (e, r) => (e ? rej(e) : res(r))));
+    assertSame(tiposPagoInfo.some((idx) => idx.unique === 1), true, "tipos_pago.codigo UNIQUE debe generar un indice unique");
+    const productosIndices = await new Promise((res, rej) => db.all("PRAGMA index_list(productos)", (e, r) => (e ? rej(e) : res(r))));
+    assertSame(
+      productosIndices.some((idx) => idx.name === "idx_productos_codigo_unique" && idx.unique === 1),
+      true,
+      "idx_productos_codigo_unique debe existir y ser unique"
+    );
+
+    // NOT NULL: usuarios.usuario
+    const usuariosInfo = await new Promise((res, rej) => db.all("PRAGMA table_info(usuarios)", (e, r) => (e ? rej(e) : res(r))));
+    const usuarioCol = usuariosInfo.find((c) => c.name === "usuario");
+    assertEqual(usuarioCol.notnull, 1, "usuarios.usuario debe ser NOT NULL");
+
+    // DEFAULT: productos.modelo_fiscal
+    const productosInfo = await new Promise((res, rej) => db.all("PRAGMA table_info(productos)", (e, r) => (e ? rej(e) : res(r))));
+    const modeloFiscalCol = productosInfo.find((c) => c.name === "modelo_fiscal");
+    assertSame(modeloFiscalCol.dflt_value, "'legacy'", "productos.modelo_fiscal debe tener default 'legacy'");
+
+    // CHECK: no aplica -- ninguna tabla del baseline (fuera de tenant_identity, deliberadamente
+    // excluida del builder) declara un CHECK constraint. Confirmado por grep exhaustivo del DDL
+    // fuente (database/init-db.js historico + backend/server.js + servicios) antes de escribir
+    // este test: cero CHECK fuera de tenant_identity. No se fabrica un caso artificial.
+
+    await new Promise((res) => db.run("ROLLBACK", () => res()));
+  } finally {
+    await cerrarConexionTest(db);
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E4CBaselineBuilderSameConnection() {
+  const codigoFuente = fs.readFileSync(BUSINESS_SCHEMA_BASELINE_PATH, "utf8");
+  assertSame(codigoFuente.includes("new sqlite3.Database"), false, "el builder no debe abrir su propia conexion sqlite3");
+  assertSame(codigoFuente.includes('require("sqlite3")'), false, "el builder no debe requerir sqlite3 en absoluto");
+
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  try {
+    await new Promise((res, rej) => db.run("BEGIN IMMEDIATE", (e) => (e ? rej(e) : res())));
+    await crearBaseline001EnConexion(db);
+    const sanity = await new Promise((res, rej) => db.get("SELECT 1 AS uno", (e, r) => (e ? rej(e) : res(r))));
+    assertEqual(sanity.uno, 1, "la conexion suministrada debe seguir usable despues del builder");
+    await new Promise((res) => db.run("ROLLBACK", () => res()));
+  } finally {
+    await cerrarConexionTest(db);
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E4CBaselineBuilderNoTransactionOwnership() {
+  const codigoFuente = fs.readFileSync(BUSINESS_SCHEMA_BASELINE_PATH, "utf8");
+  assertSame(/[^"'/]BEGIN IMMEDIATE/.test(codigoFuente), false, "el builder no debe ejecutar BEGIN");
+  assertSame(codigoFuente.includes('"COMMIT"') || codigoFuente.includes("'COMMIT'"), false, "el builder no debe ejecutar COMMIT");
+  assertSame(codigoFuente.includes('"ROLLBACK"') || codigoFuente.includes("'ROLLBACK'"), false, "el builder no debe ejecutar ROLLBACK");
+
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  try {
+    await new Promise((res, rej) => db.run("BEGIN IMMEDIATE", (e) => (e ? rej(e) : res())));
+    await crearBaseline001EnConexion(db);
+    await new Promise((res) => db.run("ROLLBACK", () => res()));
+
+    const tablas = await new Promise((res, rej) =>
+      db.all("SELECT name FROM sqlite_master WHERE type='table' AND name='productos'", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertEqual(tablas.length, 0, "un ROLLBACK del caller debe revertir todo el schema creado por el builder");
+  } finally {
+    await cerrarConexionTest(db);
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E4CBaselineBuilderModuleSinSideEffects() {
+  const fakeBusinessDb = path.join(os.tmpdir(), `mt1e4c-fake-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+  try {
+    const resultado = spawnSync(
+      process.execPath,
+      ["-e", `require(${JSON.stringify(BUSINESS_SCHEMA_BASELINE_PATH)});`],
+      { cwd: ROOT, env: { ...process.env, GUERNICA_DB_PATH: fakeBusinessDb }, encoding: "utf8" }
+    );
+    assertEqual(
+      resultado.status, 0,
+      `require aislado de business-schema-baseline debe salir 0\n${resultado.stderr || resultado.stdout}`
+    );
+    assertEqual(fs.existsSync(fakeBusinessDb), false, "require de business-schema-baseline no debe crear ningun archivo");
+  } finally {
+    fs.rmSync(fakeBusinessDb, { force: true });
+  }
+}
+
+async function testMT1E4CInitDbConsumesBuilder() {
+  const codigoFuente = fs.readFileSync(INIT_DB_PATH, "utf8");
+  assertSame(codigoFuente.includes("./business-schema-baseline"), true, "init-db.js debe requerir el builder");
+  assertSame(
+    /CREATE TABLE\s+(IF NOT EXISTS\s+)?productos\s*\(/i.test(codigoFuente),
+    false,
+    "init-db.js NO debe seguir teniendo un CREATE TABLE productos inline"
+  );
+
+  const dbPath = path.join(os.tmpdir(), `mt1e4c-consume-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+  try {
+    const resultado = spawnSync(process.execPath, ["database/init-db.js"], {
+      cwd: ROOT, env: { ...process.env, GUERNICA_DB_PATH: dbPath }, encoding: "utf8"
+    });
+    assertEqual(resultado.status, 0, `init-db.js debe salir 0 sobre DB fresca\n${resultado.stderr || resultado.stdout}`);
+    assertSame(fs.existsSync(dbPath), true, "init-db.js debe crear el archivo");
+  } finally {
+    for (const s of ["", "-wal", "-shm"]) fs.rmSync(dbPath + s, { force: true });
+  }
+}
+
+async function testMT1E4CInitDbBaselineReadyBeforeServer() {
+  const dbPath = path.join(os.tmpdir(), `mt1e4c-ready-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+  try {
+    const resultado = spawnSync(process.execPath, ["database/init-db.js"], {
+      cwd: ROOT, env: { ...process.env, GUERNICA_DB_PATH: dbPath }, encoding: "utf8"
+    });
+    assertEqual(resultado.status, 0, `init-db.js debe salir 0\n${resultado.stderr || resultado.stdout}`);
+
+    const db = await abrirConexionTestReadOnly(dbPath);
+    const readiness = await verificarLegacyBaselineEnConexion(db);
+    assertSame(readiness.ready, true, "una DB recien creada por init-db.js debe quedar baseline ready:true SIN arrancar server.js");
+    assertEqual(readiness.failures.length, 0, "no debe haber failures");
+    await cerrarConexionTest(db);
+  } finally {
+    for (const s of ["", "-wal", "-shm"]) fs.rmSync(dbPath + s, { force: true });
+  }
+}
+
+async function testMT1E4CInitDbTenantIdentityTableNoRow() {
+  const dbPath = path.join(os.tmpdir(), `mt1e4c-identity-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+  try {
+    const resultado = spawnSync(process.execPath, ["database/init-db.js"], {
+      cwd: ROOT, env: { ...process.env, GUERNICA_DB_PATH: dbPath }, encoding: "utf8"
+    });
+    assertEqual(resultado.status, 0, `init-db.js debe salir 0\n${resultado.stderr || resultado.stdout}`);
+
+    const filas = await allSql(dbPath, "SELECT sql FROM sqlite_master WHERE type='table' AND name='tenant_identity'");
+    assertEqual(filas.length, 1, "tenant_identity debe existir tras init-db.js");
+    const normalizar = (sql) => String(sql || "").replace(/\s+/g, " ").trim();
+    assertSame(
+      normalizar(filas[0].sql).includes(normalizar(TENANT_IDENTITY_SCHEMA_SQL).replace(/^CREATE TABLE IF NOT EXISTS/, "CREATE TABLE")),
+      true,
+      "el schema de tenant_identity debe ser compatible con TENANT_IDENTITY_SCHEMA_SQL"
+    );
+
+    const filasIdentity = await allSql(dbPath, "SELECT * FROM tenant_identity");
+    assertEqual(filasIdentity.length, 0, "tenant_identity NO debe tener ninguna fila -- eso es responsabilidad de provisionarTenantIdentity");
+  } finally {
+    for (const s of ["", "-wal", "-shm"]) fs.rmSync(dbPath + s, { force: true });
+  }
+}
+
+async function testMT1E4CInitDbDemoSeedPreserved() {
+  const dbPath = path.join(os.tmpdir(), `mt1e4c-demo-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+  try {
+    const resultado = spawnSync(process.execPath, ["database/init-db.js"], {
+      cwd: ROOT, env: { ...process.env, GUERNICA_DB_PATH: dbPath }, encoding: "utf8"
+    });
+    assertEqual(resultado.status, 0, `init-db.js debe salir 0\n${resultado.stderr || resultado.stdout}`);
+
+    const adminRows = await allSql(dbPath, "SELECT password FROM usuarios WHERE usuario = 'admin'");
+    assertEqual(adminRows.length, 1, "el usuario admin debe existir tras init-db.js");
+    const passwordOk = await bcrypt.compare("admin123", adminRows[0].password);
+    assertSame(passwordOk, true, "el password admin123 debe validar contra el hash almacenado");
+
+    const consumidorFinalRows = await allSql(dbPath, "SELECT nombre FROM clientes WHERE nombre = 'Consumidor Final'");
+    assertEqual(consumidorFinalRows.length, 1, "Consumidor Final debe existir tras init-db.js");
+    const juanPerezRows = await allSql(dbPath, "SELECT nombre FROM clientes WHERE nombre = 'Juan Perez'");
+    assertEqual(juanPerezRows.length, 1, "Juan Perez debe existir tras init-db.js");
+  } finally {
+    for (const s of ["", "-wal", "-shm"]) fs.rmSync(dbPath + s, { force: true });
+  }
+}
+
+async function testMT1E4CInitDbRejectsNonEmptyDb() {
+  const dbPath = path.join(os.tmpdir(), `mt1e4c-nonempty-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+  try {
+    await runSql(dbPath, "CREATE TABLE tabla_arbitraria_preexistente (id INTEGER PRIMARY KEY)");
+
+    const resultado = spawnSync(process.execPath, ["database/init-db.js"], {
+      cwd: ROOT, env: { ...process.env, GUERNICA_DB_PATH: dbPath }, encoding: "utf8"
+    });
+    assertSame(resultado.status !== 0, true, "init-db.js debe salir con codigo distinto de cero sobre una DB no vacia");
+
+    const tablaIntacta = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='tabla_arbitraria_preexistente'");
+    assertEqual(tablaIntacta.length, 1, "la tabla preexistente debe permanecer intacta");
+
+    const tablasBaseline = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('productos','usuarios','tenant_identity')");
+    assertEqual(tablasBaseline.length, 0, "NO debe haberse construido ningun baseline, demo seed ni tenant_identity");
+  } finally {
+    for (const s of ["", "-wal", "-shm"]) fs.rmSync(dbPath + s, { force: true });
+  }
 }
