@@ -65,6 +65,8 @@ const {
 } = require("../backend/legacyBaselineVerifier");
 const { adoptarLegacyBaseline } = require("../database/adopt-legacy-baseline");
 const { crearBackupSQLite } = require("../backend/sqliteBackup");
+const { migrarTenantDb } = require("../database/migrate-tenant-db");
+const { BUSINESS_MIGRATIONS } = require("../database/business-migrations");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -20580,6 +20582,24 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1E2C3ASharedBackupHappyPath);
   await _run(testMT1E2C3ASharedBackupLifecycle);
   await _run(testMT1E2C3AAdopterUsesSharedBackup);
+  await _run(testMT1E2C3MigratorAlreadyCurrent);
+  await _run(testMT1E2C3MigratorBaselineRequired);
+  await _run(testMT1E2C3MigratorBehindSingleMigration);
+  await _run(testMT1E2C3MigratorMultiplePendingMigrations);
+  await _run(testMT1E2C3MigratorFailureRollback);
+  await _run(testMT1E2C3MigratorBackupFailureBlocksMigration);
+  await _run(testMT1E2C3MigratorBackupInvalidIntegrityBlocksMigration);
+  await _run(testMT1E2C3MigratorPostBackupFailurePreservesBackup);
+  await _run(testMT1E2C3MigratorAheadRejected);
+  await _run(testMT1E2C3MigratorInvalidHistoryRejected);
+  await _run(testMT1E2C3MigratorCentralExactIdentity);
+  await _run(testMT1E2C3MigratorCentralIdentityFailures);
+  await _run(testMT1E2C3MigratorCentralInactiveAllowed);
+  await _run(testMT1E2C3MigratorCentralRegistryFailures);
+  await _run(testMT1E2C3MigratorConcurrencyAndIdempotency);
+  await _run(testMT1E2C3MigratorSameConnectionAuthority);
+  await _run(testMT1E2C3MigratorModuleSinSideEffects);
+  await _run(testMT1E2C3MigratorCatalogValidation);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -28237,4 +28257,1045 @@ async function testMT1E2C3AAdopterUsesSharedBackup() {
     limpiarLegacyFixture(dbPath);
     fs.rmSync(backupPath, { force: true });
   }
+}
+
+// MT-1E2C3B: helpers para tests del migrator que necesitan un catalogo DISTINTO al de produccion
+// (solo asi se puede probar BEHIND/multiples-pendientes sin agregar una migracion 002 real). La
+// tecnica: pre-popular require.cache para la ruta resuelta de database/business-migrations.js con
+// un modulo fake ANTES de requerir database/migrate-tenant-db.js, en un PROCESO HIJO aislado (para
+// no contaminar el catalogo de produccion del proceso runner). NO se agrega ningun parametro
+// publico de override de catalogo a migrarTenantDb(options) -- la API de produccion queda intacta.
+const MIGRATE_TENANT_DB_PATH = path.join(ROOT, "database", "migrate-tenant-db.js");
+const BUSINESS_MIGRATIONS_PATH = path.join(ROOT, "database", "business-migrations.js");
+
+function construirWorkerMigrate({ catalogSource, prePatchSource = "" }) {
+  return [
+    "const path = require('path');",
+    `const businessMigrationsPath = require.resolve(${JSON.stringify(BUSINESS_MIGRATIONS_PATH)});`,
+    "require.cache[businessMigrationsPath] = {",
+    "  id: businessMigrationsPath, filename: businessMigrationsPath, loaded: true,",
+    `  exports: { BUSINESS_MIGRATIONS: Object.freeze(${catalogSource}) }`,
+    "};",
+    prePatchSource,
+    `const { migrarTenantDb } = require(${JSON.stringify(MIGRATE_TENANT_DB_PATH)});`,
+    "const [, mode, businessDbPath, backupPath, controlDbPath, empresaSlug] = process.argv;",
+    "const options = { mode, businessDbPath, backupPath };",
+    "if (mode === 'CENTRAL') { options.controlDbPath = controlDbPath; options.empresaSlug = empresaSlug; }",
+    "migrarTenantDb(options).then((resultado) => {",
+    "  console.log(JSON.stringify({ outcome: 'RESOLVED', resultado }));",
+    "}).catch((error) => {",
+    "  console.log(JSON.stringify({ outcome: 'REJECTED', code: error.code, migrationId: error.migrationId, message: error.message }));",
+    "});"
+  ].join("\n");
+}
+
+function ejecutarWorkerMigrate(script, argv) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ["-e", script, "--", ...argv]);
+    let out = "";
+    child.stdout.on("data", (d) => { out += d.toString(); });
+    child.on("exit", () => {
+      const linea = out.trim().split("\n").filter(Boolean).pop();
+      resolve(linea ? JSON.parse(linea) : { outcome: "NO_OUTPUT" });
+    });
+  });
+}
+
+const CATALOG_SINGLE_PENDING_SOURCE = [
+  "[",
+  "  { sequence: 1, migrationId: '001_legacy_runtime_baseline', kind: 'BASELINE' },",
+  "  { sequence: 2, migrationId: '002_test_single', kind: 'MIGRATION', up: async (db) => {",
+  "    await new Promise((resolve, reject) => {",
+  "      db.run('CREATE TABLE mt_test_002 (id INTEGER PRIMARY KEY, v TEXT)', (e) => e ? reject(e) : resolve());",
+  "    });",
+  "  } }",
+  "]"
+].join("\n");
+
+const CATALOG_MULTI_PENDING_SOURCE = [
+  "[",
+  "  { sequence: 1, migrationId: '001_legacy_runtime_baseline', kind: 'BASELINE' },",
+  "  { sequence: 2, migrationId: '002_test_first', kind: 'MIGRATION', up: async (db) => {",
+  "    await new Promise((resolve, reject) => {",
+  "      db.run('CREATE TABLE mt_test_002 (id INTEGER PRIMARY KEY)', (e) => e ? reject(e) : resolve());",
+  "    });",
+  "  } },",
+  "  { sequence: 3, migrationId: '003_test_second', kind: 'MIGRATION', up: async (db) => {",
+  "    await new Promise((resolve, reject) => {",
+  "      db.run('CREATE TABLE mt_test_003 (id INTEGER PRIMARY KEY)', (e) => e ? reject(e) : resolve());",
+  "    });",
+  "  } }",
+  "]"
+].join("\n");
+
+const CATALOG_FAILING_UP_SOURCE = [
+  "[",
+  "  { sequence: 1, migrationId: '001_legacy_runtime_baseline', kind: 'BASELINE' },",
+  "  { sequence: 2, migrationId: '002_test_failing', kind: 'MIGRATION', up: async (db) => {",
+  "    throw new Error('FORCED_UP_FAILURE');",
+  "  } }",
+  "]"
+].join("\n");
+
+// Extiende CATALOG_SINGLE_PENDING_SOURCE con una tercera entrada (mismo prefijo exacto: 001,
+// 002_test_single) -- necesario para probar AHEAD sin disparar INVALID_HISTORY por Categoria B:
+// si el catalogo mas chico no fuera un prefijo exacto del mas grande, el mismatch de contenido en
+// una posicion conocida se detectaria ANTES que la comparacion de longitudes.
+const CATALOG_EXTENDS_SINGLE_SOURCE = [
+  "[",
+  "  { sequence: 1, migrationId: '001_legacy_runtime_baseline', kind: 'BASELINE' },",
+  "  { sequence: 2, migrationId: '002_test_single', kind: 'MIGRATION', up: async (db) => {",
+  "    await new Promise((resolve, reject) => {",
+  "      db.run('CREATE TABLE mt_test_002 (id INTEGER PRIMARY KEY, v TEXT)', (e) => e ? reject(e) : resolve());",
+  "    });",
+  "  } },",
+  "  { sequence: 3, migrationId: '003_test_extra', kind: 'MIGRATION', up: async (db) => {",
+  "    await new Promise((resolve, reject) => {",
+  "      db.run('CREATE TABLE mt_test_003_extra (id INTEGER PRIMARY KEY)', (e) => e ? reject(e) : resolve());",
+  "    });",
+  "  } }",
+  "]"
+].join("\n");
+
+async function testMT1E2C3MigratorAlreadyCurrent() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const adoptBackup = `${dbPath}.adoptbackup`;
+  const migBackup = `${dbPath}.migbackup`;
+  try {
+    const adoptResult = await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
+    assertSame(adoptResult.status, "ADOPTED", "fixture debe adoptarse primero");
+
+    const antes = fs.readFileSync(dbPath);
+    const resultado = await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath: migBackup });
+    assertSame(resultado.status, "ALREADY_CURRENT", "DB ya en CURRENT debe resolver ALREADY_CURRENT");
+    assertSame(resultado.migrationId, "001_legacy_runtime_baseline", "migrationId debe ser el ultimo del catalogo");
+    assertSame(fs.existsSync(migBackup), false, "no debe crearse backup para ALREADY_CURRENT");
+
+    const despues = fs.readFileSync(dbPath);
+    assertSame(Buffer.compare(antes, despues), 0, "la fuente no debe mutar");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(adoptBackup, { force: true });
+    fs.rmSync(migBackup, { force: true });
+  }
+}
+
+async function testMT1E2C3MigratorBaselineRequired() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const backupPath = `${dbPath}.backup`;
+  try {
+    let lanzo = null;
+    try {
+      await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+    } catch (error) {
+      lanzo = error;
+    }
+    assertSame(lanzo && lanzo.code, "BASELINE_REQUIRED", "DB UNVERSIONED debe lanzar BASELINE_REQUIRED");
+    assertSame(fs.existsSync(backupPath), false, "no debe crearse backup");
+    const filasMetadata = await allSql(
+      dbPath,
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='atlas_schema_migrations'"
+    );
+    assertEqual(filasMetadata.length, 0, "no debe auto-adoptar");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(backupPath, { force: true });
+  }
+}
+
+async function testMT1E2C3MigratorBehindSingleMigration() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const adoptBackup = `${dbPath}.adoptbackup`;
+  const migBackup = `${dbPath}.migbackup`;
+  try {
+    await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
+
+    const script = construirWorkerMigrate({ catalogSource: CATALOG_SINGLE_PENDING_SOURCE });
+    const resultado = await ejecutarWorkerMigrate(script, ["DIRECT", dbPath, migBackup]);
+
+    assertSame(resultado.outcome, "RESOLVED", "debe resolver, no rechazar");
+    assertSame(resultado.resultado.status, "MIGRATED", "debe resultar MIGRATED");
+    assertSame(resultado.resultado.fromMigrationId, "001_legacy_runtime_baseline", "fromMigrationId debe ser el ultimo aplicado antes del batch");
+    assertSame(resultado.resultado.toMigrationId, "002_test_single", "toMigrationId debe ser la ultima aplicada");
+    assertEqual(resultado.resultado.applied.length, 1, "applied debe tener 1 elemento");
+    assertSame(resultado.resultado.applied[0], "002_test_single", "applied debe listar la migracion aplicada");
+
+    const backupDb = await abrirConexionTestReadOnly(migBackup);
+    const tablaEnBackup = await new Promise((res, rej) =>
+      backupDb.get("SELECT name FROM sqlite_master WHERE type='table' AND name='mt_test_002'", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertSame(tablaEnBackup, undefined, "el backup debe representar el estado PRE-migracion (sin mt_test_002)");
+    await cerrarConexionTest(backupDb);
+
+    const tablaEnSource = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='mt_test_002'");
+    assertEqual(tablaEnSource.length, 1, "la fuente debe tener mt_test_002 tras la migracion");
+
+    const history = await allSql(dbPath, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence");
+    assertEqual(history.length, 2, "history debe tener 2 filas");
+    assertSame(history[1].migration_id, "002_test_single", "segunda fila debe ser la migracion aplicada");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(adoptBackup, { force: true });
+    fs.rmSync(migBackup, { force: true });
+  }
+}
+
+async function testMT1E2C3MigratorMultiplePendingMigrations() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const adoptBackup = `${dbPath}.adoptbackup`;
+  const migBackup = `${dbPath}.migbackup`;
+  try {
+    await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
+
+    const script = construirWorkerMigrate({ catalogSource: CATALOG_MULTI_PENDING_SOURCE });
+    const resultado = await ejecutarWorkerMigrate(script, ["DIRECT", dbPath, migBackup]);
+
+    assertSame(resultado.outcome, "RESOLVED", "debe resolver, no rechazar");
+    assertSame(resultado.resultado.status, "MIGRATED", "debe resultar MIGRATED");
+    assertEqual(resultado.resultado.applied.length, 2, "applied debe tener 2 elementos");
+    assertSame(resultado.resultado.applied[0], "002_test_first", "primera aplicada debe ser 002_test_first");
+    assertSame(resultado.resultado.applied[1], "003_test_second", "segunda aplicada debe ser 003_test_second (orden ascendente)");
+    assertSame(resultado.resultado.toMigrationId, "003_test_second", "toMigrationId debe ser la ultima");
+
+    const history = await allSql(dbPath, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence");
+    assertEqual(history.length, 3, "history debe tener 3 filas (001,002,003)");
+    assertSame(history[1].migration_id, "002_test_first", "posicion 2 correcta");
+    assertSame(history[2].migration_id, "003_test_second", "posicion 3 correcta");
+
+    const tablas = await allSql(
+      dbPath,
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('mt_test_002','mt_test_003')"
+    );
+    assertEqual(tablas.length, 2, "ambas tablas deben existir tras el batch");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(adoptBackup, { force: true });
+    fs.rmSync(migBackup, { force: true });
+  }
+}
+
+async function testMT1E2C3MigratorFailureRollback() {
+  // Subcase A: up() lanza.
+  {
+    const dbPath = await bootstrapReadyLegacyFixture();
+    const adoptBackup = `${dbPath}.adoptbackup`;
+    const migBackup = `${dbPath}.migbackup`;
+    try {
+      await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
+      const script = construirWorkerMigrate({ catalogSource: CATALOG_FAILING_UP_SOURCE });
+      const resultado = await ejecutarWorkerMigrate(script, ["DIRECT", dbPath, migBackup]);
+
+      assertSame(resultado.outcome, "REJECTED", "subcase A: up() debe rechazar la migracion");
+      assertSame(resultado.code, "MIGRATION_FAILED", "subcase A: code debe ser MIGRATION_FAILED");
+      assertSame(resultado.migrationId, "002_test_failing", "subcase A: debe atribuir la migracion en curso");
+
+      const history = await allSql(dbPath, "SELECT sequence FROM atlas_schema_migrations");
+      assertEqual(history.length, 1, "subcase A: history debe seguir en 1 fila (solo 001)");
+    } finally {
+      limpiarLegacyFixture(dbPath);
+      fs.rmSync(adoptBackup, { force: true });
+      fs.rmSync(migBackup, { force: true });
+    }
+  }
+
+  // Subcase B: INSERT de metadata falla.
+  {
+    const dbPath = await bootstrapReadyLegacyFixture();
+    const adoptBackup = `${dbPath}.adoptbackup`;
+    const migBackup = `${dbPath}.migbackup`;
+    try {
+      await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
+      const prePatch = [
+        "const sqlite3 = require('sqlite3');",
+        "const originalRun = sqlite3.Database.prototype.run;",
+        "sqlite3.Database.prototype.run = function (sql, ...resto) {",
+        "  if (typeof sql === 'string' && sql.includes('INSERT INTO atlas_schema_migrations')) {",
+        "    const callback = resto[resto.length - 1];",
+        "    if (typeof callback === 'function') {",
+        "      setImmediate(() => callback.call(this, Object.assign(new Error('FORCED_INSERT_FAILURE'), { code: 'SQLITE_ERROR' })));",
+        "      return this;",
+        "    }",
+        "  }",
+        "  return originalRun.apply(this, [sql, ...resto]);",
+        "};"
+      ].join("\n");
+      const script = construirWorkerMigrate({ catalogSource: CATALOG_SINGLE_PENDING_SOURCE, prePatchSource: prePatch });
+      const resultado = await ejecutarWorkerMigrate(script, ["DIRECT", dbPath, migBackup]);
+
+      assertSame(resultado.outcome, "REJECTED", "subcase B: INSERT fallido debe rechazar la migracion");
+      assertSame(resultado.code, "MIGRATION_FAILED", "subcase B: code debe ser MIGRATION_FAILED");
+      assertSame(resultado.migrationId, "002_test_single", "subcase B: debe atribuir la migracion en curso");
+
+      const history = await allSql(dbPath, "SELECT sequence FROM atlas_schema_migrations");
+      assertEqual(history.length, 1, "subcase B: history debe seguir en 1 fila");
+      const tabla = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='mt_test_002'");
+      assertEqual(tabla.length, 0, "subcase B: la tabla de la migracion no debe quedar (ROLLBACK del batch completo)");
+    } finally {
+      limpiarLegacyFixture(dbPath);
+      fs.rmSync(adoptBackup, { force: true });
+      fs.rmSync(migBackup, { force: true });
+    }
+  }
+
+  // Subcase C: COMMIT falla.
+  {
+    const dbPath = await bootstrapReadyLegacyFixture();
+    const adoptBackup = `${dbPath}.adoptbackup`;
+    const migBackup = `${dbPath}.migbackup`;
+    try {
+      await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
+      const prePatch = [
+        "const sqlite3 = require('sqlite3');",
+        "const originalRun = sqlite3.Database.prototype.run;",
+        "sqlite3.Database.prototype.run = function (sql, ...resto) {",
+        "  if (typeof sql === 'string' && sql.trim() === 'COMMIT') {",
+        "    const callback = resto[resto.length - 1];",
+        "    if (typeof callback === 'function') {",
+        "      setImmediate(() => callback.call(this, Object.assign(new Error('FORCED_COMMIT_FAILURE'), { code: 'SQLITE_ERROR' })));",
+        "      return this;",
+        "    }",
+        "  }",
+        "  return originalRun.apply(this, [sql, ...resto]);",
+        "};"
+      ].join("\n");
+      const script = construirWorkerMigrate({ catalogSource: CATALOG_SINGLE_PENDING_SOURCE, prePatchSource: prePatch });
+      const resultado = await ejecutarWorkerMigrate(script, ["DIRECT", dbPath, migBackup]);
+
+      assertSame(resultado.outcome, "REJECTED", "subcase C: COMMIT fallido debe rechazar la migracion");
+      assertSame(resultado.code, "MIGRATION_FAILED", "subcase C: code debe ser MIGRATION_FAILED");
+      assertSame(resultado.migrationId, "002_test_single", "subcase C: debe atribuir la ultima migracion aplicada");
+    } finally {
+      limpiarLegacyFixture(dbPath);
+      fs.rmSync(adoptBackup, { force: true });
+      fs.rmSync(migBackup, { force: true });
+    }
+  }
+}
+
+async function testMT1E2C3MigratorBackupFailureBlocksMigration() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const adoptBackup = `${dbPath}.adoptbackup`;
+  const migBackup = `${dbPath}.migbackup`;
+  try {
+    await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
+    const prePatch = [
+      "const EventEmitter = require('events');",
+      "const sqlite3 = require('sqlite3');",
+      "sqlite3.Database.prototype.backup = function (destPath, initCb) {",
+      "  const emitter = new EventEmitter();",
+      "  emitter.step = (pages, cb) => { setImmediate(() => cb(Object.assign(new Error('DISK_FULL'), { code: 'SQLITE_FULL' }))); };",
+      "  emitter.finish = (cb) => { setImmediate(() => cb(null)); };",
+      "  setImmediate(() => initCb(null));",
+      "  return emitter;",
+      "};"
+    ].join("\n");
+    const script = construirWorkerMigrate({ catalogSource: CATALOG_SINGLE_PENDING_SOURCE, prePatchSource: prePatch });
+    const resultado = await ejecutarWorkerMigrate(script, ["DIRECT", dbPath, migBackup]);
+
+    assertSame(resultado.outcome, "REJECTED", "fallo de backup debe rechazar la migracion");
+    assertSame(resultado.code, "BACKUP_ERROR", "code debe ser BACKUP_ERROR");
+    assertSame(fs.existsSync(migBackup), false, "no debe quedar un backup parcial");
+
+    const history = await allSql(dbPath, "SELECT sequence FROM atlas_schema_migrations");
+    assertEqual(history.length, 1, "history debe seguir en 1 fila (sin migracion aplicada)");
+    const tabla = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='mt_test_002'");
+    assertEqual(tabla.length, 0, "la tabla de la migracion no debe existir");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(adoptBackup, { force: true });
+    fs.rmSync(migBackup, { force: true });
+  }
+}
+
+async function testMT1E2C3MigratorBackupInvalidIntegrityBlocksMigration() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const adoptBackup = `${dbPath}.adoptbackup`;
+  const migBackup = `${dbPath}.migbackup`;
+  try {
+    await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
+    const prePatch = [
+      "const EventEmitter = require('events');",
+      "const fs = require('fs');",
+      "const sqlite3 = require('sqlite3');",
+      "sqlite3.Database.prototype.backup = function (destPath, initCb) {",
+      "  const emitter = new EventEmitter();",
+      "  emitter.step = (pages, cb) => { setImmediate(() => cb(null, true)); };",
+      "  emitter.finish = (cb) => {",
+      "    fs.writeFileSync(destPath, 'esto no es un archivo sqlite valido');",
+      "    setImmediate(() => cb(null));",
+      "  };",
+      "  setImmediate(() => initCb(null));",
+      "  return emitter;",
+      "};"
+    ].join("\n");
+    const script = construirWorkerMigrate({ catalogSource: CATALOG_SINGLE_PENDING_SOURCE, prePatchSource: prePatch });
+    const resultado = await ejecutarWorkerMigrate(script, ["DIRECT", dbPath, migBackup]);
+
+    assertSame(resultado.outcome, "REJECTED", "backup con integrity_check invalido debe rechazar la migracion");
+    assertSame(resultado.code, "BACKUP_INVALID", "code debe ser BACKUP_INVALID");
+    assertSame(fs.existsSync(migBackup), false, "el backup invalido debe eliminarse");
+
+    const history = await allSql(dbPath, "SELECT sequence FROM atlas_schema_migrations");
+    assertEqual(history.length, 1, "history debe seguir en 1 fila");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(adoptBackup, { force: true });
+    fs.rmSync(migBackup, { force: true });
+  }
+}
+
+async function testMT1E2C3MigratorPostBackupFailurePreservesBackup() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const adoptBackup = `${dbPath}.adoptbackup`;
+  const migBackup = `${dbPath}.migbackup`;
+  try {
+    await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
+    const script = construirWorkerMigrate({ catalogSource: CATALOG_FAILING_UP_SOURCE });
+    const resultado = await ejecutarWorkerMigrate(script, ["DIRECT", dbPath, migBackup]);
+
+    assertSame(resultado.outcome, "REJECTED", "up() fallido debe rechazar la migracion");
+    assertSame(resultado.code, "MIGRATION_FAILED", "code debe ser MIGRATION_FAILED");
+    assertSame(fs.existsSync(migBackup), true, "el backup VALID_BACKUP debe conservarse pese al fallo posterior");
+
+    const backupDb = await abrirConexionTestReadOnly(migBackup);
+    const integridad = await new Promise((res, rej) =>
+      backupDb.get("PRAGMA integrity_check", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertSame(integridad.integrity_check, "ok", "el backup conservado debe seguir siendo valido");
+    await cerrarConexionTest(backupDb);
+
+    const history = await allSql(dbPath, "SELECT sequence FROM atlas_schema_migrations");
+    assertEqual(history.length, 1, "la fuente no debe quedar con la migracion fallida aplicada (ROLLBACK)");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(adoptBackup, { force: true });
+    fs.rmSync(migBackup, { force: true });
+  }
+}
+
+async function testMT1E2C3MigratorAheadRejected() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const adoptBackup = `${dbPath}.adoptbackup`;
+  const migBackupUp = `${dbPath}.migbackup-up`;
+  const migBackupAhead = `${dbPath}.migbackup-ahead`;
+  try {
+    await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
+
+    const scriptUp = construirWorkerMigrate({ catalogSource: CATALOG_EXTENDS_SINGLE_SOURCE });
+    const resultadoUp = await ejecutarWorkerMigrate(scriptUp, ["DIRECT", dbPath, migBackupUp]);
+    assertSame(resultadoUp.outcome, "RESOLVED", "fixture debe migrar primero al catalogo mas grande (001,002_test_single,003_test_extra)");
+    assertSame(resultadoUp.resultado.status, "MIGRATED", "debe quedar MIGRATED con 3 filas de historial");
+
+    const scriptAhead = construirWorkerMigrate({ catalogSource: CATALOG_SINGLE_PENDING_SOURCE });
+    const resultadoAhead = await ejecutarWorkerMigrate(scriptAhead, ["DIRECT", dbPath, migBackupAhead]);
+    assertSame(resultadoAhead.outcome, "REJECTED", "catalogo mas chico que el historial debe rechazar la migracion");
+    assertSame(resultadoAhead.code, "DATABASE_AHEAD", "code debe ser DATABASE_AHEAD");
+    assertSame(fs.existsSync(migBackupAhead), false, "no debe crearse backup para DATABASE_AHEAD");
+
+    const history = await allSql(dbPath, "SELECT sequence FROM atlas_schema_migrations");
+    assertEqual(history.length, 3, "el historial no debe alterarse por el intento AHEAD");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(adoptBackup, { force: true });
+    fs.rmSync(migBackupUp, { force: true });
+    fs.rmSync(migBackupAhead, { force: true });
+  }
+}
+
+async function testMT1E2C3MigratorInvalidHistoryRejected() {
+  // Subcase A: tabla metadata con estructura incompatible.
+  {
+    const dbPath = await bootstrapReadyLegacyFixture();
+    const backupPath = `${dbPath}.backup`;
+    try {
+      await runSql(dbPath, "CREATE TABLE atlas_schema_migrations (sequence INTEGER, migration_id TEXT)");
+      let lanzo = null;
+      try {
+        await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+      } catch (error) {
+        lanzo = error;
+      }
+      assertSame(lanzo && lanzo.code, "INVALID_HISTORY", "subcase A: tabla incompatible debe lanzar INVALID_HISTORY");
+      assertSame(fs.existsSync(backupPath), false, "subcase A: no debe crearse backup");
+    } finally {
+      limpiarLegacyFixture(dbPath);
+      fs.rmSync(backupPath, { force: true });
+    }
+  }
+
+  // Subcase B: gap en la secuencia (1, luego 3 -- salta el 2).
+  {
+    const dbPath = await bootstrapReadyLegacyFixture();
+    const backupPath = `${dbPath}.backup`;
+    try {
+      await runSql(
+        dbPath,
+        `CREATE TABLE atlas_schema_migrations (
+          sequence INTEGER NOT NULL UNIQUE CHECK(sequence >= 1),
+          migration_id TEXT PRIMARY KEY NOT NULL,
+          applied_at TEXT NOT NULL
+        )`
+      );
+      await runSql(
+        dbPath,
+        "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (1, '001_legacy_runtime_baseline', datetime('now'))"
+      );
+      await runSql(
+        dbPath,
+        "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (3, '003_algo', datetime('now'))"
+      );
+      let lanzo = null;
+      try {
+        await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+      } catch (error) {
+        lanzo = error;
+      }
+      assertSame(lanzo && lanzo.code, "INVALID_HISTORY", "subcase B: gap en sequence debe lanzar INVALID_HISTORY");
+      assertSame(fs.existsSync(backupPath), false, "subcase B: no debe crearse backup");
+    } finally {
+      limpiarLegacyFixture(dbPath);
+      fs.rmSync(backupPath, { force: true });
+    }
+  }
+
+  // Subcase C: sequences correctas, pero migration_id en la posicion 1 no coincide con el catalogo.
+  {
+    const dbPath = await bootstrapReadyLegacyFixture();
+    const migBackup = `${dbPath}.migbackup`;
+    try {
+      await runSql(
+        dbPath,
+        `CREATE TABLE atlas_schema_migrations (
+          sequence INTEGER NOT NULL UNIQUE CHECK(sequence >= 1),
+          migration_id TEXT PRIMARY KEY NOT NULL,
+          applied_at TEXT NOT NULL
+        )`
+      );
+      await runSql(
+        dbPath,
+        "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (1, '001_legacy_runtime_baseline', datetime('now'))"
+      );
+      await runSql(
+        dbPath,
+        "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (2, '002_id_incorrecto', datetime('now'))"
+      );
+      const script = construirWorkerMigrate({ catalogSource: CATALOG_SINGLE_PENDING_SOURCE });
+      const resultado = await ejecutarWorkerMigrate(script, ["DIRECT", dbPath, migBackup]);
+      assertSame(resultado.outcome, "REJECTED", "subcase C: migration_id fuera de catalogo debe rechazar");
+      assertSame(resultado.code, "INVALID_HISTORY", "subcase C: code debe ser INVALID_HISTORY");
+      assertSame(fs.existsSync(migBackup), false, "subcase C: no debe crearse backup");
+    } finally {
+      limpiarLegacyFixture(dbPath);
+      fs.rmSync(migBackup, { force: true });
+    }
+  }
+}
+
+async function testMT1E2C3MigratorCentralExactIdentity() {
+  const dbPath = await bootstrapReadyRegisteredTenantDb();
+  const adoptBackup = `${dbPath}.adoptbackup`;
+  const migBackup = `${dbPath}.migbackup`;
+  const controlDbPath = tempDbPath();
+  const slug = `mt1e2c3b-central-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresa = await registrarEmpresa(controlDb, {
+      slug, nombre: "Test Central Migrator", dbPath: path.basename(dbPath), activa: true
+    });
+    await closeControlDb(controlDb);
+    await insertarTenantIdentityTest(dbPath, empresa.id, slug);
+
+    await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
+
+    const script = construirWorkerMigrate({ catalogSource: CATALOG_SINGLE_PENDING_SOURCE });
+    const resultado = await ejecutarWorkerMigrate(script, ["CENTRAL", dbPath, migBackup, controlDbPath, slug]);
+    assertSame(resultado.outcome, "RESOLVED", "CENTRAL con identity exacta debe resolver la migracion");
+    assertSame(resultado.resultado.status, "MIGRATED", "debe resultar MIGRATED");
+    assertSame(fs.existsSync(migBackup), true, "debe crearse el backup");
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    fs.rmSync(adoptBackup, { force: true });
+    fs.rmSync(migBackup, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E2C3MigratorCentralIdentityFailures() {
+  const controlDbPath = tempDbPath();
+  const slugBase = `mt1e2c3b-idfail-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    const dbMissing = await bootstrapReadyRegisteredTenantDb();
+    try {
+      const slugMissing = `${slugBase}-missing`;
+      const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+      await registrarEmpresa(controlDb, { slug: slugMissing, nombre: "T", dbPath: path.basename(dbMissing), activa: true });
+      await closeControlDb(controlDb);
+      const migBackup = `${dbMissing}.migbackup`;
+      let lanzo = null;
+      try {
+        await migrarTenantDb({
+          mode: "CENTRAL", controlDbPath, empresaSlug: slugMissing,
+          businessDbPath: dbMissing, backupPath: migBackup
+        });
+      } catch (error) {
+        lanzo = error;
+      }
+      assertSame(lanzo && lanzo.code, "TENANT_DB_IDENTITY_MISSING", "sin tenant_identity debe lanzar TENANT_DB_IDENTITY_MISSING");
+      assertSame(fs.existsSync(migBackup), false, "no debe crearse backup");
+    } finally {
+      limpiarTenantTestDb(dbMissing);
+    }
+
+    const dbInvalid = await bootstrapReadyRegisteredTenantDb();
+    try {
+      const slugInvalid = `${slugBase}-invalid`;
+      const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+      await registrarEmpresa(controlDb, { slug: slugInvalid, nombre: "T", dbPath: path.basename(dbInvalid), activa: true });
+      await closeControlDb(controlDb);
+      await runSql(dbInvalid, "DROP TABLE tenant_identity");
+      await runSql(dbInvalid, "CREATE TABLE tenant_identity (id INTEGER PRIMARY KEY, empresa_control_id, tenant_slug)");
+      await runSql(
+        dbInvalid,
+        "INSERT INTO tenant_identity (id, empresa_control_id, tenant_slug) VALUES (1, ?, ?)",
+        ["no-es-un-entero", slugInvalid]
+      );
+      const migBackup = `${dbInvalid}.migbackup`;
+      let lanzo = null;
+      try {
+        await migrarTenantDb({
+          mode: "CENTRAL", controlDbPath, empresaSlug: slugInvalid,
+          businessDbPath: dbInvalid, backupPath: migBackup
+        });
+      } catch (error) {
+        lanzo = error;
+      }
+      assertSame(lanzo && lanzo.code, "TENANT_DB_IDENTITY_INVALID", "identity invalida debe lanzar TENANT_DB_IDENTITY_INVALID");
+      assertSame(fs.existsSync(migBackup), false, "no debe crearse backup");
+    } finally {
+      limpiarTenantTestDb(dbInvalid);
+    }
+
+    const dbMismatch = await bootstrapReadyRegisteredTenantDb();
+    try {
+      const slugMismatch = `${slugBase}-mismatch`;
+      const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+      const empresa = await registrarEmpresa(controlDb, {
+        slug: slugMismatch, nombre: "T", dbPath: path.basename(dbMismatch), activa: true
+      });
+      await closeControlDb(controlDb);
+      await insertarTenantIdentityTest(dbMismatch, empresa.id + 999, "otro-slug-completamente-distinto");
+      const migBackup = `${dbMismatch}.migbackup`;
+      let lanzo = null;
+      try {
+        await migrarTenantDb({
+          mode: "CENTRAL", controlDbPath, empresaSlug: slugMismatch,
+          businessDbPath: dbMismatch, backupPath: migBackup
+        });
+      } catch (error) {
+        lanzo = error;
+      }
+      assertSame(lanzo && lanzo.code, "TENANT_DB_IDENTITY_MISMATCH", "identity de otra empresa debe lanzar TENANT_DB_IDENTITY_MISMATCH");
+      assertSame(fs.existsSync(migBackup), false, "no debe crearse backup");
+    } finally {
+      limpiarTenantTestDb(dbMismatch);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E2C3MigratorCentralInactiveAllowed() {
+  const dbPath = await bootstrapReadyRegisteredTenantDb();
+  const adoptBackup = `${dbPath}.adoptbackup`;
+  const migBackup = `${dbPath}.migbackup`;
+  const controlDbPath = tempDbPath();
+  const slug = `mt1e2c3b-inactiva-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresa = await registrarEmpresa(controlDb, {
+      slug, nombre: "Inactiva Migrator Test", dbPath: path.basename(dbPath), activa: false
+    });
+    await closeControlDb(controlDb);
+    assertEqual(Number(empresa.activa), 0, "la empresa debe quedar registrada como inactiva");
+    await insertarTenantIdentityTest(dbPath, empresa.id, slug);
+
+    await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
+
+    const script = construirWorkerMigrate({ catalogSource: CATALOG_SINGLE_PENDING_SOURCE });
+    const resultado = await ejecutarWorkerMigrate(script, ["CENTRAL", dbPath, migBackup, controlDbPath, slug]);
+    assertSame(resultado.outcome, "RESOLVED", "empresa inactiva debe poder migrar (operacion administrativa)");
+    assertSame(resultado.resultado.status, "MIGRATED", "debe resultar MIGRATED");
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    fs.rmSync(adoptBackup, { force: true });
+    fs.rmSync(migBackup, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E2C3MigratorCentralRegistryFailures() {
+  const controlDbInexistente = tempDbPath();
+  let lanzoNotFound = null;
+  try {
+    await migrarTenantDb({
+      mode: "CENTRAL", controlDbPath: controlDbInexistente, empresaSlug: "x",
+      businessDbPath: tempDbPath(), backupPath: tempDbPath()
+    });
+  } catch (error) {
+    lanzoNotFound = error;
+  }
+  assertSame(lanzoNotFound && lanzoNotFound.code, "CONTROL_DB_NOT_FOUND", "control DB inexistente debe lanzar CONTROL_DB_NOT_FOUND");
+
+  const controlDbInvalido = tempDbPath();
+  fs.writeFileSync(controlDbInvalido, "esto no es sqlite");
+  let lanzoError = null;
+  try {
+    await migrarTenantDb({
+      mode: "CENTRAL", controlDbPath: controlDbInvalido, empresaSlug: "x",
+      businessDbPath: tempDbPath(), backupPath: tempDbPath()
+    });
+  } catch (error) {
+    lanzoError = error;
+  }
+  assertSame(lanzoError && lanzoError.code, "CONTROL_DB_ERROR", "control DB no-SQLite debe lanzar CONTROL_DB_ERROR");
+  fs.rmSync(controlDbInvalido, { force: true });
+
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDbVacio = await bootstrapControlDb(controlDbPath, { seed: false });
+    await closeControlDb(controlDbVacio);
+    let lanzoEmpresa = null;
+    try {
+      await migrarTenantDb({
+        mode: "CENTRAL", controlDbPath, empresaSlug: "no-existe-esta-empresa-mt1e2c3b",
+        businessDbPath: tempDbPath(), backupPath: tempDbPath()
+      });
+    } catch (error) {
+      lanzoEmpresa = error;
+    }
+    assertSame(lanzoEmpresa && lanzoEmpresa.code, "EMPRESA_NOT_FOUND", "empresa inexistente debe lanzar EMPRESA_NOT_FOUND");
+
+    const dbReal = await bootstrapReadyRegisteredTenantDb();
+    const otroPath = await bootstrapReadyRegisteredTenantDb();
+    try {
+      const slug = `mt1e2c3b-pathmismatch-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const controlDb2 = await bootstrapControlDb(controlDbPath, { seed: false });
+      await registrarEmpresa(controlDb2, { slug, nombre: "T", dbPath: path.basename(dbReal), activa: true });
+      await closeControlDb(controlDb2);
+
+      const migBackup = `${otroPath}.migbackup`;
+      let lanzoMismatch = null;
+      try {
+        await migrarTenantDb({
+          mode: "CENTRAL", controlDbPath, empresaSlug: slug,
+          businessDbPath: otroPath, backupPath: migBackup
+        });
+      } catch (error) {
+        lanzoMismatch = error;
+      }
+      assertSame(
+        lanzoMismatch && lanzoMismatch.code,
+        "BUSINESS_DB_PATH_MISMATCH",
+        "businessDbPath distinto del registrado debe lanzar BUSINESS_DB_PATH_MISMATCH"
+      );
+      assertSame(fs.existsSync(migBackup), false, "no debe crearse backup (rechazo pre-lock)");
+    } finally {
+      limpiarTenantTestDb(dbReal);
+      limpiarTenantTestDb(otroPath);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E2C3MigratorConcurrencyAndIdempotency() {
+  // Subcase A: BUSINESS_DB_BUSY -- lock externo real sostenido, busy_timeout del migrator agotado.
+  const dbBusy = await bootstrapReadyLegacyFixture();
+  const adoptBackupBusy = `${dbBusy}.adoptbackup`;
+  const migBackupBusy = `${dbBusy}.migbackup`;
+  try {
+    await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbBusy, backupPath: adoptBackupBusy });
+
+    const lockerScript = `
+      const sqlite3 = require(${JSON.stringify(path.join(ROOT, "node_modules/sqlite3"))}).verbose();
+      setInterval(() => {}, 1000);
+      const db = new sqlite3.Database(${JSON.stringify(dbBusy)}, sqlite3.OPEN_READWRITE, () => {
+        db.run("BEGIN IMMEDIATE", () => {
+          console.log("LOCK_ADQUIRIDO");
+        });
+      });
+    `;
+    const locker = spawn(process.execPath, ["-e", lockerScript]);
+    await new Promise((resolve) => {
+      locker.stdout.on("data", (d) => { if (d.toString().includes("LOCK_ADQUIRIDO")) resolve(); });
+    });
+
+    const script = construirWorkerMigrate({ catalogSource: CATALOG_SINGLE_PENDING_SOURCE });
+    const resultado = await ejecutarWorkerMigrate(script, ["DIRECT", dbBusy, migBackupBusy]);
+    assertSame(resultado.outcome, "REJECTED", "migrator contra lock externo sostenido debe rechazar");
+    assertSame(resultado.code, "BUSINESS_DB_BUSY", "code debe ser BUSINESS_DB_BUSY");
+    assertSame(fs.existsSync(migBackupBusy), false, "no debe crearse backup si BEGIN IMMEDIATE nunca se adquirio");
+
+    locker.kill();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const filasTrasBusy = await allSql(dbBusy, "SELECT sequence FROM atlas_schema_migrations");
+    assertEqual(filasTrasBusy.length, 1, "no debe existir una segunda fila tras el rechazo por busy");
+  } finally {
+    limpiarLegacyFixture(dbBusy);
+    fs.rmSync(adoptBackupBusy, { force: true });
+    fs.rmSync(migBackupBusy, { force: true });
+  }
+
+  // Subcase B: dos procesos Node REALES solapados sobre la MISMA fixture ya BEHIND.
+  const dbConcurrente = await bootstrapReadyLegacyFixture();
+  const adoptBackupConcurrente = `${dbConcurrente}.adoptbackup`;
+  const migBackupA = `${dbConcurrente}.migbackupA`;
+  const migBackupB = `${dbConcurrente}.migbackupB`;
+  try {
+    await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbConcurrente, backupPath: adoptBackupConcurrente });
+
+    const scriptA = construirWorkerMigrate({ catalogSource: CATALOG_SINGLE_PENDING_SOURCE });
+    const scriptB = construirWorkerMigrate({ catalogSource: CATALOG_SINGLE_PENDING_SOURCE });
+    const [resultA, resultB] = await Promise.all([
+      ejecutarWorkerMigrate(scriptA, ["DIRECT", dbConcurrente, migBackupA]),
+      ejecutarWorkerMigrate(scriptB, ["DIRECT", dbConcurrente, migBackupB])
+    ]);
+
+    const resultados = [resultA, resultB];
+    const migratedCount = resultados.filter((r) => r.outcome === "RESOLVED" && r.resultado.status === "MIGRATED").length;
+    const otrosValidos = resultados.filter(
+      (r) =>
+        (r.outcome === "RESOLVED" && r.resultado.status === "ALREADY_CURRENT") ||
+        (r.outcome === "REJECTED" && r.code === "BUSINESS_DB_BUSY")
+    ).length;
+
+    assertEqual(migratedCount, 1, "exactamente uno de los dos migrators debe resultar MIGRATED");
+    assertEqual(otrosValidos, 1, "el otro debe resultar ALREADY_CURRENT o BUSINESS_DB_BUSY");
+
+    const filasFinal = await allSql(dbConcurrente, "SELECT sequence, migration_id FROM atlas_schema_migrations");
+    assertEqual(filasFinal.length, 2, "debe existir exactamente 2 filas (001 + 002), sin doble INSERT");
+
+    const backupsCreados = [migBackupA, migBackupB].filter((p) => fs.existsSync(p));
+    assertEqual(backupsCreados.length, 1, "solo el migrator que realmente migro puede haber dejado un backup");
+  } finally {
+    limpiarLegacyFixture(dbConcurrente);
+    fs.rmSync(adoptBackupConcurrente, { force: true });
+    fs.rmSync(migBackupA, { force: true });
+    fs.rmSync(migBackupB, { force: true });
+  }
+}
+
+async function testMT1E2C3MigratorSameConnectionAuthority() {
+  const codigoFuente = fs.readFileSync(MIGRATE_TENANT_DB_PATH, "utf8");
+  assertSame(
+    /[^.\w]verificarBusinessSchemaVersion\(/.test(codigoFuente),
+    false,
+    "no debe llamar a la variante path-based verificarBusinessSchemaVersion"
+  );
+  assertSame(
+    /[^.\w]verificarTenantDbIdentity\(/.test(codigoFuente),
+    false,
+    "no debe llamar a la variante path-based verificarTenantDbIdentity"
+  );
+  assertSame(
+    codigoFuente.includes("verificarBusinessSchemaVersionEnConexion"),
+    true,
+    "debe usar la variante EnConexion de schema version"
+  );
+  assertSame(
+    codigoFuente.includes("verificarTenantDbIdentityEnConexion"),
+    true,
+    "debe usar la variante EnConexion de identity"
+  );
+
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const adoptBackup = `${dbPath}.adoptbackup`;
+  const migBackup = `${dbPath}.migbackup`;
+  try {
+    await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
+
+    const instrumentPrePatch = [
+      "const sqlite3 = require('sqlite3');",
+      "global.__rwCount = 0;",
+      "global.__roCount = 0;",
+      "const OriginalDatabase = sqlite3.Database;",
+      "function InstrumentedDatabase(dbPath, mode, cb) {",
+      "  if (typeof mode === 'number') {",
+      "    if (mode & sqlite3.OPEN_READWRITE) global.__rwCount += 1;",
+      "    else if (mode & sqlite3.OPEN_READONLY) global.__roCount += 1;",
+      "  }",
+      "  return new OriginalDatabase(dbPath, mode, cb);",
+      "}",
+      "InstrumentedDatabase.prototype = OriginalDatabase.prototype;",
+      "sqlite3.Database = InstrumentedDatabase;"
+    ].join("\n");
+    const script = [
+      instrumentPrePatch,
+      construirWorkerMigrate({ catalogSource: CATALOG_SINGLE_PENDING_SOURCE }).replace(
+        "console.log(JSON.stringify({ outcome: 'RESOLVED', resultado }));",
+        "console.log(JSON.stringify({ outcome: 'RESOLVED', resultado, rwCount: global.__rwCount, roCount: global.__roCount }));"
+      )
+    ].join("\n");
+    const resultado = await ejecutarWorkerMigrate(script, ["DIRECT", dbPath, migBackup]);
+    assertSame(resultado.outcome, "RESOLVED", "la migracion instrumentada debe completarse");
+    assertSame(resultado.resultado.status, "MIGRATED", "debe resultar MIGRATED");
+    assertEqual(resultado.rwCount, 1, "debe haber exactamente 1 conexion OPEN_READWRITE (conexion A)");
+    assertEqual(resultado.roCount, 2, "debe haber exactamente 2 conexiones OPEN_READONLY (backup B + integrity verifier)");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(adoptBackup, { force: true });
+    fs.rmSync(migBackup, { force: true });
+  }
+}
+
+async function testMT1E2C3MigratorModuleSinSideEffects() {
+  const fakeBusinessDb = path.join(os.tmpdir(), `mt1e2c3b-fake-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+  try {
+    const resultadoMigrator = spawnSync(
+      process.execPath,
+      ["-e", `require(${JSON.stringify(MIGRATE_TENANT_DB_PATH)});`],
+      { cwd: ROOT, env: { ...process.env, GUERNICA_DB_PATH: fakeBusinessDb }, encoding: "utf8" }
+    );
+    assertEqual(
+      resultadoMigrator.status, 0,
+      `require aislado de migrate-tenant-db debe salir 0\n${resultadoMigrator.stderr || resultadoMigrator.stdout}`
+    );
+    assertEqual(fs.existsSync(fakeBusinessDb), false, "require de migrate-tenant-db no debe crear la fake business DB");
+
+    const resultadoCatalog = spawnSync(
+      process.execPath,
+      ["-e", `require(${JSON.stringify(BUSINESS_MIGRATIONS_PATH)});`],
+      { cwd: ROOT, env: { ...process.env, GUERNICA_DB_PATH: fakeBusinessDb }, encoding: "utf8" }
+    );
+    assertEqual(
+      resultadoCatalog.status, 0,
+      `require aislado de business-migrations debe salir 0\n${resultadoCatalog.stderr || resultadoCatalog.stdout}`
+    );
+    assertEqual(fs.existsSync(fakeBusinessDb), false, "require de business-migrations no debe crear la fake business DB");
+  } finally {
+    fs.rmSync(fakeBusinessDb, { force: true });
+  }
+}
+
+async function testMT1E2C3MigratorCatalogValidation() {
+  const casosInvalidos = [
+    { nombre: "array vacio", source: "[]" },
+    {
+      nombre: "sequence empieza en 2",
+      source: "[{ sequence: 2, migrationId: '001_legacy_runtime_baseline', kind: 'BASELINE' }]"
+    },
+    {
+      nombre: "gap 1 a 3",
+      source: [
+        "[",
+        "  { sequence: 1, migrationId: '001_legacy_runtime_baseline', kind: 'BASELINE' },",
+        "  { sequence: 3, migrationId: '003_x', kind: 'MIGRATION', up: async () => {} }",
+        "]"
+      ].join("\n")
+    },
+    {
+      nombre: "sequence duplicado",
+      source: [
+        "[",
+        "  { sequence: 1, migrationId: '001_legacy_runtime_baseline', kind: 'BASELINE' },",
+        "  { sequence: 1, migrationId: '002_x', kind: 'MIGRATION', up: async () => {} }",
+        "]"
+      ].join("\n")
+    },
+    {
+      nombre: "migrationId duplicado",
+      source: [
+        "[",
+        "  { sequence: 1, migrationId: '001_legacy_runtime_baseline', kind: 'BASELINE' },",
+        "  { sequence: 2, migrationId: '001_legacy_runtime_baseline', kind: 'MIGRATION', up: async () => {} }",
+        "]"
+      ].join("\n")
+    },
+    {
+      nombre: "orden fisico no coincide con sequence",
+      source: [
+        "[",
+        "  { sequence: 2, migrationId: '002_x', kind: 'MIGRATION', up: async () => {} },",
+        "  { sequence: 1, migrationId: '001_legacy_runtime_baseline', kind: 'BASELINE' }",
+        "]"
+      ].join("\n")
+    },
+    {
+      nombre: "sequence 1 con id incorrecto",
+      source: "[{ sequence: 1, migrationId: '001_otro_id', kind: 'BASELINE' }]"
+    },
+    {
+      nombre: "sequence 1 con kind incorrecto",
+      source: "[{ sequence: 1, migrationId: '001_legacy_runtime_baseline', kind: 'MIGRATION', up: async () => {} }]"
+    },
+    {
+      nombre: "entrada futura con kind incorrecto",
+      source: [
+        "[",
+        "  { sequence: 1, migrationId: '001_legacy_runtime_baseline', kind: 'BASELINE' },",
+        "  { sequence: 2, migrationId: '002_x', kind: 'BASELINE' }",
+        "]"
+      ].join("\n")
+    },
+    {
+      nombre: "entrada futura sin up",
+      source: [
+        "[",
+        "  { sequence: 1, migrationId: '001_legacy_runtime_baseline', kind: 'BASELINE' },",
+        "  { sequence: 2, migrationId: '002_x', kind: 'MIGRATION' }",
+        "]"
+      ].join("\n")
+    },
+    {
+      nombre: "sequence de tipo invalido",
+      source: "[{ sequence: '1', migrationId: '001_legacy_runtime_baseline', kind: 'BASELINE' }]"
+    },
+    {
+      nombre: "migrationId de tipo invalido",
+      source: "[{ sequence: 1, migrationId: 123, kind: 'BASELINE' }]"
+    }
+  ];
+
+  for (const caso of casosInvalidos) {
+    const dbPath = tempDbPath();
+    const backupPath = `${dbPath}.backup`;
+    const script = [
+      "const businessMigrationsPath = require.resolve(" + JSON.stringify(BUSINESS_MIGRATIONS_PATH) + ");",
+      "require.cache[businessMigrationsPath] = {",
+      "  id: businessMigrationsPath, filename: businessMigrationsPath, loaded: true,",
+      `  exports: { BUSINESS_MIGRATIONS: Object.freeze(${caso.source}) }`,
+      "};",
+      `const { migrarTenantDb } = require(${JSON.stringify(MIGRATE_TENANT_DB_PATH)});`,
+      "let lanzo = null;",
+      "try {",
+      `  migrarTenantDb({ mode: 'DIRECT', businessDbPath: ${JSON.stringify(dbPath)}, backupPath: ${JSON.stringify(backupPath)} });`,
+      "} catch (error) { lanzo = error; }",
+      "console.log(JSON.stringify({ code: lanzo && lanzo.code, dbCreated: require('fs').existsSync(" +
+        JSON.stringify(dbPath) +
+        ") }));"
+    ].join("\n");
+    const resultado = await new Promise((resolve) => {
+      const child = spawn(process.execPath, ["-e", script]);
+      let out = "";
+      child.stdout.on("data", (d) => { out += d.toString(); });
+      child.on("exit", () => {
+        const linea = out.trim().split("\n").filter(Boolean).pop();
+        resolve(linea ? JSON.parse(linea) : { code: "NO_OUTPUT" });
+      });
+    });
+    assertSame(resultado.code, "MIGRATION_CATALOG_INVALID", `caso "${caso.nombre}": debe lanzar MIGRATION_CATALOG_INVALID`);
+    assertSame(resultado.dbCreated, false, `caso "${caso.nombre}": no debe abrirse/crearse ningun SQLite antes de validar el catalogo`);
+  }
+
+  assertEqual(BUSINESS_MIGRATIONS.length, 1, "catalogo de produccion debe tener exactamente 1 entrada");
+  assertEqual(BUSINESS_MIGRATIONS[0].sequence, 1, "catalogo de produccion: sequence de la primera entrada debe ser 1");
+  assertSame(
+    BUSINESS_MIGRATIONS[0].migrationId, "001_legacy_runtime_baseline",
+    "catalogo de produccion: migrationId de la primera entrada debe ser 001_legacy_runtime_baseline"
+  );
+  assertSame(BUSINESS_MIGRATIONS[0].kind, "BASELINE", "catalogo de produccion: kind de la primera entrada debe ser BASELINE");
+  assertSame(BUSINESS_MIGRATIONS[0].up, undefined, "catalogo de produccion: la entrada BASELINE no debe tener up");
+  const tieneAlgun002 = BUSINESS_MIGRATIONS.some((m) => typeof m.migrationId === "string" && m.migrationId.startsWith("002_"));
+  assertSame(tieneAlgun002, false, "catalogo de produccion NO debe contener ningun migrationId que empiece con 002_ (PROHIBIDO)");
 }

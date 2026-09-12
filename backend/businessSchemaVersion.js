@@ -5,12 +5,15 @@
 // interpreta el estado de UNA business DB que el caller indica explicitamente.
 const fs = require("fs");
 const sqlite3 = require("sqlite3").verbose();
+const { BUSINESS_MIGRATIONS } = require("../database/business-migrations");
 
-// Autoridad unica del catalogo productivo. "001_legacy_runtime_baseline" significa "el estado
+// MT-1E2C3B: derivado de la unica fuente de verdad (database/business-migrations.js) en vez de un
+// array hardcodeado aparte -- evita dos catalogos divergentes. Valor publico identico a antes:
+// ["001_legacy_runtime_baseline"]. "001_legacy_runtime_baseline" significa "el estado
 // estructural/comercial equivalente al contrato legacy baseline fue verificado" -- NUNCA "se
 // ejecuto database/init-db.js". Este slice no adopta ninguna DB a este baseline; solo lo declara
 // como el estado esperado final contra el cual comparar un historial ya existente.
-const BUSINESS_SCHEMA_MIGRATIONS = Object.freeze(["001_legacy_runtime_baseline"]);
+const BUSINESS_SCHEMA_MIGRATIONS = Object.freeze(BUSINESS_MIGRATIONS.map((migration) => migration.migrationId));
 
 const MIGRATIONS_TABLE = "atlas_schema_migrations";
 
