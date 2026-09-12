@@ -67,6 +67,7 @@ const { adoptarLegacyBaseline } = require("../database/adopt-legacy-baseline");
 const { crearBackupSQLite } = require("../backend/sqliteBackup");
 const { migrarTenantDb } = require("../database/migrate-tenant-db");
 const { BUSINESS_MIGRATIONS } = require("../database/business-migrations");
+const { prepararLegacyParaBaseline001 } = require("../database/prepare-legacy-baseline");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -20600,6 +20601,21 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1E2C3MigratorSameConnectionAuthority);
   await _run(testMT1E2C3MigratorModuleSinSideEffects);
   await _run(testMT1E2C3MigratorCatalogValidation);
+  await _run(testMT1E3BPrepareLegacyFourColumns);
+  await _run(testMT1E3BPrepareLegacySubsetColumns);
+  await _run(testMT1E3BAlreadyBaselineReady);
+  await _run(testMT1E3BUnexpectedBaselineGapNotApplicable);
+  await _run(testMT1E3BVersionedRejected);
+  await _run(testMT1E3BBackupFailureBlocksUpgrade);
+  await _run(testMT1E3BBackupInvalidIntegrityBlocksUpgrade);
+  await _run(testMT1E3BPostBackupFailurePreservesBackup);
+  await _run(testMT1E3BCentralExactIdentity);
+  await _run(testMT1E3BCentralIdentityFailures);
+  await _run(testMT1E3BCentralRegistryFailures);
+  await _run(testMT1E3BCentralInactiveAllowed);
+  await _run(testMT1E3BConcurrencyAndIdempotency);
+  await _run(testMT1E3BSameConnectionAuthority);
+  await _run(testMT1E3BModuleSinSideEffects);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -29298,4 +29314,726 @@ async function testMT1E2C3MigratorCatalogValidation() {
   assertSame(BUSINESS_MIGRATIONS[0].up, undefined, "catalogo de produccion: la entrada BASELINE no debe tener up");
   const tieneAlgun002 = BUSINESS_MIGRATIONS.some((m) => typeof m.migrationId === "string" && m.migrationId.startsWith("002_"));
   assertSame(tieneAlgun002, false, "catalogo de produccion NO debe contener ningun migrationId que empiece con 002_ (PROHIBIDO)");
+}
+
+// MT-1E3B: helpers para tests del puente pre-baseline legacy. dropSesionesColumns simula el
+// contrato PRE-MT-1C.2B.1 de sesiones (sin las 4 columnas), y ensesionesConColumnas permite
+// dejar faltando sólo un subconjunto -- necesario para testear el modo SUBSET sin tocar ninguna
+// otra tabla del baseline 001.
+const PREPARE_LEGACY_BASELINE_PATH = path.join(ROOT, "database", "prepare-legacy-baseline.js");
+const SESIONES_COLUMN_DEFINITIONS = {
+  auth_mode: "TEXT NOT NULL DEFAULT 'legacy'",
+  central_id: "INTEGER",
+  membership_id: "INTEGER",
+  empresa_id: "INTEGER"
+};
+const SESIONES_COLUMNS_ORDER = ["auth_mode", "central_id", "membership_id", "empresa_id"];
+
+async function dejarSesionesFaltando(dbPath, columnasFaltantes) {
+  await runSql(dbPath, "DROP TABLE sesiones");
+  await runSql(dbPath, `CREATE TABLE sesiones (
+    token TEXT PRIMARY KEY,
+    usuario_id INTEGER NOT NULL,
+    nombre TEXT NOT NULL,
+    rol TEXT NOT NULL,
+    expira TEXT NOT NULL
+  )`);
+  for (const columna of SESIONES_COLUMNS_ORDER) {
+    if (!columnasFaltantes.includes(columna)) {
+      await runSql(dbPath, `ALTER TABLE sesiones ADD COLUMN ${columna} ${SESIONES_COLUMN_DEFINITIONS[columna]}`);
+    }
+  }
+}
+
+function construirWorkerPrepare({ prePatchSource = "" } = {}) {
+  return [
+    prePatchSource,
+    `const { prepararLegacyParaBaseline001 } = require(${JSON.stringify(PREPARE_LEGACY_BASELINE_PATH)});`,
+    "const [, mode, businessDbPath, backupPath, controlDbPath, empresaSlug] = process.argv;",
+    "const options = { mode, businessDbPath, backupPath };",
+    "if (mode === 'CENTRAL') { options.controlDbPath = controlDbPath; options.empresaSlug = empresaSlug; }",
+    "prepararLegacyParaBaseline001(options).then((resultado) => {",
+    "  console.log(JSON.stringify({ outcome: 'RESOLVED', resultado }));",
+    "}).catch((error) => {",
+    "  console.log(JSON.stringify({ outcome: 'REJECTED', code: error.code, message: error.message }));",
+    "});"
+  ].join("\n");
+}
+
+function ejecutarWorkerPrepare(script, argv) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ["-e", script, "--", ...argv]);
+    let out = "";
+    child.stdout.on("data", (d) => { out += d.toString(); });
+    child.on("exit", () => {
+      const linea = out.trim().split("\n").filter(Boolean).pop();
+      resolve(linea ? JSON.parse(linea) : { outcome: "NO_OUTPUT" });
+    });
+  });
+}
+
+async function testMT1E3BPrepareLegacyFourColumns() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const backupPath = `${dbPath}.backup`;
+  try {
+    await dejarSesionesFaltando(dbPath, SESIONES_COLUMNS_ORDER);
+
+    const resultado = await prepararLegacyParaBaseline001({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+    assertSame(resultado.status, "PREPARED_BASELINE_001", "debe preparar el baseline con las 4 columnas faltantes");
+    assertSame(
+      JSON.stringify(resultado.applied),
+      JSON.stringify([
+        "COLUMN:sesiones.auth_mode",
+        "COLUMN:sesiones.central_id",
+        "COLUMN:sesiones.membership_id",
+        "COLUMN:sesiones.empresa_id"
+      ]),
+      "applied debe listar las 4 columnas en el orden contractual exacto"
+    );
+    assertSame(resultado.backupPath, path.resolve(backupPath), "backupPath del resultado debe ser el resuelto");
+
+    const columnasBackup = await allSql(backupPath, "PRAGMA table_info(sesiones)");
+    const nombresBackup = columnasBackup.map((c) => c.name);
+    for (const columna of SESIONES_COLUMNS_ORDER) {
+      assertSame(nombresBackup.includes(columna), false, `backup (PRE-state) no debe tener ${columna}`);
+    }
+
+    const columnasFinal = await allSql(dbPath, "PRAGMA table_info(sesiones)");
+    const porNombre = new Map(columnasFinal.map((c) => [c.name, c]));
+    assertSame(porNombre.get("auth_mode").notnull, 1, "auth_mode debe ser NOT NULL");
+    assertSame(porNombre.get("auth_mode").dflt_value, "'legacy'", "auth_mode debe tener default 'legacy'");
+    for (const columna of ["central_id", "membership_id", "empresa_id"]) {
+      assertSame(porNombre.get(columna).type, "INTEGER", `${columna} debe ser INTEGER`);
+      assertSame(porNombre.get(columna).notnull, 0, `${columna} debe ser nullable`);
+    }
+
+    const readiness = await verificarLegacyBaseline(dbPath);
+    assertSame(readiness.ready, true, "el baseline debe quedar ready:true tras la preparacion");
+
+    const history = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='atlas_schema_migrations'");
+    assertEqual(history.length, 0, "NO debe crearse atlas_schema_migrations -- esta herramienta no adopta");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(backupPath, { force: true });
+  }
+}
+
+async function testMT1E3BPrepareLegacySubsetColumns() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const backupPath = `${dbPath}.backup`;
+  try {
+    await dejarSesionesFaltando(dbPath, ["membership_id", "empresa_id"]);
+
+    const resultado = await prepararLegacyParaBaseline001({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+    assertSame(resultado.status, "PREPARED_BASELINE_001", "debe preparar el baseline aplicando solo el subset faltante");
+    assertSame(
+      JSON.stringify(resultado.applied),
+      JSON.stringify(["COLUMN:sesiones.membership_id", "COLUMN:sesiones.empresa_id"]),
+      "applied debe listar solo las 2 columnas realmente faltantes, en orden contractual"
+    );
+
+    const columnasFinal = await allSql(dbPath, "PRAGMA table_info(sesiones)");
+    const nombresFinal = columnasFinal.map((c) => c.name);
+    for (const columna of SESIONES_COLUMNS_ORDER) {
+      assertSame(nombresFinal.includes(columna), true, `${columna} debe existir tras la preparacion`);
+    }
+
+    const readiness = await verificarLegacyBaseline(dbPath);
+    assertSame(readiness.ready, true, "el baseline debe quedar ready:true");
+
+    const history = await verificarBusinessSchemaVersion(dbPath);
+    assertSame(history.state, "UNVERSIONED", "history debe seguir UNVERSIONED");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(backupPath, { force: true });
+  }
+}
+
+async function testMT1E3BAlreadyBaselineReady() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const backupPath = `${dbPath}.backup`;
+  try {
+    const antes = fs.readFileSync(dbPath);
+    const resultado = await prepararLegacyParaBaseline001({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+    assertSame(JSON.stringify(resultado), JSON.stringify({ status: "ALREADY_BASELINE_READY" }), "resultado exacto esperado");
+    assertSame(fs.existsSync(backupPath), false, "no debe crearse backup para ALREADY_BASELINE_READY");
+    const despues = fs.readFileSync(dbPath);
+    assertSame(Buffer.compare(antes, despues), 0, "la fuente no debe mutar");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(backupPath, { force: true });
+  }
+}
+
+async function testMT1E3BUnexpectedBaselineGapNotApplicable() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const backupPath = `${dbPath}.backup`;
+  try {
+    await dejarSesionesFaltando(dbPath, ["auth_mode"]);
+    await runSql(dbPath, "DROP TABLE productos");
+
+    const resultado = await prepararLegacyParaBaseline001({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+    assertSame(resultado.status, "NOT_APPLICABLE", "un gap fuera de whitelist debe resultar NOT_APPLICABLE");
+    assertSame(Array.isArray(resultado.failures) && resultado.failures.length > 0, true, "debe exponer los failures del verifier");
+    assertSame(fs.existsSync(backupPath), false, "no debe crearse backup");
+
+    const columnas = await allSql(dbPath, "PRAGMA table_info(sesiones)");
+    assertSame(columnas.some((c) => c.name === "auth_mode"), false, "NO debe intentar reparar el gap elegible tampoco (todo o nada)");
+    const tablas = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='productos'");
+    assertEqual(tablas.length, 0, "NO debe reparar el gap fuera de whitelist");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(backupPath, { force: true });
+  }
+}
+
+async function testMT1E3BVersionedRejected() {
+  // Subcase A: CURRENT (ya adoptada).
+  {
+    const dbPath = await bootstrapReadyLegacyFixture();
+    const adoptBackup = `${dbPath}.adoptbackup`;
+    const backupPath = `${dbPath}.backup`;
+    try {
+      await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
+      const resultado = await prepararLegacyParaBaseline001({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+      assertSame(resultado.status, "ALREADY_VERSIONED", "subcase A: DB ya adoptada (CURRENT) debe rechazarse");
+      assertSame(fs.existsSync(backupPath), false, "subcase A: no debe crearse backup");
+    } finally {
+      limpiarLegacyFixture(dbPath);
+      fs.rmSync(adoptBackup, { force: true });
+      fs.rmSync(backupPath, { force: true });
+    }
+  }
+
+  // Subcase B: INVALID_HISTORY con tabla de metadata presente pero incompatible.
+  {
+    const dbPath = await bootstrapReadyLegacyFixture();
+    const backupPath = `${dbPath}.backup`;
+    try {
+      await runSql(dbPath, "CREATE TABLE atlas_schema_migrations (sequence INTEGER, migration_id TEXT)");
+      const resultado = await prepararLegacyParaBaseline001({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+      assertSame(resultado.status, "ALREADY_VERSIONED", "subcase B: metadata presente (INVALID_HISTORY) debe rechazarse igual");
+      assertSame(fs.existsSync(backupPath), false, "subcase B: no debe crearse backup");
+    } finally {
+      limpiarLegacyFixture(dbPath);
+      fs.rmSync(backupPath, { force: true });
+    }
+  }
+}
+
+async function testMT1E3BBackupFailureBlocksUpgrade() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const backupPath = `${dbPath}.backup`;
+  try {
+    await dejarSesionesFaltando(dbPath, SESIONES_COLUMNS_ORDER);
+    const prePatch = [
+      "const EventEmitter = require('events');",
+      "const sqlite3 = require('sqlite3');",
+      "sqlite3.Database.prototype.backup = function (destPath, initCb) {",
+      "  const emitter = new EventEmitter();",
+      "  emitter.step = (pages, cb) => { setImmediate(() => cb(Object.assign(new Error('DISK_FULL'), { code: 'SQLITE_FULL' }))); };",
+      "  emitter.finish = (cb) => { setImmediate(() => cb(null)); };",
+      "  setImmediate(() => initCb(null));",
+      "  return emitter;",
+      "};"
+    ].join("\n");
+    const script = construirWorkerPrepare({ prePatchSource: prePatch });
+    const resultado = await ejecutarWorkerPrepare(script, ["DIRECT", dbPath, backupPath]);
+
+    assertSame(resultado.outcome, "REJECTED", "fallo de backup debe rechazar la preparacion");
+    assertSame(resultado.code, "BACKUP_ERROR", "code debe ser BACKUP_ERROR");
+    assertSame(fs.existsSync(backupPath), false, "no debe quedar un backup parcial");
+
+    const columnas = await allSql(dbPath, "PRAGMA table_info(sesiones)");
+    assertSame(columnas.some((c) => c.name === "auth_mode"), false, "no debe haberse aplicado ninguna columna");
+    const history = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='atlas_schema_migrations'");
+    assertEqual(history.length, 0, "no debe existir metadata tras el fallo");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(backupPath, { force: true });
+  }
+}
+
+async function testMT1E3BBackupInvalidIntegrityBlocksUpgrade() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const backupPath = `${dbPath}.backup`;
+  try {
+    await dejarSesionesFaltando(dbPath, SESIONES_COLUMNS_ORDER);
+    const prePatch = [
+      "const EventEmitter = require('events');",
+      "const fs = require('fs');",
+      "const sqlite3 = require('sqlite3');",
+      "sqlite3.Database.prototype.backup = function (destPath, initCb) {",
+      "  const emitter = new EventEmitter();",
+      "  emitter.step = (pages, cb) => { setImmediate(() => cb(null, true)); };",
+      "  emitter.finish = (cb) => {",
+      "    fs.writeFileSync(destPath, 'esto no es un archivo sqlite valido');",
+      "    setImmediate(() => cb(null));",
+      "  };",
+      "  setImmediate(() => initCb(null));",
+      "  return emitter;",
+      "};"
+    ].join("\n");
+    const script = construirWorkerPrepare({ prePatchSource: prePatch });
+    const resultado = await ejecutarWorkerPrepare(script, ["DIRECT", dbPath, backupPath]);
+
+    assertSame(resultado.outcome, "REJECTED", "backup con integrity_check invalido debe rechazar la preparacion");
+    assertSame(resultado.code, "BACKUP_INVALID", "code debe ser BACKUP_INVALID");
+    assertSame(fs.existsSync(backupPath), false, "el backup invalido debe eliminarse");
+
+    const columnas = await allSql(dbPath, "PRAGMA table_info(sesiones)");
+    assertSame(columnas.some((c) => c.name === "auth_mode"), false, "no debe haberse aplicado ninguna columna");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(backupPath, { force: true });
+  }
+}
+
+async function testMT1E3BPostBackupFailurePreservesBackup() {
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const backupPath = `${dbPath}.backup`;
+  try {
+    await dejarSesionesFaltando(dbPath, SESIONES_COLUMNS_ORDER);
+    const prePatch = [
+      "const sqlite3 = require('sqlite3');",
+      "const originalRun = sqlite3.Database.prototype.run;",
+      "sqlite3.Database.prototype.run = function (sql, ...resto) {",
+      "  if (typeof sql === 'string' && sql.includes('ALTER TABLE sesiones ADD COLUMN auth_mode')) {",
+      "    const callback = resto[resto.length - 1];",
+      "    if (typeof callback === 'function') {",
+      "      setImmediate(() => callback.call(this, Object.assign(new Error('FORCED_ALTER_FAILURE'), { code: 'SQLITE_ERROR' })));",
+      "      return this;",
+      "    }",
+      "  }",
+      "  return originalRun.apply(this, [sql, ...resto]);",
+      "};"
+    ].join("\n");
+    const script = construirWorkerPrepare({ prePatchSource: prePatch });
+    const resultado = await ejecutarWorkerPrepare(script, ["DIRECT", dbPath, backupPath]);
+
+    assertSame(resultado.outcome, "REJECTED", "fallo en el primer ALTER debe rechazar la preparacion");
+    assertSame(resultado.code, "LEGACY_UPGRADE_FAILED", "code debe ser LEGACY_UPGRADE_FAILED");
+    assertSame(fs.existsSync(backupPath), true, "el backup VALID_BACKUP debe conservarse pese al fallo posterior");
+
+    const backupDb = await abrirConexionTestReadOnly(backupPath);
+    const integridad = await new Promise((res, rej) =>
+      backupDb.get("PRAGMA integrity_check", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertSame(integridad.integrity_check, "ok", "el backup conservado debe seguir siendo valido");
+    await cerrarConexionTest(backupDb);
+
+    const columnas = await allSql(dbPath, "PRAGMA table_info(sesiones)");
+    assertSame(columnas.some((c) => c.name === "auth_mode"), false, "la fuente no debe quedar con columnas parciales (ROLLBACK)");
+    const history = await verificarBusinessSchemaVersion(dbPath);
+    assertSame(history.state, "UNVERSIONED", "history debe seguir UNVERSIONED");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(backupPath, { force: true });
+  }
+}
+
+async function testMT1E3BCentralExactIdentity() {
+  const dbPath = await bootstrapReadyRegisteredTenantDb();
+  const backupPath = `${dbPath}.backup`;
+  const controlDbPath = tempDbPath();
+  const slug = `mt1e3b-central-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresa = await registrarEmpresa(controlDb, {
+      slug, nombre: "Test Central Bridge", dbPath: path.basename(dbPath), activa: true
+    });
+    await closeControlDb(controlDb);
+    await insertarTenantIdentityTest(dbPath, empresa.id, slug);
+    await dejarSesionesFaltando(dbPath, SESIONES_COLUMNS_ORDER);
+
+    const resultado = await prepararLegacyParaBaseline001({
+      mode: "CENTRAL", controlDbPath, empresaSlug: slug, businessDbPath: dbPath, backupPath
+    });
+    assertSame(resultado.status, "PREPARED_BASELINE_001", "CENTRAL con identity exacta debe preparar el baseline");
+    assertSame(fs.existsSync(backupPath), true, "debe crearse el backup");
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    fs.rmSync(backupPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E3BCentralIdentityFailures() {
+  const controlDbPath = tempDbPath();
+  const slugBase = `mt1e3b-idfail-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    const dbMissing = await bootstrapReadyRegisteredTenantDb();
+    try {
+      const slugMissing = `${slugBase}-missing`;
+      const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+      await registrarEmpresa(controlDb, { slug: slugMissing, nombre: "T", dbPath: path.basename(dbMissing), activa: true });
+      await closeControlDb(controlDb);
+      const backupPath = `${dbMissing}.backup`;
+      let lanzo = null;
+      try {
+        await prepararLegacyParaBaseline001({
+          mode: "CENTRAL", controlDbPath, empresaSlug: slugMissing, businessDbPath: dbMissing, backupPath
+        });
+      } catch (error) {
+        lanzo = error;
+      }
+      assertSame(lanzo && lanzo.code, "TENANT_DB_IDENTITY_MISSING", "sin tenant_identity debe lanzar TENANT_DB_IDENTITY_MISSING");
+      assertSame(fs.existsSync(backupPath), false, "no debe crearse backup");
+    } finally {
+      limpiarTenantTestDb(dbMissing);
+    }
+
+    const dbInvalid = await bootstrapReadyRegisteredTenantDb();
+    try {
+      const slugInvalid = `${slugBase}-invalid`;
+      const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+      await registrarEmpresa(controlDb, { slug: slugInvalid, nombre: "T", dbPath: path.basename(dbInvalid), activa: true });
+      await closeControlDb(controlDb);
+      await runSql(dbInvalid, "DROP TABLE tenant_identity");
+      await runSql(dbInvalid, "CREATE TABLE tenant_identity (id INTEGER PRIMARY KEY, empresa_control_id, tenant_slug)");
+      await runSql(
+        dbInvalid,
+        "INSERT INTO tenant_identity (id, empresa_control_id, tenant_slug) VALUES (1, ?, ?)",
+        ["no-es-un-entero", slugInvalid]
+      );
+      const backupPath = `${dbInvalid}.backup`;
+      let lanzo = null;
+      try {
+        await prepararLegacyParaBaseline001({
+          mode: "CENTRAL", controlDbPath, empresaSlug: slugInvalid, businessDbPath: dbInvalid, backupPath
+        });
+      } catch (error) {
+        lanzo = error;
+      }
+      assertSame(lanzo && lanzo.code, "TENANT_DB_IDENTITY_INVALID", "identity invalida debe lanzar TENANT_DB_IDENTITY_INVALID");
+      assertSame(fs.existsSync(backupPath), false, "no debe crearse backup");
+    } finally {
+      limpiarTenantTestDb(dbInvalid);
+    }
+
+    const dbMismatch = await bootstrapReadyRegisteredTenantDb();
+    try {
+      const slugMismatch = `${slugBase}-mismatch`;
+      const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+      const empresa = await registrarEmpresa(controlDb, {
+        slug: slugMismatch, nombre: "T", dbPath: path.basename(dbMismatch), activa: true
+      });
+      await closeControlDb(controlDb);
+      await insertarTenantIdentityTest(dbMismatch, empresa.id + 999, "otro-slug-completamente-distinto");
+      const backupPath = `${dbMismatch}.backup`;
+      let lanzo = null;
+      try {
+        await prepararLegacyParaBaseline001({
+          mode: "CENTRAL", controlDbPath, empresaSlug: slugMismatch, businessDbPath: dbMismatch, backupPath
+        });
+      } catch (error) {
+        lanzo = error;
+      }
+      assertSame(lanzo && lanzo.code, "TENANT_DB_IDENTITY_MISMATCH", "identity de otra empresa debe lanzar TENANT_DB_IDENTITY_MISMATCH");
+      assertSame(fs.existsSync(backupPath), false, "no debe crearse backup");
+    } finally {
+      limpiarTenantTestDb(dbMismatch);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E3BCentralRegistryFailures() {
+  const controlDbInexistente = tempDbPath();
+  let lanzoNotFound = null;
+  try {
+    await prepararLegacyParaBaseline001({
+      mode: "CENTRAL", controlDbPath: controlDbInexistente, empresaSlug: "x",
+      businessDbPath: tempDbPath(), backupPath: tempDbPath()
+    });
+  } catch (error) {
+    lanzoNotFound = error;
+  }
+  assertSame(lanzoNotFound && lanzoNotFound.code, "CONTROL_DB_NOT_FOUND", "control DB inexistente debe lanzar CONTROL_DB_NOT_FOUND");
+
+  const controlDbInvalido = tempDbPath();
+  fs.writeFileSync(controlDbInvalido, "esto no es sqlite");
+  let lanzoError = null;
+  try {
+    await prepararLegacyParaBaseline001({
+      mode: "CENTRAL", controlDbPath: controlDbInvalido, empresaSlug: "x",
+      businessDbPath: tempDbPath(), backupPath: tempDbPath()
+    });
+  } catch (error) {
+    lanzoError = error;
+  }
+  assertSame(lanzoError && lanzoError.code, "CONTROL_DB_ERROR", "control DB no-SQLite debe lanzar CONTROL_DB_ERROR");
+  fs.rmSync(controlDbInvalido, { force: true });
+
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDbVacio = await bootstrapControlDb(controlDbPath, { seed: false });
+    await closeControlDb(controlDbVacio);
+    let lanzoEmpresa = null;
+    try {
+      await prepararLegacyParaBaseline001({
+        mode: "CENTRAL", controlDbPath, empresaSlug: "no-existe-esta-empresa-mt1e3b",
+        businessDbPath: tempDbPath(), backupPath: tempDbPath()
+      });
+    } catch (error) {
+      lanzoEmpresa = error;
+    }
+    assertSame(lanzoEmpresa && lanzoEmpresa.code, "EMPRESA_NOT_FOUND", "empresa inexistente debe lanzar EMPRESA_NOT_FOUND");
+
+    const dbReal = await bootstrapReadyRegisteredTenantDb();
+    const otroPath = await bootstrapReadyRegisteredTenantDb();
+    try {
+      const slug = `mt1e3b-pathmismatch-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const controlDb2 = await bootstrapControlDb(controlDbPath, { seed: false });
+      await registrarEmpresa(controlDb2, { slug, nombre: "T", dbPath: path.basename(dbReal), activa: true });
+      await closeControlDb(controlDb2);
+
+      const backupPath = `${otroPath}.backup`;
+      let lanzoMismatch = null;
+      try {
+        await prepararLegacyParaBaseline001({
+          mode: "CENTRAL", controlDbPath, empresaSlug: slug, businessDbPath: otroPath, backupPath
+        });
+      } catch (error) {
+        lanzoMismatch = error;
+      }
+      assertSame(
+        lanzoMismatch && lanzoMismatch.code,
+        "BUSINESS_DB_PATH_MISMATCH",
+        "businessDbPath distinto del registrado debe lanzar BUSINESS_DB_PATH_MISMATCH"
+      );
+      assertSame(fs.existsSync(backupPath), false, "no debe crearse backup (rechazo pre-lock)");
+    } finally {
+      limpiarTenantTestDb(dbReal);
+      limpiarTenantTestDb(otroPath);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E3BCentralInactiveAllowed() {
+  const dbPath = await bootstrapReadyRegisteredTenantDb();
+  const backupPath = `${dbPath}.backup`;
+  const controlDbPath = tempDbPath();
+  const slug = `mt1e3b-inactiva-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresa = await registrarEmpresa(controlDb, {
+      slug, nombre: "Inactiva Bridge Test", dbPath: path.basename(dbPath), activa: false
+    });
+    await closeControlDb(controlDb);
+    assertEqual(Number(empresa.activa), 0, "la empresa debe quedar registrada como inactiva");
+    await insertarTenantIdentityTest(dbPath, empresa.id, slug);
+    await dejarSesionesFaltando(dbPath, SESIONES_COLUMNS_ORDER);
+
+    const resultado = await prepararLegacyParaBaseline001({
+      mode: "CENTRAL", controlDbPath, empresaSlug: slug, businessDbPath: dbPath, backupPath
+    });
+    assertSame(resultado.status, "PREPARED_BASELINE_001", "empresa inactiva debe poder prepararse (operacion administrativa)");
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    fs.rmSync(backupPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E3BConcurrencyAndIdempotency() {
+  // Subcase A: BUSINESS_DB_BUSY -- lock externo real sostenido, busy_timeout agotado.
+  const dbBusy = await bootstrapReadyLegacyFixture();
+  const backupBusy = `${dbBusy}.backup`;
+  try {
+    await dejarSesionesFaltando(dbBusy, SESIONES_COLUMNS_ORDER);
+
+    const lockerScript = `
+      const sqlite3 = require(${JSON.stringify(path.join(ROOT, "node_modules/sqlite3"))}).verbose();
+      setInterval(() => {}, 1000);
+      const db = new sqlite3.Database(${JSON.stringify(dbBusy)}, sqlite3.OPEN_READWRITE, () => {
+        db.run("BEGIN IMMEDIATE", () => {
+          console.log("LOCK_ADQUIRIDO");
+        });
+      });
+    `;
+    const locker = spawn(process.execPath, ["-e", lockerScript]);
+    await new Promise((resolve) => {
+      locker.stdout.on("data", (d) => { if (d.toString().includes("LOCK_ADQUIRIDO")) resolve(); });
+    });
+
+    const script = construirWorkerPrepare({});
+    const resultado = await ejecutarWorkerPrepare(script, ["DIRECT", dbBusy, backupBusy]);
+    assertSame(resultado.outcome, "REJECTED", "puente contra lock externo sostenido debe rechazar");
+    assertSame(resultado.code, "BUSINESS_DB_BUSY", "code debe ser BUSINESS_DB_BUSY");
+    assertSame(fs.existsSync(backupBusy), false, "no debe crearse backup si BEGIN IMMEDIATE nunca se adquirio");
+
+    locker.kill();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const columnas = await allSql(dbBusy, "PRAGMA table_info(sesiones)");
+    assertSame(columnas.some((c) => c.name === "auth_mode"), false, "no debe haberse aplicado ninguna columna tras el rechazo por busy");
+  } finally {
+    limpiarLegacyFixture(dbBusy);
+    fs.rmSync(backupBusy, { force: true });
+  }
+
+  // Subcase B: dos invocaciones REALES solapadas sobre la MISMA fixture elegible.
+  const dbConcurrente = await bootstrapReadyLegacyFixture();
+  const backupA = `${dbConcurrente}.backupA`;
+  const backupB = `${dbConcurrente}.backupB`;
+  try {
+    await dejarSesionesFaltando(dbConcurrente, SESIONES_COLUMNS_ORDER);
+
+    const scriptA = construirWorkerPrepare({});
+    const scriptB = construirWorkerPrepare({});
+    const [resultA, resultB] = await Promise.all([
+      ejecutarWorkerPrepare(scriptA, ["DIRECT", dbConcurrente, backupA]),
+      ejecutarWorkerPrepare(scriptB, ["DIRECT", dbConcurrente, backupB])
+    ]);
+
+    const resultados = [resultA, resultB];
+    const preparedCount = resultados.filter(
+      (r) => r.outcome === "RESOLVED" && r.resultado.status === "PREPARED_BASELINE_001"
+    ).length;
+    const otrosValidos = resultados.filter(
+      (r) =>
+        (r.outcome === "RESOLVED" && r.resultado.status === "ALREADY_BASELINE_READY") ||
+        (r.outcome === "REJECTED" && r.code === "BUSINESS_DB_BUSY")
+    ).length;
+
+    assertEqual(preparedCount, 1, "exactamente uno de los dos debe resultar PREPARED_BASELINE_001");
+    assertEqual(otrosValidos, 1, "el otro debe resultar ALREADY_BASELINE_READY o BUSINESS_DB_BUSY");
+
+    const readiness = await verificarLegacyBaseline(dbConcurrente);
+    assertSame(readiness.ready, true, "el baseline debe quedar ready:true tras la carrera");
+
+    const backupsCreados = [backupA, backupB].filter((p) => fs.existsSync(p));
+    assertEqual(backupsCreados.length, 1, "solo el ganador puede haber dejado un backup");
+  } finally {
+    limpiarLegacyFixture(dbConcurrente);
+    fs.rmSync(backupA, { force: true });
+    fs.rmSync(backupB, { force: true });
+  }
+}
+
+async function testMT1E3BSameConnectionAuthority() {
+  const codigoFuente = fs.readFileSync(PREPARE_LEGACY_BASELINE_PATH, "utf8");
+  assertSame(
+    /[^.\w]verificarLegacyBaseline\(/.test(codigoFuente),
+    false,
+    "no debe llamar a la variante path-based verificarLegacyBaseline"
+  );
+  assertSame(
+    /[^.\w]verificarBusinessSchemaVersion\(/.test(codigoFuente),
+    false,
+    "no debe llamar a la variante path-based verificarBusinessSchemaVersion"
+  );
+  assertSame(
+    /[^.\w]verificarTenantDbIdentity\(/.test(codigoFuente),
+    false,
+    "no debe llamar a la variante path-based verificarTenantDbIdentity"
+  );
+  assertSame(codigoFuente.includes("verificarLegacyBaselineEnConexion"), true, "debe usar la variante EnConexion de baseline");
+  assertSame(
+    codigoFuente.includes("verificarBusinessSchemaVersionEnConexion"),
+    true,
+    "debe usar la variante EnConexion de schema version"
+  );
+  assertSame(
+    codigoFuente.includes("verificarTenantDbIdentityEnConexion"),
+    true,
+    "debe usar la variante EnConexion de identity"
+  );
+
+  const dbPath = await bootstrapReadyLegacyFixture();
+  const backupPath = `${dbPath}.backup`;
+  try {
+    await dejarSesionesFaltando(dbPath, SESIONES_COLUMNS_ORDER);
+
+    const instrumentPrePatch = [
+      "const sqlite3 = require('sqlite3');",
+      "global.__rwCount = 0;",
+      "global.__roCount = 0;",
+      "const OriginalDatabase = sqlite3.Database;",
+      "function InstrumentedDatabase(dbPath, mode, cb) {",
+      "  if (typeof mode === 'number') {",
+      "    if (mode & sqlite3.OPEN_READWRITE) global.__rwCount += 1;",
+      "    else if (mode & sqlite3.OPEN_READONLY) global.__roCount += 1;",
+      "  }",
+      "  return new OriginalDatabase(dbPath, mode, cb);",
+      "}",
+      "InstrumentedDatabase.prototype = OriginalDatabase.prototype;",
+      "sqlite3.Database = InstrumentedDatabase;"
+    ].join("\n");
+    const script = [
+      instrumentPrePatch,
+      construirWorkerPrepare({}).replace(
+        "console.log(JSON.stringify({ outcome: 'RESOLVED', resultado }));",
+        "console.log(JSON.stringify({ outcome: 'RESOLVED', resultado, rwCount: global.__rwCount, roCount: global.__roCount }));"
+      )
+    ].join("\n");
+    const resultado = await ejecutarWorkerPrepare(script, ["DIRECT", dbPath, backupPath]);
+    assertSame(resultado.outcome, "RESOLVED", "la preparacion instrumentada debe completarse");
+    assertSame(resultado.resultado.status, "PREPARED_BASELINE_001", "debe resultar PREPARED_BASELINE_001");
+    assertEqual(resultado.rwCount, 1, "debe haber exactamente 1 conexion OPEN_READWRITE (conexion A)");
+    assertEqual(resultado.roCount, 2, "debe haber exactamente 2 conexiones OPEN_READONLY (backup B + integrity verifier)");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(backupPath, { force: true });
+  }
+}
+
+async function testMT1E3BModuleSinSideEffects() {
+  const fakeBusinessDb = path.join(os.tmpdir(), `mt1e3b-fake-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+  try {
+    const resultado = spawnSync(
+      process.execPath,
+      ["-e", `require(${JSON.stringify(PREPARE_LEGACY_BASELINE_PATH)});`],
+      { cwd: ROOT, env: { ...process.env, GUERNICA_DB_PATH: fakeBusinessDb }, encoding: "utf8" }
+    );
+    assertEqual(
+      resultado.status, 0,
+      `require aislado de prepare-legacy-baseline debe salir 0\n${resultado.stderr || resultado.stdout}`
+    );
+    assertEqual(fs.existsSync(fakeBusinessDb), false, "require de prepare-legacy-baseline no debe crear la fake business DB");
+  } finally {
+    fs.rmSync(fakeBusinessDb, { force: true });
+  }
+
+  const codigoFuente = fs.readFileSync(PREPARE_LEGACY_BASELINE_PATH, "utf8");
+  assertSame(codigoFuente.includes("require(\"../backend/server\")"), false, "no debe importar backend/server.js");
+  assertSame(codigoFuente.includes("require('../backend/server')"), false, "no debe importar backend/server.js");
+  assertSame(codigoFuente.includes("require(\"./init-db\")"), false, "no debe importar database/init-db.js");
+  assertSame(codigoFuente.includes("require('./init-db')"), false, "no debe importar database/init-db.js");
+  assertSame(/[^"'/]ensureColumn\(/.test(codigoFuente), false, "no debe llamar a ensureColumn como funcion (solo puede mencionarla en comentarios)");
+
+  // Whitelist static audit: exactamente los 4 IDs permitidos, con las definiciones SQL exactas,
+  // verificado sobre el texto fuente (el modulo NO exporta la whitelist -- exporta unicamente
+  // prepararLegacyParaBaseline001, per contrato).
+  const idsEnFuente = [...codigoFuente.matchAll(/id:\s*"(COLUMN:[^"]+)"/g)].map((m) => m[1]);
+  assertSame(
+    JSON.stringify(idsEnFuente),
+    JSON.stringify([
+      "COLUMN:sesiones.auth_mode",
+      "COLUMN:sesiones.central_id",
+      "COLUMN:sesiones.membership_id",
+      "COLUMN:sesiones.empresa_id"
+    ]),
+    "los unicos IDs de whitelist en el fuente deben ser exactamente estos 4, en este orden"
+  );
+  assertSame(
+    codigoFuente.includes("ALTER TABLE ${gap.table} ADD COLUMN ${gap.column} ${gap.definition}"),
+    true,
+    "la escritura debe usar definiciones hardcodeadas via template, nunca SQL dinamico desde input externo"
+  );
+  assertSame(codigoFuente.includes("TEXT NOT NULL DEFAULT 'legacy'"), true, "definicion exacta de auth_mode debe estar hardcodeada");
+  assertSame(codigoFuente.includes("CREATE TABLE"), false, "no debe contener ningun CREATE TABLE");
+  assertSame(codigoFuente.includes("CREATE INDEX"), false, "no debe contener ningun CREATE INDEX");
+  assertSame(/[^_]UPDATE\s/.test(codigoFuente), false, "no debe contener ningun UPDATE de datos");
+  assertSame(codigoFuente.includes("INSERT INTO"), false, "no debe contener ningun INSERT");
+  assertSame(codigoFuente.includes("DELETE FROM"), false, "no debe contener ningun DELETE");
+  assertSame(
+    codigoFuente.includes("CREATE TABLE atlas_schema_migrations") || codigoFuente.includes("INSERT INTO atlas_schema_migrations"),
+    false,
+    "no debe escribir jamas en atlas_schema_migrations -- esta herramienta no adopta"
+  );
 }
