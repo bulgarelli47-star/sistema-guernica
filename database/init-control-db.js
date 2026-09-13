@@ -252,6 +252,156 @@ async function bootstrapControlDb(dbPath = DEFAULT_DB_PATH, { seed = true } = {}
   return db;
 }
 
+function crearErrorControl(code, message, detalle = {}) {
+  const error = new Error(message);
+  error.code = code;
+  Object.assign(error, detalle);
+  return error;
+}
+
+function esErrorUniqueConstraint(error) {
+  return !!error && (error.code === "SQLITE_CONSTRAINT" || /UNIQUE constraint failed/i.test(error.message || ""));
+}
+
+function mapearEmpresaRow(row) {
+  return { id: row.id, slug: row.slug, nombre: row.nombre, dbPath: row.db_path, activa: Number(row.activa) === 1 };
+}
+
+// MT-1E5B: reserva ESTRICTA de una empresa nueva para provisioning -- deliberadamente separada de
+// registrarEmpresa (que preserva su UPSERT legacy sin cambios, ver comentario de esa funcion). NUNCA
+// hace ON CONFLICT DO UPDATE: un slug colisionando siempre se resuelve leyendo la fila real y
+// comparando, jamas sobrescribiendo. Recibe `db` ya abierto por el caller -- no abre conexion propia,
+// no BEGIN/COMMIT/ROLLBACK propio; el caller (futuro database/provision-tenant-db.js) controla la
+// transaccion si la necesita.
+async function reservarEmpresaParaProvisioning(db, { slug, nombre, dbPath } = {}) {
+  if (!db) {
+    throw crearErrorControl("INVALID_ARGUMENT", "reservarEmpresaParaProvisioning: falta db");
+  }
+  const slugValidado = typeof slug === "string" ? slug : "";
+  if (!slugValidado || slugValidado !== slugValidado.trim()) {
+    throw crearErrorControl("INVALID_ARGUMENT", "reservarEmpresaParaProvisioning: slug invalido");
+  }
+  if (typeof nombre !== "string" || !nombre.trim()) {
+    throw crearErrorControl("INVALID_ARGUMENT", "reservarEmpresaParaProvisioning: falta nombre");
+  }
+  if (typeof dbPath !== "string" || !dbPath.trim()) {
+    throw crearErrorControl("INVALID_ARGUMENT", "reservarEmpresaParaProvisioning: falta dbPath");
+  }
+  // Reutiliza EXACTAMENTE la misma autoridad de path que ya usa Control (resolveEmpresaDbPath) --
+  // solo para validar/rechazar, nunca para transformar el valor almacenado: empresas.db_path guarda
+  // el string tal como lo pasa el caller (igual que registrarEmpresa), nunca la ruta absoluta resuelta.
+  try {
+    resolveEmpresaDbPath(dbPath);
+  } catch (error) {
+    throw crearErrorControl("INVALID_ARGUMENT", `reservarEmpresaParaProvisioning: dbPath invalido: ${error.message}`);
+  }
+
+  let insertResult;
+  try {
+    insertResult = await runQuery(
+      db,
+      `INSERT INTO empresas (slug, nombre, db_path, activa) VALUES (?, ?, ?, 0)`,
+      [slugValidado, nombre, dbPath]
+    );
+  } catch (error) {
+    if (!esErrorUniqueConstraint(error)) throw error;
+
+    // Slug ya existe: nunca reintentar el INSERT ni caer a un UPDATE. Leer la fila real y decidir
+    // exclusivamente en base a su estado actual.
+    const existente = await getQuery(
+      db,
+      "SELECT id, slug, nombre, db_path, activa FROM empresas WHERE slug = ?",
+      [slugValidado]
+    );
+    if (!existente) throw error;
+
+    if (Number(existente.activa) === 1) {
+      throw crearErrorControl(
+        "COMPANY_ALREADY_ACTIVE",
+        `La empresa '${slugValidado}' ya existe y esta activa`,
+        { empresa: mapearEmpresaRow(existente) }
+      );
+    }
+
+    if (existente.nombre !== nombre || existente.db_path !== dbPath) {
+      throw crearErrorControl(
+        "COMPANY_RESERVATION_MISMATCH",
+        `La reserva existente para '${slugValidado}' no coincide con los datos provistos`,
+        { existente: mapearEmpresaRow(existente), esperado: { slug: slugValidado, nombre, dbPath } }
+      );
+    }
+
+    return { status: "ALREADY_RESERVED", empresa: mapearEmpresaRow(existente) };
+  }
+
+  return {
+    status: "RESERVED",
+    empresa: { id: insertResult.lastID, slug: slugValidado, nombre, dbPath, activa: false }
+  };
+}
+
+// MT-1E5B: activacion ESTRICTA de una reserva ya existente. UNICAMENTE toca la columna `activa` --
+// nunca slug/nombre/db_path (a proposito, activation no acepta `nombre` como input siquiera). Mismo
+// contrato de conexion/transaccion que reservarEmpresaParaProvisioning: recibe `db`, no abre ni
+// controla nada propio.
+async function activarEmpresaReservada(db, { empresaId, slug, dbPath } = {}) {
+  if (!db) {
+    throw crearErrorControl("INVALID_ARGUMENT", "activarEmpresaReservada: falta db");
+  }
+  const idValidado = Number.isInteger(empresaId) && empresaId > 0 ? empresaId : null;
+  if (!idValidado) {
+    throw crearErrorControl("INVALID_ARGUMENT", "activarEmpresaReservada: falta empresaId valido");
+  }
+  const slugValidado = typeof slug === "string" ? slug : "";
+  if (!slugValidado || slugValidado !== slugValidado.trim()) {
+    throw crearErrorControl("INVALID_ARGUMENT", "activarEmpresaReservada: slug invalido");
+  }
+  if (typeof dbPath !== "string" || !dbPath.trim()) {
+    throw crearErrorControl("INVALID_ARGUMENT", "activarEmpresaReservada: falta dbPath");
+  }
+
+  const existente = await getQuery(
+    db,
+    "SELECT id, slug, nombre, db_path, activa FROM empresas WHERE id = ?",
+    [idValidado]
+  );
+  if (!existente) {
+    throw crearErrorControl("EMPRESA_NOT_FOUND", `activarEmpresaReservada: no existe empresa con id=${idValidado}`);
+  }
+
+  if (existente.slug !== slugValidado || existente.db_path !== dbPath) {
+    throw crearErrorControl(
+      "COMPANY_RESERVATION_MISMATCH",
+      `activarEmpresaReservada: la empresa id=${idValidado} no coincide con slug/dbPath esperados`,
+      { existente: mapearEmpresaRow(existente), esperado: { slug: slugValidado, dbPath } }
+    );
+  }
+
+  if (Number(existente.activa) === 1) {
+    return { status: "ALREADY_ACTIVE", empresa: mapearEmpresaRow(existente) };
+  }
+
+  // WHERE defensivo: incluye la identidad completa esperada (id + slug + db_path) mas activa=0, para
+  // que un UPDATE concurrente/inesperado nunca pueda activar una fila que ya no coincide con lo
+  // verificado arriba en esta misma conexion.
+  const result = await runQuery(
+    db,
+    "UPDATE empresas SET activa = 1 WHERE id = ? AND slug = ? AND db_path = ? AND activa = 0",
+    [idValidado, slugValidado, dbPath]
+  );
+  if (result.changes !== 1) {
+    throw crearErrorControl(
+      "COMPANY_RESERVATION_MISMATCH",
+      `activarEmpresaReservada: no se pudo activar de forma defensiva (changes=${result.changes})`
+    );
+  }
+
+  return {
+    status: "ACTIVATED",
+    empresa: { id: idValidado, slug: slugValidado, nombre: existente.nombre, dbPath, activa: true }
+  };
+}
+
 module.exports = {
   ALLOWED_DB_DIR,
   DEFAULT_DB_PATH,
@@ -264,6 +414,8 @@ module.exports = {
   resolveEmpresaDbPath,
   initControlSchema,
   registrarEmpresa,
+  reservarEmpresaParaProvisioning,
+  activarEmpresaReservada,
   seedGuernica,
   bootstrapControlDb,
   crearUsuarioCentral,

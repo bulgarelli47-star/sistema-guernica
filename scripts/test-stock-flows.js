@@ -32,6 +32,8 @@ const {
   allQuery: allControlQuery,
   resolveEmpresaDbPath,
   registrarEmpresa,
+  reservarEmpresaParaProvisioning,
+  activarEmpresaReservada,
   seedGuernica,
   bootstrapControlDb,
   crearUsuarioCentral,
@@ -20632,6 +20634,18 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1E4CInitDbTenantIdentityTableNoRow);
   await _run(testMT1E4CInitDbDemoSeedPreserved);
   await _run(testMT1E4CInitDbRejectsNonEmptyDb);
+  await _run(testMT1E5BReservaNuevaInactiva);
+  await _run(testMT1E5BReservaExactaIdempotente);
+  await _run(testMT1E5BReservaActivaRechazada);
+  await _run(testMT1E5BReservaPathMismatchRechazada);
+  await _run(testMT1E5BReservaNombreMismatchRechazada);
+  await _run(testMT1E5BReservaConcurrenteUnSoloInsert);
+  await _run(testMT1E5BActivacionExacta);
+  await _run(testMT1E5BActivacionYaActivaIdempotente);
+  await _run(testMT1E5BActivacionMismatchNoMuta);
+  await _run(testMT1E5BActivacionEmpresaInexistente);
+  await _run(testMT1E5BHelpersSameConnectionSinTransactionOwnership);
+  await _run(testMT1E5BRegistrarEmpresaLegacyPreservado);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -30433,5 +30447,336 @@ async function testMT1E4CInitDbRejectsNonEmptyDb() {
     assertEqual(tablasBaseline.length, 0, "NO debe haberse construido ningun baseline, demo seed ni tenant_identity");
   } finally {
     for (const s of ["", "-wal", "-shm"]) fs.rmSync(dbPath + s, { force: true });
+  }
+}
+
+// MT-1E5B: lifecycle estricto de empresa (RESERVE/ACTIVATE) para el futuro provisioner de tenants
+// nuevos. Deliberadamente separado de registrarEmpresa (que preserva su UPSERT legacy sin cambios,
+// ver testMT1E5BRegistrarEmpresaLegacyPreservado).
+async function testMT1E5BReservaNuevaInactiva() {
+  const controlDbPath = tempDbPath();
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    const resultado = await reservarEmpresaParaProvisioning(controlDb, {
+      slug: "mt1e5b-nueva-inactiva",
+      nombre: "MT1E5B Nueva Inactiva",
+      dbPath: "mt1e5b-nueva-inactiva.db"
+    });
+    assertSame(resultado.status, "RESERVED", "una empresa nueva debe reservarse como RESERVED");
+    assertSame(resultado.empresa.activa, false, "la reserva debe quedar inactiva (activa=false)");
+    assertSame(resultado.empresa.id > 0, true, "el id debe ser el id real generado por Control");
+    assertSame(resultado.empresa.slug, "mt1e5b-nueva-inactiva", "slug debe conservarse exacto");
+    assertSame(resultado.empresa.nombre, "MT1E5B Nueva Inactiva", "nombre debe conservarse exacto");
+    assertSame(resultado.empresa.dbPath, "mt1e5b-nueva-inactiva.db", "dbPath debe conservarse exacto");
+
+    const fila = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["mt1e5b-nueva-inactiva"]);
+    assertEqual(Number(fila.activa), 0, "la fila real en Control debe tener activa=0");
+  } finally {
+    await closeControlDb(controlDb);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E5BReservaExactaIdempotente() {
+  const controlDbPath = tempDbPath();
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    const payload = { slug: "mt1e5b-idempotente", nombre: "MT1E5B Idempotente", dbPath: "mt1e5b-idempotente.db" };
+    const primera = await reservarEmpresaParaProvisioning(controlDb, payload);
+    assertSame(primera.status, "RESERVED", "primera reserva debe ser RESERVED");
+
+    const segunda = await reservarEmpresaParaProvisioning(controlDb, payload);
+    assertSame(segunda.status, "ALREADY_RESERVED", "segunda reserva exacta debe ser ALREADY_RESERVED");
+    assertEqual(segunda.empresa.id, primera.empresa.id, "debe conservar el mismo id");
+
+    const filas = await allControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", [payload.slug]);
+    assertEqual(filas.length, 1, "debe existir una sola fila");
+    assertEqual(Number(filas[0].activa), 0, "la fila debe seguir inactiva");
+  } finally {
+    await closeControlDb(controlDb);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E5BReservaActivaRechazada() {
+  const controlDbPath = tempDbPath();
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    const empresaActiva = await registrarEmpresa(controlDb, {
+      slug: "mt1e5b-activa-existente", nombre: "MT1E5B Activa", dbPath: "mt1e5b-activa.db", activa: 1
+    });
+
+    let capturado = null;
+    try {
+      await reservarEmpresaParaProvisioning(controlDb, { slug: "mt1e5b-activa-existente", nombre: "Otro Nombre", dbPath: "otro.db" });
+    } catch (error) {
+      capturado = error;
+    }
+    assertSame(!!capturado, true, "reservar un slug activo debe rechazar");
+    assertSame(capturado.code, "COMPANY_ALREADY_ACTIVE", "codigo exacto debe ser COMPANY_ALREADY_ACTIVE");
+
+    const filaIntacta = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE id = ?", [empresaActiva.id]);
+    assertSame(filaIntacta.nombre, "MT1E5B Activa", "nombre original debe permanecer intacto");
+    assertSame(filaIntacta.db_path, "mt1e5b-activa.db", "db_path original debe permanecer intacto");
+    assertEqual(Number(filaIntacta.activa), 1, "debe seguir activa");
+  } finally {
+    await closeControlDb(controlDb);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E5BReservaPathMismatchRechazada() {
+  const controlDbPath = tempDbPath();
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    const original = await reservarEmpresaParaProvisioning(controlDb, {
+      slug: "mt1e5b-pathmismatch", nombre: "MT1E5B Path", dbPath: "original.db"
+    });
+
+    let capturado = null;
+    try {
+      await reservarEmpresaParaProvisioning(controlDb, { slug: "mt1e5b-pathmismatch", nombre: "MT1E5B Path", dbPath: "distinto.db" });
+    } catch (error) {
+      capturado = error;
+    }
+    assertSame(!!capturado, true, "dbPath distinto sobre una reserva existente debe rechazar");
+    assertSame(capturado.code, "COMPANY_RESERVATION_MISMATCH", "codigo exacto debe ser COMPANY_RESERVATION_MISMATCH");
+
+    const filaIntacta = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE id = ?", [original.empresa.id]);
+    assertSame(filaIntacta.db_path, "original.db", "db_path original debe permanecer intacto");
+  } finally {
+    await closeControlDb(controlDb);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E5BReservaNombreMismatchRechazada() {
+  const controlDbPath = tempDbPath();
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    const original = await reservarEmpresaParaProvisioning(controlDb, {
+      slug: "mt1e5b-nombremismatch", nombre: "Nombre Original", dbPath: "mt1e5b-nombremismatch.db"
+    });
+
+    let capturado = null;
+    try {
+      await reservarEmpresaParaProvisioning(controlDb, { slug: "mt1e5b-nombremismatch", nombre: "Nombre Distinto", dbPath: "mt1e5b-nombremismatch.db" });
+    } catch (error) {
+      capturado = error;
+    }
+    assertSame(!!capturado, true, "nombre distinto sobre una reserva existente debe rechazar");
+    assertSame(capturado.code, "COMPANY_RESERVATION_MISMATCH", "codigo exacto debe ser COMPANY_RESERVATION_MISMATCH");
+
+    const filaIntacta = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE id = ?", [original.empresa.id]);
+    assertSame(filaIntacta.nombre, "Nombre Original", "nombre original debe permanecer intacto");
+  } finally {
+    await closeControlDb(controlDb);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E5BReservaConcurrenteUnSoloInsert() {
+  const controlDbPath = tempDbPath();
+  const conexionA = await bootstrapControlDb(controlDbPath, { seed: false });
+  const conexionB = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    const payload = { slug: "mt1e5b-concurrente", nombre: "MT1E5B Concurrente", dbPath: "mt1e5b-concurrente.db" };
+    const resultados = await Promise.allSettled([
+      reservarEmpresaParaProvisioning(conexionA, payload),
+      reservarEmpresaParaProvisioning(conexionB, payload)
+    ]);
+
+    const exitosos = resultados.filter((r) => r.status === "fulfilled").map((r) => r.value);
+    const fallidos = resultados.filter((r) => r.status === "rejected").map((r) => r.reason);
+
+    for (const fallo of fallidos) {
+      const esOperacional = !!fallo && (
+        fallo.code === "SQLITE_BUSY" || fallo.code === "SQLITE_LOCKED" || /database is locked|SQLITE_BUSY/i.test(fallo.message || "")
+      );
+      assertSame(esOperacional, true, `un fallo en la reserva concurrente solo puede ser operacional puro (SQLITE_BUSY/LOCKED), no: ${fallo && fallo.code}`);
+    }
+    assertSame(exitosos.length >= 1, true, "al menos una de las dos llamadas debe completar con exito (RESERVED o ALREADY_RESERVED)");
+    for (const exito of exitosos) {
+      assertSame(exito.status === "RESERVED" || exito.status === "ALREADY_RESERVED", true, "cada resultado exitoso debe ser RESERVED o ALREADY_RESERVED");
+    }
+    if (exitosos.length === 2) {
+      assertEqual(exitosos[0].empresa.id, exitosos[1].empresa.id, "ambos exitos deben referirse al mismo id de empresa");
+    }
+
+    const filas = await allControlQuery(conexionA, "SELECT * FROM empresas WHERE slug = ?", [payload.slug]);
+    assertEqual(filas.length, 1, "debe existir exactamente una fila, nunca dos, tras la concurrencia");
+    assertSame(filas[0].nombre, payload.nombre, "la fila final debe conservar los datos originales, nunca un overwrite");
+    assertSame(filas[0].db_path, payload.dbPath, "la fila final debe conservar el db_path original, nunca un overwrite");
+  } finally {
+    await closeControlDb(conexionA);
+    await closeControlDb(conexionB);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E5BActivacionExacta() {
+  const controlDbPath = tempDbPath();
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    const reserva = await reservarEmpresaParaProvisioning(controlDb, {
+      slug: "mt1e5b-activacion-exacta", nombre: "MT1E5B Activacion", dbPath: "mt1e5b-activacion-exacta.db"
+    });
+    const resultado = await activarEmpresaReservada(controlDb, {
+      empresaId: reserva.empresa.id, slug: "mt1e5b-activacion-exacta", dbPath: "mt1e5b-activacion-exacta.db"
+    });
+
+    assertSame(resultado.status, "ACTIVATED", "activacion exacta debe resultar en ACTIVATED");
+    assertSame(resultado.empresa.activa, true, "la empresa debe quedar activa");
+    assertSame(resultado.empresa.slug, "mt1e5b-activacion-exacta", "slug no debe cambiar");
+    assertSame(resultado.empresa.nombre, "MT1E5B Activacion", "nombre no debe cambiar");
+    assertSame(resultado.empresa.dbPath, "mt1e5b-activacion-exacta.db", "dbPath no debe cambiar");
+
+    const fila = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE id = ?", [reserva.empresa.id]);
+    assertEqual(Number(fila.activa), 1, "la fila real debe quedar activa=1");
+    assertSame(fila.slug, "mt1e5b-activacion-exacta", "slug real no debe cambiar");
+    assertSame(fila.nombre, "MT1E5B Activacion", "nombre real no debe cambiar");
+    assertSame(fila.db_path, "mt1e5b-activacion-exacta.db", "db_path real no debe cambiar");
+  } finally {
+    await closeControlDb(controlDb);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E5BActivacionYaActivaIdempotente() {
+  const controlDbPath = tempDbPath();
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    const reserva = await reservarEmpresaParaProvisioning(controlDb, {
+      slug: "mt1e5b-ya-activa", nombre: "MT1E5B Ya Activa", dbPath: "mt1e5b-ya-activa.db"
+    });
+    const primera = await activarEmpresaReservada(controlDb, {
+      empresaId: reserva.empresa.id, slug: "mt1e5b-ya-activa", dbPath: "mt1e5b-ya-activa.db"
+    });
+    assertSame(primera.status, "ACTIVATED", "primera activacion debe ser ACTIVATED");
+
+    const segunda = await activarEmpresaReservada(controlDb, {
+      empresaId: reserva.empresa.id, slug: "mt1e5b-ya-activa", dbPath: "mt1e5b-ya-activa.db"
+    });
+    assertSame(segunda.status, "ALREADY_ACTIVE", "segunda activacion sobre una fila ya activa debe ser ALREADY_ACTIVE");
+    assertEqual(segunda.empresa.id, reserva.empresa.id, "debe conservar el mismo id");
+
+    const fila = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE id = ?", [reserva.empresa.id]);
+    assertEqual(Number(fila.activa), 1, "debe seguir activa");
+  } finally {
+    await closeControlDb(controlDb);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E5BActivacionMismatchNoMuta() {
+  const controlDbPath = tempDbPath();
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    const reserva = await reservarEmpresaParaProvisioning(controlDb, {
+      slug: "mt1e5b-activ-mismatch", nombre: "MT1E5B Activ Mismatch", dbPath: "mt1e5b-activ-mismatch.db"
+    });
+
+    let capturadoSlug = null;
+    try {
+      await activarEmpresaReservada(controlDb, { empresaId: reserva.empresa.id, slug: "slug-incorrecto", dbPath: "mt1e5b-activ-mismatch.db" });
+    } catch (error) {
+      capturadoSlug = error;
+    }
+    assertSame(!!capturadoSlug, true, "slug incorrecto debe rechazar la activacion");
+    assertSame(capturadoSlug.code, "COMPANY_RESERVATION_MISMATCH", "codigo exacto debe ser COMPANY_RESERVATION_MISMATCH (slug)");
+
+    let capturadoPath = null;
+    try {
+      await activarEmpresaReservada(controlDb, { empresaId: reserva.empresa.id, slug: "mt1e5b-activ-mismatch", dbPath: "path-incorrecto.db" });
+    } catch (error) {
+      capturadoPath = error;
+    }
+    assertSame(!!capturadoPath, true, "dbPath incorrecto debe rechazar la activacion");
+    assertSame(capturadoPath.code, "COMPANY_RESERVATION_MISMATCH", "codigo exacto debe ser COMPANY_RESERVATION_MISMATCH (path)");
+
+    const fila = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE id = ?", [reserva.empresa.id]);
+    assertEqual(Number(fila.activa), 0, "activa debe seguir en 0 tras ambos intentos rechazados");
+    assertSame(fila.slug, "mt1e5b-activ-mismatch", "slug real no debe cambiar");
+    assertSame(fila.nombre, "MT1E5B Activ Mismatch", "nombre real no debe cambiar");
+    assertSame(fila.db_path, "mt1e5b-activ-mismatch.db", "db_path real no debe cambiar");
+  } finally {
+    await closeControlDb(controlDb);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E5BActivacionEmpresaInexistente() {
+  const controlDbPath = tempDbPath();
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    let capturado = null;
+    try {
+      await activarEmpresaReservada(controlDb, { empresaId: 999999, slug: "no-existe", dbPath: "no-existe.db" });
+    } catch (error) {
+      capturado = error;
+    }
+    assertSame(!!capturado, true, "activar un empresaId inexistente debe rechazar");
+    assertSame(capturado.code, "EMPRESA_NOT_FOUND", "codigo exacto debe ser EMPRESA_NOT_FOUND");
+
+    const filas = await allControlQuery(controlDb, "SELECT * FROM empresas");
+    assertEqual(filas.length, 0, "no debe haberse insertado ninguna fila");
+  } finally {
+    await closeControlDb(controlDb);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E5BHelpersSameConnectionSinTransactionOwnership() {
+  const codigoFuente = fs.readFileSync(path.join(ROOT, "database", "init-control-db.js"), "utf8");
+  const inicio = codigoFuente.indexOf("async function reservarEmpresaParaProvisioning");
+  const fin = codigoFuente.indexOf("module.exports = {");
+  assertSame(inicio >= 0, true, "reservarEmpresaParaProvisioning debe existir en el codigo fuente");
+  assertSame(fin > inicio, true, "module.exports debe aparecer despues de los dos helpers nuevos");
+  const cuerpo = codigoFuente.slice(inicio, fin);
+
+  assertSame(cuerpo.includes("async function activarEmpresaReservada"), true, "activarEmpresaReservada debe estar en el mismo bloque leido");
+  assertSame(/new sqlite3\.Database/.test(cuerpo), false, "los helpers nuevos no deben abrir su propia conexion sqlite3");
+  assertSame(/\bBEGIN\b/.test(cuerpo), false, "los helpers nuevos no deben ejecutar BEGIN");
+  assertSame(/\bCOMMIT\b/.test(cuerpo), false, "los helpers nuevos no deben ejecutar COMMIT");
+  assertSame(/\bROLLBACK\b/.test(cuerpo), false, "los helpers nuevos no deben ejecutar ROLLBACK");
+
+  // Behavioral: caller BEGIN -> reserve -> caller ROLLBACK -> la fila no debe persistir. Demuestra
+  // que el helper nunca hizo su propio COMMIT.
+  const controlDbPath = tempDbPath();
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    await runControlQuery(controlDb, "BEGIN IMMEDIATE");
+    const resultado = await reservarEmpresaParaProvisioning(controlDb, {
+      slug: "mt1e5b-rollback-test", nombre: "MT1E5B Rollback", dbPath: "mt1e5b-rollback-test.db"
+    });
+    assertSame(resultado.status, "RESERVED", "la reserva dentro de la transaccion del caller debe completar normalmente");
+    await runControlQuery(controlDb, "ROLLBACK");
+
+    const filas = await allControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["mt1e5b-rollback-test"]);
+    assertEqual(filas.length, 0, "tras el ROLLBACK del caller, la fila no debe persistir -- prueba de que el helper no hizo su propio COMMIT");
+  } finally {
+    await closeControlDb(controlDb);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E5BRegistrarEmpresaLegacyPreservado() {
+  const controlDbPath = tempDbPath();
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    const primera = await registrarEmpresa(controlDb, { slug: "mt1e5b-legacy-upsert", nombre: "Nombre Viejo", dbPath: "viejo.db", activa: 1 });
+    assertSame(primera.nombre, "Nombre Viejo", "primer registro debe crear con el nombre dado");
+
+    const segunda = await registrarEmpresa(controlDb, { slug: "mt1e5b-legacy-upsert", nombre: "Nombre Nuevo", dbPath: "nuevo.db", activa: 0 });
+    assertEqual(segunda.id, primera.id, "el UPSERT legacy debe conservar el mismo id");
+    assertSame(segunda.nombre, "Nombre Nuevo", "registrarEmpresa legacy debe seguir sobrescribiendo nombre (comportamiento historico sin cambios)");
+    assertSame(segunda.db_path, "nuevo.db", "registrarEmpresa legacy debe seguir sobrescribiendo db_path (comportamiento historico sin cambios)");
+    assertEqual(Number(segunda.activa), 0, "registrarEmpresa legacy debe seguir sobrescribiendo activa (comportamiento historico sin cambios)");
+
+    const filas = await allControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["mt1e5b-legacy-upsert"]);
+    assertEqual(filas.length, 1, "el UPSERT legacy nunca debe crear una segunda fila");
+  } finally {
+    await closeControlDb(controlDb);
+    fs.rmSync(controlDbPath, { force: true });
   }
 }
