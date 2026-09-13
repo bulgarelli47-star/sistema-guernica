@@ -24615,16 +24615,43 @@ function sha256Archivo(rutaArchivo) {
   return crypto.createHash("sha256").update(fs.readFileSync(rutaArchivo)).digest("hex");
 }
 
+// MT-1E4C.2: sha256Archivo solo por si sola no alcanza como testigo de no-mutacion -- cubre el
+// archivo principal, pero SQLite puede dejar una mutacion persistente unicamente en el WAL sidecar
+// (<db>-wal) sin haber hecho checkpoint todavia hacia el archivo principal, o en el rollback
+// journal (<db>-journal) si el modo de journaling activo es el default (ninguna parte del producto
+// fija PRAGMA journal_mode: se confirmo por grep que backend/db.js, database/init-db.js,
+// database/business-schema-baseline.js y backend/server.js no lo tocan). snapshotSQLitePersistente
+// captura los tres archivos que pueden portar estado persistente real: el principal siempre, y los
+// sidecars solo si existen Y tienen contenido (size > 0) -- un WAL/journal ausente y uno presente
+// pero vacio se normalizan como equivalentes (ambos null) para no producir un falso positivo por
+// la mera creacion-vacia de un sidecar que ningun dato mutado. -shm se excluye a proposito: es
+// memoria compartida de locking entre procesos/conexiones, su tamano y contenido pueden variar sin
+// que eso represente ningun cambio de dato o schema persistente.
+function snapshotSidecarSiTieneContenido(rutaSidecar) {
+  if (!fs.existsSync(rutaSidecar)) return null;
+  const tamano = fs.statSync(rutaSidecar).size;
+  if (tamano === 0) return null;
+  return { size: tamano, sha256: sha256Archivo(rutaSidecar) };
+}
+
+function snapshotSQLitePersistente(dbPath) {
+  return {
+    db: { size: fs.statSync(dbPath).size, sha256: sha256Archivo(dbPath) },
+    wal: snapshotSidecarSiTieneContenido(`${dbPath}-wal`),
+    journal: snapshotSidecarSiTieneContenido(`${dbPath}-journal`),
+  };
+}
+
 async function testMT1C2B2BCentralEmpresaInactiva403() {
   const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
   try {
     const fixture = await setupCentralFixture({ businessDbPath: dbPath, empresaActiva: 0 });
     controlDbPath = fixture.controlDbPath;
-    const shaAntes = sha256Archivo(dbPath);
+    const estadoAntes = snapshotSQLitePersistente(dbPath);
     await esperarStartupFallido(dbPath, extraEnvCentral(fixture));
-    const shaDespues = sha256Archivo(dbPath);
-    assertSame(shaDespues, shaAntes, "el rechazo del Central Boot Gate no debe mutar la business DB (empresa inactiva)");
+    const estadoDespues = snapshotSQLitePersistente(dbPath);
+    assertSame(JSON.stringify(estadoDespues), JSON.stringify(estadoAntes), "el rechazo del Central Boot Gate no debe mutar el estado persistente de SQLite -- archivo principal ni sidecars WAL/journal -- de la business DB (empresa inactiva)");
   } finally {
     limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
@@ -24660,10 +24687,10 @@ async function testMT1C2B2BCentralEmpresaNoExiste503() {
     const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
     await closeControlDb(controlDb);
 
-    const shaAntes = sha256Archivo(dbPath);
+    const estadoAntes = snapshotSQLitePersistente(dbPath);
     await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: "slug-que-no-existe-mt1c2b2b", ATLAS_CONTROL_DB_PATH: controlDbPath });
-    const shaDespues = sha256Archivo(dbPath);
-    assertSame(shaDespues, shaAntes, "el rechazo del Central Boot Gate no debe mutar la business DB (empresa inexistente)");
+    const estadoDespues = snapshotSQLitePersistente(dbPath);
+    assertSame(JSON.stringify(estadoDespues), JSON.stringify(estadoAntes), "el rechazo del Central Boot Gate no debe mutar el estado persistente de SQLite -- archivo principal ni sidecars WAL/journal -- de la business DB (empresa inexistente)");
   } finally {
     fs.rmSync(dbPath, { force: true });
     fs.rmSync(controlDbPath, { force: true });
