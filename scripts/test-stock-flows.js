@@ -52,7 +52,7 @@ const { resolverIdentidadCentralPorLocal, abrirControlDbSoloLectura, revalidarSe
 const { resolverTenantDbRegistrado } = require("../backend/tenantDbRegistry");
 const { verificarTenantDbIdentity, verificarTenantDbIdentityEnConexion } = require("../backend/tenantDbIdentity");
 const { autenticarCredencialCentral } = require("../backend/centralAuthSecurity");
-const { provisionarTenantIdentity, TENANT_IDENTITY_SCHEMA_SQL } = require("../database/provision-tenant-identity");
+const { provisionarTenantIdentity, provisionarTenantIdentityEnConexion, TENANT_IDENTITY_SCHEMA_SQL } = require("../database/provision-tenant-identity");
 const { parseTenantHost } = require("../backend/tenantHostContext");
 const {
   BUSINESS_SCHEMA_MIGRATIONS,
@@ -20646,6 +20646,16 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1E5BActivacionEmpresaInexistente);
   await _run(testMT1E5BHelpersSameConnectionSinTransactionOwnership);
   await _run(testMT1E5BRegistrarEmpresaLegacyPreservado);
+  await _run(testMT1E5CEnConexionCreaSchemaYBinding);
+  await _run(testMT1E5CEnConexionExactaIdempotente);
+  await _run(testMT1E5CEnConexionIdMismatchRechaza);
+  await _run(testMT1E5CEnConexionSlugMismatchRechaza);
+  await _run(testMT1E5CEnConexionIdentityInvalidaRechaza);
+  await _run(testMT1E5CEnConexionSameConnectionRollback);
+  await _run(testMT1E5CEnConexionSinTransactionOwnership);
+  await _run(testMT1E5CEnConexionSinControlDependency);
+  await _run(testMT1E5COuterApiPreservaHappyPath);
+  await _run(testMT1E5COuterApiPreservaErroresYStatuses);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -30757,6 +30767,362 @@ async function testMT1E5BHelpersSameConnectionSinTransactionOwnership() {
   } finally {
     await closeControlDb(controlDb);
     fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// MT-1E5C: primitive same-connection de tenant_identity (database/provision-tenant-identity.js
+// exports provisionarTenantIdentityEnConexion), extraida para que un futuro provisioner de tenants
+// nuevos pueda componerla dentro de su propia business transaction junto al fresh baseline builder y
+// el schema history. Tests 1-8 ejercitan la primitive en aislamiento (sin Control, sin outer API);
+// tests 9-10 certifican que el wrapper publico existente (provisionarTenantIdentity) sigue devolviendo
+// exactamente los mismos statuses/error codes que antes de la extraccion.
+async function testMT1E5CEnConexionCreaSchemaYBinding() {
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  try {
+    const resultado = await provisionarTenantIdentityEnConexion(db, { empresaId: 42, empresaSlug: "mt1e5c-nuevo" });
+    assertSame(resultado.status, "PROVISIONED", "primer provisioning debe ser PROVISIONED (mismo status que hoy)");
+    assertEqual(resultado.empresaId, 42, "empresaId debe ser exacto");
+    assertSame(resultado.empresaSlug, "mt1e5c-nuevo", "empresaSlug debe ser exacto");
+
+    const filas = await new Promise((res, rej) =>
+      db.all("SELECT id, empresa_control_id, tenant_slug FROM tenant_identity", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertEqual(filas.length, 1, "debe sembrar exactamente una fila");
+    assertEqual(filas[0].id, 1, "id debe ser singleton 1");
+    assertEqual(filas[0].empresa_control_id, 42, "empresa_control_id debe coincidir");
+    assertSame(filas[0].tenant_slug, "mt1e5c-nuevo", "tenant_slug debe coincidir");
+  } finally {
+    await cerrarConexionTest(db);
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E5CEnConexionExactaIdempotente() {
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  try {
+    const primera = await provisionarTenantIdentityEnConexion(db, { empresaId: 7, empresaSlug: "mt1e5c-idempotente" });
+    assertSame(primera.status, "PROVISIONED", "primera llamada debe provisionar");
+
+    const segunda = await provisionarTenantIdentityEnConexion(db, { empresaId: 7, empresaSlug: "mt1e5c-idempotente" });
+    assertSame(segunda.status, "ALREADY_PROVISIONED", "segunda llamada exacta debe ser idempotente (mismo status que hoy)");
+
+    const filas = await new Promise((res, rej) =>
+      db.all("SELECT id, empresa_control_id, tenant_slug FROM tenant_identity", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertEqual(filas.length, 1, "no debe duplicar filas");
+    assertEqual(filas[0].empresa_control_id, 7, "empresa_control_id no debe cambiar");
+    assertSame(filas[0].tenant_slug, "mt1e5c-idempotente", "tenant_slug no debe cambiar");
+  } finally {
+    await cerrarConexionTest(db);
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E5CEnConexionIdMismatchRechaza() {
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  try {
+    await provisionarTenantIdentityEnConexion(db, { empresaId: 100, empresaSlug: "mt1e5c-idmismatch" });
+
+    let error = null;
+    try {
+      await provisionarTenantIdentityEnConexion(db, { empresaId: 999, empresaSlug: "mt1e5c-idmismatch" });
+    } catch (err) {
+      error = err;
+    }
+    assertSame(Boolean(error), true, "id mismatch debe fallar");
+    assertSame(error.code, "TENANT_IDENTITY_MISMATCH", "debe usar el mismo error code actual");
+
+    const filas = await new Promise((res, rej) =>
+      db.all("SELECT id, empresa_control_id, tenant_slug FROM tenant_identity", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertEqual(filas.length, 1, "fila existente debe conservarse intacta");
+    assertEqual(filas[0].empresa_control_id, 100, "empresa_control_id no debe sobrescribirse");
+  } finally {
+    await cerrarConexionTest(db);
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E5CEnConexionSlugMismatchRechaza() {
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  try {
+    await provisionarTenantIdentityEnConexion(db, { empresaId: 55, empresaSlug: "mt1e5c-slug-original" });
+
+    let error = null;
+    try {
+      await provisionarTenantIdentityEnConexion(db, { empresaId: 55, empresaSlug: "mt1e5c-slug-distinto" });
+    } catch (err) {
+      error = err;
+    }
+    assertSame(Boolean(error), true, "slug mismatch debe fallar");
+    assertSame(error.code, "TENANT_IDENTITY_MISMATCH", "debe usar el mismo error code actual");
+
+    const filas = await new Promise((res, rej) =>
+      db.all("SELECT id, empresa_control_id, tenant_slug FROM tenant_identity", (e, r) => (e ? rej(e) : res(r)))
+    );
+    assertEqual(filas.length, 1, "fila existente debe conservarse intacta");
+    assertSame(filas[0].tenant_slug, "mt1e5c-slug-original", "tenant_slug no debe sobrescribirse");
+  } finally {
+    await cerrarConexionTest(db);
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E5CEnConexionIdentityInvalidaRechaza() {
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  try {
+    // Mismo patron que testMT1D1BIdentityMalformedDbDevuelveInvalid: crear tenant_identity con un
+    // DDL distinto al certificado (sin los CHECK) -- tablaTenantIdentityExiste debe detectar el
+    // schema no certificado y rechazar, sin necesidad de violar ningun CHECK constraint real.
+    await new Promise((res, rej) =>
+      db.run(
+        `CREATE TABLE tenant_identity (
+          id INTEGER PRIMARY KEY,
+          empresa_control_id,
+          tenant_slug
+        )`,
+        (e) => (e ? rej(e) : res())
+      )
+    );
+
+    let error = null;
+    try {
+      await provisionarTenantIdentityEnConexion(db, { empresaId: 1, empresaSlug: "mt1e5c-invalida" });
+    } catch (err) {
+      error = err;
+    }
+    assertSame(Boolean(error), true, "schema no certificado debe rechazar");
+    assertSame(error.code, "TENANT_IDENTITY_INVALID", "debe usar el mismo error code actual");
+  } finally {
+    await cerrarConexionTest(db);
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E5CEnConexionSameConnectionRollback() {
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  try {
+    await new Promise((res, rej) => db.run("BEGIN IMMEDIATE", (e) => (e ? rej(e) : res())));
+    const resultado = await provisionarTenantIdentityEnConexion(db, { empresaId: 9, empresaSlug: "mt1e5c-rollback" });
+    assertSame(resultado.status, "PROVISIONED", "el provisioning dentro de la transaccion del caller debe completar normalmente");
+    await new Promise((res, rej) => db.run("ROLLBACK", (e) => (e ? rej(e) : res())));
+    await cerrarConexionTest(db);
+
+    const filas = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='tenant_identity'");
+    assertEqual(filas.length, 0, "tras el ROLLBACK del caller, ni la tabla ni la fila deben persistir -- prueba de que la primitive no hizo su propio COMMIT");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E5CEnConexionSinTransactionOwnership() {
+  const codigoFuente = fs.readFileSync(path.join(ROOT, "database", "provision-tenant-identity.js"), "utf8");
+  const inicio = codigoFuente.indexOf("async function provisionarTenantIdentityEnConexion");
+  const fin = codigoFuente.indexOf("\nasync function provisionarTenantIdentity(options");
+  assertSame(inicio >= 0, true, "provisionarTenantIdentityEnConexion debe existir en el codigo fuente");
+  assertSame(fin > inicio, true, "debe poder delimitarse el cuerpo exacto de la primitive");
+  const cuerpo = codigoFuente
+    .slice(inicio, fin)
+    .split("\n")
+    .filter((linea) => !linea.trim().startsWith("//"))
+    .join("\n");
+
+  assertSame(/new sqlite3\.Database/.test(cuerpo), false, "la primitive no debe abrir su propia conexion sqlite3 (fuera de comentarios)");
+  assertSame(/\bBEGIN\b/.test(cuerpo), false, "la primitive no debe ejecutar BEGIN (fuera de comentarios)");
+  assertSame(/\bCOMMIT\b/.test(cuerpo), false, "la primitive no debe ejecutar COMMIT (fuera de comentarios)");
+  assertSame(/\bROLLBACK\b/.test(cuerpo), false, "la primitive no debe ejecutar ROLLBACK (fuera de comentarios)");
+}
+
+async function testMT1E5CEnConexionSinControlDependency() {
+  const codigoFuente = fs.readFileSync(path.join(ROOT, "database", "provision-tenant-identity.js"), "utf8");
+  const inicio = codigoFuente.indexOf("async function provisionarTenantIdentityEnConexion");
+  const fin = codigoFuente.indexOf("\nasync function provisionarTenantIdentity(options");
+  assertSame(inicio >= 0, true, "provisionarTenantIdentityEnConexion debe existir en el codigo fuente");
+  assertSame(fin > inicio, true, "debe poder delimitarse el cuerpo exacto de la primitive");
+  const cuerpo = codigoFuente
+    .slice(inicio, fin)
+    .split("\n")
+    .filter((linea) => !linea.trim().startsWith("//"))
+    .join("\n");
+
+  assertSame(cuerpo.includes("bootstrapControlDb"), false, "la primitive no debe depender de bootstrapControlDb (fuera de comentarios)");
+  assertSame(cuerpo.includes("registrarEmpresa"), false, "la primitive no debe depender de registrarEmpresa (fuera de comentarios)");
+  assertSame(cuerpo.includes("resolveEmpresaDbPath"), false, "la primitive no debe depender de resolveEmpresaDbPath (fuera de comentarios)");
+  assertSame(cuerpo.includes("controlDbPath"), false, "la primitive no debe recibir controlDbPath (fuera de comentarios)");
+  assertSame(/FROM\s+empresas/i.test(cuerpo), false, "la primitive no debe consultar la tabla empresas (fuera de comentarios)");
+}
+
+async function testMT1E5COuterApiPreservaHappyPath() {
+  const slug = `mt1e5c-outer-happy-${Date.now()}`;
+  const businessName = `mt1e5c-outer-happy-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  let controlDbPath;
+  try {
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug, nombre: "MT1E5C Outer Happy", dbPath: businessName
+    });
+    controlDbPath = fixture.controlDbPath;
+    await runSql(businessPath, "SELECT 1");
+
+    const primera = await provisionarTenantIdentity({ controlDbPath, empresaSlug: slug, businessDbPath: businessPath });
+    assertSame(primera.status, "PROVISIONED", "outer API debe seguir devolviendo PROVISIONED en el primer provisioning, igual que antes de la extraccion");
+    assertEqual(primera.empresaId, fixture.empresa.id, "empresaId debe ser exacto");
+    assertSame(primera.empresaSlug, slug, "empresaSlug debe ser exacto");
+    assertSame(primera.businessDbPath, businessPath, "businessDbPath debe ser exacto");
+
+    const filas = await allSql(businessPath, "SELECT id, empresa_control_id, tenant_slug FROM tenant_identity");
+    assertEqual(filas.length, 1, "debe sembrar exactamente una fila");
+    assertEqual(filas[0].empresa_control_id, fixture.empresa.id, "empresa_control_id debe coincidir");
+    assertSame(filas[0].tenant_slug, slug, "tenant_slug debe coincidir");
+
+    const segunda = await provisionarTenantIdentity({ controlDbPath, empresaSlug: slug, businessDbPath: businessPath });
+    assertSame(segunda.status, "ALREADY_PROVISIONED", "retry exacto debe seguir siendo ALREADY_PROVISIONED tras la extraccion");
+
+    const slugInactiva = `mt1e5c-outer-inactiva-${Date.now()}`;
+    const businessNameInactiva = `mt1e5c-outer-inactiva-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+    const businessPathInactiva = resolveEmpresaDbPath(businessNameInactiva);
+    let controlDbPathInactiva;
+    try {
+      const fixtureInactiva = await mt1d1aCrearControlDbConEmpresa({
+        slug: slugInactiva, nombre: "MT1E5C Outer Inactiva", dbPath: businessNameInactiva, activa: 0
+      });
+      controlDbPathInactiva = fixtureInactiva.controlDbPath;
+      await runSql(businessPathInactiva, "SELECT 1");
+
+      const resultadoInactiva = await provisionarTenantIdentity({
+        controlDbPath: controlDbPathInactiva, empresaSlug: slugInactiva, businessDbPath: businessPathInactiva
+      });
+      assertSame(resultadoInactiva.status, "PROVISIONED", "empresa inactiva debe seguir permitiendo provisioning (P7) tras la extraccion");
+    } finally {
+      if (controlDbPathInactiva) fs.rmSync(controlDbPathInactiva, { force: true });
+      fs.rmSync(businessPathInactiva, { force: true });
+    }
+  } finally {
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(businessPath, { force: true });
+  }
+}
+
+async function testMT1E5COuterApiPreservaErroresYStatuses() {
+  // 1) Exact retry (ALREADY_PROVISIONED).
+  {
+    const slug = `mt1e5c-outer-matrix-retry-${Date.now()}`;
+    const businessName = `mt1e5c-outer-matrix-retry-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+    const businessPath = resolveEmpresaDbPath(businessName);
+    let controlDbPath;
+    try {
+      const fixture = await mt1d1aCrearControlDbConEmpresa({ slug, nombre: "MT1E5C Matrix Retry", dbPath: businessName });
+      controlDbPath = fixture.controlDbPath;
+      await runSql(businessPath, TENANT_IDENTITY_SCHEMA_SQL);
+      await insertarTenantIdentityTest(businessPath, fixture.empresa.id, slug);
+
+      const resultado = await provisionarTenantIdentity({ controlDbPath, empresaSlug: slug, businessDbPath: businessPath });
+      assertSame(resultado.status, "ALREADY_PROVISIONED", "matrix: retry exacto debe seguir siendo ALREADY_PROVISIONED");
+    } finally {
+      if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+      fs.rmSync(businessPath, { force: true });
+    }
+  }
+
+  // 2) Id mismatch.
+  {
+    const slug = `mt1e5c-outer-matrix-idmis-${Date.now()}`;
+    const businessName = `mt1e5c-outer-matrix-idmis-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+    const businessPath = resolveEmpresaDbPath(businessName);
+    let controlDbPath;
+    try {
+      const fixture = await mt1d1aCrearControlDbConEmpresa({ slug, nombre: "MT1E5C Matrix Id Mismatch", dbPath: businessName });
+      controlDbPath = fixture.controlDbPath;
+      await runSql(businessPath, TENANT_IDENTITY_SCHEMA_SQL);
+      await insertarTenantIdentityTest(businessPath, fixture.empresa.id + 1000, slug);
+
+      let error = null;
+      try {
+        await provisionarTenantIdentity({ controlDbPath, empresaSlug: slug, businessDbPath: businessPath });
+      } catch (err) {
+        error = err;
+      }
+      assertSame(Boolean(error), true, "matrix: id mismatch debe fallar");
+      assertSame(error.code, "TENANT_IDENTITY_MISMATCH", "matrix: id mismatch debe seguir siendo TENANT_IDENTITY_MISMATCH");
+    } finally {
+      if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+      fs.rmSync(businessPath, { force: true });
+    }
+  }
+
+  // 3) Slug mismatch.
+  {
+    const slug = `mt1e5c-outer-matrix-slugmis-${Date.now()}`;
+    const slugExistente = `${slug}-otro`;
+    const businessName = `mt1e5c-outer-matrix-slugmis-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+    const businessPath = resolveEmpresaDbPath(businessName);
+    let controlDbPath;
+    try {
+      const fixture = await mt1d1aCrearControlDbConEmpresa({ slug, nombre: "MT1E5C Matrix Slug Mismatch", dbPath: businessName });
+      controlDbPath = fixture.controlDbPath;
+      await runSql(businessPath, TENANT_IDENTITY_SCHEMA_SQL);
+      await insertarTenantIdentityTest(businessPath, fixture.empresa.id, slugExistente);
+
+      let error = null;
+      try {
+        await provisionarTenantIdentity({ controlDbPath, empresaSlug: slug, businessDbPath: businessPath });
+      } catch (err) {
+        error = err;
+      }
+      assertSame(Boolean(error), true, "matrix: slug mismatch debe fallar");
+      assertSame(error.code, "TENANT_IDENTITY_MISMATCH", "matrix: slug mismatch debe seguir siendo TENANT_IDENTITY_MISMATCH");
+    } finally {
+      if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+      fs.rmSync(businessPath, { force: true });
+    }
+  }
+
+  // 4) Path mismatch.
+  {
+    const slug = `mt1e5c-outer-matrix-pathmis-${Date.now()}`;
+    const registeredName = `mt1e5c-outer-matrix-pathmis-registrada-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+    const businessDbPath = tempDbPath();
+    let controlDbPath;
+    try {
+      const fixture = await mt1d1aCrearControlDbConEmpresa({ slug, nombre: "MT1E5C Matrix Path Mismatch", dbPath: registeredName });
+      controlDbPath = fixture.controlDbPath;
+
+      let error = null;
+      try {
+        await provisionarTenantIdentity({ controlDbPath, empresaSlug: slug, businessDbPath });
+      } catch (err) {
+        error = err;
+      }
+      assertSame(Boolean(error), true, "matrix: path mismatch debe fallar");
+      assertSame(error.code, "BUSINESS_DB_PATH_MISMATCH", "matrix: path mismatch debe seguir siendo BUSINESS_DB_PATH_MISMATCH");
+      assertSame(fs.existsSync(businessDbPath), false, "matrix: no debe crearse ningun archivo en el path no coincidente");
+    } finally {
+      if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+      fs.rmSync(businessDbPath, { force: true });
+    }
+  }
+
+  // 5) Empresa inexistente.
+  {
+    const slug = `mt1e5c-outer-matrix-noexiste-${Date.now()}`;
+    const businessDbPath = tempDbPath();
+    const controlDbPath = tempDbPath();
+    try {
+      const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+      await closeControlDb(controlDb);
+
+      let error = null;
+      try {
+        await provisionarTenantIdentity({ controlDbPath, empresaSlug: slug, businessDbPath });
+      } catch (err) {
+        error = err;
+      }
+      assertSame(Boolean(error), true, "matrix: empresa inexistente debe fallar");
+      assertSame(error.code, "EMPRESA_NOT_FOUND", "matrix: empresa inexistente debe seguir siendo EMPRESA_NOT_FOUND");
+    } finally {
+      fs.rmSync(controlDbPath, { force: true });
+      fs.rmSync(businessDbPath, { force: true });
+    }
   }
 }
 

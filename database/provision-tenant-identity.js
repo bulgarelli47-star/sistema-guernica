@@ -128,6 +128,86 @@ async function tablaTenantIdentityExiste(db) {
   return !!row;
 }
 
+// MT-1E5C: primitive same-connection, extraida de la logica de identity que antes vivia inline
+// dentro de provisionarTenantIdentity (mas abajo). Responsable UNICAMENTE de tenant_identity sobre
+// una conexion `db` que el caller ya abrio: crea la tabla (via TENANT_IDENTITY_SCHEMA_SQL, la misma
+// constante certificada, sin duplicar DDL), lee el binding actual, siembra la fila singleton si esta
+// ausente, acepta un retry exacto como idempotente, y rechaza cualquier mismatch o fila invalida --
+// nunca overwrite, nunca repair automatico. Deliberadamente Control-independent: recibe empresaId/
+// empresaSlug ya resueltos y autorizados por el caller, nunca consulta la tabla `empresas` ni abre el
+// Control DB. Nunca abre su propia conexion sqlite3 ni ejecuta BEGIN/COMMIT/ROLLBACK -- el caller
+// (hoy provisionarTenantIdentity, mas adelante un futuro provisioner de tenants nuevos) controla el
+// limite transaccional completo.
+async function provisionarTenantIdentityEnConexion(db, { empresaId, empresaSlug } = {}) {
+  if (!db) {
+    throw crearError("INVALID_ARGUMENT", "provisionarTenantIdentityEnConexion: falta db");
+  }
+  const idValidado = Number.isInteger(empresaId) && empresaId > 0 ? empresaId : null;
+  if (!idValidado) {
+    throw crearError("INVALID_ARGUMENT", "provisionarTenantIdentityEnConexion: falta empresaId valido");
+  }
+  const slugValidado = typeof empresaSlug === "string" ? empresaSlug : "";
+  if (!slugValidado || slugValidado !== slugValidado.trim()) {
+    throw crearError("INVALID_ARGUMENT", "provisionarTenantIdentityEnConexion: falta empresaSlug valido");
+  }
+
+  const existeTabla = await tablaTenantIdentityExiste(db);
+
+  if (!existeTabla) {
+    // P1 (schema missing): crear unicamente tenant_identity con el schema certificado, luego
+    // sembrar la fila singleton. Ninguna otra tabla se toca.
+    await runQuery(db, TENANT_IDENTITY_SCHEMA_SQL);
+    await runQuery(
+      db,
+      "INSERT INTO tenant_identity (id, empresa_control_id, tenant_slug) VALUES (1, ?, ?)",
+      [idValidado, slugValidado]
+    );
+    return { status: "PROVISIONED", empresaId: idValidado, empresaSlug: slugValidado };
+  }
+
+  let filas;
+  try {
+    filas = await allQuery(db, "SELECT id, empresa_control_id, tenant_slug FROM tenant_identity");
+  } catch (queryError) {
+    throw crearError("TENANT_IDENTITY_INVALID", `tenant_identity existe pero su schema es incompatible: ${queryError.message}`);
+  }
+
+  if (filas.length === 0) {
+    // P1 (tabla existente pero vacia): mismo seed, tabla ya certificada por su propia
+    // definicion previa -- no se recrea.
+    await runQuery(
+      db,
+      "INSERT INTO tenant_identity (id, empresa_control_id, tenant_slug) VALUES (1, ?, ?)",
+      [idValidado, slugValidado]
+    );
+    return { status: "PROVISIONED", empresaId: idValidado, empresaSlug: slugValidado };
+  }
+
+  if (filas.length > 1) {
+    throw crearError("TENANT_IDENTITY_INVALID", "tenant_identity contiene mas de una fila (schema no certificado)");
+  }
+
+  const existente = filas[0];
+  if (!esIdentityFilaValida(existente)) {
+    throw crearError("TENANT_IDENTITY_INVALID", "tenant_identity contiene una fila malformada", { existente });
+  }
+
+  if (existente.empresa_control_id === idValidado && existente.tenant_slug === slugValidado) {
+    // P2: idempotente. NUNCA UPDATE/DELETE/REPLACE -- nada que escribir.
+    return { status: "ALREADY_PROVISIONED", empresaId: idValidado, empresaSlug: slugValidado };
+  }
+
+  // P3/P4: mismatch de empresa_control_id y/o tenant_slug. Nunca overwrite/repair.
+  throw crearError(
+    "TENANT_IDENTITY_MISMATCH",
+    "tenant_identity existente no coincide con el binding esperado del control plane",
+    {
+      existente: { empresaControlId: existente.empresa_control_id, tenantSlug: existente.tenant_slug },
+      esperado: { empresaControlId: idValidado, tenantSlug: slugValidado }
+    }
+  );
+}
+
 // Punto de entrada unico. Los tres inputs son obligatorios: nunca se asume 'guernica',
 // 'atlas_control.db' ni 'guernica.db' si el caller no los provee explicitamente. Falta de
 // cualquiera de los tres falla ANTES de abrir ninguna DB.
@@ -216,75 +296,28 @@ async function provisionarTenantIdentity(options = {}) {
     await runQuery(businessDb, "BEGIN IMMEDIATE");
     transactionStarted = true;
 
-    const existeTabla = await tablaTenantIdentityExiste(businessDb);
+    // MT-1E5C: toda la logica de identity (crear tabla, leer/insertar/validar binding) vive ahora
+    // en la primitive same-connection -- este wrapper sigue siendo la unica autoridad sobre Control
+    // lookup, path validation, apertura de la business DB y el limite transaccional (BEGIN aqui
+    // arriba; COMMIT/ROLLBACK abajo, exactamente igual que antes de la extraccion).
+    const resultado = await provisionarTenantIdentityEnConexion(businessDb, {
+      empresaId: empresa.id,
+      empresaSlug: empresa.slug
+    });
 
-    if (!existeTabla) {
-      // P1 (schema missing): crear unicamente tenant_identity con el schema certificado, luego
-      // sembrar la fila singleton. Ninguna otra tabla se toca.
-      await runQuery(businessDb, TENANT_IDENTITY_SCHEMA_SQL);
-      await runQuery(
-        businessDb,
-        "INSERT INTO tenant_identity (id, empresa_control_id, tenant_slug) VALUES (1, ?, ?)",
-        [empresa.id, empresa.slug]
-      );
+    if (resultado.status === "ALREADY_PROVISIONED") {
+      // P2: idempotente. NUNCA UPDATE/DELETE/REPLACE -- nada que escribir, mismo ROLLBACK que antes.
+      await runQuery(businessDb, "ROLLBACK");
+    } else {
       await runQuery(businessDb, "COMMIT");
-      transactionStarted = false;
-      return { status: "PROVISIONED", empresaId: empresa.id, empresaSlug: empresa.slug, businessDbPath: businessPathResuelto };
     }
-
-    let filas;
-    try {
-      filas = await allQuery(businessDb, "SELECT id, empresa_control_id, tenant_slug FROM tenant_identity");
-    } catch (queryError) {
-      await runQuery(businessDb, "ROLLBACK");
-      transactionStarted = false;
-      throw crearError("TENANT_IDENTITY_INVALID", `tenant_identity existe pero su schema es incompatible: ${queryError.message}`);
-    }
-
-    if (filas.length === 0) {
-      // P1 (tabla existente pero vacia): mismo seed, tabla ya certificada por su propia
-      // definicion previa -- no se recrea.
-      await runQuery(
-        businessDb,
-        "INSERT INTO tenant_identity (id, empresa_control_id, tenant_slug) VALUES (1, ?, ?)",
-        [empresa.id, empresa.slug]
-      );
-      await runQuery(businessDb, "COMMIT");
-      transactionStarted = false;
-      return { status: "PROVISIONED", empresaId: empresa.id, empresaSlug: empresa.slug, businessDbPath: businessPathResuelto };
-    }
-
-    if (filas.length > 1) {
-      await runQuery(businessDb, "ROLLBACK");
-      transactionStarted = false;
-      throw crearError("TENANT_IDENTITY_INVALID", "tenant_identity contiene mas de una fila (schema no certificado)");
-    }
-
-    const existente = filas[0];
-    if (!esIdentityFilaValida(existente)) {
-      await runQuery(businessDb, "ROLLBACK");
-      transactionStarted = false;
-      throw crearError("TENANT_IDENTITY_INVALID", "tenant_identity contiene una fila malformada", { existente });
-    }
-
-    if (existente.empresa_control_id === empresa.id && existente.tenant_slug === empresa.slug) {
-      // P2: idempotente. NUNCA UPDATE/DELETE/REPLACE -- nada que escribir.
-      await runQuery(businessDb, "ROLLBACK");
-      transactionStarted = false;
-      return { status: "ALREADY_PROVISIONED", empresaId: empresa.id, empresaSlug: empresa.slug, businessDbPath: businessPathResuelto };
-    }
-
-    // P3/P4: mismatch de empresa_control_id y/o tenant_slug. Nunca overwrite/repair.
-    await runQuery(businessDb, "ROLLBACK");
     transactionStarted = false;
-    throw crearError(
-      "TENANT_IDENTITY_MISMATCH",
-      "tenant_identity existente no coincide con el binding esperado del control plane",
-      {
-        existente: { empresaControlId: existente.empresa_control_id, tenantSlug: existente.tenant_slug },
-        esperado: { empresaControlId: empresa.id, tenantSlug: empresa.slug }
-      }
-    );
+    return {
+      status: resultado.status,
+      empresaId: resultado.empresaId,
+      empresaSlug: resultado.empresaSlug,
+      businessDbPath: businessPathResuelto
+    };
   } catch (error) {
     if (transactionStarted) {
       try { await runQuery(businessDb, "ROLLBACK"); } catch (rollbackError) { error.rollbackError = rollbackError; }
@@ -297,6 +330,7 @@ async function provisionarTenantIdentity(options = {}) {
 
 module.exports = {
   provisionarTenantIdentity,
+  provisionarTenantIdentityEnConexion,
   TENANT_IDENTITY_SCHEMA_SQL
 };
 
