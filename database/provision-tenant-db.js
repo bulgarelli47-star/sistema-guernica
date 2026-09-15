@@ -60,13 +60,38 @@ function abrirBusinessDbSoloLectura(dbPath) {
   });
 }
 
-// UNICO lugar de todo el modulo que usa OPEN_CREATE -- deliberado: este es el unico camino que
-// legitimamente construye una business DB nueva desde cero.
-function abrirBusinessDbFresca(dbPath) {
+// MT-1E5D.1: unica conexion de escritura para una business DB que YA SABEMOS que existe (nunca usa
+// OPEN_CREATE) -- usada tanto por la owner real (justo despues de crearla atomicamente, ver
+// intentarClaimarCreacionAtomica) como por un follower concurrente que necesita BEGIN IMMEDIATE
+// para esperar a que la owner real termine antes de inspeccionar contenido.
+function abrirBusinessDbEscrituraExistente(dbPath) {
   return new Promise((resolve, reject) => {
-    const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (error) => {
+    const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE, (error) => {
       if (error) { reject(error); return; }
       resolve(db);
+    });
+  });
+}
+
+// MT-1E5D.1: UNICA senal de ownership real en todo el modulo -- deliberadamente NUNCA derivada de
+// contenido/schema/CURRENT state (eso fue el bug que este recovery corrige). fs.open con flag "wx"
+// mapea a O_CREAT|O_EXCL a nivel de sistema operativo: exito significa, sin ninguna ventana TOCTOU
+// posible, que ESTA invocation transiciono el archivo de inexistente a existente -- el SO garantiza
+// que dos llamadas concurrentes nunca pueden tener exito ambas. Fallo con EEXIST significa que el
+// archivo YA existia antes de esta llamada, sin importar que tan vacio este por dentro: nunca somos
+// la owner en ese caso. Este es el UNICO lugar de todo el modulo que materializa un archivo nuevo.
+function intentarClaimarCreacionAtomica(dbPath) {
+  return new Promise((resolve, reject) => {
+    fs.open(dbPath, "wx", (error, fd) => {
+      if (error) {
+        if (error.code === "EEXIST") { resolve(false); return; }
+        reject(error);
+        return;
+      }
+      fs.close(fd, (closeError) => {
+        if (closeError) { reject(closeError); return; }
+        resolve(true);
+      });
     });
   });
 }
@@ -78,9 +103,9 @@ function cerrarDbSilencioso(db) {
   });
 }
 
-// Solo se invoca cuando esta invocation confirmo ser la owner real (tablas vacias bajo su propio
-// lock exclusivo, ver crearOResolverBusinessInactiva) -- nunca sobre un archivo que otra invocation
-// ya poblo. Limpia unicamente los sidecars de ESE path exacto, nunca un glob.
+// Solo se invoca cuando intentarClaimarCreacionAtomica ya establecio ownership real (fs.open "wx"
+// exitoso) -- nunca por inspeccion de contenido/schema. Limpia unicamente los sidecars de ESE path
+// exacto, nunca un glob.
 function limpiarArchivosOwned(dbPath) {
   for (const sufijo of ["", "-wal", "-shm", "-journal"]) {
     try { fs.rmSync(dbPath + sufijo, { force: true }); } catch (_error) { /* best-effort */ }
@@ -170,22 +195,134 @@ async function resolverRetrySobreBusinessExistente({ controlDb, empresa, busines
   };
 }
 
-// MT-1E5D (recovery): usado EXCLUSIVAMENTE para el camino "empresa recien reservada, inactiva"
+// MT-1E5D.1 (recovery): usado EXCLUSIVAMENTE para el camino "empresa recien reservada, inactiva"
 // (RESERVED/ALREADY_RESERVED) -- nunca para la colision activa, que jamas debe poder materializar
 // un archivo (ver verificarBusinessExistenteExacta/resolverRetrySobreBusinessExistente mas abajo,
-// intactos). Decide fresh-build vs. retry-sobre-existente DESPUES de adquirir el lock exclusivo
-// (BEGIN IMMEDIATE), nunca antes: un fs.existsSync() previo al lock deja una ventana real donde un
-// archivo recien creado por OTRA invocation (OPEN_CREATE ya lo materializo pero su transaccion
-// todavia no commiteo nada) se malinterpretaria como "existente pero no-CURRENT". Al mover la
-// inspeccion de sqlite_master a DESPUES de BEGIN IMMEDIATE sobre la MISMA conexion, cualquier
-// commiter concurrente ya termino (visible entero) o sigue bloqueado detras nuestro (invisible
-// entero) -- nunca un estado a medias.
+// intactos). Ownership se decide ANTES de tocar sqlite3 en absoluto, via el claim atomico de
+// filesystem (ver intentarClaimarCreacionAtomica) -- nunca via contenido/schema, que es lo que este
+// recovery corrige. Owner real -> fresh build. No-owner -> verificacion bajo BEGIN IMMEDIATE (fuerza
+// a esperar a que cualquier owner concurrente termine antes de inspeccionar, nunca observa un
+// estado a medias).
 async function crearOResolverBusinessInactiva({ controlDb, empresa, businessPathResuelto, empresaSlug, migrationId }) {
+  let esOwnerCreador;
+  try {
+    esOwnerCreador = await intentarClaimarCreacionAtomica(businessPathResuelto);
+  } catch (error) {
+    throw crearError("BUSINESS_DB_ERROR", `No se pudo verificar existencia atomica de la Business DB: ${error.message}`);
+  }
+
+  if (esOwnerCreador) {
+    return await construirBusinessFrescaComoOwner({ controlDb, empresa, businessPathResuelto, empresaSlug, migrationId });
+  }
+
+  return await verificarYActivarSobreBusinessExistenteConLock({ controlDb, empresa, businessPathResuelto, empresaSlug, yaActiva: false });
+}
+
+// Solo se invoca cuando intentarClaimarCreacionAtomica ya probo, sin ninguna ventana TOCTOU, que
+// ESTA invocation transiciono el archivo de inexistente a existente. UNA sola transaccion (BEGIN
+// IMMEDIATE..COMMIT) cubre: fresh builder, identity, baseline verify, history [001], identity
+// verify, schema verify. Activation ocurre DESPUES del COMMIT exitoso, nunca antes.
+async function construirBusinessFrescaComoOwner({ controlDb, empresa, businessPathResuelto, empresaSlug, migrationId }) {
   let businessDb;
   try {
-    businessDb = await abrirBusinessDbFresca(businessPathResuelto);
+    businessDb = await abrirBusinessDbEscrituraExistente(businessPathResuelto);
   } catch (error) {
-    throw crearError("BUSINESS_DB_ERROR", `No se pudo abrir/crear la Business DB: ${error.message}`);
+    limpiarArchivosOwned(businessPathResuelto);
+    throw crearError("BUSINESS_DB_ERROR", `No se pudo abrir la Business DB recien creada: ${error.message}`);
+  }
+
+  let transactionStarted = false;
+  try {
+    try {
+      await runQuery(businessDb, "PRAGMA busy_timeout = 5000");
+      await runQuery(businessDb, "BEGIN IMMEDIATE");
+      transactionStarted = true;
+    } catch (error) {
+      const codigo = error.code === "SQLITE_BUSY" || error.code === "SQLITE_LOCKED" ? "BUSINESS_DB_BUSY" : "BUSINESS_DB_ERROR";
+      throw crearError(codigo, error.message);
+    }
+
+    await crearBaseline001EnConexion(businessDb);
+    await provisionarTenantIdentityEnConexion(businessDb, { empresaId: empresa.id, empresaSlug });
+
+    const baseline = await verificarLegacyBaselineEnConexion(businessDb);
+    if (!baseline.ready) {
+      throw crearError("BASELINE_VERIFY_FAILED", "El baseline recien construido no paso la verificacion", { failures: baseline.failures });
+    }
+
+    await runQuery(
+      businessDb,
+      `CREATE TABLE atlas_schema_migrations (
+        sequence INTEGER NOT NULL UNIQUE CHECK(sequence >= 1),
+        migration_id TEXT PRIMARY KEY NOT NULL,
+        applied_at TEXT NOT NULL
+      )`
+    );
+    await runQuery(
+      businessDb,
+      "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (1, ?, datetime('now'))",
+      [migrationId]
+    );
+
+    const identidad = await verificarTenantDbIdentityEnConexion(businessDb, { empresaId: empresa.id, empresaSlug });
+    if (!identidad.ok) {
+      throw crearError(identidad.errorCode, identidad.message);
+    }
+
+    const schema = await verificarBusinessSchemaVersionEnConexion(businessDb);
+    if (schema.state !== "CURRENT") {
+      throw crearError("SCHEMA_HISTORY_FAILED", `El schema no quedo CURRENT tras escribir history (state=${schema.state})`);
+    }
+
+    await runQuery(businessDb, "COMMIT");
+    transactionStarted = false;
+  } catch (error) {
+    if (transactionStarted) {
+      try { await runQuery(businessDb, "ROLLBACK"); } catch (rollbackError) { error.rollbackError = rollbackError; }
+    }
+    await cerrarDbSilencioso(businessDb);
+    // Owned con certeza absoluta: el claim atomico (fs.open "wx") ya establecio, antes de que sqlite3
+    // siquiera tocara el archivo, que ESTA invocation lo transiciono de inexistente a existente.
+    limpiarArchivosOwned(businessPathResuelto);
+    throw error;
+  }
+
+  await cerrarDbSilencioso(businessDb);
+
+  // Business ya CURRENT y committed. Solo ahora se activa Control -- un fallo aqui NUNCA debe
+  // borrar ni tocar la business DB ya committed.
+  try {
+    await activarEmpresaReservada(controlDb, { empresaId: empresa.id, slug: empresaSlug, dbPath: empresa.dbPath });
+  } catch (activationError) {
+    throw crearError(
+      "CONTROL_ACTIVATION_FAILED",
+      `La business DB quedo CURRENT pero la activacion en Control fallo: ${activationError.message}`,
+      { cause: activationError, empresaId: empresa.id, empresaSlug, businessDbPath: businessPathResuelto }
+    );
+  }
+
+  return {
+    status: "PROVISIONED",
+    empresaId: empresa.id,
+    empresaSlug,
+    businessDbPath: businessPathResuelto,
+    schemaState: "CURRENT"
+  };
+}
+
+// Se invoca cuando intentarClaimarCreacionAtomica ya probo que ESTA invocation NUNCA es la owner
+// (el archivo ya existia antes de nuestra llamada, sin importar que tan vacio este). BEGIN IMMEDIATE
+// aqui es deliberado: fuerza a esta invocation a esperar (busy_timeout) a que cualquier owner
+// concurrente termine su propia transaccion antes de poder inspeccionar contenido -- nunca observa
+// un estado a medias. Conexion de solo lectura logica: jamas escribe (ROLLBACK siempre al final,
+// nunca COMMIT). Si el contenido resulta genuinamente vacio/no-CURRENT bajo este lock, es una DB
+// preexistente rota o una saga previa incompleta -- nunca esta invocation la creo, nunca se limpia.
+async function verificarYActivarSobreBusinessExistenteConLock({ controlDb, empresa, businessPathResuelto, empresaSlug, yaActiva }) {
+  let businessDb;
+  try {
+    businessDb = await abrirBusinessDbEscrituraExistente(businessPathResuelto);
+  } catch (error) {
+    throw crearError("BUSINESS_DB_ERROR", `No se pudo abrir Business DB: ${error.message}`);
   }
 
   let transactionStarted = false;
@@ -199,89 +336,6 @@ async function crearOResolverBusinessInactiva({ controlDb, empresa, businessPath
     throw crearError(codigo, error.message);
   }
 
-  const tablasExistentes = await new Promise((resolve, reject) => {
-    businessDb.all(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT IN ('sqlite_sequence')",
-      (error, rows) => (error ? reject(error) : resolve(rows))
-    );
-  });
-
-  if (tablasExistentes.length === 0) {
-    // Genuinamente vacia BAJO EL LOCK EXCLUSIVO -- esta invocation es la owner real, construye el
-    // baseline fresco. UNA sola transaccion (BEGIN IMMEDIATE..COMMIT) cubre: fresh builder,
-    // identity, baseline verify, history [001], identity verify, schema verify.
-    try {
-      await crearBaseline001EnConexion(businessDb);
-      await provisionarTenantIdentityEnConexion(businessDb, { empresaId: empresa.id, empresaSlug });
-
-      const baseline = await verificarLegacyBaselineEnConexion(businessDb);
-      if (!baseline.ready) {
-        throw crearError("BASELINE_VERIFY_FAILED", "El baseline recien construido no paso la verificacion", { failures: baseline.failures });
-      }
-
-      await runQuery(
-        businessDb,
-        `CREATE TABLE atlas_schema_migrations (
-          sequence INTEGER NOT NULL UNIQUE CHECK(sequence >= 1),
-          migration_id TEXT PRIMARY KEY NOT NULL,
-          applied_at TEXT NOT NULL
-        )`
-      );
-      await runQuery(
-        businessDb,
-        "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (1, ?, datetime('now'))",
-        [migrationId]
-      );
-
-      const identidad = await verificarTenantDbIdentityEnConexion(businessDb, { empresaId: empresa.id, empresaSlug });
-      if (!identidad.ok) {
-        throw crearError(identidad.errorCode, identidad.message);
-      }
-
-      const schema = await verificarBusinessSchemaVersionEnConexion(businessDb);
-      if (schema.state !== "CURRENT") {
-        throw crearError("SCHEMA_HISTORY_FAILED", `El schema no quedo CURRENT tras escribir history (state=${schema.state})`);
-      }
-
-      await runQuery(businessDb, "COMMIT");
-      transactionStarted = false;
-    } catch (error) {
-      if (transactionStarted) {
-        try { await runQuery(businessDb, "ROLLBACK"); } catch (rollbackError) { error.rollbackError = rollbackError; }
-      }
-      await cerrarDbSilencioso(businessDb);
-      // Owned con certeza: la tabla estaba vacia bajo nuestro propio lock exclusivo, nadie mas pudo
-      // haber escrito nada real todavia.
-      limpiarArchivosOwned(businessPathResuelto);
-      throw error;
-    }
-
-    await cerrarDbSilencioso(businessDb);
-
-    // Business ya CURRENT y committed. Solo ahora se activa Control -- un fallo aqui NUNCA debe
-    // borrar ni tocar la business DB ya committed.
-    try {
-      await activarEmpresaReservada(controlDb, { empresaId: empresa.id, slug: empresaSlug, dbPath: empresa.dbPath });
-    } catch (activationError) {
-      throw crearError(
-        "CONTROL_ACTIVATION_FAILED",
-        `La business DB quedo CURRENT pero la activacion en Control fallo: ${activationError.message}`,
-        { cause: activationError, empresaId: empresa.id, empresaSlug, businessDbPath: businessPathResuelto }
-      );
-    }
-
-    return {
-      status: "PROVISIONED",
-      empresaId: empresa.id,
-      empresaSlug,
-      businessDbPath: businessPathResuelto,
-      schemaState: "CURRENT"
-    };
-  }
-
-  // No esta vacia: otra invocation concurrente (o una saga previa) ya escribio contenido real bajo
-  // este mismo lock exclusivo -- NUNCA somos la owner en este caso, jamas se limpia nada. Verificar
-  // exactitud sobre la MISMA conexion ya abierta (mismo lock, sin ventana nueva) antes de decidir.
   try {
     const baseline = await verificarLegacyBaselineEnConexion(businessDb);
     if (!baseline.ready) {
@@ -303,6 +357,16 @@ async function crearOResolverBusinessInactiva({ controlDb, empresa, businessPath
       try { await runQuery(businessDb, "ROLLBACK"); } catch (_error) { /* no-op, no se escribio nada */ }
     }
     await cerrarDbSilencioso(businessDb);
+  }
+
+  if (yaActiva) {
+    return {
+      status: "ALREADY_PROVISIONED",
+      empresaId: empresa.id,
+      empresaSlug,
+      businessDbPath: businessPathResuelto,
+      schemaState: "CURRENT"
+    };
   }
 
   const activacion = await activarEmpresaReservada(controlDb, { empresaId: empresa.id, slug: empresaSlug, dbPath: empresa.dbPath });

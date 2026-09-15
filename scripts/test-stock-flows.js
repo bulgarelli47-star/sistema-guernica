@@ -20675,6 +20675,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1E5DModuleSinSideEffects);
   await _run(testMT1E5DUnsupportedFutureCatalogRejected);
   await _run(testMT1E5DRealDbSafety);
+  await _run(testMT1E5DPreexistingEmptyBusinessRejectedSinOwnership);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -31610,9 +31611,15 @@ async function testMT1E5DConcurrentSameSlugSingleOwner() {
     const exitosos = resultados.filter((r) => r.status === "fulfilled").map((r) => r.value);
     const fallidos = resultados.filter((r) => r.status === "rejected").map((r) => r.reason);
 
+    // MT-1E5D.1: con el claim atomico (fs.open "wx"), el follower nunca "cree" ser owner -- espera
+    // bajo BEGIN IMMEDIATE (busy_timeout=5000) a que la owner real termine, y luego observa contenido
+    // CURRENT real. El unico fallo operacional legitimo es agotar ese timeout (BUSINESS_DB_BUSY);
+    // BUSINESS_DB_ALREADY_EXISTS ya no es alcanzable (ver testMT1E5DConcurrentSameSlugSingleOwner
+    // arriba, confirmado por grep antes de este ajuste) y CONTROL_DB_ERROR nunca fue un outcome real
+    // de esta race especifica -- no se toleran para no esconder una regresion futura.
     for (const fallo of fallidos) {
-      const esperado = !!fallo && ["BUSINESS_DB_BUSY", "BUSINESS_DB_ALREADY_EXISTS", "CONTROL_DB_ERROR"].includes(fallo.code);
-      assertSame(esperado, true, `un fallo concurrente solo puede ser uno de los codigos operacionales esperados, no: ${fallo && fallo.code}`);
+      const esperado = !!fallo && fallo.code === "BUSINESS_DB_BUSY";
+      assertSame(esperado, true, `un fallo concurrente solo puede ser BUSINESS_DB_BUSY, no: ${fallo && fallo.code}`);
     }
     assertSame(exitosos.length >= 1, true, "al menos una de las dos llamadas debe completar con exito");
     for (const exito of exitosos) {
@@ -31636,8 +31643,13 @@ async function testMT1E5DSameBusinessTransactionAuthority() {
   const cuerpoSinComentarios = codigoFuente.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   const beginCount = (cuerpoSinComentarios.match(/"BEGIN IMMEDIATE"/g) || []).length;
   const commitCount = (cuerpoSinComentarios.match(/"COMMIT"/g) || []).length;
-  assertEqual(beginCount, 1, "debe haber exactamente un BEGIN IMMEDIATE sobre la business DB en todo el modulo");
-  assertSame(commitCount >= 1, true, "debe existir al menos un COMMIT sobre la business DB");
+  // MT-1E5D.1: dos BEGIN IMMEDIATE legitimos tras el recovery de ownership -- uno en
+  // construirBusinessFrescaComoOwner (la owner real construye y commitea) y otro en
+  // verificarYActivarSobreBusinessExistenteConLock (el follower espera bajo lock para inspeccionar
+  // sin ventana TOCTOU, pero nunca escribe: solo ROLLBACK). Exactamente UN COMMIT en todo el modulo
+  // demuestra que solo la owner real llega a confirmar cambios.
+  assertEqual(beginCount, 2, "debe haber exactamente dos BEGIN IMMEDIATE: owner real + follower bajo lock");
+  assertEqual(commitCount, 1, "debe existir exactamente un COMMIT -- solo la owner real escribe, el follower solo hace ROLLBACK");
 
   const inicioBegin = cuerpoSinComentarios.indexOf('"BEGIN IMMEDIATE"');
   const inicioCommit = cuerpoSinComentarios.indexOf('"COMMIT"');
@@ -31747,6 +31759,63 @@ async function testMT1E5DRealDbSafety() {
   const shaAtlasDespues = crypto.createHash("sha256").update(fs.readFileSync(atlasControlPath)).digest("hex");
   assertSame(shaGuernicaDespues, shaGuernicaAntes, "database/guernica.db real no debe tocarse por los tests del provisioner");
   assertSame(shaAtlasDespues, shaAtlasAntes, "database/atlas_control.db real no debe tocarse por los tests del provisioner");
+}
+
+// MT-1E5D.1 (recovery): demuestra explicitamente que empty != owned. Un archivo SQLite valido pero
+// sin tablas de aplicacion, que YA existia antes de invocar el provisioner, jamas debe entrar al
+// fresh builder ni ser candidato de cleanup -- sin importar que tan vacio este por dentro. Ownership
+// real se prueba unicamente por el claim atomico de filesystem (intentarClaimarCreacionAtomica), no
+// por inspeccionar contenido.
+async function testMT1E5DPreexistingEmptyBusinessRejectedSinOwnership() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-preexistente-vacia-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  let controlDb;
+  try {
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    await reservarEmpresaParaProvisioning(controlDb, { slug: "mt1e5d-preexistente-vacia", nombre: "MT1E5D Preexistente Vacia", dbPath: businessName });
+    await closeControlDb(controlDb);
+    controlDb = null;
+
+    // Business DB preexistente y VALIDA (SQLite real, "SELECT 1" funciona) pero sin ninguna tabla de
+    // aplicacion -- exactamente el caso que el bug original confundia con "fresh owned".
+    await runSql(businessPath, "SELECT 1");
+    assertSame(fs.existsSync(businessPath), true, "fixture: el archivo debe existir antes de invocar el provisioner");
+    const tablasFixture = await allSql(businessPath, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('sqlite_sequence')");
+    assertEqual(tablasFixture.length, 0, "fixture: el archivo debe estar realmente vacio de tablas de aplicacion");
+
+    const snapshotAntes = snapshotSQLitePersistente(businessPath);
+
+    let error = null;
+    try {
+      await provisionarTenantDb({
+        controlDbPath, empresaSlug: "mt1e5d-preexistente-vacia", empresaNombre: "MT1E5D Preexistente Vacia", businessDbPath: businessName
+      });
+    } catch (err) {
+      error = err;
+    }
+    assertSame(Boolean(error), true, "una business DB preexistente vacia debe fallar cerrado, nunca tratarse como fresh");
+    assertSame(error.code, "BUSINESS_DB_NOT_CURRENT", "codigo exacto debe ser BUSINESS_DB_NOT_CURRENT");
+
+    const snapshotDespues = snapshotSQLitePersistente(businessPath);
+    assertSame(JSON.stringify(snapshotDespues), JSON.stringify(snapshotAntes), "el snapshot persistente (main+WAL+journal) debe quedar exactamente igual -- ni una escritura, ni un checkpoint");
+
+    assertSame(fs.existsSync(businessPath), true, "el archivo preexistente debe seguir existiendo -- jamas se elimina algo que esta invocation no creo");
+
+    const tablasDespues = await allSql(businessPath, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('sqlite_sequence')");
+    assertEqual(tablasDespues.length, 0, "no debe haberse creado ninguna tabla de baseline");
+    const identityDespues = await allSql(businessPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='tenant_identity'");
+    assertEqual(identityDespues.length, 0, "no debe existir tenant_identity");
+    const historyDespues = await allSql(businessPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='atlas_schema_migrations'");
+    assertEqual(historyDespues.length, 0, "no debe existir atlas_schema_migrations");
+
+    const filaControl = await mt1e5dFilaEmpresa(controlDbPath, "mt1e5d-preexistente-vacia");
+    assertEqual(Number(filaControl.activa), 0, "Control debe seguir inactiva -- no se activo nada");
+  } finally {
+    if (controlDb) await closeControlDb(controlDb).catch(() => {});
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
 }
 
 async function testMT1E5BRegistrarEmpresaLegacyPreservado() {
