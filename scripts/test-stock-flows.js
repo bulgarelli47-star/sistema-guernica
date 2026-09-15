@@ -72,6 +72,7 @@ const { migrarTenantDb } = require("../database/migrate-tenant-db");
 const { BUSINESS_MIGRATIONS } = require("../database/business-migrations");
 const { prepararLegacyParaBaseline001 } = require("../database/prepare-legacy-baseline");
 const { crearBaseline001EnConexion } = require("../database/business-schema-baseline");
+const { provisionarTenantDb } = require("../database/provision-tenant-db");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -20656,6 +20657,24 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1E5CEnConexionSinControlDependency);
   await _run(testMT1E5COuterApiPreservaHappyPath);
   await _run(testMT1E5COuterApiPreservaErroresYStatuses);
+  await _run(testMT1E5DProvisionFreshSuccess);
+  await _run(testMT1E5DControlReservedBeforeBusiness);
+  await _run(testMT1E5DFreshIdentityExact);
+  await _run(testMT1E5DFreshHistory001);
+  await _run(testMT1E5DFreshCurrentBeforeActivation);
+  await _run(testMT1E5DActivationLast);
+  await _run(testMT1E5DBusinessFailureLeavesControlInactive);
+  await _run(testMT1E5DActivationFailurePreservesCurrentBusiness);
+  await _run(testMT1E5DRetryInactiveCurrentActivatesOnly);
+  await _run(testMT1E5DAlreadyProvisionedIdempotent);
+  await _run(testMT1E5DExistingPartialBusinessRejected);
+  await _run(testMT1E5DIdentityMismatchRetryRejected);
+  await _run(testMT1E5DPathMismatchRejected);
+  await _run(testMT1E5DConcurrentSameSlugSingleOwner);
+  await _run(testMT1E5DSameBusinessTransactionAuthority);
+  await _run(testMT1E5DModuleSinSideEffects);
+  await _run(testMT1E5DUnsupportedFutureCatalogRejected);
+  await _run(testMT1E5DRealDbSafety);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -31124,6 +31143,610 @@ async function testMT1E5COuterApiPreservaErroresYStatuses() {
       fs.rmSync(businessDbPath, { force: true });
     }
   }
+}
+
+// MT-1E5D: provisioner CURRENT de tenant nuevo (database/provision-tenant-db.js), compuesto sobre
+// las primitivas ya publicadas (Control reserve/activate estricto, fresh builder, identity
+// same-connection, verifiers same-connection). Helpers e infraestructura de tests 1-18 abajo.
+const PROVISION_TENANT_DB_PATH = path.join(ROOT, "database", "provision-tenant-db.js");
+const INIT_CONTROL_DB_PATH = path.join(ROOT, "database", "init-control-db.js");
+const PROVISION_TENANT_IDENTITY_PATH = path.join(ROOT, "database", "provision-tenant-identity.js");
+
+async function mt1e5dControlDbVacio() {
+  const controlDbPath = tempDbPath();
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  await closeControlDb(controlDb);
+  return controlDbPath;
+}
+
+async function mt1e5dFilaEmpresa(controlDbPath, slug) {
+  return (await allSql(controlDbPath, "SELECT * FROM empresas WHERE slug = ?", [slug]))[0];
+}
+
+function mt1e5dAbrirBusinessFrescaEnPath(businessPath) {
+  return new Promise((resolve, reject) => {
+    const db = new sqlite3.Database(businessPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (error) => {
+      if (error) { reject(error); return; }
+      resolve(db);
+    });
+  });
+}
+
+// Construye manualmente (fuera del provisioner real) una business DB EXACTAMENTE CURRENT, con los
+// mismos pasos que usa provisionarTenantDb -- para fixtures de retry/mismatch que necesitan un
+// estado "ya provisionado" sin pasar por una invocation completa (o con una identity deliberadamente
+// distinta a la reservada en Control).
+async function mt1e5dConstruirBusinessCurrentManual(businessPath, { empresaId, empresaSlug }) {
+  const db = await mt1e5dAbrirBusinessFrescaEnPath(businessPath);
+  await new Promise((res, rej) => db.run("BEGIN IMMEDIATE", (e) => (e ? rej(e) : res())));
+  await crearBaseline001EnConexion(db);
+  await provisionarTenantIdentityEnConexion(db, { empresaId, empresaSlug });
+  await new Promise((res, rej) => db.run(
+    `CREATE TABLE atlas_schema_migrations (
+      sequence INTEGER NOT NULL UNIQUE CHECK(sequence >= 1),
+      migration_id TEXT PRIMARY KEY NOT NULL,
+      applied_at TEXT NOT NULL
+    )`,
+    (e) => (e ? rej(e) : res())
+  ));
+  await new Promise((res, rej) => db.run(
+    "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (1, ?, datetime('now'))",
+    [BUSINESS_MIGRATIONS[0].migrationId],
+    (e) => (e ? rej(e) : res())
+  ));
+  await new Promise((res, rej) => db.run("COMMIT", (e) => (e ? rej(e) : res())));
+  await new Promise((res) => db.close(() => res()));
+}
+
+// MT-1E5D: mismo patron de require.cache stubbing en proceso hijo ya usado para los tests del
+// migrator (ver construirWorkerMigrate) -- nunca se agrega ninguna API publica de override/hook al
+// provisioner real. `prePatchSource` se ejecuta ANTES de requerir provision-tenant-db.js, y puede
+// mutar el require.cache de sus dependencias (init-control-db.js, provision-tenant-identity.js,
+// business-migrations.js) para inyectar fallos deterministas o observar el orden real de llamadas.
+function construirWorkerProvision({ prePatchSource = "" }) {
+  return [
+    "const path = require('path');",
+    prePatchSource,
+    `const { provisionarTenantDb } = require(${JSON.stringify(PROVISION_TENANT_DB_PATH)});`,
+    "const [, controlDbPath, empresaSlug, empresaNombre, businessDbPath] = process.argv;",
+    "provisionarTenantDb({ controlDbPath, empresaSlug, empresaNombre, businessDbPath }).then((resultado) => {",
+    "  console.log(JSON.stringify({ outcome: 'RESOLVED', resultado }));",
+    "}).catch((error) => {",
+    "  console.log(JSON.stringify({ outcome: 'REJECTED', code: error.code, message: error.message }));",
+    "});"
+  ].join("\n");
+}
+
+function ejecutarWorkerProvision(script, argv) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["-e", script, "--", ...argv]);
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => { out += d.toString(); });
+    child.stderr.on("data", (d) => { err += d.toString(); });
+    child.on("exit", () => {
+      const linea = out.trim().split("\n").filter(Boolean).pop();
+      if (!linea) { reject(new Error(`worker sin output. stderr: ${err}`)); return; }
+      resolve({ resultado: JSON.parse(linea), stderr: err });
+    });
+  });
+}
+
+async function testMT1E5DProvisionFreshSuccess() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-fresh-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    const resultado = await provisionarTenantDb({
+      controlDbPath, empresaSlug: "mt1e5d-fresh", empresaNombre: "MT1E5D Fresh", businessDbPath: businessName
+    });
+    assertSame(resultado.status, "PROVISIONED", "fresh provisioning debe resultar en PROVISIONED");
+    assertSame(resultado.schemaState, "CURRENT", "schemaState debe ser CURRENT");
+    assertSame(resultado.businessDbPath, businessPath, "businessDbPath debe ser el path resuelto");
+
+    const filaControl = await mt1e5dFilaEmpresa(controlDbPath, "mt1e5d-fresh");
+    assertEqual(Number(filaControl.activa), 1, "Control debe quedar activa=1");
+    assertEqual(filaControl.id, resultado.empresaId, "empresaId debe coincidir con Control");
+
+    assertSame(fs.existsSync(businessPath), true, "business DB debe existir");
+    const baseline = await verificarLegacyBaseline(businessPath);
+    assertSame(baseline.ready, true, "baseline debe estar ready");
+    assertEqual(baseline.failures.length, 0, "no debe haber failures de baseline");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1E5DControlReservedBeforeBusiness() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-ctrlfirst-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    const prePatchSource = [
+      `const baselinePath = require.resolve(${JSON.stringify(BUSINESS_SCHEMA_BASELINE_PATH)});`,
+      "const realBaseline = require(baselinePath);",
+      "realBaseline.crearBaseline001EnConexion = async () => { throw new Error('FORCED_BASELINE_FAILURE_TEST2'); };"
+    ].join("\n");
+    const script = construirWorkerProvision({ prePatchSource });
+    const salida = await ejecutarWorkerProvision(script, [controlDbPath, "mt1e5d-ctrlfirst", "MT1E5D Ctrl First", businessName]);
+
+    assertSame(salida.resultado.outcome, "REJECTED", "con el builder forzado a fallar, el provisioning entero debe rechazar");
+    assertSame(salida.resultado.message.includes("FORCED_BASELINE_FAILURE_TEST2"), true, "el error debe propagar la causa forzada");
+
+    const filaControl = await mt1e5dFilaEmpresa(controlDbPath, "mt1e5d-ctrlfirst");
+    assertSame(!!filaControl, true, "la reserva de Control debe existir aunque business haya fallado despues");
+    assertEqual(Number(filaControl.activa), 0, "Control debe seguir inactiva (la reserva ocurrio ANTES del fallo de business)");
+    assertSame(fs.existsSync(businessPath), false, "el archivo business no debe persistir tras el fallo");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1E5DFreshIdentityExact() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-identity-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    const resultado = await provisionarTenantDb({
+      controlDbPath, empresaSlug: "mt1e5d-identity", empresaNombre: "MT1E5D Identity", businessDbPath: businessName
+    });
+    const filas = await allSql(businessPath, "SELECT id, empresa_control_id, tenant_slug FROM tenant_identity");
+    assertEqual(filas.length, 1, "debe existir exactamente una fila de identity");
+    assertEqual(filas[0].id, 1, "id debe ser singleton 1");
+    assertEqual(filas[0].empresa_control_id, resultado.empresaId, "empresa_control_id debe coincidir con el id reservado en Control");
+    assertSame(filas[0].tenant_slug, "mt1e5d-identity", "tenant_slug debe ser exacto");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1E5DFreshHistory001() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-history-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    await provisionarTenantDb({
+      controlDbPath, empresaSlug: "mt1e5d-history", empresaNombre: "MT1E5D History", businessDbPath: businessName
+    });
+    const filas = await allSql(businessPath, "SELECT sequence, migration_id, applied_at FROM atlas_schema_migrations");
+    assertEqual(filas.length, 1, "debe existir exactamente una fila de history");
+    assertEqual(filas[0].sequence, 1, "sequence debe ser 1");
+    assertSame(filas[0].migration_id, BUSINESS_MIGRATIONS[0].migrationId, "migration_id debe salir del catalogo, no hardcodeado");
+    assertSame(typeof filas[0].applied_at === "string" && filas[0].applied_at.length > 0, true, "applied_at debe ser un string no vacio");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1E5DFreshCurrentBeforeActivation() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-currentfirst-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    const prePatchSource = [
+      `const sqlite3Worker = require(${JSON.stringify(path.join(ROOT, "node_modules", "sqlite3"))}).verbose();`,
+      `const { verificarBusinessSchemaVersionEnConexion } = require(${JSON.stringify(path.join(ROOT, "backend", "businessSchemaVersion.js"))});`,
+      `const initControlDbPath = require.resolve(${JSON.stringify(INIT_CONTROL_DB_PATH)});`,
+      "const realInitControlDb = require(initControlDbPath);",
+      "const originalActivar = realInitControlDb.activarEmpresaReservada;",
+      `const businessPathForCheck = ${JSON.stringify(businessPath)};`,
+      "realInitControlDb.activarEmpresaReservada = async (db, opts) => {",
+      "  const checkDb = await new Promise((res, rej) => { const d = new sqlite3Worker.Database(businessPathForCheck, sqlite3Worker.OPEN_READONLY, (e) => e ? rej(e) : res(d)); });",
+      "  const estado = await verificarBusinessSchemaVersionEnConexion(checkDb);",
+      "  await new Promise((res) => checkDb.close(() => res()));",
+      "  console.error('MT1E5D_STATE_AT_ACTIVATION=' + estado.state);",
+      "  return originalActivar(db, opts);",
+      "};"
+    ].join("\n");
+    const script = construirWorkerProvision({ prePatchSource });
+    const salida = await ejecutarWorkerProvision(script, [controlDbPath, "mt1e5d-currentfirst", "MT1E5D Current First", businessName]);
+
+    assertSame(salida.resultado.outcome, "RESOLVED", "el provisioning debe completar exitosamente");
+    assertSame(salida.resultado.resultado.status, "PROVISIONED", "status debe ser PROVISIONED");
+    assertSame(salida.stderr.includes("MT1E5D_STATE_AT_ACTIVATION=CURRENT"), true, "al momento de intentar activation, el schema ya debia estar CURRENT");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1E5DActivationLast() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-actlast-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    const prePatchSource = [
+      `const initControlDbPath = require.resolve(${JSON.stringify(INIT_CONTROL_DB_PATH)});`,
+      "const realInitControlDb = require(initControlDbPath);",
+      "const originalActivar = realInitControlDb.activarEmpresaReservada;",
+      "realInitControlDb.activarEmpresaReservada = async (db, opts) => {",
+      "  const filaAntes = await realInitControlDb.getQuery(db, 'SELECT activa FROM empresas WHERE id = ?', [opts.empresaId]);",
+      "  console.error('MT1E5D_ACTIVA_ANTES_DE_ACTIVAR=' + filaAntes.activa);",
+      "  return originalActivar(db, opts);",
+      "};"
+    ].join("\n");
+    const script = construirWorkerProvision({ prePatchSource });
+    const salida = await ejecutarWorkerProvision(script, [controlDbPath, "mt1e5d-actlast", "MT1E5D Activation Last", businessName]);
+
+    assertSame(salida.resultado.outcome, "RESOLVED", "el provisioning debe completar exitosamente");
+    assertSame(salida.stderr.includes("MT1E5D_ACTIVA_ANTES_DE_ACTIVAR=0"), true, "justo antes de activar, la fila de Control debia seguir inactiva");
+
+    const filaDespues = await mt1e5dFilaEmpresa(controlDbPath, "mt1e5d-actlast");
+    assertEqual(Number(filaDespues.activa), 1, "tras completar, Control debe quedar activa=1");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1E5DBusinessFailureLeavesControlInactive() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-bizfail-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    const prePatchSource = [
+      `const identityPath = require.resolve(${JSON.stringify(PROVISION_TENANT_IDENTITY_PATH)});`,
+      "const realIdentity = require(identityPath);",
+      "realIdentity.provisionarTenantIdentityEnConexion = async () => { throw new Error('FORCED_IDENTITY_FAILURE_TEST7'); };"
+    ].join("\n");
+    const script = construirWorkerProvision({ prePatchSource });
+    const salida = await ejecutarWorkerProvision(script, [controlDbPath, "mt1e5d-bizfail", "MT1E5D Biz Fail", businessName]);
+
+    assertSame(salida.resultado.outcome, "REJECTED", "con identity forzada a fallar, el provisioning debe rechazar");
+
+    const filaControl = await mt1e5dFilaEmpresa(controlDbPath, "mt1e5d-bizfail");
+    assertSame(!!filaControl, true, "la reserva de Control debe persistir");
+    assertEqual(Number(filaControl.activa), 0, "Control debe quedar inactiva, lista para retry");
+
+    for (const sufijo of ["", "-wal", "-shm", "-journal"]) {
+      assertSame(fs.existsSync(businessPath + sufijo), false, `no debe quedar ningun artefacto owned (${sufijo || "principal"})`);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1E5DActivationFailurePreservesCurrentBusiness() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-actfail-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    const prePatchSource = [
+      `const initControlDbPath = require.resolve(${JSON.stringify(INIT_CONTROL_DB_PATH)});`,
+      "const realInitControlDb = require(initControlDbPath);",
+      "realInitControlDb.activarEmpresaReservada = async () => { throw new Error('FORCED_ACTIVATION_FAILURE_TEST8'); };"
+    ].join("\n");
+    const script = construirWorkerProvision({ prePatchSource });
+    const salida = await ejecutarWorkerProvision(script, [controlDbPath, "mt1e5d-actfail", "MT1E5D Activation Fail", businessName]);
+
+    assertSame(salida.resultado.outcome, "REJECTED", "con activation forzada a fallar, el provisioning entero debe rechazar");
+    assertSame(salida.resultado.code, "CONTROL_ACTIVATION_FAILED", "codigo exacto debe ser CONTROL_ACTIVATION_FAILED");
+
+    assertSame(fs.existsSync(businessPath), true, "la business DB ya committed NO debe borrarse tras un fallo de activation");
+    const baseline = await verificarLegacyBaseline(businessPath);
+    assertSame(baseline.ready, true, "la business DB debe seguir baseline-ready");
+    const identityRows = await allSql(businessPath, "SELECT * FROM tenant_identity");
+    assertEqual(identityRows.length, 1, "identity debe seguir exacta");
+    const schema = await verificarBusinessSchemaVersion(businessPath);
+    assertSame(schema.state, "CURRENT", "business debe seguir CURRENT");
+
+    const filaControl = await mt1e5dFilaEmpresa(controlDbPath, "mt1e5d-actfail");
+    assertEqual(Number(filaControl.activa), 0, "Control debe quedar inactiva (la activacion fallo)");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1E5DRetryInactiveCurrentActivatesOnly() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-retrycur-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    const prePatchSource = [
+      `const initControlDbPath = require.resolve(${JSON.stringify(INIT_CONTROL_DB_PATH)});`,
+      "const realInitControlDb = require(initControlDbPath);",
+      "realInitControlDb.activarEmpresaReservada = async () => { throw new Error('FORCED_ACTIVATION_FAILURE_TEST9_SETUP'); };"
+    ].join("\n");
+    const scriptSetup = construirWorkerProvision({ prePatchSource });
+    const salidaSetup = await ejecutarWorkerProvision(scriptSetup, [controlDbPath, "mt1e5d-retrycur", "MT1E5D Retry Current", businessName]);
+    assertSame(salidaSetup.resultado.outcome, "REJECTED", "setup: la activacion debe fallar como preparacion del escenario");
+
+    const shaAntes = crypto.createHash("sha256").update(fs.readFileSync(businessPath)).digest("hex");
+
+    const resultado = await provisionarTenantDb({
+      controlDbPath, empresaSlug: "mt1e5d-retrycur", empresaNombre: "MT1E5D Retry Current", businessDbPath: businessName
+    });
+    assertSame(resultado.status, "ACTIVATED_EXISTING_CURRENT", "retry sobre inactivo+CURRENT debe resultar en ACTIVATED_EXISTING_CURRENT");
+
+    const shaDespues = crypto.createHash("sha256").update(fs.readFileSync(businessPath)).digest("hex");
+    assertSame(shaDespues, shaAntes, "el retry no debe mutar la business DB en absoluto");
+
+    const filaControl = await mt1e5dFilaEmpresa(controlDbPath, "mt1e5d-retrycur");
+    assertEqual(Number(filaControl.activa), 1, "Control debe quedar activa=1 tras el retry");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1E5DAlreadyProvisionedIdempotent() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-alreadyprov-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    const primera = await provisionarTenantDb({
+      controlDbPath, empresaSlug: "mt1e5d-alreadyprov", empresaNombre: "MT1E5D Already", businessDbPath: businessName
+    });
+    assertSame(primera.status, "PROVISIONED", "primera invocation debe ser PROVISIONED");
+
+    const shaAntes = crypto.createHash("sha256").update(fs.readFileSync(businessPath)).digest("hex");
+
+    const segunda = await provisionarTenantDb({
+      controlDbPath, empresaSlug: "mt1e5d-alreadyprov", empresaNombre: "MT1E5D Already", businessDbPath: businessName
+    });
+    assertSame(segunda.status, "ALREADY_PROVISIONED", "segunda invocation exacta debe ser ALREADY_PROVISIONED");
+    assertEqual(segunda.empresaId, primera.empresaId, "debe conservar el mismo empresaId");
+
+    const shaDespues = crypto.createHash("sha256").update(fs.readFileSync(businessPath)).digest("hex");
+    assertSame(shaDespues, shaAntes, "la segunda invocation no debe mutar la business DB");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1E5DExistingPartialBusinessRejected() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-partial-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  let controlDb;
+  try {
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    await reservarEmpresaParaProvisioning(controlDb, { slug: "mt1e5d-partial", nombre: "MT1E5D Partial", dbPath: businessName });
+    await closeControlDb(controlDb);
+    controlDb = null;
+
+    // Archivo "partial" arbitrario -- deliberadamente NO creado por el provisioner, simula una
+    // saga abandonada o un archivo externo. Su contenido nunca se usa para inferir ownership.
+    await runSql(businessPath, "CREATE TABLE tabla_arbitraria_no_baseline (id INTEGER PRIMARY KEY)");
+    const shaAntes = crypto.createHash("sha256").update(fs.readFileSync(businessPath)).digest("hex");
+
+    let error = null;
+    try {
+      await provisionarTenantDb({
+        controlDbPath, empresaSlug: "mt1e5d-partial", empresaNombre: "MT1E5D Partial", businessDbPath: businessName
+      });
+    } catch (err) {
+      error = err;
+    }
+    assertSame(Boolean(error), true, "business parcial/no-CURRENT debe fallar cerrado");
+    assertSame(error.code, "BUSINESS_DB_NOT_CURRENT", "codigo debe ser BUSINESS_DB_NOT_CURRENT");
+
+    const shaDespues = crypto.createHash("sha256").update(fs.readFileSync(businessPath)).digest("hex");
+    assertSame(shaDespues, shaAntes, "el archivo parcial no debe mutarse ni borrarse");
+
+    const filaControl = await mt1e5dFilaEmpresa(controlDbPath, "mt1e5d-partial");
+    assertEqual(Number(filaControl.activa), 0, "Control debe seguir inactiva -- no se activo nada");
+  } finally {
+    if (controlDb) await closeControlDb(controlDb).catch(() => {});
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1E5DIdentityMismatchRetryRejected() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-idmis-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  let controlDb;
+  try {
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const reserva = await reservarEmpresaParaProvisioning(controlDb, { slug: "mt1e5d-idmis", nombre: "MT1E5D Id Mismatch", dbPath: businessName });
+    await closeControlDb(controlDb);
+    controlDb = null;
+
+    await mt1e5dConstruirBusinessCurrentManual(businessPath, { empresaId: reserva.empresa.id + 5000, empresaSlug: "mt1e5d-idmis" });
+
+    let error = null;
+    try {
+      await provisionarTenantDb({ controlDbPath, empresaSlug: "mt1e5d-idmis", empresaNombre: "MT1E5D Id Mismatch", businessDbPath: businessName });
+    } catch (err) {
+      error = err;
+    }
+    assertSame(Boolean(error), true, "identity mismatch en retry debe fallar");
+    assertSame(error.code, "TENANT_DB_IDENTITY_MISMATCH", "codigo exacto debe ser TENANT_DB_IDENTITY_MISMATCH");
+
+    const filaControl = await mt1e5dFilaEmpresa(controlDbPath, "mt1e5d-idmis");
+    assertEqual(Number(filaControl.activa), 0, "Control debe seguir inactiva");
+  } finally {
+    if (controlDb) await closeControlDb(controlDb).catch(() => {});
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1E5DPathMismatchRejected() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const registeredName = `mt1e5d-pathmis-registrada-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const requestedName = `mt1e5d-pathmis-solicitada-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const requestedPath = resolveEmpresaDbPath(requestedName);
+  let controlDb;
+  try {
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    await reservarEmpresaParaProvisioning(controlDb, { slug: "mt1e5d-pathmis", nombre: "MT1E5D Path Mismatch", dbPath: registeredName });
+    await closeControlDb(controlDb);
+    controlDb = null;
+
+    let error = null;
+    try {
+      await provisionarTenantDb({ controlDbPath, empresaSlug: "mt1e5d-pathmis", empresaNombre: "MT1E5D Path Mismatch", businessDbPath: requestedName });
+    } catch (err) {
+      error = err;
+    }
+    assertSame(Boolean(error), true, "path distinto al registrado debe fallar");
+    assertSame(error.code, "BUSINESS_DB_PATH_MISMATCH", "codigo exacto debe ser BUSINESS_DB_PATH_MISMATCH");
+    assertSame(fs.existsSync(requestedPath), false, "no debe crearse ningun archivo en el path solicitado no coincidente");
+  } finally {
+    if (controlDb) await closeControlDb(controlDb).catch(() => {});
+    fs.rmSync(controlDbPath, { force: true });
+    fs.rmSync(requestedPath, { force: true });
+  }
+}
+
+async function testMT1E5DConcurrentSameSlugSingleOwner() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-concurrent-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    const payload = { controlDbPath, empresaSlug: "mt1e5d-concurrent", empresaNombre: "MT1E5D Concurrent", businessDbPath: businessName };
+    const resultados = await Promise.allSettled([provisionarTenantDb(payload), provisionarTenantDb(payload)]);
+
+    const exitosos = resultados.filter((r) => r.status === "fulfilled").map((r) => r.value);
+    const fallidos = resultados.filter((r) => r.status === "rejected").map((r) => r.reason);
+
+    for (const fallo of fallidos) {
+      const esperado = !!fallo && ["BUSINESS_DB_BUSY", "BUSINESS_DB_ALREADY_EXISTS", "CONTROL_DB_ERROR"].includes(fallo.code);
+      assertSame(esperado, true, `un fallo concurrente solo puede ser uno de los codigos operacionales esperados, no: ${fallo && fallo.code}`);
+    }
+    assertSame(exitosos.length >= 1, true, "al menos una de las dos llamadas debe completar con exito");
+    for (const exito of exitosos) {
+      assertSame(["PROVISIONED", "ALREADY_PROVISIONED", "ACTIVATED_EXISTING_CURRENT"].includes(exito.status), true, "cada resultado exitoso debe ser un status valido de provisioning completo");
+    }
+
+    const filas = await allSql(controlDbPath, "SELECT * FROM empresas WHERE slug = ?", ["mt1e5d-concurrent"]);
+    assertEqual(filas.length, 1, "debe existir exactamente una empresa en Control");
+    assertEqual(Number(filas[0].activa), 1, "la empresa final debe quedar activa");
+
+    const identityRows = await allSql(businessPath, "SELECT * FROM tenant_identity");
+    assertEqual(identityRows.length, 1, "debe existir exactamente una fila de identity en business");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1E5DSameBusinessTransactionAuthority() {
+  const codigoFuente = fs.readFileSync(path.join(ROOT, "database", "provision-tenant-db.js"), "utf8");
+  const cuerpoSinComentarios = codigoFuente.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  const beginCount = (cuerpoSinComentarios.match(/"BEGIN IMMEDIATE"/g) || []).length;
+  const commitCount = (cuerpoSinComentarios.match(/"COMMIT"/g) || []).length;
+  assertEqual(beginCount, 1, "debe haber exactamente un BEGIN IMMEDIATE sobre la business DB en todo el modulo");
+  assertSame(commitCount >= 1, true, "debe existir al menos un COMMIT sobre la business DB");
+
+  const inicioBegin = cuerpoSinComentarios.indexOf('"BEGIN IMMEDIATE"');
+  const inicioCommit = cuerpoSinComentarios.indexOf('"COMMIT"');
+  const tramo = cuerpoSinComentarios.slice(inicioBegin, inicioCommit);
+  assertSame(tramo.includes("crearBaseline001EnConexion"), true, "el builder debe invocarse entre BEGIN y COMMIT");
+  assertSame(tramo.includes("provisionarTenantIdentityEnConexion"), true, "identity debe invocarse entre BEGIN y COMMIT");
+  assertSame(tramo.includes("atlas_schema_migrations"), true, "history debe escribirse entre BEGIN y COMMIT");
+  assertSame(tramo.includes("verificarLegacyBaselineEnConexion"), true, "el baseline verifier debe invocarse entre BEGIN y COMMIT");
+  assertSame(tramo.includes("verificarBusinessSchemaVersionEnConexion"), true, "el schema verifier debe invocarse entre BEGIN y COMMIT");
+
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-sametx-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    const prePatchSource = [
+      `const identityPath = require.resolve(${JSON.stringify(PROVISION_TENANT_IDENTITY_PATH)});`,
+      "const realIdentity = require(identityPath);",
+      "realIdentity.provisionarTenantIdentityEnConexion = async () => { throw new Error('FORCED_IDENTITY_FAILURE_TEST15'); };"
+    ].join("\n");
+    const script = construirWorkerProvision({ prePatchSource });
+    const salida = await ejecutarWorkerProvision(script, [controlDbPath, "mt1e5d-sametx", "MT1E5D Same Tx", businessName]);
+    assertSame(salida.resultado.outcome, "REJECTED", "con identity forzada a fallar, el provisioning debe rechazar");
+    assertSame(fs.existsSync(businessPath), false, "ni el archivo debe persistir -- el builder ya habia corrido dentro de la MISMA transaccion que aborto entera");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1E5DModuleSinSideEffects() {
+  const tmpDir = os.tmpdir();
+  const script = [
+    `const before = require('fs').readdirSync(${JSON.stringify(tmpDir)}).length;`,
+    `const mod = require(${JSON.stringify(PROVISION_TENANT_DB_PATH)});`,
+    `const after = require('fs').readdirSync(${JSON.stringify(tmpDir)}).length;`,
+    "console.log(JSON.stringify({ exportKeys: Object.keys(mod), exportType: typeof mod.provisionarTenantDb, tmpDirDelta: after - before }));"
+  ].join("\n");
+  const resultado = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["-e", script]);
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => { out += d.toString(); });
+    child.stderr.on("data", (d) => { err += d.toString(); });
+    child.on("exit", (code) => {
+      if (code !== 0) { reject(new Error(`worker fallo (code=${code}): ${err}`)); return; }
+      resolve(JSON.parse(out.trim()));
+    });
+  });
+
+  assertSame(JSON.stringify(resultado.exportKeys), JSON.stringify(["provisionarTenantDb"]), "el modulo debe exportar exactamente una funcion: provisionarTenantDb");
+  assertSame(resultado.exportType, "function", "provisionarTenantDb debe ser una funcion");
+  assertEqual(resultado.tmpDirDelta, 0, "solo requerir el modulo no debe crear ningun archivo en tmpdir");
+}
+
+async function testMT1E5DUnsupportedFutureCatalogRejected() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-futurecat-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    const fakeCatalogSource = [
+      "[",
+      "  { sequence: 1, migrationId: '001_legacy_runtime_baseline', kind: 'BASELINE' },",
+      "  { sequence: 2, migrationId: '002_fake_future', kind: 'MIGRATION', up: async () => {} }",
+      "]"
+    ].join("\n");
+    const prePatchSource = [
+      `const businessMigrationsPath = require.resolve(${JSON.stringify(BUSINESS_MIGRATIONS_PATH)});`,
+      "require.cache[businessMigrationsPath] = {",
+      "  id: businessMigrationsPath, filename: businessMigrationsPath, loaded: true,",
+      `  exports: { BUSINESS_MIGRATIONS: Object.freeze(${fakeCatalogSource}) }`,
+      "};"
+    ].join("\n");
+    const script = construirWorkerProvision({ prePatchSource });
+    const salida = await ejecutarWorkerProvision(script, [controlDbPath, "mt1e5d-futurecat", "MT1E5D Future Catalog", businessName]);
+
+    assertSame(salida.resultado.outcome, "REJECTED", "con catalogo [001,002], el provisioner debe rechazar antes de mutar nada");
+    assertSame(salida.resultado.code, "MIGRATION_CATALOG_UNSUPPORTED", "codigo exacto debe ser MIGRATION_CATALOG_UNSUPPORTED");
+
+    assertSame(fs.existsSync(businessPath), false, "no debe haberse creado ningun archivo business");
+    const filaControl = await mt1e5dFilaEmpresa(controlDbPath, "mt1e5d-futurecat");
+    assertSame(!!filaControl, false, "no debe haberse escrito ninguna reserva en Control -- el guard corre ANTES de tocar Control");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1E5DRealDbSafety() {
+  const guernicaPath = path.join(ROOT, "database", "guernica.db");
+  const atlasControlPath = path.join(ROOT, "database", "atlas_control.db");
+  const shaGuernicaAntes = crypto.createHash("sha256").update(fs.readFileSync(guernicaPath)).digest("hex");
+  const shaAtlasAntes = crypto.createHash("sha256").update(fs.readFileSync(atlasControlPath)).digest("hex");
+
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1e5d-realsafety-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    await provisionarTenantDb({
+      controlDbPath, empresaSlug: "mt1e5d-realsafety", empresaNombre: "MT1E5D Real Safety", businessDbPath: businessName
+    });
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+
+  const shaGuernicaDespues = crypto.createHash("sha256").update(fs.readFileSync(guernicaPath)).digest("hex");
+  const shaAtlasDespues = crypto.createHash("sha256").update(fs.readFileSync(atlasControlPath)).digest("hex");
+  assertSame(shaGuernicaDespues, shaGuernicaAntes, "database/guernica.db real no debe tocarse por los tests del provisioner");
+  assertSame(shaAtlasDespues, shaAtlasAntes, "database/atlas_control.db real no debe tocarse por los tests del provisioner");
 }
 
 async function testMT1E5BRegistrarEmpresaLegacyPreservado() {
