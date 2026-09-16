@@ -20676,6 +20676,10 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1E5DUnsupportedFutureCatalogRejected);
   await _run(testMT1E5DRealDbSafety);
   await _run(testMT1E5DPreexistingEmptyBusinessRejectedSinOwnership);
+  await _run(testMT1E7A4BaselineCatalog278Unique);
+  await _run(testMT1E7A4StockAjustesRuntimeColumnsCertificadas);
+  await _run(testMT1E7A4DetalleYProduccionSchemaCertificado);
+  await _run(testMT1E7A4GuernicaCurrentReady278SinMutacion);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -26769,7 +26773,7 @@ function limpiarLegacyFixture(dbPath) {
 }
 
 async function testMT1E2C1ReferenceReady() {
-  assertEqual(LEGACY_BASELINE_INVARIANTS.length, 252, "manifest debe tener exactamente 252 invariantes");
+  assertEqual(LEGACY_BASELINE_INVARIANTS.length, 278, "manifest debe tener exactamente 278 invariantes");
   assertSame(Object.isFrozen(LEGACY_BASELINE_INVARIANTS), true, "manifest root debe estar frozen");
   const ids = LEGACY_BASELINE_INVARIANTS.map((entry) => entry.id);
   assertEqual(new Set(ids).size, ids.length, "todos los IDs del manifest deben ser unicos");
@@ -26785,16 +26789,16 @@ async function testMT1E2C1ReferenceReady() {
     }
     porCategoria[entry.category] = (porCategoria[entry.category] || 0) + 1;
   }
-  assertEqual(porCategoria.SCHEMA_TABLE, 39, "SCHEMA_TABLE debe ser 39");
-  assertEqual(porCategoria.SCHEMA_COLUMN, 147, "SCHEMA_COLUMN debe ser 147");
-  assertEqual(porCategoria.SCHEMA_INDEX, 53, "SCHEMA_INDEX debe ser 53");
+  assertEqual(porCategoria.SCHEMA_TABLE, 42, "SCHEMA_TABLE debe ser 42");
+  assertEqual(porCategoria.SCHEMA_COLUMN, 166, "SCHEMA_COLUMN debe ser 166");
+  assertEqual(porCategoria.SCHEMA_INDEX, 57, "SCHEMA_INDEX debe ser 57");
   const dataTotal = (porCategoria.DATA_MIGRATION_COMPLETE || 0) + (porCategoria.DATA_NORMALIZATION_COMPLETE || 0);
   assertEqual(dataTotal, 10, "DATA total debe ser 10");
   assertEqual(porCategoria.REQUIRED_RUNTIME_DEFAULT, 3, "DEFAULT debe ser 3");
 
   const indexEntries = LEGACY_BASELINE_INVARIANTS.filter((entry) => entry.category === "SCHEMA_INDEX");
   const indexNames = new Set(indexEntries.map((entry) => entry.indexName));
-  assertEqual(indexNames.size, 53, "los 53 indexName del manifest deben ser unicos (0 manifest conflicts)");
+  assertEqual(indexNames.size, 57, "los 57 indexName del manifest deben ser unicos (0 manifest conflicts)");
 
   const variantesConocidas = LEGACY_BASELINE_INVARIANTS.filter((entry) => Array.isArray(entry.acceptedPredicates));
   assertEqual(variantesConocidas.length, 1, "KNOWN_COMPATIBLE_INDEX_VARIANTS_COUNT debe ser 1");
@@ -31837,4 +31841,190 @@ async function testMT1E5BRegistrarEmpresaLegacyPreservado() {
     await closeControlDb(controlDb);
     fs.rmSync(controlDbPath, { force: true });
   }
+}
+
+// MT-1E7A.4R: cierra el gap de baseline completo detectado en MT-1E7A.3/MT-1E7A.4 -- las 19
+// columnas que ensureColumnStockAjustesPendientes puede reparar en runtime, más las 7 estructuras
+// (detalle_venta_ingredientes + su indice, producciones + produccion_componentes_snapshot + sus
+// 3 indices) que ensureDetalleVentaIngredientesTable/ensureProduccionSchema crean pero que el
+// fresh builder (business-schema-baseline.js) no producia, ahora tienen invariant exacto en el
+// manifest Y el fresh builder las crea. 19 + 3 tablas + 4 indices = 26 adiciones exactas sobre
+// las 252 originales -- total 278.
+async function testMT1E7A4BaselineCatalog278Unique() {
+  assertEqual(LEGACY_BASELINE_INVARIANTS.length, 278, "el catalogo debe tener exactamente 278 invariantes tras MT-1E7A.4R");
+  const ids = LEGACY_BASELINE_INVARIANTS.map((entry) => entry.id);
+  assertEqual(new Set(ids).size, 278, "los 278 IDs deben ser unicos, sin duplicados");
+
+  const columnasStockNuevas = [
+    "cantidad_pendiente_resolucion", "cantidad_resuelta", "cantidad_teorica", "componente_id",
+    "cuenta_local_costo_estimado", "cuenta_local_integracion", "cuenta_local_nombre_snapshot",
+    "cuenta_local_observacion", "cuenta_local_responsable", "detalle_venta_id", "fecha_resolucion",
+    "hora_resolucion", "origen", "producto_vendido_id", "producto_vendido_nombre_snapshot",
+    "resolucion_parcial", "resuelto_por", "tipo_resolucion", "venta_id"
+  ];
+  assertEqual(columnasStockNuevas.length, 19, "deben ser exactamente 19 columnas nuevas de stock_ajustes_pendientes");
+  for (const columna of columnasStockNuevas) {
+    const idEsperado = `COLUMN:stock_ajustes_pendientes.${columna}`;
+    const ocurrencias = ids.filter((id) => id === idEsperado).length;
+    assertEqual(ocurrencias, 1, `${idEsperado} debe existir exactamente una vez en el catalogo`);
+  }
+
+  const recursosBuilderGap = [
+    "TABLE:detalle_venta_ingredientes",
+    "INDEX:idx_detalle_venta_ingredientes_detalle",
+    "TABLE:producciones",
+    "TABLE:produccion_componentes_snapshot",
+    "INDEX:idx_producciones_producto",
+    "INDEX:idx_producciones_fecha",
+    "INDEX:idx_produccion_componentes_produccion"
+  ];
+  assertEqual(recursosBuilderGap.length, 7, "deben ser exactamente 7 recursos nuevos del gap de builder");
+  for (const idEsperado of recursosBuilderGap) {
+    const ocurrencias = ids.filter((id) => id === idEsperado).length;
+    assertEqual(ocurrencias, 1, `${idEsperado} debe existir exactamente una vez en el catalogo`);
+  }
+}
+
+async function testMT1E7A4StockAjustesRuntimeColumnsCertificadas() {
+  const columnasEsperadas = [
+    "cantidad_pendiente_resolucion", "cantidad_resuelta", "cantidad_teorica", "componente_id",
+    "cuenta_local_costo_estimado", "cuenta_local_integracion", "cuenta_local_nombre_snapshot",
+    "cuenta_local_observacion", "cuenta_local_responsable", "detalle_venta_id", "fecha_resolucion",
+    "hora_resolucion", "origen", "producto_vendido_id", "producto_vendido_nombre_snapshot",
+    "resolucion_parcial", "resuelto_por", "tipo_resolucion", "venta_id"
+  ];
+  const stockColumnEntries = LEGACY_BASELINE_INVARIANTS.filter(
+    (entry) => entry.category === "SCHEMA_COLUMN" && entry.table === "stock_ajustes_pendientes"
+  );
+  assertEqual(stockColumnEntries.length, 19, "deben existir exactamente 19 SCHEMA_COLUMN de stock_ajustes_pendientes");
+  const columnasCertificadas = new Set(stockColumnEntries.map((entry) => entry.column));
+  for (const columna of columnasEsperadas) {
+    assertSame(columnasCertificadas.has(columna), true, `stock_ajustes_pendientes.${columna} debe estar certificada en el manifest`);
+  }
+
+  // Prueba behavioral, no solo grep: el builder fresco completo debe quedar ready:true, y al
+  // quitar UNA columna real del schema en runtime, el verifier debe dejar de reportar ready y
+  // debe identificar exactamente esa columna como faltante.
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  try {
+    await new Promise((res, rej) => db.run("BEGIN IMMEDIATE", (e) => (e ? rej(e) : res())));
+    await crearBaseline001EnConexion(db);
+    const readinessCompleta = await verificarLegacyBaselineEnConexion(db);
+    assertSame(readinessCompleta.ready, true, "el builder completo debe dejar ready:true antes de quitar la columna");
+
+    await new Promise((res, rej) =>
+      db.run("ALTER TABLE stock_ajustes_pendientes DROP COLUMN cantidad_teorica", (e) => (e ? rej(e) : res()))
+    );
+    const readinessSinColumna = await verificarLegacyBaselineEnConexion(db);
+    assertSame(readinessSinColumna.ready, false, "al faltar una columna real, el verifier NO debe devolver ready");
+    const tieneFailureExacta = readinessSinColumna.failures.some(
+      (f) => f.code === "BASELINE_COLUMN_MISSING" && f.resource === "stock_ajustes_pendientes.cantidad_teorica"
+    );
+    assertSame(tieneFailureExacta, true, "debe reportar BASELINE_COLUMN_MISSING para stock_ajustes_pendientes.cantidad_teorica");
+
+    await new Promise((res) => db.run("ROLLBACK", () => res()));
+  } finally {
+    await cerrarConexionTest(db);
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E7A4DetalleYProduccionSchemaCertificado() {
+  const tablasEsperadas = ["detalle_venta_ingredientes", "producciones", "produccion_componentes_snapshot"];
+  const indicesEsperados = [
+    "idx_detalle_venta_ingredientes_detalle",
+    "idx_producciones_producto",
+    "idx_producciones_fecha",
+    "idx_produccion_componentes_produccion"
+  ];
+  const tablasCertificadas = new Set(
+    LEGACY_BASELINE_INVARIANTS.filter((e) => e.category === "SCHEMA_TABLE").map((e) => e.table)
+  );
+  const indicesCertificados = new Set(
+    LEGACY_BASELINE_INVARIANTS.filter((e) => e.category === "SCHEMA_INDEX").map((e) => e.indexName)
+  );
+  for (const tabla of tablasEsperadas) {
+    assertSame(tablasCertificadas.has(tabla), true, `${tabla} debe estar certificada en el manifest`);
+  }
+  for (const indice of indicesEsperados) {
+    assertSame(indicesCertificados.has(indice), true, `${indice} debe estar certificado en el manifest`);
+  }
+
+  // Prueba behavioral: el fresh builder debe crear las 7 estructuras y dejar ready:true: y al
+  // remover una estructura de detalle_venta_ingredientes y una de produccion (una por caso, no
+  // basta un solo ejemplo global), el verifier debe dejar de reportar ready identificando
+  // exactamente esa estructura faltante.
+  {
+    const { db, dbPath } = await abrirDbEfimeraVacia();
+    try {
+      await new Promise((res, rej) => db.run("BEGIN IMMEDIATE", (e) => (e ? rej(e) : res())));
+      await crearBaseline001EnConexion(db);
+      const readinessCompleta = await verificarLegacyBaselineEnConexion(db);
+      assertSame(readinessCompleta.ready, true, "el builder completo debe dejar ready:true antes de remover estructuras");
+      for (const tabla of tablasEsperadas) {
+        const info = await new Promise((res, rej) => db.all(`PRAGMA table_info(${tabla})`, (e, r) => (e ? rej(e) : res(r))));
+        assertSame(info.length > 0, true, `el builder debe crear la tabla ${tabla}`);
+      }
+      await new Promise((res) => db.run("ROLLBACK", () => res()));
+    } finally {
+      await cerrarConexionTest(db);
+      fs.rmSync(dbPath, { force: true });
+    }
+  }
+
+  {
+    const { db, dbPath } = await abrirDbEfimeraVacia();
+    try {
+      await new Promise((res, rej) => db.run("BEGIN IMMEDIATE", (e) => (e ? rej(e) : res())));
+      await crearBaseline001EnConexion(db);
+      await new Promise((res, rej) => db.run("DROP TABLE detalle_venta_ingredientes", (e) => (e ? rej(e) : res())));
+      const readiness = await verificarLegacyBaselineEnConexion(db);
+      assertSame(readiness.ready, false, "al faltar detalle_venta_ingredientes, el verifier NO debe devolver ready");
+      const tieneFailure = readiness.failures.some(
+        (f) => f.code === "BASELINE_TABLE_MISSING" && f.resource === "detalle_venta_ingredientes"
+      );
+      assertSame(tieneFailure, true, "debe reportar BASELINE_TABLE_MISSING para detalle_venta_ingredientes");
+      await new Promise((res) => db.run("ROLLBACK", () => res()));
+    } finally {
+      await cerrarConexionTest(db);
+      fs.rmSync(dbPath, { force: true });
+    }
+  }
+
+  {
+    const { db, dbPath } = await abrirDbEfimeraVacia();
+    try {
+      await new Promise((res, rej) => db.run("BEGIN IMMEDIATE", (e) => (e ? rej(e) : res())));
+      await crearBaseline001EnConexion(db);
+      await new Promise((res, rej) => db.run("DROP INDEX idx_produccion_componentes_produccion", (e) => (e ? rej(e) : res())));
+      const readiness = await verificarLegacyBaselineEnConexion(db);
+      assertSame(readiness.ready, false, "al faltar idx_produccion_componentes_produccion, el verifier NO debe devolver ready");
+      const tieneFailure = readiness.failures.some(
+        (f) => f.code === "BASELINE_INDEX_MISSING" && f.resource === "idx_produccion_componentes_produccion"
+      );
+      assertSame(tieneFailure, true, "debe reportar BASELINE_INDEX_MISSING para idx_produccion_componentes_produccion");
+      await new Promise((res) => db.run("ROLLBACK", () => res()));
+    } finally {
+      await cerrarConexionTest(db);
+      fs.rmSync(dbPath, { force: true });
+    }
+  }
+}
+
+async function testMT1E7A4GuernicaCurrentReady278SinMutacion() {
+  const guernicaPath = path.join(ROOT, "database", "guernica.db");
+  const shaAntes = crypto.createHash("sha256").update(fs.readFileSync(guernicaPath)).digest("hex");
+  assertSame(
+    shaAntes,
+    "2931d7a099b78e05c51409bc7a67284680ebea107bf033180db1723d4f965f60",
+    "hash de Guernica antes de correr el verifier debe coincidir con la autoridad congelada del checkpoint"
+  );
+
+  const resultado = await verificarLegacyBaseline(guernicaPath);
+
+  const shaDespues = crypto.createHash("sha256").update(fs.readFileSync(guernicaPath)).digest("hex");
+  assertSame(shaDespues, shaAntes, "database/guernica.db real no debe mutar al correr el verifier actualizado (READ-ONLY witness)");
+  assertSame(resultado.ready, true, "Guernica CURRENT real debe seguir ready:true con el catalogo ampliado a 278");
+  assertEqual(resultado.failures.length, 0, "no deben existir failures contra Guernica real");
+  assertEqual(LEGACY_BASELINE_INVARIANTS.length, 278, "el catalogo usado contra Guernica debe tener 278 invariantes");
 }

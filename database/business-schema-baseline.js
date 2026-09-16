@@ -1064,6 +1064,61 @@ async function crearBaseline001EnConexion(db) {
   await runQuery(db, "CREATE INDEX idx_stock_ajustes_pendientes_venta_origen ON stock_ajustes_pendientes(venta_id, origen)");
 
   await runQuery(db, `
+    CREATE TABLE detalle_venta_ingredientes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      detalle_venta_id INTEGER NOT NULL,
+      ingrediente_id INTEGER,
+      tipo TEXT NOT NULL,
+      nombre TEXT,
+      cantidad REAL DEFAULT 1,
+      nota TEXT,
+      FOREIGN KEY (detalle_venta_id) REFERENCES detalle_ventas(id)
+    )
+  `);
+  await runQuery(db, "CREATE INDEX idx_detalle_venta_ingredientes_detalle ON detalle_venta_ingredientes(detalle_venta_id)");
+
+  await runQuery(db, `
+    CREATE TABLE producciones (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      producto_id INTEGER NOT NULL,
+      producto_nombre_snapshot TEXT,
+      cantidad_producida REAL NOT NULL,
+      fecha TEXT NOT NULL,
+      hora TEXT NOT NULL,
+      responsable TEXT,
+      observacion TEXT,
+      costo_estimado REAL NOT NULL DEFAULT 0,
+      estado TEXT NOT NULL DEFAULT 'registrada',
+      movimiento_stock_ingreso_id INTEGER,
+      creado_por TEXT,
+      created_at TEXT,
+      anulada_at TEXT,
+      anulada_por TEXT,
+      motivo_anulacion TEXT
+    )
+  `);
+
+  await runQuery(db, `
+    CREATE TABLE produccion_componentes_snapshot (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      produccion_id INTEGER NOT NULL,
+      producto_id INTEGER NOT NULL,
+      producto_nombre_snapshot TEXT,
+      cantidad_unitaria REAL NOT NULL,
+      cantidad_consumida REAL NOT NULL,
+      stock_anterior REAL,
+      stock_nuevo REAL,
+      costo_unitario_snapshot REAL NOT NULL DEFAULT 0,
+      costo_total_snapshot REAL NOT NULL DEFAULT 0,
+      movimiento_stock_id INTEGER
+    )
+  `);
+
+  await runQuery(db, "CREATE INDEX idx_producciones_producto ON producciones(producto_id)");
+  await runQuery(db, "CREATE INDEX idx_producciones_fecha ON producciones(fecha)");
+  await runQuery(db, "CREATE INDEX idx_produccion_componentes_produccion ON produccion_componentes_snapshot(produccion_id)");
+
+  await runQuery(db, `
     CREATE TABLE tienda_pedidos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       codigo_publico TEXT NOT NULL UNIQUE,
