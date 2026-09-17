@@ -9,9 +9,12 @@ const dbPath = resolveBusinessDbPath();
 // se crea en el primer uso de runQuery/getQuery/allQuery (via getDb()), nunca al cargar el modulo.
 let dbInstance = null;
 
+// MT-1E7B: OPEN_READWRITE explicito, sin OPEN_CREATE. El boot gate (backend/server.js) ya exige
+// baseline ready + schema CURRENT antes de que este singleton se materialice -- una business DB
+// verificada ya debe existir, asi que este runtime nunca tiene autoridad para crear una vacia.
 function getDb() {
   if (!dbInstance) {
-    dbInstance = new sqlite3.Database(dbPath);
+    dbInstance = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE);
   }
   return dbInstance;
 }

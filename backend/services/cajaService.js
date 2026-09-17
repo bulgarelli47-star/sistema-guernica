@@ -150,7 +150,6 @@ async function ensureCajaDenominacionesArqueoTable() {
 }
 
 async function getReglasDenominacionesArqueoActivas() {
-  await ensureCajaDenominacionesArqueoTable();
   return allQuery(
     `SELECT denominacion, modo, tamano_grupo, activo, orden
      FROM caja_arqueo_denominaciones
@@ -476,7 +475,6 @@ async function getOperacionesCaja(cajaId) {
     return [];
   }
 
-  await ensureCajaMovimientosTable();
 
   const ventas = await allQuery(
     `SELECT v.id, v.fecha, v.hora, v.total, v.tipo_cobro, v.monto_efectivo, v.monto_debito,
@@ -958,7 +956,6 @@ async function getConciliacionesCuentaCobro({ cajaId } = {}) {
   if (!cajaId) {
     return [];
   }
-  await ensureConciliacionesCuentasCobroTable();
   return allQuery(
     `SELECT c.*, cc.nombre AS cuenta_nombre
      FROM conciliaciones_cuentas_cobro c
@@ -979,7 +976,6 @@ async function guardarConciliacionCuentaCobro({
   fecha,
   hora
 } = {}) {
-  await ensureConciliacionesCuentasCobroTable();
   const caja = Number(cajaId) || 0;
   if (!caja) {
     const error = new Error("Caja invalida");
@@ -1029,7 +1025,6 @@ async function getConciliacionesCuentaDestino({ cajaId } = {}) {
   if (!cajaId) {
     return [];
   }
-  await ensureConciliacionesCuentasDestinoTable();
   return allQuery(
     `SELECT c.*, cd.nombre AS cuenta_destino_nombre, cd.tipo_destino
      FROM conciliaciones_cuentas_destino c
@@ -1057,7 +1052,6 @@ async function guardarConciliacionCuentaDestino({
   fecha,
   hora
 } = {}) {
-  await ensureConciliacionesCuentasDestinoTable();
   const caja = Number(cajaId) || 0;
   if (!caja) {
     const error = new Error("Caja invalida");
@@ -1142,7 +1136,6 @@ async function guardarConciliacionCuentaDestino({
 }
 
 async function getUltimoSaldoArrastradoPorCuenta(cuentaDestinoId) {
-  await ensureConciliacionesCuentasDestinoTable();
   const cuenta = cuentaDestinoId === null || cuentaDestinoId === undefined || cuentaDestinoId === ""
     ? null
     : Number(cuentaDestinoId);
@@ -1172,7 +1165,6 @@ async function getUltimoSaldoArrastradoPorCuenta(cuentaDestinoId) {
 }
 
 async function getSaldoInicialCuentaDestinoEnCaja(cajaId, cuentaDestinoId) {
-  await ensureConciliacionesCuentasDestinoTable();
   const conciliacion = await getQuery(
     `SELECT saldo_inicial
      FROM conciliaciones_cuentas_destino
@@ -1248,9 +1240,6 @@ function esEventoPosteriorAArqueo(evento, arqueo) {
 }
 
 async function getEstadoEfectivoOperativo({ cajaId } = {}) {
-  await ensureCajaArqueosTable();
-  await ensureCajaTrasladosInternosTable();
-  await ensureConciliacionesCuentasDestinoTable();
   const caja = cajaId
     ? await getQuery("SELECT * FROM caja_aperturas WHERE id = ?", [Number(cajaId)])
     : await getCajaAbiertaActual();
@@ -1456,7 +1445,6 @@ async function getEstadoEfectivoOperativo({ cajaId } = {}) {
 }
 
 async function getEstadoDigitalOperativo({ cajaId } = {}) {
-  await ensureConciliacionesCuentasDestinoTable();
   const caja = cajaId
     ? await getQuery("SELECT * FROM caja_aperturas WHERE id = ?", [Number(cajaId)])
     : await getCajaAbiertaActual();

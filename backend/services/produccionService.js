@@ -96,7 +96,6 @@ async function obtenerProductoProducible(productoId) {
 }
 
 async function listarProductosProducibles() {
-  await ensureProduccionSchema();
   return allQuery(
     `SELECT p.id, p.nombre, p.codigo, p.categoria, c.nombre AS categoria_nombre, p.stock, p.unidad_medida, p.costo_final, p.precio_compra
      FROM productos p
@@ -111,7 +110,6 @@ async function listarProductosProducibles() {
 }
 
 async function buildPreviewProduccion({ producto_id, cantidad }) {
-  await ensureProduccionSchema();
   const producto = await obtenerProductoProducible(producto_id);
   const cantidadProducida = Number(cantidad);
   if (!Number.isFinite(cantidadProducida) || cantidadProducida <= 0) {
@@ -305,7 +303,6 @@ async function registrarProduccion({ producto_id, cantidad_producida, responsabl
 }
 
 async function listarProducciones({ desde = null, hasta = null, producto_id = null, estado = null } = {}) {
-  await ensureProduccionSchema();
   const where = ["1 = 1"];
   const params = [];
   if (desde) {
@@ -337,7 +334,6 @@ async function listarProducciones({ desde = null, hasta = null, producto_id = nu
 }
 
 async function obtenerProduccion(id) {
-  await ensureProduccionSchema();
   const produccion = await getQuery("SELECT * FROM producciones WHERE id = ?", [Number(id)]);
   if (!produccion) return null;
   const componentes = await allQuery(

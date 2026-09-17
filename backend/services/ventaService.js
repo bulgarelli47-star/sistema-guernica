@@ -371,7 +371,6 @@ async function refreshCuentaCorrienteSaldo(ventaId) {
 }
 
 async function replaceVentaDetalle(ventaId, items) {
-  await ensureDetalleVentaIngredientesTable();
   const detallesAnteriores = await allQuery("SELECT id FROM detalle_ventas WHERE venta_id = ?", [ventaId]);
   const detalleIds = detallesAnteriores.map((item) => item.id);
   if (detalleIds.length) {
@@ -474,7 +473,6 @@ async function getVentaDetalleRows(ventaId) {
 }
 
 async function getVentaConDetalle(ventaId) {
-  await ensureDetalleVentaIngredientesTable();
   const venta = await getQuery("SELECT * FROM ventas WHERE id = ?", [ventaId]);
 
   if (!venta) {

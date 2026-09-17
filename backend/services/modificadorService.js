@@ -101,7 +101,6 @@ async function ensureModificadoresSchema() {
 async function getModificadoresProducto(productoId) {
   if (!productoId) return [];
 
-  await ensureModificadoresSchema();
   const modificadores = await allQuery(
     `SELECT m.*, pm.obligatorio, pm.max_usos, pm.orden AS producto_orden
      FROM producto_modificadores pm
@@ -123,7 +122,6 @@ async function getModificadoresProducto(productoId) {
 async function getComponentesModificador(modificadorId) {
   if (!modificadorId) return [];
 
-  await ensureModificadoresSchema();
   return allQuery(
     `SELECT mc.*, p.nombre AS nombre_producto
      FROM modificador_componentes mc
@@ -146,7 +144,6 @@ async function getModificadorConComponentes(modificadorId) {
 async function getModificadorProductoActivo(productoId, modificadorId) {
   if (!productoId || !modificadorId) return null;
 
-  await ensureModificadoresSchema();
   const modificador = await getQuery(
     `SELECT m.*, pm.producto_id, pm.max_usos, pm.obligatorio, pm.orden AS producto_orden
      FROM producto_modificadores pm
@@ -163,7 +160,6 @@ async function getModificadorProductoActivo(productoId, modificadorId) {
 }
 
 async function crearModificadorProducto(productoId, payload = {}) {
-  await ensureModificadoresSchema();
   const producto = Number(productoId) || 0;
   const nombre = String(payload.nombre || "").trim();
   if (!producto || !nombre) {
@@ -375,7 +371,6 @@ async function resolverComposicionItemVenta(item = {}, options = {}) {
 async function guardarModificadoresDetalleVenta(detalleVentaId, modificadores = []) {
   if (!detalleVentaId || !Array.isArray(modificadores) || !modificadores.length) return;
 
-  await ensureModificadoresSchema();
   for (const modificador of normalizarModificadoresItem({ modificadores })) {
     await runQuery(
       `INSERT INTO detalle_venta_modificadores
@@ -397,7 +392,6 @@ async function guardarModificadoresDetalleVenta(detalleVentaId, modificadores = 
 async function guardarComponentesSnapshot(detalleVentaId, componentes = []) {
   if (!detalleVentaId || !Array.isArray(componentes) || !componentes.length) return;
 
-  await ensureModificadoresSchema();
   for (const componente of componentes) {
     await runQuery(
       `INSERT INTO detalle_venta_componentes_snapshot
@@ -420,7 +414,6 @@ async function guardarComponentesSnapshot(detalleVentaId, componentes = []) {
 async function getComponentesSnapshotDetalle(detalleVentaId) {
   if (!detalleVentaId) return [];
 
-  await ensureModificadoresSchema();
   return allQuery(
     `SELECT *
      FROM detalle_venta_componentes_snapshot
@@ -514,7 +507,6 @@ async function getComponentesBaseProducto(productoId) {
 
 async function getModificadoresProductoTodos(productoId) {
   if (!productoId) return [];
-  await ensureModificadoresSchema();
   const modificadores = await allQuery(
     `SELECT m.*, pm.obligatorio, pm.max_usos, pm.orden AS producto_orden
      FROM producto_modificadores pm

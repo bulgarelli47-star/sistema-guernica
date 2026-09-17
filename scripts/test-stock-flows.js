@@ -81,6 +81,47 @@ function tempDbPath() {
   return path.join(os.tmpdir(), `guernica-test-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
 }
 
+// MT-1E7B: database/init-db.js (fresh dev/test seed, via crearBaseline001EnConexion) nunca crea
+// atlas_schema_migrations -- eso es responsabilidad exclusiva de adopt-legacy-baseline.js/
+// provision-tenant-db.js (ver business-schema-baseline.js). Antes de MT-1E7B eso no importaba: el
+// runtime legacy no exigia schema CURRENT para arrancar. El nuevo boot gate SI lo exige en ambos
+// modos, asi que toda business DB de fixture producida por database/init-db.js debe declararse
+// CURRENT explicitamente aca (en el test harness, sin tocar database/init-db.js ni el builder) para
+// poder arrancar backend/server.js. Mismo contrato exacto (tabla + fila) que provision-tenant-db.js
+// usa para un tenant nuevo real.
+// Sincrono a proposito (spawnSync, mismo patron que database/init-db.js ya usa arriba): las
+// ~120 call-sites existentes de bootstrapFreshTestDb()/bootstrapFreshRegisteredTenantDb() son
+// sincronas y no-await en toda la suite -- convertir esta funcion en async forzaria tocar cada una
+// de esas call-sites, un refactor masivo fuera de proposito para un fix de test harness.
+function stamparHistorialBaselineActual(dbPath) {
+  const migracion = BUSINESS_MIGRATIONS[0];
+  const script = `
+    const sqlite3 = require("sqlite3").verbose();
+    const db = new sqlite3.Database(${JSON.stringify(dbPath)});
+    db.serialize(() => {
+      db.run(\`CREATE TABLE atlas_schema_migrations (
+        sequence INTEGER NOT NULL UNIQUE CHECK(sequence >= 1),
+        migration_id TEXT PRIMARY KEY NOT NULL,
+        applied_at TEXT NOT NULL
+      )\`);
+      db.run(
+        "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (?, ?, datetime('now'))",
+        [${migracion.sequence}, ${JSON.stringify(migracion.migrationId)}],
+        (error) => {
+          db.close(() => { if (error) { console.error(error.message); process.exitCode = 1; } });
+        }
+      );
+    });
+  `;
+  const resultado = spawnSync(process.execPath, ["-e", script], { cwd: ROOT, encoding: "utf8" });
+  if (resultado.error) {
+    throw new Error(`stamparHistorialBaselineActual: no se pudo ejecutar: ${resultado.error.message}`);
+  }
+  if (resultado.status !== 0) {
+    throw new Error(`stamparHistorialBaselineActual: fallo con status=${resultado.status}\n${resultado.stderr || resultado.stdout}`);
+  }
+}
+
 // MT-1A.1: camino de bootstrap "desde cero" para tests -- nunca copia database/guernica.db.
 // Ejecuta database/init-db.js como proceso hijo (aislando conexion/lifecycle/module cache, igual
 // que withServer ya hace con backend/server.js), apuntandolo via GUERNICA_DB_PATH a una ruta que
@@ -108,6 +149,7 @@ function bootstrapFreshTestDb() {
   if (!fs.existsSync(dbPath)) {
     throw new Error("bootstrapFreshTestDb: database/init-db.js termino OK pero no se creo el archivo esperado");
   }
+  stamparHistorialBaselineActual(dbPath);
   return dbPath;
 }
 
@@ -148,6 +190,7 @@ function bootstrapFreshRegisteredTenantDb() {
   if (!fs.existsSync(dbPath)) {
     throw new Error("bootstrapFreshRegisteredTenantDb: database/init-db.js termino OK pero no se creo el archivo esperado");
   }
+  stamparHistorialBaselineActual(dbPath);
   return dbPath;
 }
 
@@ -6725,7 +6768,14 @@ async function testCompraRecepcionNuevaNoActualizaCostoProveedorF3D4bis() {
 // (producto_proveedores) en el bootstrap de arranque (ensureProductosSchema). Idempotente:
 // reiniciar el servidor (proceso nuevo) sobre el mismo archivo de DB no debe duplicar
 // relaciones ya presentes, ni sobrescribir el precio_compra de una relacion ya normalizada.
-async function testProductoProveedorBackfillF3D4bis() {
+// MT-1E7B: este test certificaba el backfill legacy->normalizado embebido en
+// ensureProductosSchema(), que corria en cada boot (F3D-4bis original). Ese backfill es
+// exactamente la categoria "historical backfill" que MT-1E7B elimina del boot -- ya no se invoca
+// (ver PASO 7/13). El estado que este test simula (producto_id con proveedor_id pero sin fila en
+// producto_proveedores) es ahora precisamente lo que BASELINE_PRODUCTO_PROVEEDOR_PENDING detecta
+// y rechaza: reescrito para demostrar el contrato nuevo -- el boot debe fallar CERRADO en vez de
+// reparar el dato silenciosamente, y el dato sucio debe quedar intacto.
+async function testProductoProveedorBackfillF3D4bisObsoletoPorE7B() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
   try {
@@ -6750,8 +6800,7 @@ async function testProductoProveedorBackfillF3D4bis() {
       });
       await runSql(dbPath, "UPDATE productos SET proveedor_id = ? WHERE id = ?", [proveedorId, productoLegacyId]);
 
-      // Producto con relacion normalizada YA existente, con precio DISTINTO al de
-      // productos.precio_compra -- para el caso C (el backfill no debe tocarla).
+      // Producto con relacion normalizada YA existente -- no aporta al defecto de baseline.
       productoConRelacionId = await crearProducto(baseUrl, token, {
         nombre: `Backfill Con Relacion ${Date.now()}`,
         categoria_id: categoriaId, categoria: "Backfill", stock: 3, maneja_stock: true,
@@ -6765,30 +6814,18 @@ async function testProductoProveedorBackfillF3D4bis() {
     });
 
     const relacionLegacyAntes = await allSql(dbPath, "SELECT * FROM producto_proveedores WHERE producto_id = ?", [productoLegacyId]);
-    assertEqual(relacionLegacyAntes.length, 0, "Precondicion: producto legacy sin relacion normalizada antes del backfill");
+    assertEqual(relacionLegacyAntes.length, 0, "Precondicion: producto legacy sin relacion normalizada, exactamente el defecto que baseline detecta");
 
-    // Segunda pasada: reinicia el servidor (proceso nuevo) -> corre ensureProductosSchema() ->
-    // backfill. A: legacy pasa a normalizado. C: la relacion previa no se sobrescribe.
-    await withServer(dbPath, async () => {
-      const relacionLegacyDespues = await allSql(dbPath, "SELECT * FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoLegacyId, proveedorId]);
-      assertEqual(relacionLegacyDespues.length, 1, "A: backfill crea la relacion normalizada para el producto legacy");
-      assertApprox(relacionLegacyDespues[0].precio_compra, 2076.92, "A: backfill usa productos.precio_compra como precio_compra inicial");
-      assertEqual(relacionLegacyDespues[0].es_principal, 1, "A: backfill marca la relacion como principal");
+    // Segunda pasada: el reinicio ya NO repara el dato -- debe fallar cerrado el boot.
+    const { logs } = await esperarStartupFallido(dbPath, {});
+    assertSame(logs.includes("BASELINE_PRODUCTO_PROVEEDOR_PENDING"), true, "el boot debe fallar identificando exactamente el gap de baseline, no repararlo en silencio");
 
-      const relacionBDespues = await allSql(dbPath, "SELECT * FROM producto_proveedores WHERE producto_id = ?", [productoConRelacionId]);
-      assertEqual(relacionBDespues.length, 1, "C: backfill no duplica una relacion ya existente");
-      assertApprox(relacionBDespues[0].precio_compra, 999, "C: backfill no sobrescribe precio_compra de una relacion ya existente");
+    const relacionLegacyDespues = await allSql(dbPath, "SELECT * FROM producto_proveedores WHERE producto_id = ?", [productoLegacyId]);
+    assertEqual(relacionLegacyDespues.length, 0, "sin backfill de boot, el producto legacy debe seguir sin relacion normalizada");
 
-      const productoLegacyStock = (await allSql(dbPath, "SELECT stock FROM productos WHERE id = ?", [productoLegacyId]))[0];
-      assertApprox(productoLegacyStock.stock, 5, "H: backfill no modifica stock");
-    });
-
-    // Tercera pasada: reiniciar OTRA VEZ -- B: idempotencia, no duplica nada ya presente.
-    const totalRelacionesAntesReinicio = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM producto_proveedores"))[0].total;
-    await withServer(dbPath, async () => {
-      const totalRelacionesDespuesReinicio = (await allSql(dbPath, "SELECT COUNT(*) AS total FROM producto_proveedores"))[0].total;
-      assertEqual(totalRelacionesDespuesReinicio, totalRelacionesAntesReinicio, "B: correr el backfill de nuevo (reinicio del servidor) no duplica relaciones");
-    });
+    const relacionBDespues = await allSql(dbPath, "SELECT * FROM producto_proveedores WHERE producto_id = ?", [productoConRelacionId]);
+    assertEqual(relacionBDespues.length, 1, "la relacion ya existente no debe alterarse por el intento de boot fallido");
+    assertApprox(relacionBDespues[0].precio_compra, 999, "su precio_compra tampoco debe alterarse");
   } finally {
     fs.rmSync(dbPath, { force: true });
   }
@@ -6868,6 +6905,12 @@ async function testProductoProveedorAltaEdicionSincronizaF3D4bis() {
 // via backfill + Cargar compra con costo distinto) de punta a punta. Confirma que, una vez
 // normalizado, el circuito de revision de costo funciona sobre el producto migrado, y que
 // registrar el comprobante NUNCA actualiza producto_proveedores.precio_compra en silencio.
+// MT-1E7B: la "segunda pasada" original dependia del backfill embebido en ensureProductosSchema()
+// (corria en cada boot) para normalizar producto_proveedores antes de seguir. Ese backfill ya no
+// se invoca -- lo que este test realmente certifica (G/I/H: generacion de revision pendiente al
+// registrar un comprobante con costo distinto al vigente) no depende de COMO se normalizo la
+// relacion, asi que se inserta directamente (mismo resultado final que el backfill hubiera
+// producido) en vez de depender de un reinicio que ahora fallaria cerrado por baseline.
 async function testF3D4bisSobreProductoMigradoGeneraRevisionF3D4bis() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
@@ -6890,12 +6933,18 @@ async function testF3D4bisSobreProductoMigradoGeneraRevisionF3D4bis() {
         precio_compra: 2076.92
       });
       await runSql(dbPath, "UPDATE productos SET proveedor_id = ? WHERE id = ?", [proveedorId, productoId]);
+      // Normaliza directamente (mismo resultado final que producia el backfill de boot ya
+      // eliminado), para dejar la DB baseline-ready antes del proximo arranque.
+      await runSql(dbPath, `
+        INSERT INTO producto_proveedores (producto_id, proveedor_id, precio_compra, fecha_actualizacion, es_principal)
+        VALUES (?, ?, 2076.92, ?, 1)
+      `, [productoId, proveedorId, new Date().toISOString().slice(0, 10)]);
     });
 
-    // Segunda pasada: reinicio dispara el backfill -- confirma normalizacion antes de seguir.
+    // Segunda pasada: confirma la normalizacion antes de seguir.
     await withServer(dbPath, async () => {
       const relacion = (await allSql(dbPath, "SELECT * FROM producto_proveedores WHERE producto_id = ? AND proveedor_id = ?", [productoId, proveedorId]))[0];
-      if (!relacion) throw new Error("Precondicion: el backfill deberia haber normalizado este producto");
+      if (!relacion) throw new Error("Precondicion: la relacion normalizada deberia existir");
       assertApprox(relacion.precio_compra, 2076.92, "Precondicion: costo vigente migrado = 2076.92");
     });
 
@@ -8553,7 +8602,9 @@ async function testStockProvenanceRecepcionReversaManualF3E3E1() {
   }
 }
 
-async function testStockProvenanceBackfillDemostrableF3E3E1() {
+// MT-1E7B: certificaba el backfill de provenance embebido en ensureMovimientosStockProvenanceSchema()
+// (corria en cada boot). Ese backfill ya no se invoca -- ver comentario dentro del test.
+async function testStockProvenanceBackfillDemostrableF3E3E1ObsoletoPorE7B() {
   const dbPath = tempDbPath();
   fs.copyFileSync(SOURCE_DB, dbPath);
   try {
@@ -8589,16 +8640,23 @@ async function testStockProvenanceBackfillDemostrableF3E3E1() {
       VALUES (?, 999002, 11, 5, 'un', ?, datetime('now'))
     `, [recepcion.lastID, movReversa.lastID]);
 
-    await withServer(dbPath, async () => {
-      const rows = await allSql(dbPath, "SELECT id, origen_tipo, origen_id FROM movimientos_stock WHERE id IN (?, ?, ?) ORDER BY id", [movRecepcion.lastID, movReversa.lastID, movSinVinculo.lastID]);
-      const porId = new Map(rows.map((row) => [Number(row.id), row]));
-      assertSame(porId.get(movRecepcion.lastID).origen_tipo, "compra_recepcion", "F3E3E1 backfill marca recepcion demostrable");
-      assertEqual(Number(porId.get(movRecepcion.lastID).origen_id), Number(recepcion.lastID), "F3E3E1 backfill usa recepcion_id demostrable");
-      assertSame(porId.get(movReversa.lastID).origen_tipo, "reversa_recepcion", "F3E3E1 backfill marca reversa demostrable");
-      assertEqual(Number(porId.get(movReversa.lastID).origen_id), Number(recepcion.lastID), "F3E3E1 backfill reversa usa recepcion_id demostrable");
-      assertSame(porId.get(movSinVinculo.lastID).origen_tipo, null, "F3E3E1 backfill no inventa provenance por motivo");
-      assertSame(porId.get(movSinVinculo.lastID).origen_id, null, "F3E3E1 backfill no inventa origen_id");
-    });
+    // MT-1E7B: el backfill de provenance embebido en ensureMovimientosStockProvenanceSchema() ya
+    // no corre en boot (historical backfill eliminado). El estado fixture de arriba -- movimientos
+    // de recepcion/reversa de compra sin origen_tipo -- es exactamente lo que
+    // BASELINE_STOCK_PROVENANCE_COMPRA_PENDING/BASELINE_STOCK_PROVENANCE_REVERSA_PENDING
+    // detectan: el boot debe fallar cerrado en vez de repararlo en silencio.
+    const { logs } = await esperarStartupFallido(dbPath, {});
+    assertSame(
+      logs.includes("BASELINE_STOCK_PROVENANCE_COMPRA_PENDING") || logs.includes("BASELINE_STOCK_PROVENANCE_REVERSA_PENDING"),
+      true,
+      "el boot debe fallar identificando el gap de provenance pendiente, no repararlo en silencio"
+    );
+
+    const rows = await allSql(dbPath, "SELECT id, origen_tipo, origen_id FROM movimientos_stock WHERE id IN (?, ?, ?) ORDER BY id", [movRecepcion.lastID, movReversa.lastID, movSinVinculo.lastID]);
+    const porId = new Map(rows.map((row) => [Number(row.id), row]));
+    assertSame(porId.get(movRecepcion.lastID).origen_tipo, null, "sin backfill de boot, la recepcion debe seguir sin origen_tipo");
+    assertSame(porId.get(movReversa.lastID).origen_tipo, null, "sin backfill de boot, la reversa debe seguir sin origen_tipo");
+    assertSame(porId.get(movSinVinculo.lastID).origen_tipo, null, "el movimiento sin vinculo real nunca debe tener origen_tipo inventado");
   } finally {
     fs.rmSync(dbPath, { force: true });
   }
@@ -19696,12 +19754,12 @@ async function testGuardarComponentesDuplicadosSumaYDedup() {
   });
 }
 
-async function testConsolidacionComponentesDuplicadosExistentes() {
-  // HIGIENE-5F: requiere DOS lifecycles de servidor reales contra el MISMO dbPath (crear via API,
-  // apagar, ensuciar con SQL directo, volver a levantar para disparar la consolidacion de
-  // startup) -- no reducible a un unico withFreshTestDb. Se usa bootstrapFreshTestDb() +
-  // withServer(dbPath, fn) directamente, mismo patron ya usado en Carril A (MT-1C.2B.1) para
-  // escenarios que necesitan mas de un arranque de servidor sobre la misma DB.
+// MT-1E7B: certificaba consolidarComponentesDuplicados() corriendo en cada boot (HIGIENE-5F
+// original). Ese repair historico ya no se invoca -- el estado que este test simula (pares
+// producto_compuesto_id/producto_id duplicados) es exactamente lo que
+// BASELINE_COMPONENT_DUPLICATES_PENDING detecta y rechaza. Reescrito para demostrar el contrato
+// nuevo: el boot debe fallar cerrado, y los duplicados deben quedar intactos (nunca consolidados).
+async function testConsolidacionComponentesDuplicadosExistentesObsoletoPorE7B() {
   const dbPath = bootstrapFreshTestDb();
   try {
     let compId, ingId;
@@ -19729,14 +19787,16 @@ async function testConsolidacionComponentesDuplicadosExistentes() {
       [compId, ingId]
     );
     if (antes.length !== 2) throw new Error(`Setup: se esperaban 2 filas duplicadas, hay ${antes.length}`);
-    // Fase 3: reiniciar servidor — consolidarComponentesDuplicados corre en startup
-    await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "admin123");
-      const { response, data } = await requestJson(baseUrl, "GET", `/productos_compuestos/${compId}`, null, token);
-      if (!response.ok) throw new Error(`GET fallo: ${data?.message}`);
-      assertEqual(data.componentes.length, 1, "Consolidacion startup: debe haber 1 componente tras limpiar duplicados");
-      assertApprox(data.componentes[0].cantidad, 5, "Consolidacion startup: cantidad debe ser suma (2+3=5)", 0.01);
-    });
+
+    // Fase 3: reiniciar servidor -- el boot debe fallar cerrado, no consolidar el duplicado.
+    const { logs } = await esperarStartupFallido(dbPath, {});
+    assertSame(logs.includes("BASELINE_COMPONENT_DUPLICATES_PENDING"), true, "el boot debe fallar identificando el duplicado pendiente, no consolidarlo en silencio");
+
+    const despues = await allSql(dbPath,
+      `SELECT id FROM producto_componentes WHERE producto_compuesto_id = ? AND producto_id = ?`,
+      [compId, ingId]
+    );
+    assertEqual(despues.length, 2, "sin consolidacion de boot, las 2 filas duplicadas deben seguir intactas");
   } finally {
     fs.rmSync(dbPath, { force: true });
   }
@@ -20176,7 +20236,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testCompraRecepcionOperativaF3D3);
   await _run(testCompraRecepcionReversaCostoReferencialF3D4);
   await _run(testCompraRecepcionNuevaNoActualizaCostoProveedorF3D4bis);
-  await _run(testProductoProveedorBackfillF3D4bis);
+  await _run(testProductoProveedorBackfillF3D4bisObsoletoPorE7B);
   await _run(testProductoProveedorAltaEdicionSincronizaF3D4bis);
   await _run(testF3D4bisSobreProductoMigradoGeneraRevisionF3D4bis);
   await _run(testProductoRevisionPendienteCostoProveedorF3D4bis);
@@ -20201,7 +20261,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testStockReversaRecepcionPermisosFinanzasYCostoF3E3D1);
   await _run(testStockReversaRecepcionUiRefrescaMovimientosF3E3D1);
   await _run(testStockProvenanceRecepcionReversaManualF3E3E1);
-  await _run(testStockProvenanceBackfillDemostrableF3E3E1);
+  await _run(testStockProvenanceBackfillDemostrableF3E3E1ObsoletoPorE7B);
   await _run(testStockMovimientoManualIdempotenteF3E3E1);
   await _run(testStockMovimientoManualConcurrenteMismaKeyF3E3E1b);
   await _run(testStockMovimientoManualConcurrenteKeysDistintasF3E3E1b);
@@ -20354,7 +20414,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testStockExactoNoCreaPendiente);
   await _run(testStockNegativoNoDuplicaPendiente);
   await _run(testGuardarComponentesDuplicadosSumaYDedup);
-  await _run(testConsolidacionComponentesDuplicadosExistentes);
+  await _run(testConsolidacionComponentesDuplicadosExistentesObsoletoPorE7B);
   await _run(testTipoAyudaSinUnidadesHardcodeado);
   await _run(testLogsTemporalesRemovidos);
   await _run(testVentaCCDesdePostVentasAplicaReglas);
@@ -20435,11 +20495,11 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1C2AResolverControlDbInaccesible);
   await _run(testMT1C2AResolverControlDbQueryFailure);
   await _run(testMT1C2B1SesionesFreshTienenMetadataAuth);
-  await _run(testMT1C2B1MigraSesionLegacySinInvalidarla);
+  await _run(testMT1C2B1MigraSesionLegacySinInvalidarlaObsoletoPorE7B);
   await _run(testMT1C2B1LoginLegacyCreaSesionLegacy);
   await _run(testMT1C2B1RequireAuthLegacySigueCompatible);
   await _run(testMT1C2B1LogoutLegacySigueCompatible);
-  await _run(testMT1C2B1SesionLegacyMigradaSigueAutenticando);
+  await _run(testMT1C2B1SesionLegacyMigradaSigueAutenticandoObsoletoPorE7B);
   await _run(testMT1C2B2ASecurityHappyPath);
   await _run(testMT1C2B2AWrongPasswordIncrementaIntentos);
   await _run(testMT1C2B2AThresholdBloqueaEnQuintoIntento);
@@ -20680,6 +20740,20 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1E7A4StockAjustesRuntimeColumnsCertificadas);
   await _run(testMT1E7A4DetalleYProduccionSchemaCertificado);
   await _run(testMT1E7A4GuernicaCurrentReady278SinMutacion);
+  await _run(testMT1E7BCurrentTenantBootsSinSchemaMutation);
+  await _run(testMT1E7BCurrentTenantBootsSinBusinessRepair);
+  await _run(testMT1E7BCajaRequestNoEnsureSchema);
+  await _run(testMT1E7BOtroModuloRequestNoEnsureSchema);
+  await _run(testMT1E7BMissingRequiredTableFailsClosed);
+  await _run(testMT1E7BMissingRequiredColumnFailsClosed);
+  await _run(testMT1E7BUnversionedFailsClosedNoAdopt);
+  await _run(testMT1E7BIdentityMissingCentralFailsNoProvision);
+  await _run(testMT1E7BIdentityMismatchCentralFailsClosed);
+  await _run(testMT1E7BLegacyModeRequiresBaselineYCurrent);
+  await _run(testMT1E7BMissingDbNoOpenCreateFallback);
+  await _run(testMT1E7BBusinessWritesNormalesFuncionan);
+  await _run(testMT1E7BCurrentBootPersistentSnapshotSinMutacion);
+  await _run(testMT1E7BReadOnlyRequestNoSchemaMutation);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -23509,7 +23583,11 @@ async function testMT1C2B1SesionesFreshTienenMetadataAuth() {
   }
 }
 
-async function testMT1C2B1MigraSesionLegacySinInvalidarla() {
+// MT-1E7B: certificaba ensureColumn(sesiones, ...) dentro de ensureUsuariosSchema() migrando
+// (ALTER TABLE) una tabla sesiones vieja al arrancar. Ese schema self-healing ya no corre en boot
+// -- una sesiones sin las 4 columnas es ahora exactamente BASELINE_COLUMN_MISSING, y el boot debe
+// fallar cerrado en vez de repararla. Reescrito para demostrar el contrato nuevo.
+async function testMT1C2B1MigraSesionLegacySinInvalidarlaObsoletoPorE7B() {
   const dbPath = bootstrapFreshTestDb();
   try {
     await runSql(dbPath, "DROP TABLE IF EXISTS sesiones");
@@ -23531,21 +23609,14 @@ async function testMT1C2B1MigraSesionLegacySinInvalidarla() {
       [tokenLegacy, 1, "Admin Legacy TEST", "admin", expiraLegacy]
     );
 
-    await withServer(dbPath, async () => {
-      // El solo arranque del servidor ya dispara ensureUsuariosSchema() -> ensureColumn(sesiones, ...)
-    });
+    const { logs } = await esperarStartupFallido(dbPath, {});
+    assertSame(logs.includes("BASELINE_COLUMN_MISSING") && logs.includes("sesiones."), true, "el boot debe fallar identificando las columnas faltantes de sesiones, no repararlas en silencio");
 
+    const columnas = await allSql(dbPath, "PRAGMA table_info(sesiones)");
+    assertSame(columnas.some((c) => c.name === "auth_mode"), false, "sin ALTER TABLE de boot, sesiones no debe ganar la columna auth_mode");
     const fila = (await allSql(dbPath, "SELECT * FROM sesiones WHERE token = ?", [tokenLegacy]))[0];
-    if (!fila) throw new Error("la migracion no debe eliminar la sesion legacy existente");
-    assertSame(fila.token, tokenLegacy, "token debe preservarse");
-    assertEqual(fila.usuario_id, 1, "usuario_id debe preservarse");
-    assertSame(fila.nombre, "Admin Legacy TEST", "nombre debe preservarse");
-    assertSame(fila.rol, "admin", "rol debe preservarse");
-    assertSame(fila.expira, expiraLegacy, "expira debe preservarse exacta");
-    assertSame(fila.auth_mode, "legacy", "auth_mode debe migrar a legacy por default");
-    if (fila.central_id !== null) throw new Error("central_id debe quedar NULL tras migrar una sesion legacy");
-    if (fila.membership_id !== null) throw new Error("membership_id debe quedar NULL tras migrar una sesion legacy");
-    if (fila.empresa_id !== null) throw new Error("empresa_id debe quedar NULL tras migrar una sesion legacy");
+    if (!fila) throw new Error("la sesion legacy preexistente debe seguir intacta tras el boot fallido");
+    assertSame(fila.nombre, "Admin Legacy TEST", "los datos originales no deben alterarse por el intento de boot");
   } finally {
     fs.rmSync(dbPath, { force: true });
   }
@@ -23600,7 +23671,11 @@ async function testMT1C2B1LogoutLegacySigueCompatible() {
   }
 }
 
-async function testMT1C2B1SesionLegacyMigradaSigueAutenticando() {
+// MT-1E7B: certificaba que una sesion migrada POR EL ALTER TABLE de boot seguia autenticando.
+// Ese ALTER TABLE de boot ya no existe -- una sesiones vieja (sin las 4 columnas) es ahora
+// BASELINE_COLUMN_MISSING y el boot debe fallar cerrado, asi que no hay "sesion migrada" que
+// autentique. Reescrito para demostrar exactamente eso.
+async function testMT1C2B1SesionLegacyMigradaSigueAutenticandoObsoletoPorE7B() {
   const dbPath = bootstrapFreshTestDb();
   try {
     await runSql(dbPath, "DROP TABLE IF EXISTS sesiones");
@@ -23623,10 +23698,8 @@ async function testMT1C2B1SesionLegacyMigradaSigueAutenticando() {
       [tokenLegacy, admin.id, admin.nombre, admin.rol, expiraLegacy]
     );
 
-    await withServer(dbPath, async (baseUrl) => {
-      const resp = await requestJson(baseUrl, "GET", "/configuracion", null, tokenLegacy);
-      assertEqual(resp.response.status, 200, "una sesion legacy migrada por ALTER TABLE debe seguir autenticando sin logout accidental");
-    });
+    const { logs } = await esperarStartupFallido(dbPath, {});
+    assertSame(logs.includes("BASELINE_COLUMN_MISSING") && logs.includes("sesiones."), true, "el boot debe fallar identificando las columnas faltantes de sesiones, no repararlas en silencio");
   } finally {
     fs.rmSync(dbPath, { force: true });
   }
@@ -26760,9 +26833,18 @@ async function testMT1E2BSchemaVersionModuleSinSideEffects() {
 // backend/server.js (via withServer, que espera readiness y despues mata el proceso). El
 // resultado es la MISMA DB que produce un boot legacy real, ya cerrada/idle, apta para abrir
 // con legacyBaselineVerifier en modo OPEN_READONLY.
+//
+// MT-1E7B: bootstrapFreshTestDb() ahora deja la DB con atlas_schema_migrations ya en CURRENT
+// (stamparHistorialBaselineActual, necesario para que el nuevo boot gate verify-only la acepte).
+// Este fixture especificamente representa lo contrario -- un baseline legacy completo pero TODAVIA
+// NO adoptado/versionado -- que es el insumo que adoptarLegacyBaseline/prepararLegacyParaBaseline001
+// y sus ~50 tests dependientes necesitan para probar la transicion. Se remueve el stamping DESPUES
+// de un boot exitoso (que ya prueba que el schema esta completo/CURRENT-worthy), restaurando el
+// contrato original de este fixture sin tocar bootstrapFreshTestDb() ni sus ~120 otros callers.
 async function bootstrapReadyLegacyFixture() {
   const dbPath = bootstrapFreshTestDb();
   await withServer(dbPath, async () => {});
+  await runSql(dbPath, "DROP TABLE atlas_schema_migrations");
   return dbPath;
 }
 
@@ -27360,9 +27442,15 @@ async function testMT1E2C2ATenantIdentityEnConexion() {
 // ROOT/database/, como exige resolveEmpresaDbPath) -- init-db.js + arranque legacy real de
 // backend/server.js, igual que bootstrapReadyLegacyFixture pero con un path compatible con
 // registrarEmpresa/resolveEmpresaDbPath para los tests CENTRAL.
+//
+// MT-1E7B: mismo fix que bootstrapReadyLegacyFixture -- se remueve el stamping de
+// atlas_schema_migrations (agregado por bootstrapFreshRegisteredTenantDb() para que el boot
+// verify-only la acepte) DESPUES del boot exitoso, para restaurar el contrato "todavia no
+// adoptada/versionada" que prepararLegacyParaBaseline001/adoptarLegacyBaseline necesitan probar.
 async function bootstrapReadyRegisteredTenantDb() {
   const dbPath = bootstrapFreshRegisteredTenantDb();
   await withServer(dbPath, async () => {});
+  await runSql(dbPath, "DROP TABLE atlas_schema_migrations");
   return dbPath;
 }
 
@@ -32027,4 +32115,329 @@ async function testMT1E7A4GuernicaCurrentReady278SinMutacion() {
   assertSame(resultado.ready, true, "Guernica CURRENT real debe seguir ready:true con el catalogo ampliado a 278");
   assertEqual(resultado.failures.length, 0, "no deben existir failures contra Guernica real");
   assertEqual(LEGACY_BASELINE_INVARIANTS.length, 278, "el catalogo usado contra Guernica debe tener 278 invariantes");
+}
+
+// ============================================================================
+// MT-1E7B: runtime verify-only. El boot deja de auto-reparar/sembrar schema; el gate
+// (validarTenantAntesDeAbrirDb) certifica baseline+CURRENT (+identity en central) ANTES de
+// app.listen, y ninguna request puede reparar schema/datos despues. Todas las DBs de fixture usan
+// bootstrapFreshTestDb()/bootstrapFreshRegisteredTenantDb(), que desde MT-1E7B ya incluyen el
+// stamping de atlas_schema_migrations (CURRENT) -- nunca database/guernica.db real para arranques.
+// ============================================================================
+
+function schemaFingerprint(dbPath) {
+  return allSql(dbPath, "SELECT type, name, sql FROM sqlite_master ORDER BY type, name");
+}
+
+const MT1E7B_REQUEST_ENSURE_HELPERS = [
+  "ensureCajaMovimientosTable",
+  "ensureCajaArqueosTable",
+  "ensureCajaDenominacionesArqueoTable",
+  "ensureCajaTrasladosInternosTable",
+  "ensureConciliacionesCuentasCobroTable",
+  "ensureConciliacionesCuentasDestinoTable",
+  "ensureModificadoresSchema",
+  "ensureRecalculosCuentaCorrienteTable",
+  "ensureStockAjustesPendientesSchema",
+  "ensureDetalleVentaIngredientesTable",
+  "ensureProduccionSchema"
+];
+const MT1E7B_SERVICE_FILES = [
+  "backend/services/cajaService.js",
+  "backend/services/modificadorService.js",
+  "backend/services/clienteService.js",
+  "backend/services/stockAjustePendienteService.js",
+  "backend/services/ventaService.js",
+  "backend/services/produccionService.js"
+];
+
+// MT-1E7B PASO 16: guardas estaticas de codigo fuente, complementarias a las pruebas
+// behaviorales (nunca las reemplazan) -- protegen contra que boot self-healing o request
+// self-healing reaparezcan en un cambio futuro sin que ningun test behavioral lo note.
+function verificarGuardasEstaticasE7B() {
+  const serverSrc = fs.readFileSync(path.join(ROOT, "backend/server.js"), "utf8");
+  const dbSrc = fs.readFileSync(path.join(ROOT, "backend/db.js"), "utf8");
+
+  const inicioGate = serverSrc.indexOf("await validarTenantAntesDeAbrirDb();");
+  const finBoot = serverSrc.indexOf("})().catch((error) => {");
+  assertSame(inicioGate !== -1, true, "guarda estatica: debe existir la invocacion del gate verify-only en server.js");
+  assertSame(finBoot !== -1 && finBoot > inicioGate, true, "guarda estatica: debe existir exactamente un cierre de boot IIFE despues del gate");
+  const bootBody = serverSrc.slice(inicioGate, finBoot);
+  assertSame(/ensure[A-Za-z]+\(\)/.test(bootBody), false, "guarda estatica: el boot IIFE no debe invocar ningun ensure*()");
+  assertSame(bootBody.includes("migrarVentaCobrosLegacy("), false, "guarda estatica: el boot IIFE no debe invocar migrarVentaCobrosLegacy");
+  assertSame(bootBody.includes("consolidarComponentesDuplicados("), false, "guarda estatica: el boot IIFE no debe invocar consolidarComponentesDuplicados");
+  assertSame(bootBody.includes("CREATE INDEX"), false, "guarda estatica: el boot IIFE no debe contener CREATE INDEX");
+  assertSame(bootBody.includes("CREATE TABLE"), false, "guarda estatica: el boot IIFE no debe contener CREATE TABLE");
+  assertSame(bootBody.includes("app.listen("), true, "guarda estatica: el boot IIFE debe seguir llamando app.listen despues del gate");
+
+  for (const helper of MT1E7B_REQUEST_ENSURE_HELPERS) {
+    const definicionRegex = new RegExp(`async function ${helper}\\(`);
+    assertSame(definicionRegex.test(serverSrc) || MT1E7B_SERVICE_FILES.some((f) => definicionRegex.test(fs.readFileSync(path.join(ROOT, f), "utf8"))), true, `guarda estatica: la definicion de ${helper} debe seguir existiendo`);
+    for (const archivo of ["backend/server.js", ...MT1E7B_SERVICE_FILES]) {
+      const src = fs.readFileSync(path.join(ROOT, archivo), "utf8");
+      const llamadas = (src.match(new RegExp(`\\b${helper}\\(`, "g")) || []).length;
+      const definiciones = (src.match(new RegExp(`async function ${helper}\\(`, "g")) || []).length;
+      assertEqual(llamadas, definiciones, `guarda estatica: ${helper} no debe tener call-sites fuera de su propia definicion en ${archivo}`);
+    }
+  }
+
+  assertSame(dbSrc.includes("new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE)"), true, "guarda estatica: backend/db.js debe abrir con OPEN_READWRITE explicito");
+  assertSame(dbSrc.includes("sqlite3.OPEN_CREATE"), false, "guarda estatica: backend/db.js no debe usar sqlite3.OPEN_CREATE");
+}
+
+async function testMT1E7BCurrentTenantBootsSinSchemaMutation() {
+  verificarGuardasEstaticasE7B();
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    const antes = await schemaFingerprint(dbPath);
+    await withServer(dbPath, async () => {});
+    const despues = await schemaFingerprint(dbPath);
+    assertSame(JSON.stringify(despues), JSON.stringify(antes), "el boot de una tenant CURRENT no debe crear/alterar ninguna tabla o indice");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E7BCurrentTenantBootsSinBusinessRepair() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    // Mismo patron de duplicado que DATA:BASELINE_COMPONENT_DUPLICATES_PENDING certifica: antes de
+    // MT-1E7B, consolidarComponentesDuplicados() corria en cada boot y silenciosamente lo arreglaba.
+    // Ahora ese repair historico ya no esta en el boot -- una DB con este defecto debe FALLAR el
+    // gate (fail-closed) en vez de arrancar con el dato reparado por detras.
+    await runSql(dbPath, "INSERT INTO producto_componentes (producto_compuesto_id, producto_id, cantidad) VALUES (1, 1, 1)");
+    await runSql(dbPath, "INSERT INTO producto_componentes (producto_compuesto_id, producto_id, cantidad) VALUES (1, 1, 2)");
+    const antes = await allSql(dbPath, "SELECT producto_compuesto_id, producto_id FROM producto_componentes GROUP BY producto_compuesto_id, producto_id HAVING COUNT(*) > 1");
+    assertEqual(antes.length, 1, "debe existir exactamente un par duplicado antes del intento de boot");
+
+    await esperarStartupFallido(dbPath, {});
+
+    const despues = await allSql(dbPath, "SELECT producto_compuesto_id, producto_id FROM producto_componentes GROUP BY producto_compuesto_id, producto_id HAVING COUNT(*) > 1");
+    assertEqual(despues.length, 1, "el duplicado debe seguir intacto -- ningun repair historico debe haberlo consolidado");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E7BCajaRequestNoEnsureSchema() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const antes = await requestJson(baseUrl, "GET", "/caja/arqueo-denominaciones", null, token);
+      assertEqual(antes.data.reglas.length, 10, "recien arrancado deben existir las 10 denominaciones canonicas");
+
+      // Con el server VIVO, se borra una denominacion directo sobre el archivo (fuera del HTTP) --
+      // antes de MT-1E7B, ensureCajaDenominacionesArqueoTable() corria en cada GET y la hubiera
+      // re-sembrado. Ahora la request debe limitarse a leer lo que hay.
+      await runSql(dbPath, "DELETE FROM caja_arqueo_denominaciones WHERE denominacion = 20000");
+
+      const despues = await requestJson(baseUrl, "GET", "/caja/arqueo-denominaciones", null, token);
+      assertEqual(despues.data.reglas.length, 9, "GET /caja/arqueo-denominaciones no debe reseedear la denominacion faltante");
+      assertSame(despues.data.reglas.some((r) => Number(r.denominacion) === 20000), false, "la denominacion borrada no debe reaparecer via request");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E7BOtroModuloRequestNoEnsureSchema() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const antes = await requestJson(baseUrl, "GET", "/produccion", null, token);
+      assertEqual(antes.response.status, 200, "produccion debe responder normalmente con el schema CURRENT ya certificado");
+
+      // Con el server VIVO, se elimina la tabla producciones directo sobre el archivo -- antes de
+      // MT-1E7B, ensureProduccionSchema() corria en cada acceso a /produccion y la hubiera
+      // recreado silenciosamente. Ahora la request debe fallar, no auto-repararse.
+      await runSql(dbPath, "DROP TABLE producciones");
+
+      const despues = await requestJson(baseUrl, "GET", "/produccion", null, token);
+      assertSame(despues.response.status >= 500, true, "sin la tabla producciones, la request debe fallar en vez de recrearla silenciosamente");
+
+      const tablas = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='producciones'");
+      assertEqual(tablas.length, 0, "producciones no debe haber sido recreada por la request fallida");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E7BMissingRequiredTableFailsClosed() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    const tablasAntes = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table'");
+    await runSql(dbPath, "DROP TABLE productos");
+
+    await esperarStartupFallido(dbPath, {});
+
+    const tablasDespues = await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table'");
+    assertEqual(tablasDespues.length, tablasAntes.length - 1, "el boot fallido no debe haber creado ninguna tabla nueva, ni recreado productos");
+    assertSame(tablasDespues.some((t) => t.name === "productos"), false, "productos debe seguir ausente -- nunca recreada por el boot fallido");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E7BMissingRequiredColumnFailsClosed() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await runSql(dbPath, "ALTER TABLE stock_ajustes_pendientes DROP COLUMN cantidad_teorica");
+
+    await esperarStartupFallido(dbPath, {});
+
+    const columnas = await allSql(dbPath, "PRAGMA table_info(stock_ajustes_pendientes)");
+    assertSame(columnas.some((c) => c.name === "cantidad_teorica"), false, "la columna borrada no debe haber sido recreada por el boot fallido");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E7BUnversionedFailsClosedNoAdopt() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await runSql(dbPath, "DELETE FROM atlas_schema_migrations");
+    const antes = await allSql(dbPath, "SELECT * FROM atlas_schema_migrations");
+    assertEqual(antes.length, 0, "la DB debe quedar UNVERSIONED (historial vacio) antes del intento de boot");
+
+    const { logs } = await esperarStartupFallido(dbPath, {});
+    assertSame(logs.includes("UNVERSIONED"), true, "el error de boot debe identificar el estado UNVERSIONED");
+
+    const despues = await allSql(dbPath, "SELECT * FROM atlas_schema_migrations");
+    assertEqual(despues.length, 0, "atlas_schema_migrations debe seguir vacio -- ningun adopt automatico debe haber corrido");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E7BIdentityMissingCentralFailsNoProvision() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const slug = `mt1e7b-identity-missing-${Date.now()}`;
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1E7B Identity Missing",
+      dbPath: path.basename(dbPath)
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    const identidadAntes = await allSql(dbPath, "SELECT * FROM tenant_identity");
+    assertEqual(identidadAntes.length, 0, "tenant_identity debe empezar vacia (nunca provisionada)");
+
+    await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+
+    const identidadDespues = await allSql(dbPath, "SELECT * FROM tenant_identity");
+    assertEqual(identidadDespues.length, 0, "tenant_identity debe seguir vacia -- ningun provisioning automatico debe haber corrido");
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E7BIdentityMismatchCentralFailsClosed() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const slug = `mt1e7b-identity-mismatch-${Date.now()}`;
+    const fixture = await mt1d1aCrearControlDbConEmpresa({
+      slug,
+      nombre: "MT1E7B Identity Mismatch",
+      dbPath: path.basename(dbPath)
+    });
+    controlDbPath = fixture.controlDbPath;
+
+    // Identity real declarada, pero para OTRA empresa (id/slug que no coinciden con el registry).
+    await insertarTenantIdentityTest(dbPath, fixture.empresa.id + 999, `${slug}-otra-empresa`);
+
+    await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1E7BLegacyModeRequiresBaselineYCurrent() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    // Antes de MT-1E7B, el gate en modo legacy era no-op: una DB UNVERSIONED arrancaba igual
+    // (el boot self-healing tapaba cualquier gap). Ahora legacy exige baseline+CURRENT igual que
+    // central -- sin ATLAS_AUTH_MODE (legacy puro), esto debe fallar el boot.
+    await runSql(dbPath, "DELETE FROM atlas_schema_migrations");
+
+    const { logs } = await esperarStartupFallido(dbPath, {});
+    assertSame(logs.includes("CURRENT"), true, "legacy debe exigir schema CURRENT -- ya no es un bypass silencioso");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E7BMissingDbNoOpenCreateFallback() {
+  const dbPathInexistente = tempDbPath();
+  assertSame(fs.existsSync(dbPathInexistente), false, "el path de este test no debe existir antes del intento de boot");
+  try {
+    await esperarStartupFallido(dbPathInexistente, {});
+    assertSame(fs.existsSync(dbPathInexistente), false, "sin OPEN_CREATE, un boot fallido nunca debe materializar el archivo .db");
+  } finally {
+    fs.rmSync(dbPathInexistente, { force: true });
+  }
+}
+
+async function testMT1E7BBusinessWritesNormalesFuncionan() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await abrirCaja(baseUrl, token, 1000);
+      const catId = await crearCategoria(baseUrl, token, "TEST MT1E7B writes normales");
+      const prodId = await crearProducto(baseUrl, token, {
+        nombre: "TEST MT1E7B producto normal", categoria_id: catId,
+        precio_venta: 100, stock: 50, maneja_stock: true
+      });
+      const { response } = await requestJson(baseUrl, "POST", "/ventas", {
+        tipo: "normal", estado: "registrada",
+        items: [{ producto_id: prodId, nombre_producto: "TEST MT1E7B producto normal", cantidad: 1, precio_unitario: 100 }],
+        es_cuenta_corriente: false,
+        tipo_cobro: "efectivo", monto_efectivo: 100, monto_debito: 0
+      }, token);
+      assertEqual(response.status, 200, "una venta normal debe seguir funcionando plenamente bajo runtime verify-only");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E7BCurrentBootPersistentSnapshotSinMutacion() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    const snapshotAntes = snapshotSQLitePersistente(dbPath);
+    await withServer(dbPath, async () => {});
+    const snapshotDespues = snapshotSQLitePersistente(dbPath);
+    assertSame(JSON.stringify(snapshotDespues), JSON.stringify(snapshotAntes), "el snapshot persistente (main+WAL+journal) debe quedar identico -- boot verify-only, cero escrituras");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1E7BReadOnlyRequestNoSchemaMutation() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const antes = await schemaFingerprint(dbPath);
+
+      const rutas = ["/productos", "/caja/resumen", "/ventas", "/configuracion", "/clientes", "/tipos_pago", "/cuentas_destino"];
+      for (const ruta of rutas) {
+        const { response } = await requestJson(baseUrl, "GET", ruta, null, token);
+        assertEqual(response.status, 200, `GET ${ruta} debe responder 200 sobre una tenant CURRENT`);
+      }
+
+      const despues = await schemaFingerprint(dbPath);
+      assertSame(JSON.stringify(despues), JSON.stringify(antes), "una serie de requests GET de solo lectura no debe mutar el schema");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
 }

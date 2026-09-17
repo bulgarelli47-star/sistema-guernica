@@ -190,7 +190,6 @@ async function crearAjustePendiente({
   rol,
   caja_id
 }) {
-  await ensureStockAjustesPendientesSchema();
 
   const productoId = normalizarId(producto_id);
   const tipoMovimiento = normalizarTexto(tipo_movimiento).toLowerCase();
@@ -303,7 +302,6 @@ async function crearAjustesPendientesVentaReceta({
   usuario,
   rol
 } = {}) {
-  await ensureStockAjustesPendientesSchema();
 
   const venta = normalizarId(ventaId);
   if (!venta || !Array.isArray(detalles) || !detalles.length) {
@@ -393,7 +391,6 @@ async function cancelarAjustesPendientesVentaReceta(ventaId, {
   usuario,
   observaciones_admin
 } = {}) {
-  await ensureStockAjustesPendientesSchema();
 
   const venta = normalizarId(ventaId);
   if (!venta) {
@@ -419,7 +416,6 @@ async function cancelarAjustesPendientesVentaReceta(ventaId, {
 }
 
 async function listarAjustesPendientes({ estado, solo_accionables = false } = {}) {
-  await ensureStockAjustesPendientesSchema();
   const estadoNormalizado = normalizarTexto(estado).toLowerCase();
   const filtrarEstado = ESTADOS_VALIDOS.has(estadoNormalizado);
   const where = [];
@@ -443,7 +439,6 @@ async function listarAjustesPendientes({ estado, solo_accionables = false } = {}
 }
 
 async function reconciliarAjustesPendientes({ ids = [], usuario, puedeGestionar = false } = {}) {
-  await ensureStockAjustesPendientesSchema();
   const idsNormalizados = [...new Set((Array.isArray(ids) ? ids : [])
     .map((id) => Number(id))
     .filter((id) => Number.isFinite(id) && id > 0))]
@@ -578,7 +573,6 @@ async function aprobarAjustePendiente(id, {
   confirmar_posible_duplicado = false,
   buscarPosibleIngresoDuplicado = null
 } = {}) {
-  await ensureStockAjustesPendientesSchema();
 
   await runQuery("BEGIN IMMEDIATE");
   try {
@@ -662,7 +656,6 @@ async function rechazarAjustePendiente(id, {
   usuario,
   observaciones_admin
 } = {}) {
-  await ensureStockAjustesPendientesSchema();
 
   await runQuery("BEGIN TRANSACTION");
   try {
@@ -693,7 +686,6 @@ async function resolverAjustePendienteConVenta(id, {
   tipo_resolucion,
   usuario
 } = {}) {
-  await ensureStockAjustesPendientesSchema();
 
   const ajusteId = Number(id);
   const ventaId = normalizarId(venta_id);
@@ -795,7 +787,6 @@ async function resolverAjustePendienteConCuentaLocal(id, {
   observacion,
   usuario
 } = {}) {
-  await ensureStockAjustesPendientesSchema();
 
   const config = await getConfiguracionGlobal();
   if (!configBool(config.cuenta_local_activa)) {
@@ -917,7 +908,6 @@ async function resolverAjustePendienteConCuentaLocal(id, {
 }
 
 async function getResumenAjustesPendientes() {
-  await ensureStockAjustesPendientesSchema();
   const hoy = new Date().toISOString().slice(0, 10);
   const [rowPendientes, rowResueltosPorVenta, rowAprobados, rowRechazados] = await Promise.all([
     getQuery(`SELECT COUNT(*) AS total
@@ -952,7 +942,6 @@ async function getResumenAjustesPendientes() {
 }
 
 async function getResumenCuentaLocalNoMonetaria({ desde = null, hasta = null, limite = 8 } = {}) {
-  await ensureStockAjustesPendientesSchema();
 
   const base = {
     produccion: {
@@ -1052,7 +1041,6 @@ async function crearAjustePendienteStockNegativo({
   stockNuevo,
   usuario
 }) {
-  await ensureStockAjustesPendientesSchema();
   const pid = normalizarId(productoId);
   const vid = normalizarId(ventaId);
   if (!pid || !Number.isFinite(Number(cantidad)) || Number(cantidad) <= 0) return;

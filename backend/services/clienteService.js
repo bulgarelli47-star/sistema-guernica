@@ -276,7 +276,6 @@ async function getDeudaActualizadaCliente(clienteId) {
 }
 
 async function aplicarRecalculoDeudaCliente(clienteId, { usuario, motivo } = {}) {
-  await ensureRecalculosCuentaCorrienteTable();
   const calculo = await calcularDeudaActualizadaCliente(clienteId);
 
   if (Math.abs(Number(calculo.diferencia || 0)) <= 0.009) {

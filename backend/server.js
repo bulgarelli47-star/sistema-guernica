@@ -11,6 +11,8 @@ const { autenticarCredencialCentral } = require("./centralAuthSecurity");
 const { revalidarSesionCentral } = require("./centralAuthResolver");
 const { resolverTenantDbRegistradoPorSlug } = require("./tenantDbRegistry");
 const { verificarTenantDbIdentity } = require("./tenantDbIdentity");
+const { verificarLegacyBaseline } = require("./legacyBaselineVerifier");
+const { verificarBusinessSchemaVersion } = require("./businessSchemaVersion");
 const { resolveBusinessDbPath } = require("./resolveBusinessDbPath");
 const { parseTenantHost } = require("./tenantHostContext");
 const {
@@ -283,14 +285,34 @@ if (ATLAS_AUTH_MODE === "central" && !ATLAS_EMPRESA_SLUG) {
   process.exit(1);
 }
 
-// MT-1D.2B: Central Boot Identity Gate. En legacy no hace nada (ni Control DB ni tenant_identity).
-// En central, verifica que la business DB configurada (GUERNICA_DB_PATH) pertenezca exactamente a
-// la empresa declarada por ATLAS_EMPRESA_SLUG -- registry (empresa activa + path canonico) primero,
-// tenant_identity READONLY despues -- ANTES de que el primer runQuery/getQuery/allQuery dispare la
-// apertura lazy de backend/db.js. Cualquier fallo lanza (nunca hace fallback a legacy); el llamador
-// es responsable de tratarlo como fail-closed antes de tocar la business DB.
-async function validarTenantCentralAntesDeAbrirDb() {
-  if (ATLAS_AUTH_MODE !== "central") return;
+// MT-1E7B: Runtime Verify-Only Boot Gate. Corre en AMBOS modos, SIEMPRE antes de que el primer
+// runQuery/getQuery/allQuery dispare la apertura lazy de backend/db.js -- nunca crea, repara ni
+// migra nada: verificarLegacyBaseline/verificarBusinessSchemaVersion/verificarTenantDbIdentity
+// abren su propia conexion OPEN_READONLY (jamas OPEN_CREATE), independiente del singleton de
+// backend/db.js. Cualquier fallo lanza (nunca hace fallback ni continua a medias); el llamador es
+// responsable de tratarlo como fail-closed antes de tocar la business DB.
+//
+// LEGACY (ATLAS_AUTH_MODE != "central"): exige baseline ready + schema CURRENT. No exige
+// tenant_identity -- ese concepto no existe fuera de modo central.
+//
+// CENTRAL: preserva exactamente la semantica ya existente de registry (empresa activa + path
+// canonico) + tenant_identity READONLY, y ADEMAS exige baseline ready + schema CURRENT sobre la
+// misma business DB ya identificada -- el modo mas estricto, nunca mas debil que legacy.
+async function validarTenantAntesDeAbrirDb() {
+  const configuredPath = resolveBusinessDbPath();
+
+  if (ATLAS_AUTH_MODE !== "central") {
+    const baseline = await verificarLegacyBaseline(configuredPath);
+    if (!baseline.ready) {
+      throw new Error(`Business DB (${configuredPath}) no cumple el baseline legacy requerido: ${JSON.stringify(baseline.failures)}`);
+    }
+
+    const schema = await verificarBusinessSchemaVersion(configuredPath);
+    if (schema.state !== "CURRENT") {
+      throw new Error(`Business DB (${configuredPath}) no esta en estado CURRENT (state=${schema.state}, expected=${schema.expectedMigrationId})`);
+    }
+    return;
+  }
 
   const registry = await resolverTenantDbRegistradoPorSlug({
     empresaSlug: ATLAS_EMPRESA_SLUG,
@@ -300,7 +322,6 @@ async function validarTenantCentralAntesDeAbrirDb() {
     throw new Error(`Tenant registry invalido para ATLAS_EMPRESA_SLUG="${ATLAS_EMPRESA_SLUG}": ${registry.errorCode} - ${registry.message}`);
   }
 
-  const configuredPath = resolveBusinessDbPath();
   if (configuredPath !== registry.db.resolvedPath) {
     throw new Error(`GUERNICA_DB_PATH configurado (${configuredPath}) no coincide con el path registrado para la empresa (${registry.db.resolvedPath})`);
   }
@@ -312,6 +333,16 @@ async function validarTenantCentralAntesDeAbrirDb() {
   });
   if (!identity.ok) {
     throw new Error(`tenant_identity invalida en ${configuredPath}: ${identity.errorCode} - ${identity.message}`);
+  }
+
+  const baseline = await verificarLegacyBaseline(configuredPath);
+  if (!baseline.ready) {
+    throw new Error(`Business DB (${configuredPath}) no cumple el baseline legacy requerido: ${JSON.stringify(baseline.failures)}`);
+  }
+
+  const schema = await verificarBusinessSchemaVersion(configuredPath);
+  if (schema.state !== "CURRENT") {
+    throw new Error(`Business DB (${configuredPath}) no esta en estado CURRENT (state=${schema.state}, expected=${schema.expectedMigrationId})`);
   }
 }
 
@@ -8618,7 +8649,6 @@ app.get("/caja/estado-digital-operativo", async (req, res) => {
 
 app.get("/caja/arqueo-denominaciones", async (req, res) => {
   try {
-    await ensureCajaDenominacionesArqueoTable();
     const reglas = await getReglasDenominacionesArqueoActivas();
     return res.json({
       reglas: reglas.map((regla) => ({
@@ -8889,7 +8919,6 @@ app.post("/caja/movimientos", async (req, res) => {
   }
 
   try {
-    await ensureCajaMovimientosTable();
     const apertura = await getCajaAbiertaActual();
 
     if (!apertura || apertura.estado !== "abierta") {
@@ -8950,7 +8979,6 @@ app.put("/caja/movimientos/:id", async (req, res) => {
   }
 
   try {
-    await ensureCajaMovimientosTable();
     const movimiento = await getQuery(
       `SELECT cm.*, ca.estado AS caja_estado
        FROM caja_movimientos cm
@@ -9014,8 +9042,6 @@ function normalizarDecisionesCierreEfectivo(raw) {
 
 async function handlePostCajaCierreModelo1(req, res, fecha, hora) {
   try {
-    await ensureCajaArqueosTable();
-    await ensureConciliacionesCuentasDestinoTable();
     await runQuery("BEGIN IMMEDIATE");
 
     const apertura = await getCajaAbiertaActual();
@@ -9258,7 +9284,6 @@ app.post("/caja/cierre", async (req, res) => {
   const montoCajaFondo = Number(req.body.monto_caja_fondo) || 0;
 
   try {
-    await ensureCajaArqueosTable();
     const apertura = await getCajaAbiertaActual();
 
     if (!apertura || apertura.estado !== "abierta") {
@@ -9383,7 +9408,6 @@ function mapCajaArqueoParaRol(arqueo, req) {
 // Historial de arqueos de caja
 app.get("/caja/arqueos", async (req, res) => {
   try {
-    await ensureCajaArqueosTable();
     const caja = await getCajaParaArqueos();
 
     if (!caja) {
@@ -9410,7 +9434,6 @@ app.get("/caja/arqueos/:id", async (req, res) => {
   const arqueoId = Number(req.params.id);
 
   try {
-    await ensureCajaArqueosTable();
     const arqueo = await getQuery("SELECT * FROM caja_arqueos WHERE id = ?", [arqueoId]);
 
     if (!arqueo) {
@@ -9433,7 +9456,6 @@ app.post("/caja/arqueos/:id/usar-para-cierre", async (req, res) => {
   }
 
   try {
-    await ensureCajaArqueosTable();
     const apertura = await getCajaAbiertaActual();
     if (!apertura || apertura.estado !== "abierta") {
       return res.status(400).json({ message: "No hay una caja abierta para usar el arqueo" });
@@ -9500,9 +9522,6 @@ async function handlePostCajaArqueoModelo1(req, res, fecha, hora, registradoCier
   }
 
   try {
-    await ensureCajaArqueosTable();
-    await ensureCajaTrasladosInternosTable();
-    await ensureCajaDenominacionesArqueoTable();
     await runQuery("BEGIN IMMEDIATE");
 
     const apertura = await getCajaAbiertaActual();
@@ -9680,7 +9699,6 @@ app.post("/caja/arqueos", async (req, res) => {
   }
 
   try {
-    await ensureCajaArqueosTable();
     const apertura = await getCajaAbiertaActual();
 
     if (!apertura || apertura.estado !== "abierta") {
@@ -9735,7 +9753,6 @@ app.put("/caja/arqueos/:id", async (req, res) => {
   const registradoCierre = Number(req.body.registrado_cierre) === 1 ? 1 : 0;
 
   try {
-    await ensureCajaArqueosTable();
     const arqueoActual = await getQuery("SELECT * FROM caja_arqueos WHERE id = ?", [arqueoId]);
 
     if (!arqueoActual) {
@@ -12546,50 +12563,14 @@ app.use((err, req, res, _next) => {
   }
 });
 
+// MT-1E7B: boot pasa de VERIFY+SELF-HEAL a VERIFY ONLY. Entre el gate y app.listen no debe
+// ejecutarse ninguna mutacion de schema/datos -- ni CREATE TABLE, ni CREATE INDEX, ni ALTER TABLE,
+// ni legacy migration, ni backfill historico, ni reseed de defaults. Las funciones ensure*/
+// migrarVentaCobrosLegacy/consolidarComponentesDuplicados siguen definidas (referenciadas por
+// codigo de request/servicios o por tests), pero ya no se invocan aqui.
 (async () => {
-  await validarTenantCentralAntesDeAbrirDb();
+  await validarTenantAntesDeAbrirDb();
 
-  await Promise.all([
-    ensureUsuariosSchema(),
-    ensureCajaMovimientosTable(),
-    ensureCajaArqueosTable(),
-    ensureCajaDenominacionesArqueoTable(),
-    ensureCajaTrasladosInternosTable(),
-    ensureProveedoresSchema(),
-    ensureComprasSchema(),
-    ensureTiposPagoSchema(),
-    ensureCuentasCobroSchema(),
-    ensureConciliacionesCuentasCobroTable(),
-    ensureConciliacionesCuentasDestinoTable(),
-    ensureModificadoresSchema(),
-    ensureRecalculosCuentaCorrienteTable(),
-    ensureStockAjustesPendientesSchema(),
-    ensureMercadoPagoPointSchema(),
-    ensureProductosSchema(),
-    ensureClientesSchema(),
-    ensureConfiguracionSchema(),
-    ensureTiendaSchema(),
-    ensureVentaRecetaSnapshotSchema(),
-    ensureVentaCobrosSchema(),
-    ensureVentaFiscalSnapshotSchema()
-  ]);
-  await migrarVentaCobrosLegacy();
-  await ensureMovimientosStockProvenanceSchema();
-  await Promise.all([
-    runQuery("CREATE INDEX IF NOT EXISTS idx_usuarios_usuario ON usuarios(usuario)"),
-    runQuery("CREATE INDEX IF NOT EXISTS idx_productos_activo ON productos(activo)"),
-    runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_estado ON ventas(estado)"),
-    runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_cliente ON ventas(cliente_id)"),
-    runQuery("CREATE INDEX IF NOT EXISTS idx_ventas_caja ON ventas(caja_id)"),
-    runQuery("CREATE INDEX IF NOT EXISTS idx_detalle_ventas_venta ON detalle_ventas(venta_id)"),
-    runQuery("CREATE INDEX IF NOT EXISTS idx_movimientos_stock_producto ON movimientos_stock(producto_id)"),
-    runQuery("CREATE INDEX IF NOT EXISTS idx_caja_movimientos_caja ON caja_movimientos(caja_id)"),
-    runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_productos_codigo_unique ON productos(codigo) WHERE codigo IS NOT NULL AND codigo != '' AND eliminado = 0"),
-    runQuery("CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_dni_cuit_unique ON clientes(dni_cuit) WHERE dni_cuit IS NOT NULL AND dni_cuit != ''"),
-    runQuery("CREATE INDEX IF NOT EXISTS idx_venta_cobros_venta ON venta_cobros(venta_id)"),
-    runQuery("CREATE INDEX IF NOT EXISTS idx_venta_cobros_cuenta ON venta_cobros(cuenta_cobro_id)")
-  ]);
-  await consolidarComponentesDuplicados();
   app.listen(PORT, () => {
     console.log(`Servidor corriendo en http://localhost:${PORT}`);
   });
