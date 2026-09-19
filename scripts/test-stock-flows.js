@@ -75,6 +75,7 @@ const { crearBaseline001EnConexion } = require("../database/business-schema-base
 const { provisionarTenantDb } = require("../database/provision-tenant-db");
 const { resolveTenantHandle, closeTenantHandle, closeAllTenantHandles, TENANT_RUNTIME_ERROR_CODES } = require("../backend/runtimeTenantRegistry");
 const { runWithTenantHandle, getTenantContext, getTenantHandle, hasTenantContext } = require("../backend/tenantRequestContext");
+const { TENANCY_MODES, parsearTenancyMode, verificarControlDisponible, crearTenantRequestMiddleware } = require("../backend/tenantRequestMiddleware");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -355,6 +356,7 @@ async function withServer(dbPath, fn, extraEnv = {}) {
   delete baseEnv.ATLAS_AUTH_MODE;
   delete baseEnv.ATLAS_EMPRESA_SLUG;
   delete baseEnv.ATLAS_CONTROL_DB_PATH;
+  delete baseEnv.ATLAS_TENANCY_MODE;
   const child = spawn(process.execPath, ["backend/server.js"], {
     cwd: ROOT,
     env: { ...baseEnv, PORT: String(port), GUERNICA_DB_PATH: dbPath, ...extraEnv },
@@ -20786,6 +20788,22 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1F2SqlEscrituraConcurrenteEsAisladaAB);
   await _run(testMT1F2TransaccionANoInterfiereConB);
   await _run(testMT1F2ErrorLimpiaContextoSinAfectarOtro);
+  await _run(testMT1F3SingleLegacyNoActivaRouting);
+  await _run(testMT1F3SingleCentralNoActivaRouting);
+  await _run(testMT1F3MultiTenantHostResuelveHandle);
+  await _run(testMT1F3MultiRequestEntraContextoALS);
+  await _run(testMT1F3MultiHelpersUsanDbDelHost);
+  await _run(testMT1F3ConcurrenteRequestARequestBAisladas);
+  await _run(testMT1F3TenantDesconocidoFailsClosed);
+  await _run(testMT1F3TenantInactivoFailsClosed);
+  await _run(testMT1F3TenantDbInvalidaFailsClosed);
+  await _run(testMT1F3FallosTenantNoEnumerables);
+  await _run(testMT1F3LocalFailsClosedEnMulti);
+  await _run(testMT1F3ReservedFailsClosedEnMulti);
+  await _run(testMT1F3InvalidFailsClosedEnMulti);
+  await _run(testMT1F3ApexFailsClosedEnRutaTenant);
+  await _run(testMT1F3NoFallbackAGuernicaEnMulti);
+  await _run(testMT1F3ErrorRequestLimpiaContexto);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -24272,6 +24290,7 @@ async function esperarStartupFallido(dbPath, extraEnv, timeoutMs = 8000) {
   delete baseEnv.ATLAS_AUTH_MODE;
   delete baseEnv.ATLAS_EMPRESA_SLUG;
   delete baseEnv.ATLAS_CONTROL_DB_PATH;
+  delete baseEnv.ATLAS_TENANCY_MODE;
   const child = spawn(process.execPath, ["backend/server.js"], {
     cwd: ROOT,
     env: { ...baseEnv, GUERNICA_DB_PATH: dbPath, ...extraEnv },
@@ -26240,6 +26259,7 @@ function ejecutarBackupDb(extraEnv = {}) {
   delete baseEnv.ATLAS_AUTH_MODE;
   delete baseEnv.ATLAS_EMPRESA_SLUG;
   delete baseEnv.ATLAS_CONTROL_DB_PATH;
+  delete baseEnv.ATLAS_TENANCY_MODE;
   return spawnSync(process.execPath, ["scripts/backup-db.js"], {
     cwd: ROOT,
     env: { ...baseEnv, ...extraEnv },
@@ -33809,6 +33829,887 @@ async function testMT1F2ErrorLimpiaContextoSinAfectarOtro() {
     assertSame(singleton, aperturas[0].instancia, "y es la instancia singleton sobre el decoy");
     assertEqual(mt1f2AperturasProhibidas(estado.instrumento, estado.decoyPath).guernica, 0, "database/guernica.db real jamas se abre");
   } finally {
+    await mt1f2Cerrar(estado);
+  }
+}
+
+// ====================================================================================================
+// MT-1F3: middleware de contexto de tenant por request (backend/tenantRequestMiddleware.js) cableado en
+// backend/server.js. Dos niveles de prueba:
+//  - END-TO-END: backend/server.js REAL como proceso hijo en modo central + multi, con Host real sobre
+//    http.request (fetch no permite fijar Host). En multi el GUERNICA_DB_PATH del hijo apunta a un path
+//    INEXISTENTE: cualquier fallback al singleton legacy abriria ese path sin OPEN_CREATE y tumbaria el
+//    proceso, lo que el test detecta. database/guernica.db real jamas se abre.
+//  - EN PROCESO: app Express minima con el MISMO middleware, para observar el contexto ALS real y el
+//    diagnostico interno. El singleton de db.js se ejercita solo via instancia aislada sobre un decoy.
+// El Host resuelve CONTEXTO, no autoriza: nada de esto prueba ni afirma autorizacion (eso es MT-1F4).
+// ====================================================================================================
+const MT1F3_DOMINIO = "atlasos.com.ar";
+const MT1F3_MENSAJE_NO_AUTENTICADO = "No autenticado. Iniciá sesión.";
+
+function mt1f3Pedir(port, { host, metodo = "GET", ruta, cuerpo = null, autorizacion = null }) {
+  return new Promise((resolve, reject) => {
+    const payload = cuerpo === null ? null : JSON.stringify(cuerpo);
+    const headers = {};
+    if (host !== undefined) headers.Host = host;
+    if (autorizacion !== null) headers.Authorization = autorizacion;
+    if (payload !== null) {
+      headers["Content-Type"] = "application/json";
+      headers["Content-Length"] = Buffer.byteLength(payload);
+    }
+    const req = http.request({ host: "127.0.0.1", port, method: metodo, path: ruta, headers, agent: false }, (res) => {
+      const trozos = [];
+      res.on("data", (trozo) => trozos.push(trozo));
+      res.on("end", () => {
+        const texto = Buffer.concat(trozos).toString("utf8");
+        let json = null;
+        try { json = JSON.parse(texto); } catch (error) { json = null; }
+        const firmaCabeceras = JSON.stringify(Object.entries(res.headers).filter(([nombre]) => !["date", "connection", "keep-alive"].includes(nombre)).sort());
+        resolve({ status: res.statusCode, contentType: String(res.headers["content-type"] || ""), cacheControl: String(res.headers["cache-control"] || ""), firmaCabeceras, texto, json });
+      });
+    });
+    req.on("error", reject);
+    if (payload !== null) req.write(payload);
+    req.end();
+  });
+}
+
+// Servidor REAL como hijo con acceso a sus logs y a su estado de vida. Hermetico respecto de ATLAS_*.
+async function mt1f3ConServidor(entorno, fn) {
+  const port = await getFreePort();
+  const baseUrl = `http://localhost:${port}`;
+  const baseEnv = { ...process.env };
+  for (const clave of ["ATLAS_AUTH_MODE", "ATLAS_EMPRESA_SLUG", "ATLAS_CONTROL_DB_PATH", "ATLAS_TENANCY_MODE"]) delete baseEnv[clave];
+  const hijo = spawn(process.execPath, ["backend/server.js"], { cwd: ROOT, env: { ...baseEnv, PORT: String(port), ...entorno }, stdio: ["ignore", "pipe", "pipe"] });
+  let logs = "";
+  let salio = null;
+  hijo.stdout.on("data", (trozo) => { logs += trozo.toString(); });
+  hijo.stderr.on("data", (trozo) => { logs += trozo.toString(); });
+  hijo.once("exit", (codigo) => { salio = codigo === null ? -1 : codigo; });
+  try {
+    await waitForServer(baseUrl);
+    await fn({ port, logs: () => logs, salio: () => salio });
+  } catch (error) {
+    error.message = `${error.message}\nServidor test port=${port}\n${logs}`;
+    throw error;
+  } finally {
+    if (!hijo.killed) hijo.kill("SIGTERM");
+    await new Promise((resolve) => {
+      const temporizador = setTimeout(resolve, 1000);
+      hijo.once("exit", () => { clearTimeout(temporizador); resolve(); });
+    });
+    if (hijo.exitCode === null && !hijo.killed) hijo.kill("SIGKILL");
+  }
+}
+
+function mt1f3Host(tenant) {
+  return `${tenant.slug}.${MT1F3_DOMINIO}`;
+}
+
+// Siembra en cada tenant un nombre de comercio y un producto DISTINTIVOS por tag.
+async function mt1f3Sembrar(escenario) {
+  for (const tenant of escenario.tenants) {
+    const etiqueta = tenant.tag.toUpperCase();
+    await runSql(tenant.dbPath, "INSERT OR REPLACE INTO configuracion_global (clave, valor, seccion, actualizado_en) VALUES ('negocio_nombre_comercial', ?, 'negocio', datetime('now'))", [JSON.stringify(`Comercio ${etiqueta}`)]);
+    const producto = await runSql(tenant.dbPath, "INSERT INTO productos (nombre, precio_venta, stock, maneja_stock, activo) VALUES (?, 100, 0, 0, 1)", [`Producto ${etiqueta}`]);
+    tenant.productoId = producto.lastID;
+  }
+}
+
+function mt1f3EntornoMulti(escenario, decoyPath) {
+  return { ATLAS_AUTH_MODE: "central", ATLAS_TENANCY_MODE: "multi", ATLAS_CONTROL_DB_PATH: escenario.controlDbPath, GUERNICA_DB_PATH: decoyPath };
+}
+
+function mt1f3EsGenerica404(respuesta, ruta, metodo = "GET") {
+  return respuesta.status === 404 && respuesta.json !== null && respuesta.json.ok === false && respuesta.json.message === `Ruta no encontrada: ${metodo} ${ruta}`;
+}
+
+// MT-1F3-C1: respuesta externa unica de "autenticacion no establecida" en central + multi.
+function mt1f3EsNoAutenticado(respuesta) {
+  return respuesta.status === 401
+    && respuesta.contentType.includes("application/json")
+    && respuesta.json !== null
+    && JSON.stringify(Object.keys(respuesta.json)) === JSON.stringify(["message"])
+    && respuesta.json.message === MT1F3_MENSAJE_NO_AUTENTICADO;
+}
+
+// Rutas PROTEGIDAS que usan estos tests (clasificacion real: backend/server.js). Un fallo de tenant en una ruta
+// protegida es el 401 generico; en una ruta publica de tenant (tienda, login, logout) sigue siendo el 404 generico.
+const MT1F3_RUTAS_PROTEGIDAS_DE_PRUEBA = new Set(["/productos", "/ruta-que-no-existe", "/uploads/no-existe.png", "/protegida/perfil"]);
+function mt1f3EsFalloCerrado(respuesta, ruta, metodo = "GET") {
+  return MT1F3_RUTAS_PROTEGIDAS_DE_PRUEBA.has(ruta) ? mt1f3EsNoAutenticado(respuesta) : mt1f3EsGenerica404(respuesta, ruta, metodo);
+}
+
+// Escenario con tenants sanos y degradados (para fallos NO enumerables y aislamiento de tenant malo).
+async function mt1f3PrepararDegradado() {
+  const escenario = await mt1f1CrearEscenario(["ok", "miss", "ident", "base", "schema", "inact"]);
+  try {
+    await mt1f3Sembrar(escenario);
+    const por = (tag) => escenario.tenants.find((tenant) => tenant.tag === tag);
+    await runSql(escenario.controlDbPath, "UPDATE empresas SET activa = 0 WHERE id = ?", [por("inact").empresa.id]);
+    await mt1f1EliminarArchivo(por("miss").dbPath);
+    await runSql(por("ident").dbPath, "UPDATE tenant_identity SET tenant_slug = 'otra-empresa' WHERE id = 1");
+    await runSql(por("base").dbPath, "DROP TABLE recalculos_cuenta_corriente");
+    await runSql(por("schema").dbPath, "DROP TABLE atlas_schema_migrations");
+    const slugPathInvalido = mt1f1Slug("pathinv");
+    await runSql(escenario.controlDbPath, "INSERT INTO empresas (slug, nombre, db_path, activa) VALUES (?, 'path invalido', '../fuera-del-directorio.db', 1)", [slugPathInvalido]);
+    const slugDesconocido = mt1f1Slug("desconocido");
+    return {
+      escenario,
+      por,
+      fallos: [
+        { nombre: "desconocido", host: `${slugDesconocido}.${MT1F3_DOMINIO}`, codigo: "REGISTRY_BINDING_INVALID" },
+        { nombre: "inactivo", host: mt1f3Host(por("inact")), codigo: "REGISTRY_COMPANY_INACTIVE" },
+        { nombre: "path registrado invalido", host: `${slugPathInvalido}.${MT1F3_DOMINIO}`, codigo: "REGISTRY_BINDING_INVALID" },
+        { nombre: "DB ausente", host: mt1f3Host(por("miss")), codigo: "TENANT_DB_OPEN_FAILED" },
+        { nombre: "identity distinta", host: mt1f3Host(por("ident")), codigo: "TENANT_IDENTITY_INVALID" },
+        { nombre: "baseline no READY", host: mt1f3Host(por("base")), codigo: "TENANT_BASELINE_INVALID" },
+        { nombre: "schema no CURRENT", host: mt1f3Host(por("schema")), codigo: "TENANT_SCHEMA_NOT_CURRENT" }
+      ]
+    };
+  } catch (error) {
+    await mt1f1Limpiar(escenario);
+    throw error;
+  }
+}
+
+async function mt1f3AppMinima({ controlDbPath, diagnosticos, resolverHandle, esRutaProtegida }) {
+  const express = require("express");
+  const app = express();
+  app.use((req, res, next) => { req.tenantHostContext = parseTenantHost(req.headers.host); next(); });
+  app.use(express.json());
+  app.use(crearTenantRequestMiddleware({
+    authMode: "central",
+    tenancyMode: "multi",
+    controlDbPath,
+    resolverHandle,
+    eximirRuta: (req) => req.path === "/sin-tenant",
+    esRutaProtegida,
+    alFallar: (diagnostico) => diagnosticos.push(diagnostico)
+  }));
+  app.use((req, res, next) => { req.slugEnSiguienteMiddleware = getTenantContext() ? getTenantContext().empresaSlug : null; next(); });
+  return app;
+}
+
+async function mt1f3Escuchar(app) {
+  const servidor = await new Promise((resolve) => { const s = app.listen(0, "127.0.0.1", () => resolve(s)); });
+  return {
+    port: servidor.address().port,
+    async cerrar() {
+      if (typeof servidor.closeAllConnections === "function") servidor.closeAllConnections();
+      await new Promise((resolve) => servidor.close(() => resolve()));
+    }
+  };
+}
+
+async function testMT1F3SingleLegacyNoActivaRouting() {
+  // Unitario: fuera de central + multi el middleware es un passthrough que jamas invoca al resolver.
+  for (const [authMode, tenancyMode] of [["legacy", "single"], ["legacy", "multi"], ["central", "single"]]) {
+    let resolvio = 0;
+    let siguio = 0;
+    const middleware = crearTenantRequestMiddleware({ authMode, tenancyMode, resolverHandle: async () => { resolvio += 1; return { ok: false }; } });
+    middleware({ tenantHostContext: { kind: "TENANT", tenantSlug: "x" } }, {}, () => { siguio += 1; });
+    assertEqual(resolvio, 0, `${authMode}+${tenancyMode}: el resolver no debe invocarse`);
+    assertEqual(siguio, 1, `${authMode}+${tenancyMode}: passthrough sincronico`);
+  }
+  assertSame(JSON.stringify(parsearTenancyMode(undefined)), JSON.stringify({ ok: true, mode: "single" }), "el default es single");
+  assertSame(parsearTenancyMode(" MULTI ").mode, "multi", "multi se normaliza");
+  assertSame(parsearTenancyMode("quantum").ok, false, "un valor desconocido es invalido");
+
+  // End-to-end legacy + single: comportamiento actual, el Host no interviene en absoluto.
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const port = Number(new URL(baseUrl).port);
+      const referencia = await mt1f3Pedir(port, { host: `127.0.0.1:${port}`, ruta: "/tienda/publica" });
+      assertEqual(referencia.status, 200, "legacy: la ruta de negocio responde con la DB configurada");
+      for (const host of [`desconocido.${MT1F3_DOMINIO}`, `www.${MT1F3_DOMINIO}`, `a.b.${MT1F3_DOMINIO}`, MT1F3_DOMINIO, "evil.example.com"]) {
+        const respuesta = await mt1f3Pedir(port, { host, ruta: "/tienda/publica" });
+        assertEqual(respuesta.status, 200, `legacy: el Host ${host} no debe rechazarse ni enrutar`);
+        assertSame(respuesta.texto, referencia.texto, `legacy: el Host ${host} no cambia la DB servida`);
+      }
+      // MT-1F3-C1: requireAuth conserva sus mensajes historicos; la uniformidad pre-auth es SOLO de central + multi.
+      const protegidaSinToken = await mt1f3Pedir(port, { host: `otra.${MT1F3_DOMINIO}`, ruta: "/productos" });
+      assertEqual(protegidaSinToken.status, 401, "legacy: una ruta protegida sin token responde 401");
+      assertSame(protegidaSinToken.json && protegidaSinToken.json.message, "No autenticado. Iniciá sesión.", "legacy: 'sin token' conserva su mensaje historico");
+      const protegidaBasura = await mt1f3Pedir(port, { host: `otra.${MT1F3_DOMINIO}`, ruta: "/productos", autorizacion: "Bearer basura" });
+      assertEqual(protegidaBasura.status, 401, "legacy: un token basura responde 401");
+      assertSame(protegidaBasura.json && protegidaBasura.json.message, "Sesión expirada. Iniciá sesión nuevamente.", "legacy: 'token basura' conserva su mensaje historico (distinto de 'sin token')");
+    });
+    await withServer(dbPath, async (baseUrl) => {
+      const port = Number(new URL(baseUrl).port);
+      const respuesta = await mt1f3Pedir(port, { host: `cualquiera.${MT1F3_DOMINIO}`, ruta: "/tienda/publica" });
+      assertEqual(respuesta.status, 200, "legacy + ATLAS_TENANCY_MODE=single explicito: sin routing");
+    }, { ATLAS_TENANCY_MODE: "single" });
+
+    // Configuracion invalida: el proceso no arranca (fail-closed antes de app.listen).
+    const invalido = await esperarStartupFallido(dbPath, { ATLAS_TENANCY_MODE: "quantum" });
+    assertSame(invalido.logs.includes("ATLAS_TENANCY_MODE invalido"), true, "un ATLAS_TENANCY_MODE desconocido tumba el arranque");
+    const legacyMulti = await esperarStartupFallido(dbPath, { ATLAS_TENANCY_MODE: "multi" });
+    assertSame(legacyMulti.logs.includes("requiere ATLAS_AUTH_MODE=central"), true, "multi sin auth central tumba el arranque");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1F3SingleCentralNoActivaRouting() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await mt1f3Sembrar({ tenants: [{ tag: "fija", dbPath }] });
+    for (const extra of [{}, { ATLAS_TENANCY_MODE: "single" }]) {
+      await withServer(dbPath, async (baseUrl) => {
+        const port = Number(new URL(baseUrl).port);
+        const referencia = await mt1f3Pedir(port, { host: `127.0.0.1:${port}`, ruta: "/tienda/publica" });
+        assertEqual(referencia.status, 200, "central + single: la empresa fija responde");
+        assertSame(referencia.json.nombre, "Comercio FIJA", "central + single: se sirve la DB de la empresa fija");
+        for (const host of [`otra-empresa.${MT1F3_DOMINIO}`, `www.${MT1F3_DOMINIO}`, `a.b.${MT1F3_DOMINIO}`, MT1F3_DOMINIO]) {
+          const respuesta = await mt1f3Pedir(port, { host, ruta: "/tienda/publica" });
+          assertEqual(respuesta.status, 200, `central + single: el Host ${host} no se exige ni enruta`);
+          assertSame(respuesta.texto, referencia.texto, `central + single: el Host ${host} no cambia la DB servida`);
+        }
+        // MT-1F3-C1: en central + single requireAuth NO cambia: mensajes historicos distintos para 'sin token' y 'token basura'.
+        const protegidaSinToken = await mt1f3Pedir(port, { host: `otra-empresa.${MT1F3_DOMINIO}`, ruta: "/productos" });
+        assertEqual(protegidaSinToken.status, 401, "central + single: una ruta protegida sin token responde 401");
+        assertSame(protegidaSinToken.json && protegidaSinToken.json.message, "No autenticado. Iniciá sesión.", "central + single: 'sin token' conserva su mensaje historico");
+        const protegidaBasura = await mt1f3Pedir(port, { host: `otra-empresa.${MT1F3_DOMINIO}`, ruta: "/productos", autorizacion: "Bearer basura" });
+        assertEqual(protegidaBasura.status, 401, "central + single: un token basura responde 401");
+        assertSame(protegidaBasura.json && protegidaBasura.json.message, "Sesión expirada. Iniciá sesión nuevamente.", "central + single: 'token basura' conserva su mensaje historico (distinto de 'sin token')");
+      }, { ...extraEnvCentral(fixture), ...extra });
+    }
+    // El gate E7B de empresa fija sigue vigente: central + single sin ATLAS_EMPRESA_SLUG no arranca.
+    const sinSlug = await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_CONTROL_DB_PATH: fixture.controlDbPath });
+    assertSame(sinSlug.logs.includes("requiere ATLAS_EMPRESA_SLUG"), true, "central + single sigue exigiendo la empresa fija");
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testMT1F3MultiTenantHostResuelveHandle() {
+  const escenario = await mt1f1CrearEscenario(["a", "b"]);
+  const decoyPath = tempDbPath();
+  try {
+    await mt1f3Sembrar(escenario);
+    const [tenantA, tenantB] = escenario.tenants;
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      const respuestaA = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenantA), ruta: "/tienda/publica" });
+      const respuestaB = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenantB), ruta: "/tienda/publica" });
+      assertEqual(respuestaA.status, 200, "el Host de A resuelve su tenant");
+      assertSame(respuestaA.json.nombre, "Comercio A", "el Host de A sirve la DB de A");
+      assertSame(respuestaB.json.nombre, "Comercio B", "el Host de B sirve la DB de B");
+      // El parser existente normaliza mayusculas y puerto; la resolucion usa el slug que el parser entrega.
+      const conPuerto = await mt1f3Pedir(servidor.port, { host: `${tenantA.slug.toUpperCase()}.AtlasOS.com.ar:8443`, ruta: "/tienda/publica" });
+      assertSame(conPuerto.json && conPuerto.json.nombre, "Comercio A", "Host con mayusculas y puerto tambien resuelve a A");
+      assertSame(servidor.logs().includes("[TENANT]"), false, "una resolucion exitosa no registra fallos");
+      assertSame(servidor.salio(), null, "el servidor sigue vivo");
+    });
+
+    // Arranque: multi no admite una empresa fija por entorno ni un Control inexistente.
+    const conEmpresaFija = await esperarStartupFallido(decoyPath, { ...mt1f3EntornoMulti(escenario, decoyPath), ATLAS_EMPRESA_SLUG: tenantA.slug });
+    assertSame(conEmpresaFija.logs.includes("no admite ATLAS_EMPRESA_SLUG"), true, "multi con ATLAS_EMPRESA_SLUG tumba el arranque (seria un fallback prohibido)");
+    const sinControl = await esperarStartupFallido(decoyPath, { ...mt1f3EntornoMulti(escenario, decoyPath), ATLAS_CONTROL_DB_PATH: tempDbPath() });
+    assertSame(sinControl.logs.includes("Control plane no disponible"), true, "multi exige que el Control plane este disponible");
+    assertSame(fs.existsSync(decoyPath), false, "el arranque en multi jamas abre ni crea GUERNICA_DB_PATH");
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F3MultiRequestEntraContextoALS() {
+  const estado = await mt1f2Preparar(["a", "b"]);
+  const diagnosticos = [];
+  let app = null;
+  let escucha = null;
+  try {
+    await mt1f3Sembrar(estado.escenario);
+    const [tenantA, tenantB] = estado.tenants;
+    const [handleA, handleB] = estado.handles;
+    app = await mt1f3AppMinima({ controlDbPath: estado.escenario.controlDbPath, diagnosticos, esRutaProtegida: (req) => req.path.startsWith("/protegida") });
+    app.get("/probe", async (req, res) => {
+      const contexto = getTenantContext();
+      await delay(5);
+      await new Promise((resolve) => setImmediate(resolve));
+      const fila = await estado.db.getQuery("SELECT valor FROM configuracion_global WHERE clave = 'negocio_nombre_comercial'");
+      res.json({
+        slug: contexto.empresaSlug,
+        empresaId: contexto.empresaId,
+        mismoHandleQueF1: contexto.tenantHandle === (contexto.empresaSlug === tenantA.slug ? handleA : handleB),
+        contextoIntactoTrasAwaits: getTenantContext() === contexto,
+        slugEnSiguienteMiddleware: req.slugEnSiguienteMiddleware,
+        negocio: JSON.parse(fila.valor)
+      });
+    });
+    app.get("/sin-tenant", (req, res) => { res.json({ contexto: getTenantContext(), hay: hasTenantContext() }); });
+    escucha = await mt1f3Escuchar(app);
+
+    for (const [tenant, etiqueta] of [[tenantA, "Comercio A"], [tenantB, "Comercio B"]]) {
+      const respuesta = await mt1f3Pedir(escucha.port, { host: mt1f3Host(tenant), ruta: "/probe" });
+      assertEqual(respuesta.status, 200, `${etiqueta}: la ruta corre dentro del contexto`);
+      assertSame(respuesta.json.slug, tenant.slug, `${etiqueta}: el contexto ALS lleva la empresa del Host`);
+      assertEqual(respuesta.json.empresaId, tenant.empresa.id, `${etiqueta}: empresaId del contexto`);
+      assertSame(respuesta.json.mismoHandleQueF1, true, `${etiqueta}: el contexto transporta el handle publicado por F1, no uno nuevo`);
+      assertSame(respuesta.json.contextoIntactoTrasAwaits, true, `${etiqueta}: el contexto sobrevive a awaits, timers y consultas`);
+      assertSame(respuesta.json.slugEnSiguienteMiddleware, tenant.slug, `${etiqueta}: los middlewares siguientes tambien corren dentro del contexto`);
+      assertSame(respuesta.json.negocio, etiqueta, `${etiqueta}: db.js resuelve la DB del contexto`);
+    }
+    const eximida = await mt1f3Pedir(escucha.port, { host: `127.0.0.1:${escucha.port}`, ruta: "/sin-tenant" });
+    assertSame(eximida.json.hay, false, "una ruta eximida (Clase 0) corre SIN contexto");
+    assertSame(hasTenantContext(), false, "fuera de las requests no queda contexto en el proceso");
+    assertEqual(diagnosticos.length, 0, "las requests exitosas no generan diagnosticos de fallo");
+
+    // MT-1F3-C1 control positivo: con la clasificacion PROTEGIDA activa, un tenant sano + autenticacion valida (stub de prueba,
+    // NO es la autorizacion de F4) llega al contexto y a la DB correctos; el fallo de tenant en la misma ruta es el 401 generico.
+    await runSql(tenantA.dbPath, "INSERT INTO sesiones (token, usuario_id, nombre, rol, expira) VALUES ('tok-a', 1, 'Usuario A', 'admin', datetime('now', '+1 hour'))");
+    await runSql(tenantB.dbPath, "INSERT INTO sesiones (token, usuario_id, nombre, rol, expira) VALUES ('tok-b', 1, 'Usuario B', 'admin', datetime('now', '+1 hour'))");
+    app.use("/protegida", async (req, res, next) => {
+      const token = String(req.headers.authorization || "").replace(/^Bearer /, "");
+      const fila = token ? await estado.db.getQuery("SELECT nombre FROM sesiones WHERE token = ?", [token]) : null;
+      if (!fila) { res.status(401).json({ message: "stub: sin sesion en la DB del tenant" }); return; }
+      req.usuarioStub = fila.nombre;
+      next();
+    });
+    app.get("/protegida/perfil", (req, res) => { res.json({ usuario: req.usuarioStub, slug: getTenantContext().empresaSlug }); });
+    for (const [tenant, token, esperado] of [[tenantA, "tok-a", "Usuario A"], [tenantB, "tok-b", "Usuario B"]]) {
+      const autenticada = await mt1f3Pedir(escucha.port, { host: mt1f3Host(tenant), ruta: "/protegida/perfil", autorizacion: `Bearer ${token}` });
+      assertEqual(autenticada.status, 200, `${esperado}: tenant sano + autenticacion valida atraviesa el middleware`);
+      assertSame(autenticada.json.usuario, esperado, `${esperado}: la autenticacion se resolvio contra la DB del Host`);
+      assertSame(autenticada.json.slug, tenant.slug, `${esperado}: el contexto ALS es el del Host`);
+    }
+    const tokenCruzado = await mt1f3Pedir(escucha.port, { host: mt1f3Host(tenantA), ruta: "/protegida/perfil", autorizacion: "Bearer tok-b" });
+    assertSame(tokenCruzado.json.message, "stub: sin sesion en la DB del tenant", "el token de B no existe en la DB de A: nada cruza entre tenants");
+    const tenantAjeno = await mt1f3Pedir(escucha.port, { host: `nadie.${MT1F3_DOMINIO}`, ruta: "/protegida/perfil", autorizacion: "Bearer tok-a" });
+    assertSame(mt1f3EsNoAutenticado(tenantAjeno), true, "tenant desconocido + token valido de otro tenant: 401 generico del middleware, sin llegar a ninguna DB");
+    assertEqual(diagnosticos.length, 1, "solo el tenant desconocido genero diagnostico interno");
+    assertEqual(estado.instrumento.de(estado.decoyPath).length, 0, "el singleton jamas se abrio");
+  } finally {
+    if (escucha) await escucha.cerrar();
+    await mt1f2Cerrar(estado);
+  }
+}
+
+async function testMT1F3MultiHelpersUsanDbDelHost() {
+  const escenario = await mt1f1CrearEscenario(["a", "b"]);
+  const decoyPath = tempDbPath();
+  try {
+    await mt1f3Sembrar(escenario);
+    const [tenantA, tenantB] = escenario.tenants;
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      // allQuery/getQuery via lecturas publicas de negocio.
+      const productosA = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenantA), ruta: "/tienda/publica/productos" });
+      const productosB = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenantB), ruta: "/tienda/publica/productos" });
+      assertEqual(productosA.status, 200, "lectura de productos en A");
+      assertSame(productosA.texto.includes("Producto A") && !productosA.texto.includes("Producto B"), true, "el Host de A lee SOLO productos de A");
+      assertSame(productosB.texto.includes("Producto B") && !productosB.texto.includes("Producto A"), true, "el Host de B lee SOLO productos de B");
+
+      // runQuery con transaccion via alta publica de pedido.
+      for (const [tenant, cliente] of [[tenantA, "Cliente A"], [tenantB, "Cliente B"]]) {
+        const pedido = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenant), metodo: "POST", ruta: "/tienda/publica/pedidos", cuerpo: { cliente_nombre: cliente, items: [{ producto_id: tenant.productoId, cantidad: 1 }] } });
+        assertSame(pedido.status >= 200 && pedido.status < 300, true, `el pedido de ${cliente} se registra (status=${pedido.status} ${pedido.texto.slice(0, 120)})`);
+      }
+    });
+    const pedidosA = await allSql(tenantA.dbPath, "SELECT cliente_nombre FROM tienda_pedidos");
+    const pedidosB = await allSql(tenantB.dbPath, "SELECT cliente_nombre FROM tienda_pedidos");
+    assertSame(JSON.stringify(pedidosA.map((fila) => fila.cliente_nombre)), JSON.stringify(["Cliente A"]), "verificacion directa: la escritura del Host A quedo SOLO en la DB de A");
+    assertSame(JSON.stringify(pedidosB.map((fila) => fila.cliente_nombre)), JSON.stringify(["Cliente B"]), "verificacion directa: la escritura del Host B quedo SOLO en la DB de B");
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F3ConcurrenteRequestARequestBAisladas() {
+  const escenario = await mt1f1CrearEscenario(["a", "b"]);
+  const decoyPath = tempDbPath();
+  try {
+    await mt1f3Sembrar(escenario);
+    const [tenantA, tenantB] = escenario.tenants;
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      const lecturas = [];
+      for (let indice = 0; indice < 20; indice += 1) {
+        const tenant = indice % 2 === 0 ? tenantA : tenantB;
+        lecturas.push(mt1f3Pedir(servidor.port, { host: mt1f3Host(tenant), ruta: "/tienda/publica" }).then((respuesta) => ({ respuesta, esperado: `Comercio ${tenant.tag.toUpperCase()}` })));
+        lecturas.push(mt1f3Pedir(servidor.port, { host: mt1f3Host(tenant), ruta: "/tienda/publica/productos" }).then((respuesta) => ({ respuesta, esperado: `Producto ${tenant.tag.toUpperCase()}`, ajeno: `Producto ${tenant.tag === "a" ? "B" : "A"}` })));
+      }
+      const resultadosLecturas = await Promise.all(lecturas);
+      for (const resultado of resultadosLecturas) {
+        assertEqual(resultado.respuesta.status, 200, "cada lectura concurrente responde");
+        assertSame(resultado.respuesta.texto.includes(resultado.esperado), true, `la lectura concurrente ve ${resultado.esperado}`);
+        if (resultado.ajeno) assertSame(resultado.respuesta.texto.includes(resultado.ajeno), false, `la lectura concurrente NO ve ${resultado.ajeno}`);
+      }
+
+      // Escrituras: concurrencia ENTRE tenants (A y B a la vez, 6 rondas). Jamas dos transacciones concurrentes sobre
+      // el MISMO tenant: eso es TX-SAME-TENANT (preexistente, OPEN) y no es un requisito ni un alcance de F3.
+      for (let indice = 0; indice < 6; indice += 1) {
+        const ronda = await Promise.all([tenantA, tenantB].map((tenant) => mt1f3Pedir(servidor.port, { host: mt1f3Host(tenant), metodo: "POST", ruta: "/tienda/publica/pedidos", cuerpo: { cliente_nombre: `Cliente ${tenant.tag.toUpperCase()} ${indice}`, items: [{ producto_id: tenant.productoId, cantidad: 1 }] } })));
+        for (const resultado of ronda) {
+          assertSame(resultado.status >= 200 && resultado.status < 300, true, `cada escritura concurrente entre tenants se registra (status=${resultado.status} ${resultado.texto.slice(0, 100)})`);
+        }
+      }
+      assertSame(servidor.salio(), null, "el servidor sobrevive a la carga concurrente");
+    });
+    const pedidosA = await allSql(tenantA.dbPath, "SELECT cliente_nombre FROM tienda_pedidos");
+    const pedidosB = await allSql(tenantB.dbPath, "SELECT cliente_nombre FROM tienda_pedidos");
+    assertEqual(pedidosA.length, 6, "A recibio exactamente sus 6 pedidos concurrentes");
+    assertEqual(pedidosB.length, 6, "B recibio exactamente sus 6 pedidos concurrentes");
+    assertSame(pedidosA.every((fila) => fila.cliente_nombre.startsWith("Cliente A ")), true, "A contiene SOLO pedidos de A");
+    assertSame(pedidosB.every((fila) => fila.cliente_nombre.startsWith("Cliente B ")), true, "B contiene SOLO pedidos de B");
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F3TenantDesconocidoFailsClosed() {
+  const escenario = await mt1f1CrearEscenario(["a"]);
+  const decoyPath = tempDbPath();
+  try {
+    await mt1f3Sembrar(escenario);
+    const [tenantA] = escenario.tenants;
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      const hostDesconocido = `${mt1f1Slug("nadie")}.${MT1F3_DOMINIO}`;
+      for (const [metodo, ruta] of [["GET", "/tienda/publica"], ["GET", "/productos"], ["POST", "/login"]]) {
+        const respuesta = await mt1f3Pedir(servidor.port, { host: hostDesconocido, metodo, ruta, cuerpo: metodo === "POST" ? { usuario: "x", password: "y" } : null });
+        assertSame(mt1f3EsFalloCerrado(respuesta, ruta, metodo), true, `${metodo} ${ruta} sobre un tenant desconocido falla cerrado (status=${respuesta.status} ${respuesta.texto.slice(0, 100)})`);
+      }
+      await delay(100);
+      assertSame(servidor.logs().includes("reason=TENANT_NO_RESUELVE") && servidor.logs().includes("errorCode=REGISTRY_BINDING_INVALID"), true, "el diagnostico INTERNO conserva el motivo exacto");
+      const sano = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenantA), ruta: "/tienda/publica" });
+      assertSame(sano.json && sano.json.nombre, "Comercio A", "un tenant desconocido no afecta al sano");
+      assertSame(servidor.salio(), null, "el servidor sigue vivo (no hubo fallback al singleton)");
+    });
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F3TenantInactivoFailsClosed() {
+  const escenario = await mt1f1CrearEscenario(["a", "b"]);
+  const decoyPath = tempDbPath();
+  try {
+    await mt1f3Sembrar(escenario);
+    const [tenantA, tenantB] = escenario.tenants;
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      const antes = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenantB), ruta: "/tienda/publica" });
+      assertSame(antes.json && antes.json.nombre, "Comercio B", "precondicion: B activa responde");
+
+      await runSql(escenario.controlDbPath, "UPDATE empresas SET activa = 0 WHERE id = ?", [tenantB.empresa.id]);
+      const inactiva = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenantB), ruta: "/tienda/publica" });
+      assertSame(mt1f3EsGenerica404(inactiva, "/tienda/publica"), true, `una empresa inactiva falla cerrado aunque tuviera handle cacheado (status=${inactiva.status})`);
+      await delay(100);
+      assertSame(servidor.logs().includes("errorCode=REGISTRY_COMPANY_INACTIVE"), true, "el diagnostico INTERNO conserva que estaba inactiva");
+      const sana = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenantA), ruta: "/tienda/publica" });
+      assertSame(sana.json && sana.json.nombre, "Comercio A", "la inactiva no afecta a A");
+
+      // Sin cache negativo: reactivada, la MISMA empresa vuelve a servirse sin reiniciar el proceso.
+      await runSql(escenario.controlDbPath, "UPDATE empresas SET activa = 1 WHERE id = ?", [tenantB.empresa.id]);
+      const reactivada = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenantB), ruta: "/tienda/publica" });
+      assertSame(reactivada.json && reactivada.json.nombre, "Comercio B", "reactivada, B vuelve a servirse (no hay cache negativo)");
+    });
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F3TenantDbInvalidaFailsClosed() {
+  const degradado = await mt1f3PrepararDegradado();
+  const decoyPath = tempDbPath();
+  try {
+    const { escenario, por, fallos } = degradado;
+    // El arranque NO verifica tenants: con 6 empresas rotas registradas el proceso arranca igual.
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      for (const fallo of fallos) {
+        const respuesta = await mt1f3Pedir(servidor.port, { host: fallo.host, ruta: "/tienda/publica" });
+        assertSame(mt1f3EsGenerica404(respuesta, "/tienda/publica"), true, `${fallo.nombre}: falla cerrado (status=${respuesta.status})`);
+      }
+      await delay(150);
+      const sano = await mt1f3Pedir(servidor.port, { host: mt1f3Host(por("ok")), ruta: "/tienda/publica" });
+      assertSame(sano.json && sano.json.nombre, "Comercio OK", "los tenants malos NO tumban al sano");
+      assertSame(servidor.salio(), null, "ningun tenant malo tumba el proceso ni cae al singleton");
+      for (const fallo of fallos) {
+        assertSame(servidor.logs().includes(`errorCode=${fallo.codigo}`), true, `el diagnostico INTERNO conserva ${fallo.codigo} (${fallo.nombre})`);
+      }
+
+      // Sin cache negativo: corregida la identity, el mismo tenant se sirve sin reiniciar el proceso.
+      await runSql(por("ident").dbPath, "UPDATE tenant_identity SET tenant_slug = ? WHERE id = 1", [por("ident").slug]);
+      const recuperado = await mt1f3Pedir(servidor.port, { host: mt1f3Host(por("ident")), ruta: "/tienda/publica" });
+      assertSame(recuperado.json && recuperado.json.nombre, "Comercio IDENT", "corregido el tenant se recupera sin reiniciar (no hay cache negativo)");
+    });
+    assertSame(fs.existsSync(por("miss").dbPath), false, "una DB ausente jamas se materializa como archivo vacio");
+  } finally {
+    await mt1f1Limpiar(degradado.escenario);
+  }
+}
+
+async function testMT1F3FallosTenantNoEnumerables() {
+  const degradado = await mt1f3PrepararDegradado();
+  const decoyPath = tempDbPath();
+  try {
+    const { escenario, por, fallos } = degradado;
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      // 1) La misma ruta en TODOS los fallos: status, forma y cabeceras identicos.
+      const rutas = ["/tienda/publica", "/ruta-que-no-existe"];
+      for (const ruta of rutas) {
+        const firmas = new Map();
+        for (const fallo of fallos) {
+          const respuesta = await mt1f3Pedir(servidor.port, { host: fallo.host, ruta });
+          firmas.set(fallo.nombre, JSON.stringify({ status: respuesta.status, contentType: respuesta.contentType, cacheControl: respuesta.cacheControl, texto: respuesta.texto }));
+          for (const secreto of ["TENANT_", "REGISTRY_", "identity", "baseline", "CURRENT", "inactiv", "atlas_control"]) {
+            assertSame(respuesta.texto.includes(secreto), false, `${fallo.nombre}: la respuesta no filtra "${secreto}"`);
+          }
+        }
+        assertEqual(new Set(firmas.values()).size, 1, `los 7 tipos de fallo devuelven la MISMA respuesta externa para ${ruta} (firmas=${JSON.stringify([...firmas])})`);
+      }
+
+      // 2) Y, en rutas PUBLICAS de tenant, esa respuesta es indistinguible de una ruta publica inexistente en un tenant SANO.
+      // (La tienda publica expone por diseno que la empresa existe; las rutas PROTEGIDAS se cubren en 2b: 401 uniforme.)
+      const rutaPublicaInexistente = "/tienda/publica/ruta-que-no-existe";
+      const sanoInexistente = await mt1f3Pedir(servidor.port, { host: mt1f3Host(por("ok")), ruta: rutaPublicaInexistente });
+      assertEqual(sanoInexistente.status, 404, "un tenant sano responde 404 a una ruta publica inexistente");
+      for (const fallo of fallos) {
+        const fallida = await mt1f3Pedir(servidor.port, { host: fallo.host, ruta: rutaPublicaInexistente });
+        assertSame(fallida.texto, sanoInexistente.texto, `${fallo.nombre}: el fallo de tenant es indistinguible de una ruta publica inexistente en un tenant sano`);
+        assertEqual(fallida.status, sanoInexistente.status, `${fallo.nombre}: mismo status`);
+      }
+
+      // 2b) MT-1F3-C1: NO ENUMERACION en rutas PROTEGIDAS. Misma ruta y mismas credenciales (que controla el atacante) contra un
+      // tenant SANO, uno desconocido, uno inactivo, tres con DB invalida/degradada y los Hosts sin candidato: la respuesta
+      // externa es IDENTICA (status, cabeceras y cuerpo) y es UNA sola para todo estado de pre-autenticacion.
+      const tenantSano = por("ok");
+      await runSql(tenantSano.dbPath, "INSERT INTO sesiones (token, usuario_id, nombre, rol, expira, auth_mode) VALUES ('mt1f3-c1-expirado', 1, 'X', 'admin', datetime('now', '-1 hour'), 'central')");
+      await runSql(tenantSano.dbPath, "INSERT INTO sesiones (token, usuario_id, nombre, rol, expira, auth_mode) VALUES ('mt1f3-c1-incompatible', 1, 'X', 'admin', datetime('now', '+1 hour'), 'legacy')");
+      const objetivos = [
+        { nombre: "sano", host: mt1f3Host(tenantSano) },
+        ...fallos.map((fallo) => ({ nombre: fallo.nombre, host: fallo.host })),
+        { nombre: "LOCAL", host: `127.0.0.1:${servidor.port}` },
+        { nombre: "RESERVED", host: `www.${MT1F3_DOMINIO}` },
+        { nombre: "APEX", host: MT1F3_DOMINIO }
+      ];
+      const credenciales = [
+        { nombre: "sin Authorization", autorizacion: null },
+        { nombre: "Authorization malformado", autorizacion: "Basic abc123" },
+        { nombre: "Bearer vacio", autorizacion: "Bearer " },
+        { nombre: "Bearer basura", autorizacion: "Bearer garbage-token-0123456789" },
+        { nombre: "token expirado", autorizacion: "Bearer mt1f3-c1-expirado" },
+        { nombre: "sesion incompatible", autorizacion: "Bearer mt1f3-c1-incompatible" }
+      ];
+      const firmaDe = (respuesta) => JSON.stringify({ status: respuesta.status, cabeceras: respuesta.firmaCabeceras, texto: respuesta.texto });
+      const firmasPreAuth = new Set();
+      let combinaciones = 0;
+      for (const [metodo, rutaProtegida] of [["GET", "/productos"], ["GET", "/ruta-que-no-existe"], ["GET", "/uploads/no-existe.png"], ["POST", "/productos"]]) {
+        for (const credencial of credenciales) {
+          let firmaSano = null;
+          for (const objetivo of objetivos) {
+            const respuesta = await mt1f3Pedir(servidor.port, { host: objetivo.host, metodo, ruta: rutaProtegida, cuerpo: metodo === "POST" ? {} : null, autorizacion: credencial.autorizacion });
+            const etiqueta = `${metodo} ${rutaProtegida} [${credencial.nombre}] @ ${objetivo.nombre}`;
+            assertSame(mt1f3EsNoAutenticado(respuesta), true, `${etiqueta}: 401 generico (status=${respuesta.status} ${respuesta.texto.slice(0, 80)})`);
+            for (const secreto of ["TENANT_", "REGISTRY_", "identity", "baseline", "CURRENT", "inactiv", "atlas_control", "no encontrada"]) {
+              assertSame(respuesta.texto.includes(secreto), false, `${etiqueta}: no filtra "${secreto}"`);
+            }
+            const firma = firmaDe(respuesta);
+            if (firmaSano === null) firmaSano = firma; // el primer objetivo es el tenant SANO
+            assertSame(firma, firmaSano, `${etiqueta}: identica a la respuesta del tenant SANO (status, cabeceras y cuerpo)`);
+            firmasPreAuth.add(firma);
+            combinaciones += 1;
+          }
+        }
+      }
+      assertEqual(firmasPreAuth.size, 1, `existe UNA sola respuesta externa de pre-autenticacion en ${combinaciones} combinaciones (firmas distintas=${firmasPreAuth.size})`);
+
+      // Clase 0 sin cambios: el HTML de login y los estaticos no dependen del tenant (sano o no).
+      for (const objetivo of objetivos) {
+        for (const claseCero of ["/", "/login", "/auth-interceptor.js"]) {
+          assertEqual((await mt1f3Pedir(servidor.port, { host: objetivo.host, ruta: claseCero })).status, 200, `${objetivo.nombre}: ${claseCero} (Clase 0) no depende del tenant`);
+        }
+      }
+
+      // Control positivo (servidor real): una sesion REAL en la DB del tenant sano se BUSCA en esa DB (el contexto llevo a
+      // requireAuth a la DB correcta). No es autorizacion de F4: hoy la revalidacion central aun no puede completarse en
+      // multi; solo se afirma que la respuesta deja de ser el 401 generico de pre-autenticacion.
+      await runSql(tenantSano.dbPath, "INSERT INTO sesiones (token, usuario_id, nombre, rol, expira, auth_mode, central_id, membership_id, empresa_id) VALUES ('mt1f3-c1-valido', 1, 'Usuario OK', 'admin', datetime('now', '+1 hour'), 'central', 1, 1, ?)", [tenantSano.empresa.id]);
+      const conSesion = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenantSano), ruta: "/productos", autorizacion: "Bearer mt1f3-c1-valido" });
+      assertSame(mt1f3EsNoAutenticado(conSesion), false, `la sesion existente en la DB del tenant sano SE ENCONTRO: ya no es la respuesta generica (status=${conSesion.status})`);
+      for (const ajeno of [fallos[0].host, `127.0.0.1:${servidor.port}`]) {
+        const otroHost = await mt1f3Pedir(servidor.port, { host: ajeno, ruta: "/productos", autorizacion: "Bearer mt1f3-c1-valido" });
+        assertSame(mt1f3EsNoAutenticado(otroHost), true, `el mismo token en otro Host (${ajeno}) sigue siendo la respuesta generica: la sesion no existe en ninguna otra DB`);
+      }
+
+      // 3) Internamente SI se distinguen: el diagnostico conserva el motivo exacto de cada caso.
+      await delay(150);
+      const codigosVistos = new Set(fallos.map((fallo) => fallo.codigo).filter((codigo) => servidor.logs().includes(`errorCode=${codigo}`)));
+      assertEqual(codigosVistos.size, 6, "internamente hay 6 motivos distintos (desconocido y path invalido comparten codigo)");
+    });
+
+    // 4) Mismo contrato en proceso: el callback interno recibe el motivo, la respuesta no.
+    const diagnosticos = [];
+    const app = await mt1f3AppMinima({ controlDbPath: escenario.controlDbPath, diagnosticos });
+    app.get("/probe", (req, res) => res.json({ ok: true }));
+    const escucha = await mt1f3Escuchar(app);
+    try {
+      for (const fallo of fallos) await mt1f3Pedir(escucha.port, { host: fallo.host, ruta: "/probe" });
+      assertSame(JSON.stringify(diagnosticos.map((d) => d.errorCode)), JSON.stringify(fallos.map((f) => f.codigo)), "el diagnostico interno preserva el errorCode exacto en orden");
+      assertSame(diagnosticos.every((d) => d.reason === "TENANT_NO_RESUELVE" && d.hostKind === "TENANT"), true, "y el motivo/kind de Host");
+    } finally {
+      await escucha.cerrar();
+    }
+  } finally {
+    await mt1f1Limpiar(degradado.escenario);
+  }
+}
+
+async function testMT1F3LocalFailsClosedEnMulti() {
+  const escenario = await mt1f1CrearEscenario(["a"]);
+  const decoyPath = tempDbPath();
+  try {
+    await mt1f3Sembrar(escenario);
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      for (const host of [`127.0.0.1:${servidor.port}`, `localhost:${servidor.port}`, "localhost", "127.0.0.1"]) {
+        for (const [metodo, ruta] of [["GET", "/tienda/publica"], ["GET", "/productos"], ["POST", "/login"], ["GET", "/tienda/publica/productos"]]) {
+          const respuesta = await mt1f3Pedir(servidor.port, { host, metodo, ruta, cuerpo: metodo === "POST" ? { usuario: "x", password: "y" } : null });
+          assertSame(mt1f3EsFalloCerrado(respuesta, ruta, metodo), true, `LOCAL (${host}): ${metodo} ${ruta} falla cerrado en una ruta de tenant (status=${respuesta.status})`);
+        }
+        // Clase 0: el HTML de login y los estaticos NO resuelven tenant.
+        for (const ruta of ["/", "/login", "/login.html", "/favicon.png", "/auth-interceptor.js"]) {
+          const respuesta = await mt1f3Pedir(servidor.port, { host, ruta });
+          assertEqual(respuesta.status, 200, `LOCAL (${host}): ${ruta} es Clase 0 y no exige tenant`);
+        }
+      }
+      await delay(100);
+      assertSame(servidor.logs().includes("hostKind=LOCAL") && servidor.logs().includes("reason=SIN_CANDIDATO_DE_TENANT"), true, "el diagnostico interno registra que el Host era LOCAL");
+      assertSame(servidor.salio(), null, "sin fallback: el servidor sigue vivo");
+    });
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F3ReservedFailsClosedEnMulti() {
+  const escenario = await mt1f1CrearEscenario(["a"]);
+  const decoyPath = tempDbPath();
+  try {
+    await mt1f3Sembrar(escenario);
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      for (const label of ["www", "app", "api"]) {
+        const host = `${label}.${MT1F3_DOMINIO}`;
+        for (const [metodo, ruta] of [["GET", "/tienda/publica"], ["GET", "/productos"], ["POST", "/login"]]) {
+          const respuesta = await mt1f3Pedir(servidor.port, { host, metodo, ruta, cuerpo: metodo === "POST" ? { usuario: "x", password: "y" } : null });
+          assertSame(mt1f3EsFalloCerrado(respuesta, ruta, metodo), true, `RESERVED (${host}): ${metodo} ${ruta} falla cerrado (status=${respuesta.status})`);
+        }
+        assertEqual((await mt1f3Pedir(servidor.port, { host, ruta: "/login" })).status, 200, `RESERVED (${host}): el HTML de login es Clase 0`);
+      }
+      await delay(100);
+      assertSame(servidor.logs().includes("hostKind=RESERVED"), true, "el diagnostico interno registra RESERVED");
+      assertSame(servidor.salio(), null, "sin fallback: el servidor sigue vivo");
+    });
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F3InvalidFailsClosedEnMulti() {
+  const escenario = await mt1f1CrearEscenario(["a"]);
+  const decoyPath = tempDbPath();
+  try {
+    await mt1f3Sembrar(escenario);
+    const [tenantA] = escenario.tenants;
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      const invalidos = [`a.b.${MT1F3_DOMINIO}`, `x_y.${MT1F3_DOMINIO}`, `-x.${MT1F3_DOMINIO}`, "evil.example.com", "10.0.0.5", `${tenantA.slug}.${MT1F3_DOMINIO}.evil.com`, `${tenantA.slug}.localhost`, `${tenantA.slug}.${MT1F3_DOMINIO}.`];
+      for (const host of invalidos) {
+        for (const [metodo, ruta] of [["GET", "/tienda/publica"], ["POST", "/login"]]) {
+          const respuesta = await mt1f3Pedir(servidor.port, { host, metodo, ruta, cuerpo: metodo === "POST" ? { usuario: "x", password: "y" } : null });
+          assertSame(mt1f3EsGenerica404(respuesta, ruta, metodo), true, `INVALID (${host}): ${metodo} ${ruta} falla cerrado (status=${respuesta.status})`);
+        }
+      }
+      await delay(100);
+      assertSame(servidor.logs().includes("hostKind=INVALID"), true, "el diagnostico interno registra INVALID");
+      assertSame(servidor.salio(), null, "sin fallback: el servidor sigue vivo");
+    });
+
+    // En proceso: contexto de Host ausente o degenerado tambien falla cerrado, sin invocar al resolver.
+    let resolvio = 0;
+    const middleware = crearTenantRequestMiddleware({ authMode: "central", tenancyMode: "multi", resolverHandle: async () => { resolvio += 1; return { ok: false, errorCode: "X" }; } });
+    for (const [nombre, contexto] of [["sin req.tenantHostContext", undefined], ["kind TENANT sin slug", { kind: "TENANT", tenantSlug: "" }], ["kind INVALID", { kind: "INVALID", tenantSlug: null }], ["kind desconocido", { kind: "OTRO", tenantSlug: "x" }]]) {
+      let siguio = 0;
+      const capturado = { status: null, cuerpo: null };
+      const res = { headersSent: false, status(codigo) { capturado.status = codigo; return this; }, json(cuerpo) { capturado.cuerpo = cuerpo; return this; } };
+      await middleware({ method: "GET", path: "/x", tenantHostContext: contexto }, res, () => { siguio += 1; });
+      assertEqual(capturado.status, 404, `${nombre}: responde generico`);
+      assertEqual(siguio, 0, `${nombre}: jamas llama a next`);
+    }
+    assertEqual(resolvio, 0, "sin candidato valido el resolver nunca se invoca");
+
+    // MT-1F3-C1 (unitario): en una ruta PROTEGIDA todo fallo de resolucion responde el 401 generico (aunque el callback de
+    // clasificacion lance); en una ruta publica sigue el 404 generico; el 503 de Control caido es agnostico del tenant.
+    const capturarRespuesta = () => {
+      const capturado = { status: null, cuerpo: null };
+      return { capturado, res: { headersSent: false, status(codigo) { capturado.status = codigo; return this; }, json(cuerpo) { capturado.cuerpo = cuerpo; return this; } } };
+    };
+    for (const [nombre, resultadoResolver, clasificar] of [
+      ["binding invalido", { ok: false, errorCode: "REGISTRY_BINDING_INVALID" }, () => true],
+      ["empresa inactiva", { ok: false, errorCode: "REGISTRY_COMPANY_INACTIVE" }, () => true],
+      ["DB ausente", { ok: false, errorCode: "TENANT_DB_OPEN_FAILED" }, () => true],
+      ["identity invalida con clasificacion que lanza", { ok: false, errorCode: "TENANT_IDENTITY_INVALID" }, () => { throw new Error("boom"); }]
+    ]) {
+      const { capturado, res } = capturarRespuesta();
+      let siguio = 0;
+      const protegido = crearTenantRequestMiddleware({ authMode: "central", tenancyMode: "multi", resolverHandle: async () => resultadoResolver, esRutaProtegida: clasificar });
+      await protegido({ method: "GET", path: "/productos", tenantHostContext: { kind: "TENANT", tenantSlug: "x" } }, res, () => { siguio += 1; });
+      assertEqual(capturado.status, 401, `${nombre}: ruta protegida responde 401`);
+      assertSame(JSON.stringify(capturado.cuerpo), JSON.stringify({ message: MT1F3_MENSAJE_NO_AUTENTICADO }), `${nombre}: cuerpo generico unico, sin motivo`);
+      assertEqual(siguio, 0, `${nombre}: jamas llama a next`);
+    }
+    const publica = capturarRespuesta();
+    await crearTenantRequestMiddleware({ authMode: "central", tenancyMode: "multi", resolverHandle: async () => ({ ok: false, errorCode: "REGISTRY_BINDING_INVALID" }), esRutaProtegida: () => false })({ method: "GET", path: "/tienda/publica", tenantHostContext: { kind: "TENANT", tenantSlug: "x" } }, publica.res, () => {});
+    assertEqual(publica.capturado.status, 404, "ruta publica de tenant: sigue el 404 generico");
+    const controlCaido = capturarRespuesta();
+    await crearTenantRequestMiddleware({ authMode: "central", tenancyMode: "multi", resolverHandle: async () => ({ ok: false, errorCode: "REGISTRY_UNAVAILABLE" }), esRutaProtegida: () => true })({ method: "GET", path: "/productos", tenantHostContext: { kind: "TENANT", tenantSlug: "x" } }, controlCaido.res, () => {});
+    assertEqual(controlCaido.capturado.status, 503, "Control caido: 503 generico, agnostico del tenant");
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F3ApexFailsClosedEnRutaTenant() {
+  const escenario = await mt1f1CrearEscenario(["a"]);
+  const decoyPath = tempDbPath();
+  try {
+    await mt1f3Sembrar(escenario);
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      for (const host of [MT1F3_DOMINIO, `${MT1F3_DOMINIO}:8443`, MT1F3_DOMINIO.toUpperCase()]) {
+        for (const [metodo, ruta] of [["GET", "/tienda/publica"], ["GET", "/productos"], ["POST", "/login"], ["POST", "/logout"], ["POST", "/tienda/publica/pedidos"]]) {
+          const respuesta = await mt1f3Pedir(servidor.port, { host, metodo, ruta, cuerpo: metodo === "POST" ? { usuario: "x", password: "y", cliente_nombre: "x", items: [{ producto_id: 1, cantidad: 1 }] } : null });
+          assertSame(mt1f3EsFalloCerrado(respuesta, ruta, metodo), true, `APEX (${host}): ${metodo} ${ruta} falla cerrado, sin Guernica implicita (status=${respuesta.status})`);
+        }
+        for (const ruta of ["/", "/login"]) {
+          assertEqual((await mt1f3Pedir(servidor.port, { host, ruta })).status, 200, `APEX (${host}): ${ruta} (HTML de login) no requiere tenant`);
+        }
+      }
+      assertSame(servidor.salio(), null, "el servidor sigue vivo: no hubo empresa por defecto");
+    });
+    // En proceso: un Host ausente se interpreta como INVALID por el parser existente y falla cerrado.
+    assertSame(parseTenantHost(undefined).kind, "INVALID", "el parser existente trata la ausencia de Host como INVALID");
+    assertSame(parseTenantHost(MT1F3_DOMINIO).kind, "RESERVED", "el parser existente trata el apex como RESERVED (sin candidato de tenant)");
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F3NoFallbackAGuernicaEnMulti() {
+  // Testigo estatico: ni el middleware ni la rama multi del gate consultan el entorno de empresa/DB fija.
+  const middlewareSrc = fs.readFileSync(path.join(ROOT, "backend", "tenantRequestMiddleware.js"), "utf8").replace(/\/\/.*$/gm, "");
+  for (const prohibido of ["process.env", "GUERNICA_DB_PATH", "ATLAS_EMPRESA_SLUG", "resolveBusinessDbPath", "require(\"./db\")", "sqlite3", "guernica"]) {
+    assertSame(middlewareSrc.includes(prohibido), false, `el middleware no debe referenciar ${prohibido}`);
+  }
+  // MT-1F3-C1: la clasificacion publica/protegida es de server.js; el middleware NO mantiene una segunda copia de la tabla.
+  for (const copia of ["/tienda/publica", "RUTAS_PUBLICAS", "\"/logout\"", "\"/login\""]) {
+    assertSame(middlewareSrc.includes(copia), false, `el middleware no debe duplicar la tabla de rutas publicas (${copia})`);
+  }
+  const serverSrc = fs.readFileSync(path.join(ROOT, "backend", "server.js"), "utf8");
+  assertSame(serverSrc.includes("esRutaProtegida: (req) => !esRutaPublicaSinAuth(req.path)"), true, "server.js entrega la clasificacion al middleware reutilizando su propia tabla");
+  assertEqual((serverSrc.match(/esRutaPublicaSinAuth\(/g) || []).length, 3, "esRutaPublicaSinAuth: definicion + requireAuth + callback del middleware (una sola autoridad)");
+  assertSame(/function esRutaPublicaSinAuth\(rutaPath\) \{\s*return RUTAS_PUBLICAS\.has\(rutaPath\) \|\| rutaPath\.startsWith\("\/tienda\/publica\/"\);/.test(serverSrc), true, "la clasificacion sigue derivando de RUTAS_PUBLICAS");
+  const inicioGate = serverSrc.indexOf("async function validarTenantAntesDeAbrirDb()");
+  const ramaMulti = serverSrc.slice(inicioGate, serverSrc.indexOf("const configuredPath = resolveBusinessDbPath();", inicioGate));
+  assertSame(/ATLAS_TENANCY_MODE === TENANCY_MODES\.MULTI/.test(ramaMulti), true, "la rama multi del gate existe");
+  for (const prohibido of ["resolveBusinessDbPath", "ATLAS_EMPRESA_SLUG", "GUERNICA_DB_PATH", "configuredPath"]) {
+    assertSame(ramaMulti.includes(prohibido), false, `la rama multi del gate no debe usar ${prohibido}`);
+  }
+
+  // End-to-end: GUERNICA_DB_PATH INEXISTENTE. Un fallback lo abriria sin OPEN_CREATE y tumbaria el proceso.
+  const escenario = await mt1f1CrearEscenario(["a"]);
+  const canario = tempDbPath();
+  try {
+    await mt1f3Sembrar(escenario);
+    const [tenantA] = escenario.tenants;
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, canario), async (servidor) => {
+      const sano = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenantA), ruta: "/tienda/publica" });
+      assertSame(sano.json && sano.json.nombre, "Comercio A", "un tenant valido se sirve desde SU DB");
+      // Tras servir A, ningun fallo puede caer en 'el ultimo tenant' ni en el singleton.
+      for (const host of [`nadie.${MT1F3_DOMINIO}`, `www.${MT1F3_DOMINIO}`, "127.0.0.1", MT1F3_DOMINIO, `a.b.${MT1F3_DOMINIO}`]) {
+        for (const ruta of ["/tienda/publica", "/tienda/publica/productos", "/productos"]) {
+          const respuesta = await mt1f3Pedir(servidor.port, { host, ruta });
+          assertSame(mt1f3EsFalloCerrado(respuesta, ruta), true, `${host} ${ruta}: falla cerrado, sin datos de A ni de Guernica`);
+          assertSame(respuesta.texto.includes("Comercio"), false, `${host} ${ruta}: no se filtra ningun comercio`);
+        }
+      }
+      assertSame(servidor.salio(), null, "el servidor sigue vivo: ninguna ruta toco el singleton legacy");
+    });
+    assertSame(fs.existsSync(canario), false, "el path de GUERNICA_DB_PATH jamas se creo ni se abrio");
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+
+  // En proceso: instrumentacion de aperturas sqlite. Con exitos y fallos, el singleton NO se abre.
+  const estado = await mt1f2Preparar(["a"]);
+  const diagnosticos = [];
+  let escucha = null;
+  try {
+    await mt1f3Sembrar(estado.escenario);
+    const [tenantA] = estado.tenants;
+    const app = await mt1f3AppMinima({ controlDbPath: estado.escenario.controlDbPath, diagnosticos });
+    app.get("/probe", async (req, res) => { const fila = await estado.db.getQuery("SELECT valor FROM configuracion_global WHERE clave = 'negocio_nombre_comercial'"); res.json({ negocio: JSON.parse(fila.valor) }); });
+    escucha = await mt1f3Escuchar(app);
+    assertSame((await mt1f3Pedir(escucha.port, { host: mt1f3Host(tenantA), ruta: "/probe" })).json.negocio, "Comercio A", "A se sirve");
+    for (const host of [`nadie.${MT1F3_DOMINIO}`, "127.0.0.1", MT1F3_DOMINIO]) {
+      assertSame(mt1f3EsGenerica404(await mt1f3Pedir(escucha.port, { host, ruta: "/probe" }), "/probe"), true, `${host}: falla cerrado tras haber servido A`);
+    }
+    const prohibidas = mt1f2AperturasProhibidas(estado.instrumento, estado.decoyPath);
+    assertEqual(prohibidas.decoy, 0, "el singleton legacy jamas se abrio (ni en exitos ni en fallos)");
+    assertEqual(prohibidas.guernica, 0, "database/guernica.db real jamas se abrio");
+  } finally {
+    if (escucha) await escucha.cerrar();
+    await mt1f2Cerrar(estado);
+  }
+}
+
+async function testMT1F3ErrorRequestLimpiaContexto() {
+  const estado = await mt1f2Preparar(["a", "b"]);
+  const diagnosticos = [];
+  let escucha = null;
+  try {
+    await mt1f3Sembrar(estado.escenario);
+    const [tenantA, tenantB] = estado.tenants;
+    const app = await mt1f3AppMinima({ controlDbPath: estado.escenario.controlDbPath, diagnosticos });
+    app.get("/probe", async (req, res) => { const fila = await estado.db.getQuery("SELECT valor FROM configuracion_global WHERE clave = 'negocio_nombre_comercial'"); res.json({ slug: getTenantContext().empresaSlug, negocio: JSON.parse(fila.valor) }); });
+    app.get("/lento", async (req, res) => {
+      const errores = [];
+      for (let indice = 0; indice < 15; indice += 1) {
+        await delay(10);
+        const fila = await estado.db.getQuery("SELECT valor FROM configuracion_global WHERE clave = 'negocio_nombre_comercial'");
+        if (getTenantContext().empresaSlug !== req.tenantHostContext.tenantSlug || JSON.parse(fila.valor) !== "Comercio B") errores.push(`paso#${indice}`);
+      }
+      res.json({ errores });
+    });
+    app.get("/boom-async", async () => { await delay(15); await estado.db.getQuery("SELECT 1 AS uno"); throw new Error("boom-async"); });
+    app.get("/boom-sync", () => { throw new Error("boom-sync"); });
+    app.get("/sin-tenant", (req, res) => { res.json({ hay: hasTenantContext(), contexto: getTenantContext() }); });
+    app.use((error, req, res, next) => { res.status(500).json({ ok: false, error: error.message, contextoEnManejador: hasTenantContext() }); });
+    escucha = await mt1f3Escuchar(app);
+
+    // B corre una cadena larga mientras A falla en mitad de la suya.
+    const largaB = mt1f3Pedir(escucha.port, { host: mt1f3Host(tenantB), ruta: "/lento" });
+    const falloA = await mt1f3Pedir(escucha.port, { host: mt1f3Host(tenantA), ruta: "/boom-async" });
+    assertEqual(falloA.status, 500, "el error asincrono de la ruta se convierte en 500 por el manejador de errores");
+    assertSame(falloA.json.error, "boom-async", "el error se propaga intacto (no se enmascara como ruta inexistente)");
+    const falloSync = await mt1f3Pedir(escucha.port, { host: mt1f3Host(tenantA), ruta: "/boom-sync" });
+    assertEqual(falloSync.status, 500, "el error sincronico tambien");
+    assertSame(hasTenantContext(), false, "tras los errores no queda contexto en el proceso");
+    const respuestaB = await largaB;
+    assertSame(JSON.stringify(respuestaB.json.errores), JSON.stringify([]), "la request de B, en vuelo durante el error de A, mantuvo su contexto y su DB");
+
+    // La request siguiente no queda contaminada: ni por A (que fallo) ni por B (la ultima en vuelo).
+    const siguienteA = await mt1f3Pedir(escucha.port, { host: mt1f3Host(tenantA), ruta: "/probe" });
+    assertSame(siguienteA.json.negocio, "Comercio A", "la request siguiente sobre A ve A");
+    const siguienteB = await mt1f3Pedir(escucha.port, { host: mt1f3Host(tenantB), ruta: "/probe" });
+    assertSame(siguienteB.json.negocio, "Comercio B", "la request siguiente sobre B ve B");
+    const eximida = await mt1f3Pedir(escucha.port, { host: `127.0.0.1:${escucha.port}`, ruta: "/sin-tenant" });
+    assertSame(eximida.json.hay, false, "una ruta sin tenant tras errores y requests previas corre SIN contexto residual");
+    assertSame(mt1f3EsGenerica404(await mt1f3Pedir(escucha.port, { host: `nadie.${MT1F3_DOMINIO}`, ruta: "/probe" }), "/probe"), true, "un tenant desconocido tras los errores falla cerrado, sin heredar el ultimo contexto");
+    assertSame(hasTenantContext(), false, "fin: el proceso de test no tiene contexto");
+    assertEqual(estado.instrumento.de(estado.decoyPath).length, 0, "el singleton jamas se abrio");
+    assertEqual((await mt1f1Consultar(estado.handles[0].db, "SELECT 1 AS uno"))[0].uno, 1, "el error no cerro ninguna conexion de tenant");
+  } finally {
+    if (escucha) await escucha.cerrar();
     await mt1f2Cerrar(estado);
   }
 }

@@ -16,6 +16,13 @@ const { verificarBusinessSchemaVersion } = require("./businessSchemaVersion");
 const { resolveBusinessDbPath } = require("./resolveBusinessDbPath");
 const { parseTenantHost } = require("./tenantHostContext");
 const {
+  TENANCY_MODES,
+  parsearTenancyMode,
+  verificarControlDisponible,
+  responderNoAutenticado,
+  crearTenantRequestMiddleware
+} = require("./tenantRequestMiddleware");
+const {
   CONFIGURACION_DEFAULTS,
   getConfiguracionGlobal,
   parsearConfigValor,
@@ -279,9 +286,33 @@ const ATLAS_AUTH_MODE = (() => {
   }
   return modo;
 })();
+
+// MT-1F3: modo de tenancy del proceso, independiente del modo de autenticacion y tambien resuelto una
+// unica vez al cargar el modulo. "single" (default) = comportamiento actual: legacy con la DB
+// configurada, o central con la empresa fija ATLAS_EMPRESA_SLUG. "multi" = routing de tenant por
+// request (MT-1F3), valido SOLO junto con ATLAS_AUTH_MODE=central. Cualquier otra combinacion o valor
+// tumba el proceso antes de app.listen(); nunca se degrada en silencio.
+const ATLAS_TENANCY_MODE = (() => {
+  const parsed = parsearTenancyMode(process.env.ATLAS_TENANCY_MODE);
+  if (!parsed.ok) {
+    console.error(`[FATAL] ATLAS_TENANCY_MODE invalido: "${process.env.ATLAS_TENANCY_MODE}". Valores permitidos: single, multi.`);
+    process.exit(1);
+  }
+  if (parsed.mode === TENANCY_MODES.MULTI && ATLAS_AUTH_MODE !== "central") {
+    console.error("[FATAL] ATLAS_TENANCY_MODE=multi requiere ATLAS_AUTH_MODE=central.");
+    process.exit(1);
+  }
+  return parsed.mode;
+})();
 const ATLAS_EMPRESA_SLUG = String(process.env.ATLAS_EMPRESA_SLUG || "").trim();
-if (ATLAS_AUTH_MODE === "central" && !ATLAS_EMPRESA_SLUG) {
+if (ATLAS_AUTH_MODE === "central" && ATLAS_TENANCY_MODE === TENANCY_MODES.SINGLE && !ATLAS_EMPRESA_SLUG) {
   console.error("[FATAL] ATLAS_AUTH_MODE=central requiere ATLAS_EMPRESA_SLUG configurado.");
+  process.exit(1);
+}
+// En multi el proceso NO representa una empresa fija: una empresa declarada por entorno seria un
+// fallback prohibido (y, sin MT-1F4, dejaria autenticar contra la membership de OTRA empresa).
+if (ATLAS_TENANCY_MODE === TENANCY_MODES.MULTI && ATLAS_EMPRESA_SLUG) {
+  console.error("[FATAL] ATLAS_TENANCY_MODE=multi no admite ATLAS_EMPRESA_SLUG: el proceso no esta atado a una empresa.");
   process.exit(1);
 }
 
@@ -298,7 +329,16 @@ if (ATLAS_AUTH_MODE === "central" && !ATLAS_EMPRESA_SLUG) {
 // CENTRAL: preserva exactamente la semantica ya existente de registry (empresa activa + path
 // canonico) + tenant_identity READONLY, y ADEMAS exige baseline ready + schema CURRENT sobre la
 // misma business DB ya identificada -- el modo mas estricto, nunca mas debil que legacy.
+//
+// MT-1F3 (central + multi): no hay una business DB fija que verificar al arrancar. Solo se exige que el
+// Control plane este disponible; cada tenant se verifica de forma perezosa por request (MT-1F1) y un
+// tenant malo jamas impide arrancar ni afecta a los sanos. GUERNICA_DB_PATH no interviene.
 async function validarTenantAntesDeAbrirDb() {
+  if (ATLAS_TENANCY_MODE === TENANCY_MODES.MULTI) {
+    await verificarControlDisponible({ controlDbPath: process.env.ATLAS_CONTROL_DB_PATH || undefined });
+    return;
+  }
+
   const configuredPath = resolveBusinessDbPath();
 
   if (ATLAS_AUTH_MODE !== "central") {
@@ -408,6 +448,23 @@ app.use(express.static(path.join(__dirname, "../frontend"), {
 }));
 
 const RUTAS_PUBLICAS = new Set(["/", "/login", "/logout", "/tienda/publica", "/tienda/publica/productos", "/tienda/publica/pedidos"]);
+
+// Clasificacion publica/protegida: UNICA fuente de verdad. La usan requireAuth y, via callback, el middleware
+// de contexto de tenant (MT-1F3-C1), que no mantiene ninguna copia de esta tabla.
+function esRutaPublicaSinAuth(rutaPath) {
+  return RUTAS_PUBLICAS.has(rutaPath) || rutaPath.startsWith("/tienda/publica/");
+}
+
+// MT-1F3-C1: en central + multi, antes de que exista autenticacion, la respuesta externa a una ruta protegida
+// es UNA sola (401 generico), sin importar si el tenant existe, esta activo o tiene DB sana. El Authorization
+// lo controla el atacante, por eso "sin token", "token basura", "token expirado/inexistente" y "sesion
+// incompatible" tambien colapsan en esa respuesta. Fuera de central + multi los mensajes historicos no cambian.
+const PREAUTH_UNIFORME = ATLAS_AUTH_MODE === "central" && ATLAS_TENANCY_MODE === TENANCY_MODES.MULTI;
+
+function rechazarNoAutenticado(res, mensajeHistorico) {
+  if (PREAUTH_UNIFORME) return responderNoAutenticado(res);
+  return res.status(401).json({ message: mensajeHistorico });
+}
 const CENTRAL_SESSION_AUTHORITY_ERRORS = new Set([
   "EMPRESA_INACTIVA",
   "MEMBERSHIP_INACTIVA",
@@ -429,13 +486,13 @@ function logError(contexto, error, extra = "") {
 }
 
 async function requireAuth(req, res, next) {
-  if (RUTAS_PUBLICAS.has(req.path) || req.path.startsWith("/tienda/publica/")) return next();
+  if (esRutaPublicaSinAuth(req.path)) return next();
 
   const authHeader = String(req.headers.authorization || "");
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
 
   if (!token) {
-    return res.status(401).json({ message: "No autenticado. Iniciá sesión." });
+    return rechazarNoAutenticado(res, "No autenticado. Iniciá sesión.");
   }
 
   try {
@@ -444,7 +501,7 @@ async function requireAuth(req, res, next) {
       [token]
     );
     if (!sesion) {
-      return res.status(401).json({ message: "Sesión expirada. Iniciá sesión nuevamente." });
+      return rechazarNoAutenticado(res, "Sesión expirada. Iniciá sesión nuevamente.");
     }
 
     // MT-1C.2B.2B: barrera de procedencia. Una sesion emitida bajo una autoridad (legacy/central)
@@ -455,7 +512,7 @@ async function requireAuth(req, res, next) {
     const sesionAuthMode = String(sesion.auth_mode || "legacy").trim().toLowerCase();
     const sesionCentralCompleta = sesion.central_id !== null && sesion.membership_id !== null && sesion.empresa_id !== null;
     if (sesionAuthMode !== ATLAS_AUTH_MODE || (sesionAuthMode === "central" && !sesionCentralCompleta)) {
-      return res.status(401).json({ message: "Sesión incompatible. Iniciá sesión nuevamente." });
+      return rechazarNoAutenticado(res, "Sesión incompatible. Iniciá sesión nuevamente.");
     }
 
     if (sesionAuthMode === "legacy") {
@@ -495,6 +552,22 @@ async function requireAuth(req, res, next) {
     return res.status(500).json({ message: "Error de autenticación" });
   }
 }
+
+// MT-1F3: contexto de tenant por request, SOLO en central + multi. Va DESPUES de la Clase 0 (estaticos
+// del frontend y /uploads, ya registrados arriba, jamas resuelven tenant) y ANTES de requireAuth y de
+// todas las rutas de aplicacion, para que autenticacion y negocio corran dentro del contexto. Las unicas
+// rutas exentas son el HTML de login (GET / y GET /login), que no toca la business DB. En los demas
+// modos es un passthrough. Esto resuelve CONTEXTO; el Host no autoriza a nadie (autorizacion: MT-1F4).
+app.use(crearTenantRequestMiddleware({
+  authMode: ATLAS_AUTH_MODE,
+  tenancyMode: ATLAS_TENANCY_MODE,
+  controlDbPath: process.env.ATLAS_CONTROL_DB_PATH || undefined,
+  eximirRuta: (req) => (req.method === "GET" || req.method === "HEAD") && (req.path === "/" || req.path === "/login"),
+  esRutaProtegida: (req) => !esRutaPublicaSinAuth(req.path),
+  alFallar: (diagnostico) => {
+    console.error(`[TENANT] request sin contexto de tenant: reason=${diagnostico.reason} hostKind=${diagnostico.hostKind} errorCode=${diagnostico.errorCode} cause=${diagnostico.cause} slug=${JSON.stringify(diagnostico.tenantSlug)}`);
+  }
+}));
 
 app.use(requireAuth);
 
