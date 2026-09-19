@@ -74,6 +74,7 @@ const { prepararLegacyParaBaseline001 } = require("../database/prepare-legacy-ba
 const { crearBaseline001EnConexion } = require("../database/business-schema-baseline");
 const { provisionarTenantDb } = require("../database/provision-tenant-db");
 const { resolveTenantHandle, closeTenantHandle, closeAllTenantHandles, TENANT_RUNTIME_ERROR_CODES } = require("../backend/runtimeTenantRegistry");
+const { runWithTenantHandle, getTenantContext, getTenantHandle, hasTenantContext } = require("../backend/tenantRequestContext");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -20771,6 +20772,20 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1F1PathDuplicadoEntreEmpresasFailsClosed);
   await _run(testMT1F1CerrarTenantNoCierraOtro);
   await _run(testMT1F1CerrarTodosPermiteReabrir);
+  await _run(testMT1F2ContextoAusentePorDefecto);
+  await _run(testMT1F2HandleInvalidoNoEntraContexto);
+  await _run(testMT1F2ContextoPropagaAwaitYTimers);
+  await _run(testMT1F2ContextosConcurrentesAislados);
+  await _run(testMT1F2ContextoAnidadoRestauraAnterior);
+  await _run(testMT1F2DbGetDbUsaHandleActivo);
+  await _run(testMT1F2DbSinContextoConservaSingleton);
+  await _run(testMT1F2DbContextoNoFallbackASingleton);
+  await _run(testMT1F2CloseDbNoCierraHandleTenant);
+  await _run(testMT1F2HelpersDesestructuradosResuelvenEnEjecucion);
+  await _run(testMT1F2SqlLecturaEsAisladaAB);
+  await _run(testMT1F2SqlEscrituraConcurrenteEsAisladaAB);
+  await _run(testMT1F2TransaccionANoInterfiereConB);
+  await _run(testMT1F2ErrorLimpiaContextoSinAfectarOtro);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -33106,5 +33121,694 @@ async function testMT1F1CerrarTodosPermiteReabrir() {
   } finally {
     instrumento.restaurar();
     await mt1f1Limpiar(escenario);
+  }
+}
+
+// ====================================================================================================
+// MT-1F2: contexto asincrono de tenant (backend/tenantRequestContext.js) + backend/db.js consciente de
+// contexto. Todo el comportamiento se ejercita contra DBs de prueba efimeras. Los handles SQL son
+// handles REALES de MT-1F1 (backend/runtimeTenantRegistry.js) sobre business DBs frescas registrables.
+// El singleton legacy de backend/db.js se ejercita SIEMPRE a traves de una instancia AISLADA del
+// modulo, ligada a una DB "decoy" temporal (mt1f2CargarModulosAislados): asi ningun test, ni siquiera
+// ante una regresion de fallback, puede abrir database/guernica.db real. TX-SAME-TENANT sigue OPEN:
+// estos tests certifican aislamiento ENTRE tenants, jamas transacciones concurrentes del MISMO tenant.
+// ====================================================================================================
+function mt1f2HandleFalso(empresaId, empresaSlug) {
+  const contadores = { run: 0, get: 0, all: 0 };
+  const db = { run() { contadores.run += 1; }, get() { contadores.get += 1; }, all() { contadores.all += 1; } };
+  const handle = Object.freeze({
+    empresaId,
+    empresaSlug,
+    registeredPath: `${empresaSlug}.db`,
+    canonicalPath: path.join(os.tmpdir(), `${empresaSlug}.db`),
+    db,
+    verifiedAt: new Date().toISOString()
+  });
+  return { handle, contadores };
+}
+
+// Carga una instancia NUEVA de backend/db.js (y de los servicios pedidos) ligada a `decoyPath`, sin
+// alterar el modulo real del proceso ni el entorno: al terminar se restauran cache de require y env.
+function mt1f2CargarModulosAislados(decoyPath, servicios = []) {
+  const claveDb = require.resolve("../backend/db");
+  const claves = [claveDb, ...servicios.map((nombre) => require.resolve(`../backend/services/${nombre}`))];
+  const originales = claves.map((clave) => require.cache[clave]);
+  const envAnterior = process.env.GUERNICA_DB_PATH;
+  process.env.GUERNICA_DB_PATH = decoyPath;
+  try {
+    claves.forEach((clave) => { delete require.cache[clave]; });
+    const db = require("../backend/db");
+    const cargados = {};
+    for (const nombre of servicios) cargados[nombre] = require(`../backend/services/${nombre}`);
+    return { db, servicios: cargados };
+  } finally {
+    if (envAnterior === undefined) delete process.env.GUERNICA_DB_PATH;
+    else process.env.GUERNICA_DB_PATH = envAnterior;
+    claves.forEach((clave, indice) => {
+      if (originales[indice]) require.cache[clave] = originales[indice];
+      else delete require.cache[clave];
+    });
+  }
+}
+
+async function mt1f2CrearDecoy() {
+  const decoyPath = tempDbPath();
+  await runSql(decoyPath, "CREATE TABLE singleton_marker (valor TEXT NOT NULL)");
+  await runSql(decoyPath, "INSERT INTO singleton_marker (valor) VALUES ('decoy-singleton')");
+  return decoyPath;
+}
+
+async function mt1f2LimpiarDecoy(decoyPath) {
+  for (const sufijo of ["", "-journal", "-wal", "-shm"]) {
+    await mt1f1EliminarArchivo(`${decoyPath}${sufijo}`);
+  }
+}
+
+// Escenario completo: N tenants F1 con handles REALES resueltos, decoy singleton, instrumentacion de
+// aperturas sqlite y modulos aislados. mt1f2Cerrar deja todo sin residuos.
+async function mt1f2Preparar(tags, servicios = []) {
+  const estado = { escenario: null, decoyPath: null, instrumento: null, db: null, servicios: {}, handles: [], tenants: [] };
+  try {
+    estado.escenario = await mt1f1CrearEscenario(tags);
+    estado.tenants = estado.escenario.tenants;
+    estado.decoyPath = await mt1f2CrearDecoy();
+    estado.instrumento = mt1f1InstrumentarSqlite();
+    const aislado = mt1f2CargarModulosAislados(estado.decoyPath, servicios);
+    estado.db = aislado.db;
+    estado.servicios = aislado.servicios;
+    for (const tenant of estado.tenants) {
+      const resultado = await mt1f1Resolver(tenant, estado.escenario.controlDbPath);
+      assertSame(resultado.ok, true, `el handle F1 de ${tenant.tag} debe resolver (resultado=${JSON.stringify(resultado)})`);
+      estado.handles.push(resultado.handle);
+    }
+    return estado;
+  } catch (error) {
+    await mt1f2Cerrar(estado);
+    throw error;
+  }
+}
+
+async function mt1f2Cerrar(estado) {
+  if (estado.db) { try { await estado.db.closeDb(); } catch (error) { /* singleton aislado ya cerrado */ } }
+  if (estado.instrumento) estado.instrumento.restaurar();
+  if (estado.escenario) await mt1f1Limpiar(estado.escenario);
+  if (estado.decoyPath) await mt1f2LimpiarDecoy(estado.decoyPath);
+}
+
+function mt1f2Barrera() {
+  let liberar;
+  const promesa = new Promise((resolve) => { liberar = resolve; });
+  return { promesa, liberar };
+}
+
+function mt1f2AperturasProhibidas(instrumento, decoyPath) {
+  const guernica = path.resolve(SOURCE_DB).toLowerCase();
+  const decoy = path.resolve(decoyPath).toLowerCase();
+  return {
+    guernica: instrumento.todas().filter((apertura) => apertura.archivo === guernica).length,
+    decoy: instrumento.todas().filter((apertura) => apertura.archivo === decoy && typeof apertura.modo === "number").length
+  };
+}
+
+async function testMT1F2ContextoAusentePorDefecto() {
+  assertSame(hasTenantContext(), false, "sin runWithTenantHandle no debe haber contexto");
+  assertSame(getTenantHandle(), null, "getTenantHandle sin contexto devuelve null");
+  assertSame(getTenantContext(), null, "getTenantContext sin contexto devuelve null");
+  assertSame(
+    JSON.stringify(Object.keys(require("../backend/tenantRequestContext")).sort()),
+    JSON.stringify(["getTenantContext", "getTenantHandle", "hasTenantContext", "runWithTenantHandle"]),
+    "la API publica del modulo de contexto es exactamente la congelada"
+  );
+
+  // Testigo estatico: solo el built-in async_hooks; sin Express/auth/Host/Control/sqlite ni entorno.
+  const fuente = fs.readFileSync(path.join(ROOT, "backend", "tenantRequestContext.js"), "utf8");
+  const ejecutable = fuente.replace(/\/\/.*$/gm, "");
+  const dependencias = Array.from(ejecutable.matchAll(/require\("([^"]+)"\)/g), (coincidencia) => coincidencia[1]);
+  assertSame(JSON.stringify(dependencias), JSON.stringify(["async_hooks"]), "la unica dependencia del modulo de contexto es el built-in async_hooks");
+  for (const prohibido of ["express", "sqlite3", "process.env", "runtimeTenantRegistry", "init-control-db", "centralAuth", "tenantHostContext", "userControlBridge", "sesiones"]) {
+    assertSame(ejecutable.includes(prohibido), false, `el modulo de contexto no debe depender de ${prohibido}`);
+  }
+
+  // Requerir contexto + db.js + servicios en un proceso limpio jamas crea contexto ni abre/crea la DB.
+  const decoyInexistente = tempDbPath();
+  const script = `
+    const ctx = require(${JSON.stringify(path.join(ROOT, "backend", "tenantRequestContext.js"))});
+    require(${JSON.stringify(path.join(ROOT, "backend", "db.js"))});
+    for (const servicio of ["ventaService", "cajaService", "stockService", "configService"]) {
+      require(${JSON.stringify(path.join(ROOT, "backend", "services"))} + "/" + servicio);
+    }
+    console.log(JSON.stringify({ has: ctx.hasTenantContext(), handle: ctx.getTenantHandle(), contexto: ctx.getTenantContext() }));
+  `;
+  const resultado = spawnSync(process.execPath, ["-e", script], { cwd: ROOT, env: { ...process.env, GUERNICA_DB_PATH: decoyInexistente }, encoding: "utf8" });
+  assertEqual(resultado.status, 0, `el require de los modulos en proceso limpio debe salir 0\n${resultado.stderr}`);
+  const observado = JSON.parse(resultado.stdout.trim());
+  assertSame(observado.has, false, "requerir modulos no crea contexto");
+  assertSame(observado.handle, null, "no hay tenant por defecto tras requerir");
+  assertSame(observado.contexto, null, "no hay contexto tras requerir");
+  assertSame(fs.existsSync(decoyInexistente), false, "requerir db.js/servicios no abre ni crea ninguna DB");
+}
+
+async function testMT1F2HandleInvalidoNoEntraContexto() {
+  const { handle: valido, contadores } = mt1f2HandleFalso(1, "tenant-valido");
+  const { empresaId, ...sinEmpresaId } = valido;
+  const { empresaSlug, ...sinSlug } = valido;
+  const { canonicalPath, ...sinCanonical } = valido;
+  const { db, ...sinDb } = valido;
+  const invalidos = [
+    ["null", null], ["undefined", undefined], ["string", "handle"], ["numero", 7], ["array", []],
+    ["objeto valido pero SIN congelar", { ...valido }],
+    ["sin empresaId", Object.freeze(sinEmpresaId)], ["empresaId 0", Object.freeze({ ...valido, empresaId: 0 })],
+    ["empresaId negativo", Object.freeze({ ...valido, empresaId: -3 })], ["empresaId string", Object.freeze({ ...valido, empresaId: "1" })],
+    ["empresaId decimal", Object.freeze({ ...valido, empresaId: 1.5 })],
+    ["sin slug", Object.freeze(sinSlug)], ["slug vacio", Object.freeze({ ...valido, empresaSlug: "" })],
+    ["slug con espacios", Object.freeze({ ...valido, empresaSlug: " tenant " })], ["slug no string", Object.freeze({ ...valido, empresaSlug: 5 })],
+    ["sin canonicalPath", Object.freeze(sinCanonical)], ["canonicalPath vacio", Object.freeze({ ...valido, canonicalPath: "" })],
+    ["canonicalPath solo espacios", Object.freeze({ ...valido, canonicalPath: "   " })],
+    ["sin db", Object.freeze(sinDb)], ["db null", Object.freeze({ ...valido, db: null })],
+    ["db sin metodos", Object.freeze({ ...valido, db: {} })], ["db parcial", Object.freeze({ ...valido, db: { run() {} } })]
+  ];
+  for (const [nombre, candidato] of invalidos) {
+    let invocado = false;
+    let error = null;
+    try {
+      runWithTenantHandle(candidato, () => { invocado = true; });
+    } catch (capturado) {
+      error = capturado;
+    }
+    assertSame(error instanceof TypeError, true, `${nombre}: debe rechazarse con TypeError (error=${error})`);
+    assertSame(error.code, "TENANT_CONTEXT_INVALID_HANDLE", `${nombre}: codigo de rechazo estable`);
+    assertSame(invocado, false, `${nombre}: el callback jamas se invoca con un handle invalido`);
+    assertSame(hasTenantContext(), false, `${nombre}: no queda contexto tras el rechazo`);
+  }
+
+  for (const callbackInvalido of [null, undefined, "no-funcion", 42]) {
+    let error = null;
+    try { runWithTenantHandle(valido, callbackInvalido); } catch (capturado) { error = capturado; }
+    assertSame(error && error.code, "TENANT_CONTEXT_INVALID_HANDLE", "un callback que no es funcion se rechaza");
+  }
+
+  // Un handle bien formado SI entra: el contexto solo transporta, no reabre ni reverifica la conexion.
+  let observado = null;
+  const retorno = runWithTenantHandle(valido, () => { observado = getTenantHandle(); return "devuelto"; });
+  assertSame(retorno, "devuelto", "runWithTenantHandle devuelve lo que devuelve el callback");
+  assertSame(observado, valido, "el contexto transporta el MISMO handle, no una copia");
+  assertEqual(contadores.run + contadores.get + contadores.all, 0, "entrar/salir del contexto no toca la conexion del handle");
+  assertSame(hasTenantContext(), false, "al terminar el callback el contexto desaparece");
+
+  // El store del contexto es inmutable: nadie puede cambiar el binding empresa/path/conexion a mitad de cadena.
+  let contexto = null;
+  runWithTenantHandle(valido, () => { contexto = getTenantContext(); });
+  assertSame(Object.isFrozen(contexto), true, "el store del contexto esta congelado");
+  assertSame(
+    JSON.stringify(Object.keys(contexto).sort()),
+    JSON.stringify(["canonicalPath", "empresaId", "empresaSlug", "tenantHandle"]),
+    "el store contiene exactamente el minimo contractual"
+  );
+  assertSame(contexto.tenantHandle, valido, "el store transporta el mismo handle verificado");
+  assertEqual(contexto.empresaId, valido.empresaId, "empresaId del store");
+  assertSame(contexto.empresaSlug, valido.empresaSlug, "empresaSlug del store");
+  assertSame(contexto.canonicalPath, valido.canonicalPath, "canonicalPath del store");
+  const mutacionesStore = [
+    () => { "use strict"; contexto.empresaId = 999; },
+    () => { "use strict"; contexto.empresaSlug = "otro"; },
+    () => { "use strict"; contexto.canonicalPath = "C:\otro.db"; },
+    () => { "use strict"; contexto.tenantHandle = null; },
+    () => { "use strict"; contexto.extra = true; },
+    () => { "use strict"; delete contexto.tenantHandle; }
+  ];
+  for (let indice = 0; indice < mutacionesStore.length; indice += 1) {
+    assertThrows(mutacionesStore[indice], `la mutacion #${indice + 1} del store debe rechazarse`);
+  }
+  assertSame(contexto.tenantHandle, valido, "el binding del store no cambio tras los intentos de mutacion");
+  assertSame(Object.isFrozen(valido.db), false, "la conexion del handle NO se congela: su ciclo de vida es del registry");
+}
+
+async function testMT1F2ContextoPropagaAwaitYTimers() {
+  const { handle } = mt1f2HandleFalso(11, "propaga");
+  const memoria = new sqlite3.Database(":memory:");
+  const observaciones = [];
+  const ver = (etapa) => { observaciones.push([etapa, getTenantHandle() === handle]); };
+  // Helper anidado SIN parametros de contexto: la propagacion debe ser implicita.
+  const helperAnidado = async () => {
+    ver("helper anidado (antes)");
+    await Promise.resolve();
+    ver("helper anidado (tras await)");
+    await delay(2);
+    ver("helper anidado (tras timer)");
+  };
+
+  try {
+    const retorno = await runWithTenantHandle(handle, async () => {
+      ver("inicio");
+      await Promise.resolve(); ver("await Promise.resolve");
+      await new Promise((resolve) => setImmediate(resolve)); ver("await setImmediate");
+      await delay(5); ver("await setTimeout");
+      await new Promise((resolve) => process.nextTick(resolve)); ver("await process.nextTick");
+      await Promise.resolve().then(() => ver("cadena then 1")).then(() => ver("cadena then 2")).finally(() => ver("cadena finally"));
+      await new Promise((resolve) => queueMicrotask(() => { ver("queueMicrotask"); resolve(); }));
+      // Contrato relevante para backend/db.js: sqlite3 envuelto en una promesa. El callback nativo crudo
+      // de sqlite3 corre fuera del contexto ALS (detalle del addon, NO se exige ni se asume), pero db.js
+      // solo lo usa para resolver/rechazar la promesa: la continuacion del await SI conserva el contexto.
+      await new Promise((resolve, reject) => memoria.get("SELECT 1 AS uno", (error, fila) => {
+        if (error) reject(error); else resolve(fila);
+      }));
+      ver("await tras query sqlite3 envuelta en promesa");
+      await new Promise((resolve, reject) => memoria.all("SELECT 2 AS dos", (error, filas) => {
+        if (error) reject(error); else resolve(filas);
+      }));
+      ver("segunda query sqlite3 envuelta en promesa");
+      await new Promise((resolve) => setTimeout(() => { ver("dentro del callback de setTimeout"); resolve(); }, 3));
+      await new Promise((resolve) => setImmediate(() => { ver("dentro del callback de setImmediate"); resolve(); }));
+      await helperAnidado(); ver("tras helper anidado");
+      await Promise.all([helperAnidado(), helperAnidado()]); ver("tras Promise.all de helpers");
+      await Promise.race([delay(1), delay(6)]); ver("tras Promise.race");
+      return "completo";
+    });
+    assertSame(retorno, "completo", "la cadena async completa debe terminar");
+  } finally {
+    await new Promise((resolve) => memoria.close(() => resolve()));
+  }
+
+  const perdidas = observaciones.filter(([, presente]) => !presente).map(([etapa]) => etapa);
+  assertEqual(perdidas.length, 0, `el contexto se perdio en: ${JSON.stringify(perdidas)}`);
+  assertSame(observaciones.length >= 20, true, `se esperaban >= 20 observaciones, hubo ${observaciones.length}`);
+  assertSame(hasTenantContext(), false, "fuera de la cadena no queda contexto");
+}
+
+async function testMT1F2ContextosConcurrentesAislados() {
+  const { handle: handleA } = mt1f2HandleFalso(21, "concurrente-a");
+  const { handle: handleB } = mt1f2HandleFalso(22, "concurrente-b");
+  const orden = [];
+  const rama = (handle, pasos) => runWithTenantHandle(handle, async () => {
+    const errores = [];
+    const verificar = (etapa) => { if (getTenantHandle() !== handle) errores.push(`${handle.empresaSlug}:${etapa}`); };
+    for (let indice = 0; indice < pasos; indice += 1) {
+      await delay(Math.floor(Math.random() * 4)); verificar(`timer#${indice}`); orden.push(handle.empresaSlug);
+      await Promise.resolve(); verificar(`microtask#${indice}`);
+      await new Promise((resolve) => setImmediate(resolve)); verificar(`immediate#${indice}`);
+    }
+    return errores;
+  });
+
+  const resultados = await Promise.all([rama(handleA, 50), rama(handleB, 50), rama(handleA, 30), rama(handleB, 30)]);
+  for (const errores of resultados) {
+    assertEqual(errores.length, 0, `contaminacion entre contextos concurrentes: ${JSON.stringify(errores.slice(0, 5))}`);
+  }
+  let alternancias = 0;
+  for (let indice = 1; indice < orden.length; indice += 1) if (orden[indice] !== orden[indice - 1]) alternancias += 1;
+  assertSame(alternancias >= 10, true, `el test debe haber intercalado ramas A y B de verdad (alternancias=${alternancias})`);
+  assertSame(hasTenantContext(), false, "tras completar ambas ramas el contexto externo esta ausente");
+  assertSame(getTenantHandle(), null, "y no queda ningun handle 'ultimo usado'");
+}
+
+async function testMT1F2ContextoAnidadoRestauraAnterior() {
+  const { handle: handleA } = mt1f2HandleFalso(31, "anidado-a");
+  const { handle: handleB } = mt1f2HandleFalso(32, "anidado-b");
+  const eventos = [];
+  const anotar = (etiqueta, esperado) => eventos.push([etiqueta, getTenantHandle() === esperado]);
+  let contextoA = null;
+  let contextoB = null;
+
+  await runWithTenantHandle(handleA, async () => {
+    contextoA = getTenantContext();
+    anotar("A antes de anidar", handleA);
+    await runWithTenantHandle(handleB, async () => {
+      contextoB = getTenantContext();
+      anotar("B dentro", handleB);
+      await delay(3);
+      anotar("B tras await", handleB);
+      await runWithTenantHandle(handleA, async () => { anotar("A anidado en B", handleA); });
+      anotar("B tras A anidado", handleB);
+    });
+    anotar("A tras volver de B", handleA);
+    await delay(2);
+    anotar("A tras await posterior", handleA);
+    const sincrono = runWithTenantHandle(handleB, () => getTenantHandle() === handleB);
+    eventos.push(["B sincronico anidado", sincrono]);
+    anotar("A tras anidado sincronico", handleA);
+    assertSame(getTenantContext(), contextoA, "el store de A vuelve a ser exactamente el original");
+  });
+  anotar("afuera", null);
+
+  const fallidos = eventos.filter(([, ok]) => !ok).map(([etiqueta]) => etiqueta);
+  assertEqual(fallidos.length, 0, `semantica de pila incorrecta en: ${JSON.stringify(fallidos)}`);
+  assertSame(contextoA === contextoB, false, "cada nivel tiene su propio store");
+  assertSame(contextoB.tenantHandle, handleB, "el store de B transporta el handle de B");
+  assertSame(hasTenantContext(), false, "terminado el nivel externo no hay contexto");
+}
+
+async function testMT1F2DbGetDbUsaHandleActivo() {
+  const estado = await mt1f2Preparar(["getdb"]);
+  try {
+    const [handle] = estado.handles;
+    const [tenant] = estado.tenants;
+    assertEqual(estado.instrumento.de(estado.decoyPath).length, 0, "cargar el modulo aislado no abre el singleton (apertura lazy)");
+
+    await runWithTenantHandle(handle, async () => {
+      assertSame(estado.db.getDb(), handle.db, "getDb con contexto activo devuelve EXACTAMENTE la conexion del handle");
+      const fila = await estado.db.getQuery("SELECT tenant_slug FROM tenant_identity WHERE id = 1");
+      assertSame(fila.tenant_slug, tenant.slug, "getQuery lee la business DB del tenant activo");
+    });
+
+    const prohibidas = mt1f2AperturasProhibidas(estado.instrumento, estado.decoyPath);
+    assertEqual(prohibidas.decoy, 0, "con contexto activo el singleton jamas se abre");
+    assertEqual(prohibidas.guernica, 0, "database/guernica.db real jamas se abre");
+  } finally {
+    await mt1f2Cerrar(estado);
+  }
+}
+
+async function testMT1F2DbSinContextoConservaSingleton() {
+  const decoyPath = await mt1f2CrearDecoy();
+  const instrumento = mt1f1InstrumentarSqlite();
+  let db = null;
+  try {
+    db = mt1f2CargarModulosAislados(decoyPath).db;
+    assertEqual(instrumento.de(decoyPath).length, 0, "require no abre ni crea la DB (apertura lazy)");
+    assertSame(db.dbPath, path.resolve(decoyPath), "dbPath sigue viniendo del entorno, como siempre");
+    assertSame(hasTenantContext(), false, "el test corre SIN contexto");
+
+    const fila = await db.getQuery("SELECT valor FROM singleton_marker");
+    assertSame(fila.valor, "decoy-singleton", "sin contexto getQuery usa el singleton legacy");
+    const escrito = await db.runQuery("INSERT INTO singleton_marker (valor) VALUES (?)", ["segunda"]);
+    assertEqual(escrito.changes, 1, "sin contexto runQuery escribe en el singleton legacy");
+    const filas = await db.allQuery("SELECT valor FROM singleton_marker ORDER BY valor");
+    assertEqual(filas.length, 2, "sin contexto allQuery lee el singleton legacy");
+
+    const aperturas = instrumento.de(decoyPath);
+    assertEqual(aperturas.length, 1, "una sola apertura lazy del singleton para tres operaciones");
+    assertSame(aperturas[0].modo, sqlite3.OPEN_READWRITE, "el singleton conserva OPEN_READWRITE explicito");
+    assertEqual(aperturas[0].modo & sqlite3.OPEN_CREATE, 0, "y sigue sin OPEN_CREATE");
+    assertSame(db.getDb(), aperturas[0].instancia, "getDb devuelve la instancia singleton");
+    assertSame(db.getDb(), db.getDb(), "el singleton es estable entre llamadas");
+
+    await db.closeDb();
+    assertSame(await mt1f1ConexionCerrada(aperturas[0].instancia), true, "closeDb cierra el singleton");
+    await db.closeDb();
+    const reabierta = await db.getQuery("SELECT COUNT(*) AS total FROM singleton_marker");
+    assertEqual(reabierta.total, 2, "tras closeDb la proxima operacion reabre el singleton");
+    assertEqual(instrumento.de(decoyPath).length, 2, "el singleton se reabrio una vez");
+    assertEqual(mt1f2AperturasProhibidas(instrumento, decoyPath).guernica, 0, "database/guernica.db real jamas se abre");
+  } finally {
+    if (db) { try { await db.closeDb(); } catch (error) { /* ya cerrado */ } }
+    instrumento.restaurar();
+    await mt1f2LimpiarDecoy(decoyPath);
+  }
+}
+
+async function testMT1F2DbContextoNoFallbackASingleton() {
+  const estado = await mt1f2Preparar(["nofallback"]);
+  try {
+    const [handle] = estado.handles;
+    const cierre = await closeTenantHandle(handle);
+    assertSame(cierre.ok && cierre.closed, true, "el registry (dueno del ciclo de vida) cierra el handle");
+    assertSame(await mt1f1ConexionCerrada(handle.db), true, "precondicion: la conexion del handle esta cerrada");
+
+    await runWithTenantHandle(handle, async () => {
+      assertSame(estado.db.getDb(), handle.db, "con contexto activo getDb sigue devolviendo la conexion del handle, aunque este cerrada");
+      for (const [nombre, operacion] of [
+        ["runQuery", () => estado.db.runQuery("SELECT 1")],
+        ["getQuery", () => estado.db.getQuery("SELECT 1 AS uno")],
+        ["allQuery", () => estado.db.allQuery("SELECT 1 AS uno")]
+      ]) {
+        let error = null;
+        try { await operacion(); } catch (capturado) { error = capturado; }
+        assertSame(error !== null, true, `${nombre} sobre un handle cerrado debe fallar`);
+        assertSame(/closed|MISUSE/i.test(`${error.code} ${error.message}`), true, `${nombre}: debe ser el error de sqlite de conexion cerrada (fue: ${error.code} ${error.message})`);
+      }
+    });
+
+    const prohibidas = mt1f2AperturasProhibidas(estado.instrumento, estado.decoyPath);
+    assertEqual(prohibidas.decoy, 0, "el fallo NO abrio el singleton como fallback");
+    assertEqual(prohibidas.guernica, 0, "el fallo NO abrio database/guernica.db");
+  } finally {
+    await mt1f2Cerrar(estado);
+  }
+}
+
+async function testMT1F2CloseDbNoCierraHandleTenant() {
+  const estado = await mt1f2Preparar(["closedb"]);
+  try {
+    const [handle] = estado.handles;
+    const [tenant] = estado.tenants;
+
+    // Abre el singleton FUERA de contexto y luego llama closeDb DENTRO de un contexto de tenant.
+    const marcador = await estado.db.getQuery("SELECT valor FROM singleton_marker");
+    assertSame(marcador.valor, "decoy-singleton", "precondicion: singleton abierto fuera de contexto");
+    const instanciaSingleton = estado.instrumento.de(estado.decoyPath)[0].instancia;
+
+    await runWithTenantHandle(handle, async () => { await estado.db.closeDb(); });
+    assertSame(await mt1f1ConexionCerrada(instanciaSingleton), true, "closeDb cierra SOLO el singleton legacy");
+    const filas = await mt1f1Consultar(handle.db, "SELECT 1 AS uno");
+    assertEqual(filas[0].uno, 1, "closeDb dentro del contexto NO cerro la conexion del handle");
+
+    // Sin singleton abierto, closeDb dentro del contexto tampoco toca el handle.
+    await runWithTenantHandle(handle, async () => {
+      await estado.db.closeDb();
+      const fila = await estado.db.getQuery("SELECT tenant_slug FROM tenant_identity WHERE id = 1");
+      assertSame(fila.tenant_slug, tenant.slug, "el handle sigue sirviendo su DB tras closeDb");
+    });
+
+    const otra = await mt1f1Resolver(tenant, estado.escenario.controlDbPath);
+    assertSame(otra.handle, handle, "el registry sigue teniendo publicado el mismo handle: el ciclo de vida sigue siendo suyo");
+  } finally {
+    await mt1f2Cerrar(estado);
+  }
+}
+
+async function testMT1F2HelpersDesestructuradosResuelvenEnEjecucion() {
+  const estado = await mt1f2Preparar(["destructA", "destructB"], ["configService"]);
+  try {
+    const [handleA, handleB] = estado.handles;
+    // Referencias capturadas ANTES de entrar a cualquier contexto, como hacen los servicios reales.
+    const { runQuery, getQuery, allQuery } = estado.db;
+    const { getConfiguracionGlobal } = estado.servicios.configService;
+    const sqlNombre = "SELECT valor FROM configuracion_global WHERE clave = 'negocio_nombre_comercial'";
+    const escribir = (etiqueta) => runQuery(
+      "INSERT OR REPLACE INTO configuracion_global (clave, valor, seccion, actualizado_en) VALUES ('negocio_nombre_comercial', ?, 'negocio', datetime('now'))",
+      [JSON.stringify(etiqueta)]
+    );
+
+    await runWithTenantHandle(handleA, async () => { await escribir("Comercio A"); });
+    await runWithTenantHandle(handleB, async () => { await escribir("Comercio B"); });
+
+    for (const [handle, etiqueta] of [[handleA, "Comercio A"], [handleB, "Comercio B"]]) {
+      await runWithTenantHandle(handle, async () => {
+        assertSame((await getQuery(sqlNombre)).valor, JSON.stringify(etiqueta), `getQuery capturado resuelve al tenant activo (${etiqueta})`);
+        assertEqual((await allQuery(sqlNombre)).length, 1, "allQuery capturado ve una sola fila");
+        const config = await getConfiguracionGlobal();
+        assertSame(config.negocio_nombre_comercial, etiqueta, `el servicio REAL configService (require al cargar) lee ${etiqueta}`);
+      });
+    }
+
+    // La MISMA referencia capturada, fuera de todo contexto, sigue usando el singleton legacy.
+    const fueraDeContexto = await getQuery("SELECT valor FROM singleton_marker");
+    assertSame(fueraDeContexto.valor, "decoy-singleton", "sin contexto la referencia capturada usa el singleton");
+
+    const enA = await allSql(estado.tenants[0].dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'negocio_nombre_comercial'");
+    const enB = await allSql(estado.tenants[1].dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'negocio_nombre_comercial'");
+    assertSame(JSON.stringify(enA.map((fila) => fila.valor)), JSON.stringify(['"Comercio A"']), "verificacion directa: A solo tiene A");
+    assertSame(JSON.stringify(enB.map((fila) => fila.valor)), JSON.stringify(['"Comercio B"']), "verificacion directa: B solo tiene B");
+    assertEqual(mt1f2AperturasProhibidas(estado.instrumento, estado.decoyPath).guernica, 0, "database/guernica.db real jamas se abre");
+  } finally {
+    await mt1f2Cerrar(estado);
+  }
+}
+
+async function testMT1F2SqlLecturaEsAisladaAB() {
+  const estado = await mt1f2Preparar(["lecturaA", "lecturaB"]);
+  try {
+    const [tenantA, tenantB] = estado.tenants;
+    const [handleA, handleB] = estado.handles;
+    const sembrar = (tenant, valor, propio) => Promise.all([
+      runSql(tenant.dbPath, "INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en) VALUES ('mt1f2_marker', ?, 'test', datetime('now'))", [valor]),
+      runSql(tenant.dbPath, "INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en) VALUES (?, '1', 'test', datetime('now'))", [propio])
+    ]);
+    // Sembrado secuencial por tenant (runSql abre conexiones propias sobre el archivo, ya con handle F1 abierto).
+    await sembrar(tenantA, "A", "mt1f2_solo_a");
+    await sembrar(tenantB, "B", "mt1f2_solo_b");
+
+    const leer = (handle, esperado, propio, ajeno) => runWithTenantHandle(handle, async () => {
+      const errores = [];
+      for (let indice = 0; indice < 25; indice += 1) {
+        await delay(Math.floor(Math.random() * 3));
+        const marcador = await estado.db.getQuery("SELECT valor FROM configuracion_global WHERE clave = 'mt1f2_marker'");
+        if (!marcador || marcador.valor !== esperado) errores.push(`marcador#${indice}=${marcador && marcador.valor}`);
+        const claves = (await estado.db.allQuery("SELECT clave FROM configuracion_global WHERE clave LIKE 'mt1f2_%' ORDER BY clave")).map((fila) => fila.clave);
+        if (JSON.stringify(claves) !== JSON.stringify(["mt1f2_marker", propio])) errores.push(`claves#${indice}=${JSON.stringify(claves)}`);
+        const delAjeno = await estado.db.getQuery("SELECT valor FROM configuracion_global WHERE clave = ?", [ajeno]);
+        if (delAjeno !== undefined) errores.push(`ajeno#${indice} visible`);
+        await estado.db.runQuery("SELECT 1");
+      }
+      return errores;
+    });
+
+    const [erroresA, erroresB] = await Promise.all([
+      leer(handleA, "A", "mt1f2_solo_a", "mt1f2_solo_b"),
+      leer(handleB, "B", "mt1f2_solo_b", "mt1f2_solo_a")
+    ]);
+    assertEqual(erroresA.length, 0, `lecturas concurrentes en A vieron datos ajenos: ${JSON.stringify(erroresA.slice(0, 3))}`);
+    assertEqual(erroresB.length, 0, `lecturas concurrentes en B vieron datos ajenos: ${JSON.stringify(erroresB.slice(0, 3))}`);
+    assertEqual(mt1f2AperturasProhibidas(estado.instrumento, estado.decoyPath).decoy, 0, "ninguna lectura toco el singleton");
+  } finally {
+    await mt1f2Cerrar(estado);
+  }
+}
+
+async function testMT1F2SqlEscrituraConcurrenteEsAisladaAB() {
+  const estado = await mt1f2Preparar(["escrituraA", "escrituraB"]);
+  try {
+    const [tenantA, tenantB] = estado.tenants;
+    const [handleA, handleB] = estado.handles;
+    const total = 30;
+    const escribir = (handle, etiqueta) => runWithTenantHandle(handle, async () => {
+      for (let indice = 0; indice < total; indice += 1) {
+        await delay(Math.floor(Math.random() * 3));
+        const resultado = await estado.db.runQuery(
+          "INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en) VALUES (?, ?, 'test', datetime('now'))",
+          [`mt1f2_w_${etiqueta}_${indice}`, etiqueta]
+        );
+        if (resultado.changes !== 1) throw new Error(`insert ${etiqueta}#${indice} changes=${resultado.changes}`);
+      }
+    });
+    await Promise.all([escribir(handleA, "A"), escribir(handleB, "B")]);
+
+    const filasA = await allSql(tenantA.dbPath, "SELECT clave, valor FROM configuracion_global WHERE clave LIKE 'mt1f2_w_%'");
+    const filasB = await allSql(tenantB.dbPath, "SELECT clave, valor FROM configuracion_global WHERE clave LIKE 'mt1f2_w_%'");
+    assertEqual(filasA.length, total, "verificacion directa: A recibio exactamente sus escrituras");
+    assertEqual(filasB.length, total, "verificacion directa: B recibio exactamente sus escrituras");
+    assertSame(filasA.every((fila) => fila.valor === "A" && fila.clave.startsWith("mt1f2_w_A_")), true, "A contiene SOLO escrituras de A");
+    assertSame(filasB.every((fila) => fila.valor === "B" && fila.clave.startsWith("mt1f2_w_B_")), true, "B contiene SOLO escrituras de B");
+    assertEqual(mt1f2AperturasProhibidas(estado.instrumento, estado.decoyPath).decoy, 0, "ninguna escritura toco el singleton");
+  } finally {
+    await mt1f2Cerrar(estado);
+  }
+}
+
+async function testMT1F2TransaccionANoInterfiereConB() {
+  const estado = await mt1f2Preparar(["txA", "txB"]);
+  try {
+    const [tenantA, tenantB] = estado.tenants;
+    const [handleA, handleB] = estado.handles;
+    const insertar = (clave, valor) => estado.db.runQuery(
+      "INSERT INTO configuracion_global (clave, valor, seccion, actualizado_en) VALUES (?, ?, 'test', datetime('now'))",
+      [clave, valor]
+    );
+
+    // Escenario 1: A abre su transaccion y la mantiene ABIERTA mientras B abre y cierra la suya.
+    // Si compartieran conexion, B fallaria con "cannot start a transaction within a transaction".
+    const aAbierta = mt1f2Barrera();
+    const bAbierta = mt1f2Barrera();
+    const transaccionA = runWithTenantHandle(handleA, async () => {
+      await estado.db.runQuery("BEGIN TRANSACTION");
+      await insertar("mt1f2_tx1", "A-commit");
+      aAbierta.liberar();
+      await bAbierta.promesa;
+      await delay(20);
+      await estado.db.runQuery("COMMIT");
+      return "A-ok";
+    });
+    const transaccionB = runWithTenantHandle(handleB, async () => {
+      await aAbierta.promesa;
+      await estado.db.runQuery("BEGIN IMMEDIATE");
+      await insertar("mt1f2_tx1", "B-commit");
+      bAbierta.liberar();
+      const propio = await estado.db.getQuery("SELECT valor FROM configuracion_global WHERE clave = 'mt1f2_tx1'");
+      await estado.db.runQuery("COMMIT");
+      return propio.valor;
+    });
+    const [resultadoA, resultadoB] = await Promise.all([transaccionA, transaccionB]);
+    assertSame(resultadoA, "A-ok", "la transaccion de A completa sin error causado por B");
+    assertSame(resultadoB, "B-commit", "B lee su propia escritura dentro de su transaccion");
+    assertSame(JSON.stringify((await allSql(tenantA.dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'mt1f2_tx1'")).map((fila) => fila.valor)), JSON.stringify(["A-commit"]), "A committeo solo lo suyo");
+    assertSame(JSON.stringify((await allSql(tenantB.dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'mt1f2_tx1'")).map((fila) => fila.valor)), JSON.stringify(["B-commit"]), "B committeo solo lo suyo");
+
+    // Escenario 2: A hace ROLLBACK mientras B escribe SIN transaccion propia. Con un singleton compartido
+    // la escritura de B se perderia junto al ROLLBACK de A; con conexiones separadas no hay cruce.
+    const aEscribio = mt1f2Barrera();
+    const bEscribio = mt1f2Barrera();
+    const rollbackA = runWithTenantHandle(handleA, async () => {
+      await estado.db.runQuery("BEGIN TRANSACTION");
+      await insertar("mt1f2_tx2", "A-rollback");
+      aEscribio.liberar();
+      await bEscribio.promesa;
+      await estado.db.runQuery("ROLLBACK");
+      return "A-rollback-ok";
+    });
+    const autocommitB = runWithTenantHandle(handleB, async () => {
+      await aEscribio.promesa;
+      await insertar("mt1f2_tx2", "B-autocommit");
+      bEscribio.liberar();
+      return "B-autocommit-ok";
+    });
+    assertSame((await Promise.all([rollbackA, autocommitB])).join(","), "A-rollback-ok,B-autocommit-ok", "ambas ramas completan sin errores cruzados");
+    assertEqual((await allSql(tenantA.dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'mt1f2_tx2'")).length, 0, "el ROLLBACK de A descarto la escritura de A");
+    assertSame(
+      JSON.stringify((await allSql(tenantB.dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'mt1f2_tx2'")).map((fila) => fila.valor)),
+      JSON.stringify(["B-autocommit"]),
+      "el ROLLBACK de A NO revirtio la escritura de B"
+    );
+    assertEqual(mt1f2AperturasProhibidas(estado.instrumento, estado.decoyPath).decoy, 0, "ninguna transaccion toco el singleton");
+  } finally {
+    await mt1f2Cerrar(estado);
+  }
+}
+
+async function testMT1F2ErrorLimpiaContextoSinAfectarOtro() {
+  const estado = await mt1f2Preparar(["errorA", "errorB"]);
+  try {
+    const [tenantA, tenantB] = estado.tenants;
+    const [handleA, handleB] = estado.handles;
+
+    // B corre una cadena larga mientras A falla en mitad de la suya.
+    const ramaB = runWithTenantHandle(handleB, async () => {
+      const errores = [];
+      for (let indice = 0; indice < 20; indice += 1) {
+        await delay(4);
+        if (getTenantHandle() !== handleB) errores.push(`handle#${indice}`);
+        const fila = await estado.db.getQuery("SELECT tenant_slug FROM tenant_identity WHERE id = 1");
+        if (fila.tenant_slug !== tenantB.slug) errores.push(`db#${indice}=${fila.tenant_slug}`);
+      }
+      return errores;
+    });
+
+    let capturado = null;
+    try {
+      await runWithTenantHandle(handleA, async () => {
+        await delay(8);
+        await estado.db.runQuery("SELECT 1");
+        throw new Error("boom-A");
+      });
+    } catch (error) {
+      capturado = error;
+    }
+    assertSame(capturado && capturado.message, "boom-A", "el error de un callback async se propaga intacto");
+    assertSame(hasTenantContext(), false, "tras el rechazo el contexto de A desaparecio");
+    const erroresB = await ramaB;
+    assertEqual(erroresB.length, 0, `el contexto concurrente de B quedo intacto: ${JSON.stringify(erroresB.slice(0, 3))}`);
+
+    let sincrono = null;
+    try { runWithTenantHandle(handleA, () => { throw new Error("boom-sync"); }); } catch (error) { sincrono = error; }
+    assertSame(sincrono && sincrono.message, "boom-sync", "el error de un callback sincronico se propaga intacto");
+    assertSame(hasTenantContext(), false, "tras el throw sincronico tampoco queda contexto");
+
+    // El error NO cierra conexiones ni invalida el cache del registry.
+    assertEqual((await mt1f1Consultar(handleA.db, "SELECT 1 AS uno"))[0].uno, 1, "la conexion de A sigue abierta");
+    const otraVez = await mt1f1Resolver(tenantA, estado.escenario.controlDbPath);
+    assertSame(otraVez.handle, handleA, "el registry conserva el mismo handle publicado de A");
+
+    // Ningun tenant 'ultimo usado' se vuelve el default.
+    for (let indice = 0; indice < 30; indice += 1) {
+      await runWithTenantHandle(indice % 2 === 0 ? handleA : handleB, async () => { await estado.db.getQuery("SELECT 1 AS uno"); });
+      assertSame(getTenantHandle(), null, `tras la corrida #${indice} no queda handle por defecto`);
+    }
+    const singleton = estado.db.getDb();
+    assertSame(singleton === handleA.db || singleton === handleB.db, false, "fuera de contexto getDb vuelve al singleton, no a un tenant previo");
+    const aperturas = estado.instrumento.de(estado.decoyPath);
+    assertEqual(aperturas.length, 1, "recien FUERA de contexto se abre el singleton legacy");
+    assertSame(singleton, aperturas[0].instancia, "y es la instancia singleton sobre el decoy");
+    assertEqual(mt1f2AperturasProhibidas(estado.instrumento, estado.decoyPath).guernica, 0, "database/guernica.db real jamas se abre");
+  } finally {
+    await mt1f2Cerrar(estado);
   }
 }
