@@ -73,6 +73,7 @@ const { BUSINESS_MIGRATIONS } = require("../database/business-migrations");
 const { prepararLegacyParaBaseline001 } = require("../database/prepare-legacy-baseline");
 const { crearBaseline001EnConexion } = require("../database/business-schema-baseline");
 const { provisionarTenantDb } = require("../database/provision-tenant-db");
+const { resolveTenantHandle, closeTenantHandle, closeAllTenantHandles, TENANT_RUNTIME_ERROR_CODES } = require("../backend/runtimeTenantRegistry");
 
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_DB = path.join(ROOT, "database", "guernica.db");
@@ -20754,6 +20755,22 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1E7BBusinessWritesNormalesFuncionan);
   await _run(testMT1E7BCurrentBootPersistentSnapshotSinMutacion);
   await _run(testMT1E7BReadOnlyRequestNoSchemaMutation);
+  await _run(testMT1F1HandleCurrentValido);
+  await _run(testMT1F1HandleUsaOpenReadwriteSinCreate);
+  await _run(testMT1F1MissingDbNoCreaArchivo);
+  await _run(testMT1F1IdentityMismatchFailsClosed);
+  await _run(testMT1F1BaselineInvalidoFailsClosed);
+  await _run(testMT1F1SchemaUnversionedFailsClosed);
+  await _run(testMT1F1SchemaNoCurrentFailsClosed);
+  await _run(testMT1F1HandleInmutable);
+  await _run(testMT1F1MismoTenantCacheaMismoHandle);
+  await _run(testMT1F1MismoTenantConcurrenteSingleFlight);
+  await _run(testMT1F1FalloConcurrenteNoQuedaCacheado);
+  await _run(testMT1F1TenantAErrorNoAfectaTenantB);
+  await _run(testMT1F1TenantsDistintosHandlesDistintos);
+  await _run(testMT1F1PathDuplicadoEntreEmpresasFailsClosed);
+  await _run(testMT1F1CerrarTenantNoCierraOtro);
+  await _run(testMT1F1CerrarTodosPermiteReabrir);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -32439,5 +32456,655 @@ async function testMT1E7BReadOnlyRequestNoSchemaMutation() {
     });
   } finally {
     fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// ====================================================================================================
+// MT-1F1: runtime tenant handle registry (backend/runtimeTenantRegistry.js). Todo el comportamiento se
+// ejercita contra DBs de prueba efimeras: business DBs frescas dentro de ROOT/database/ (necesario para
+// que el registry las acepte) con nombre unico y cleanup obligatorio, y Control DBs temporales en
+// os.tmpdir(). Nunca se toca database/guernica.db ni database/atlas_control.db.
+// ====================================================================================================
+function mt1f1Slug(tag) {
+  return `mt1f1-${tag}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+}
+
+// runSql/close de sqlite3 no esperan el cierre real del descriptor: en Windows un rm inmediato puede
+// fallar con EPERM/EBUSY hasta que la conexion termine de cerrarse. Reintento acotado, solo de test.
+async function mt1f1EliminarArchivo(ruta) {
+  for (let intento = 0; intento < 40; intento += 1) {
+    try {
+      fs.rmSync(ruta, { force: true });
+      return;
+    } catch (error) {
+      if (!["EPERM", "EBUSY", "EACCES"].includes(error.code) || intento === 39) throw error;
+      await delay(50);
+    }
+  }
+}
+
+async function mt1f1Limpiar(escenario) {
+  await closeAllTenantHandles();
+  for (const tenant of escenario.tenants) {
+    for (const sufijo of ["", "-wal", "-shm", "-journal"]) {
+      await mt1f1EliminarArchivo(`${tenant.dbPath}${sufijo}`);
+    }
+  }
+  if (escenario.controlDbPath) {
+    for (const sufijo of ["", "-journal", "-wal", "-shm"]) {
+      await mt1f1EliminarArchivo(`${escenario.controlDbPath}${sufijo}`);
+    }
+  }
+}
+
+// N tenants (business DB fresca registrable + identity exacta, salvo conIdentity=false) y UN Control
+// temporal que registra las N empresas activas.
+async function mt1f1CrearEscenario(tags, { conIdentity = true } = {}) {
+  const tenants = [];
+  let controlDbPath = null;
+  try {
+    for (const tag of tags) {
+      tenants.push({ tag, slug: mt1f1Slug(tag), dbPath: bootstrapFreshRegisteredTenantDb(), empresa: null });
+    }
+    controlDbPath = tempDbPath();
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      for (const tenant of tenants) {
+        tenant.empresa = await registrarEmpresa(controlDb, {
+          slug: tenant.slug,
+          nombre: `MT1F1 ${tenant.tag}`,
+          dbPath: path.basename(tenant.dbPath),
+          activa: 1
+        });
+      }
+    } finally {
+      await closeControlDb(controlDb);
+    }
+    if (conIdentity) {
+      for (const tenant of tenants) {
+        await insertarTenantIdentityTest(tenant.dbPath, tenant.empresa.id, tenant.slug);
+      }
+    }
+    return { tenants, controlDbPath };
+  } catch (error) {
+    await mt1f1Limpiar({ tenants, controlDbPath });
+    throw error;
+  }
+}
+
+async function mt1f1RegistrarEmpresaExtra(controlDbPath, { slug, dbPath, activa = 1 }) {
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    return await registrarEmpresa(controlDb, { slug, nombre: `MT1F1 extra ${slug}`, dbPath, activa });
+  } finally {
+    await closeControlDb(controlDb);
+  }
+}
+
+// Instrumenta sqlite3.Database SOLO durante el test para registrar cada apertura (path, modo,
+// instancia). Es el testigo de "un solo open", "OPEN_READWRITE sin OPEN_CREATE" y "misma conexion".
+function mt1f1InstrumentarSqlite() {
+  const original = sqlite3.Database;
+  const aperturas = [];
+  class DatabaseInstrumentada extends original {
+    constructor(archivo, ...resto) {
+      super(archivo, ...resto);
+      aperturas.push({ archivo: path.resolve(String(archivo)).toLowerCase(), modo: resto[0], instancia: this });
+    }
+  }
+  sqlite3.Database = DatabaseInstrumentada;
+  return {
+    restaurar() { sqlite3.Database = original; },
+    // Solo aperturas con modo numerico EXPLICITO: son las del modulo bajo test (y las de cualquier
+    // verificador path-based, que tambien deben contarse). Los helpers de test (runSql/allSql) abren sin
+    // modo y no participan del conteo.
+    de(rutaDb) {
+      const clave = path.resolve(rutaDb).toLowerCase();
+      return aperturas.filter((apertura) => apertura.archivo === clave && typeof apertura.modo === "number");
+    },
+    todas() { return aperturas; }
+  };
+}
+
+function mt1f1Consultar(db, sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (error, filas) => {
+      if (error) reject(error);
+      else resolve(filas);
+    });
+  });
+}
+
+// true si la conexion ya no acepta consultas (cerrada). Una conexion cerrada rechaza cualquier query.
+function mt1f1ConexionCerrada(db) {
+  return new Promise((resolve) => {
+    try {
+      db.get("SELECT 1", (error) => resolve(Boolean(error)));
+    } catch (error) {
+      resolve(true);
+    }
+  });
+}
+
+function mt1f1Resolver(tenant, controlDbPath) {
+  return resolveTenantHandle({ empresaSlug: tenant.slug, controlDbPath });
+}
+
+function mt1f1AssertFallo(resultado, errorCode, mensaje) {
+  assertSame(resultado.ok, false, `${mensaje}: debe fallar cerrado (resultado=${JSON.stringify(resultado)})`);
+  assertSame(resultado.errorCode, errorCode, `${mensaje}: errorCode`);
+  assertSame(Object.prototype.hasOwnProperty.call(resultado, "handle"), false, `${mensaje}: un fallo jamas expone handle`);
+}
+
+async function testMT1F1HandleCurrentValido() {
+  const escenario = await mt1f1CrearEscenario(["valido"]);
+  try {
+    const [tenant] = escenario.tenants;
+    const resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
+    assertSame(resultado.ok, true, `una tenant CURRENT con identity exacta debe resolver (resultado=${JSON.stringify(resultado)})`);
+    const handle = resultado.handle;
+
+    assertSame(
+      JSON.stringify(Object.keys(handle).sort()),
+      JSON.stringify(["canonicalPath", "db", "empresaId", "empresaSlug", "registeredPath", "verifiedAt"]),
+      "el shape publico del handle debe ser exactamente el contrato minimo"
+    );
+    assertEqual(handle.empresaId, tenant.empresa.id, "empresaId debe ser el del registry");
+    assertSame(handle.empresaSlug, tenant.slug, "empresaSlug debe ser el del registry");
+    assertSame(handle.registeredPath, path.basename(tenant.dbPath), "registeredPath es el string registrado en Control");
+    assertSame(handle.canonicalPath, resolveEmpresaDbPath(path.basename(tenant.dbPath)), "canonicalPath usa la misma autoridad path.resolve del Control registry");
+    assertSame(Number.isNaN(Date.parse(handle.verifiedAt)), false, "verifiedAt debe ser una fecha ISO valida");
+
+    // La conexion publicada esta viva y certifica exactamente lo que el handle declara.
+    const identity = await verificarTenantDbIdentityEnConexion(handle.db, { empresaId: tenant.empresa.id, empresaSlug: tenant.slug });
+    assertSame(identity.ok, true, "la conexion del handle debe declarar la identity exacta");
+    assertEqual(LEGACY_BASELINE_INVARIANTS.length, 278, "el baseline verificado por el handle es el catalogo de 278 invariantes");
+    assertEqual(new Set(LEGACY_BASELINE_INVARIANTS.map((invariante) => invariante.id)).size, 278, "los 278 invariantes son unicos");
+    const baseline = await verificarLegacyBaselineEnConexion(handle.db);
+    assertSame(baseline.ready, true, "la conexion del handle debe cumplir el baseline");
+    assertEqual(baseline.failures.length, 0, "baseline sin failures");
+    const schema = await verificarBusinessSchemaVersionEnConexion(handle.db);
+    assertSame(schema.state, "CURRENT", "schema CURRENT");
+    assertSame(schema.currentMigrationId, "001_legacy_runtime_baseline", "currentMigrationId exacto");
+    assertSame(schema.expectedMigrationId, "001_legacy_runtime_baseline", "expectedMigrationId exacto");
+    const filas = await mt1f1Consultar(handle.db, "SELECT 1 AS uno");
+    assertEqual(filas[0].uno, 1, "la conexion del handle debe ser usable");
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F1HandleUsaOpenReadwriteSinCreate() {
+  const escenario = await mt1f1CrearEscenario(["openflags"]);
+  const instrumento = mt1f1InstrumentarSqlite();
+  try {
+    const [tenant] = escenario.tenants;
+    const resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
+    assertSame(resultado.ok, true, "la resolucion debe funcionar");
+
+    const aperturas = instrumento.de(tenant.dbPath);
+    assertEqual(aperturas.length, 1, "exactamente UNA apertura de la business DB: identity/baseline/schema corren en esa misma conexion, sin reabrir");
+    assertSame(aperturas[0].modo, sqlite3.OPEN_READWRITE, "modo de apertura exactamente OPEN_READWRITE");
+    assertEqual(aperturas[0].modo & sqlite3.OPEN_CREATE, 0, "la apertura no debe incluir OPEN_CREATE");
+    assertSame(aperturas[0].instancia, resultado.handle.db, "la conexion abierta y verificada ES la conexion del handle");
+    assertSame(
+      instrumento.todas().some((apertura) => apertura.archivo === path.resolve(SOURCE_DB).toLowerCase()),
+      false,
+      "la resolucion jamas debe abrir database/guernica.db real"
+    );
+
+    // Testigo estatico: sin OPEN_CREATE ejecutable y sin verificadores path-based (abririan otra conexion).
+    const fuente = fs.readFileSync(path.join(ROOT, "backend", "runtimeTenantRegistry.js"), "utf8");
+    const ejecutable = fuente.replace(/\/\/.*$/gm, "");
+    assertSame(/OPEN_CREATE/.test(ejecutable), false, "el modulo no debe usar OPEN_CREATE en codigo ejecutable");
+    assertSame(/OPEN_READWRITE/.test(ejecutable), true, "el modulo debe abrir con OPEN_READWRITE explicito");
+    assertSame(/\bverificar(TenantDbIdentity|LegacyBaseline|BusinessSchemaVersion)\s*\(/.test(ejecutable), false, "sin verificadores path-based (verify-por-path + reopen)");
+    for (const nombre of ["verificarTenantDbIdentityEnConexion", "verificarLegacyBaselineEnConexion", "verificarBusinessSchemaVersionEnConexion"]) {
+      assertSame(new RegExp(`\\b${nombre}\\s*\\(`).test(ejecutable), true, `debe usar ${nombre} sobre la misma conexion`);
+    }
+    for (const prohibido of ["require(\"./db\")", "require(\"./server\")", "AsyncLocalStorage", "process.exit"]) {
+      assertSame(ejecutable.includes(prohibido), false, `el modulo no debe depender de ${prohibido}`);
+    }
+  } finally {
+    instrumento.restaurar();
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F1MissingDbNoCreaArchivo() {
+  const escenario = await mt1f1CrearEscenario(["missing"]);
+  const instrumento = mt1f1InstrumentarSqlite();
+  try {
+    const [tenant] = escenario.tenants;
+    await mt1f1EliminarArchivo(tenant.dbPath);
+    assertSame(fs.existsSync(tenant.dbPath), false, "precondicion: la business DB registrada no existe");
+
+    for (let intento = 1; intento <= 2; intento += 1) {
+      const resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
+      mt1f1AssertFallo(resultado, TENANT_RUNTIME_ERROR_CODES.TENANT_DB_OPEN_FAILED, `DB ausente (intento ${intento})`);
+      assertSame(fs.existsSync(tenant.dbPath), false, "una DB ausente jamas debe materializarse como archivo vacio");
+      for (const sufijo of ["-journal", "-wal", "-shm"]) {
+        assertSame(fs.existsSync(`${tenant.dbPath}${sufijo}`), false, `no debe aparecer ${sufijo}`);
+      }
+    }
+    assertEqual(instrumento.de(tenant.dbPath).length, 0, "sin archivo, ni siquiera se intenta abrir sqlite (nada que pueda crear)");
+
+    // Un DIRECTORIO en el path registrado tambien debe fallar, sin crear nada.
+    fs.mkdirSync(tenant.dbPath);
+    try {
+      const resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
+      assertSame(resultado.ok, false, "un directorio como business DB debe fallar cerrado");
+      assertSame(
+        [TENANT_RUNTIME_ERROR_CODES.REGISTRY_BINDING_INVALID, TENANT_RUNTIME_ERROR_CODES.TENANT_DB_OPEN_FAILED].includes(resultado.errorCode),
+        true,
+        "el directorio se rechaza por el registry o por la apertura"
+      );
+      assertSame(fs.statSync(tenant.dbPath).isDirectory(), true, "el directorio no debe ser reemplazado ni tocado");
+      assertEqual(instrumento.de(tenant.dbPath).length, 0, "un directorio no se abre con sqlite");
+    } finally {
+      fs.rmdirSync(tenant.dbPath);
+    }
+    assertSame(fs.existsSync(tenant.dbPath), false, "nada debe quedar en el path tras el test");
+  } finally {
+    instrumento.restaurar();
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F1IdentityMismatchFailsClosed() {
+  const escenario = await mt1f1CrearEscenario(["identity"], { conIdentity: false });
+  const instrumento = mt1f1InstrumentarSqlite();
+  try {
+    const [tenant] = escenario.tenants;
+    const casos = [
+      { nombre: "identity ausente", preparar: async () => {}, cause: "TENANT_DB_IDENTITY_MISSING" },
+      { nombre: "slug ajeno", preparar: async () => { await insertarTenantIdentityTest(tenant.dbPath, tenant.empresa.id, "slug-ajeno"); }, cause: "TENANT_DB_IDENTITY_MISMATCH" },
+      { nombre: "empresa_id ajeno", preparar: async () => { await runSql(tenant.dbPath, "UPDATE tenant_identity SET empresa_control_id = ?, tenant_slug = ? WHERE id = 1", [tenant.empresa.id + 999, tenant.slug]); }, cause: "TENANT_DB_IDENTITY_MISMATCH" }
+    ];
+
+    let aperturasEsperadas = 0;
+    for (const caso of casos) {
+      await caso.preparar();
+      const antes = snapshotSQLitePersistente(tenant.dbPath);
+      const resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
+      mt1f1AssertFallo(resultado, TENANT_RUNTIME_ERROR_CODES.TENANT_IDENTITY_INVALID, caso.nombre);
+      assertSame(resultado.cause, caso.cause, `${caso.nombre}: causa exacta del verificador de identity`);
+      assertSame(
+        JSON.stringify(snapshotSQLitePersistente(tenant.dbPath)),
+        JSON.stringify(antes),
+        `${caso.nombre}: el rechazo no debe mutar el estado persistente de la business DB`
+      );
+      aperturasEsperadas += 1;
+      assertEqual(instrumento.de(tenant.dbPath).length, aperturasEsperadas, `${caso.nombre}: cada resolucion fallida abre una sola conexion y no queda cacheada`);
+      const abiertas = instrumento.de(tenant.dbPath);
+      assertSame(await mt1f1ConexionCerrada(abiertas[abiertas.length - 1].instancia), true, `${caso.nombre}: la conexion de una verificacion fallida debe cerrarse`);
+    }
+    assertSame(
+      instrumento.todas().some((apertura) => apertura.archivo === path.resolve(SOURCE_DB).toLowerCase()),
+      false,
+      "un fallo jamas debe hacer fallback a database/guernica.db"
+    );
+  } finally {
+    instrumento.restaurar();
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F1BaselineInvalidoFailsClosed() {
+  const escenario = await mt1f1CrearEscenario(["baseline"]);
+  const instrumento = mt1f1InstrumentarSqlite();
+  try {
+    const [tenant] = escenario.tenants;
+    await runSql(tenant.dbPath, "DROP TABLE recalculos_cuenta_corriente");
+    const antes = snapshotSQLitePersistente(tenant.dbPath);
+
+    const resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
+    mt1f1AssertFallo(resultado, TENANT_RUNTIME_ERROR_CODES.TENANT_BASELINE_INVALID, "baseline con tabla faltante");
+    // Se capturan las aperturas ANTES de consultar con helpers de test (allSql abre su propia conexion).
+    const aperturas = instrumento.de(tenant.dbPath);
+    assertSame(resultado.details.failureCodes.includes("BASELINE_TABLE_MISSING"), true, "debe reportar el codigo exacto del gap de baseline");
+    assertSame(JSON.stringify(snapshotSQLitePersistente(tenant.dbPath)), JSON.stringify(antes), "sin reparacion: el estado persistente no cambia");
+    assertEqual(aperturas.length, 1, "una sola conexion, luego cerrada");
+    assertSame(await mt1f1ConexionCerrada(aperturas[0].instancia), true, "la conexion de la verificacion fallida se cierra");
+    const tablas = await allSql(tenant.dbPath, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'recalculos_cuenta_corriente'");
+    assertEqual(tablas.length, 0, "la tabla faltante NO se recrea (no hay self-healing)");
+  } finally {
+    instrumento.restaurar();
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F1SchemaUnversionedFailsClosed() {
+  const escenario = await mt1f1CrearEscenario(["unversioned"]);
+  try {
+    const [tenant] = escenario.tenants;
+    await runSql(tenant.dbPath, "DROP TABLE atlas_schema_migrations");
+    const antes = snapshotSQLitePersistente(tenant.dbPath);
+
+    const resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
+    mt1f1AssertFallo(resultado, TENANT_RUNTIME_ERROR_CODES.TENANT_SCHEMA_NOT_CURRENT, "schema UNVERSIONED");
+    assertSame(resultado.details.state, "UNVERSIONED", "el estado reportado debe ser UNVERSIONED");
+    assertSame(JSON.stringify(snapshotSQLitePersistente(tenant.dbPath)), JSON.stringify(antes), "el rechazo no adopta ni versiona: estado persistente identico");
+    const tablas = await allSql(tenant.dbPath, "SELECT name FROM sqlite_master WHERE name = 'atlas_schema_migrations'");
+    assertEqual(tablas.length, 0, "atlas_schema_migrations NO se crea (no hay adopcion implicita)");
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F1SchemaNoCurrentFailsClosed() {
+  const escenario = await mt1f1CrearEscenario(["nocurrent"]);
+  try {
+    const [tenant] = escenario.tenants;
+
+    // AHEAD: la DB declara una migracion que este runtime no conoce. (BEHIND es inalcanzable mientras
+    // el catalogo productivo sea exactamente [001]: un historial vacio ya es UNVERSIONED.)
+    await runSql(tenant.dbPath, "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (2, '999_migracion_futura', datetime('now'))");
+    let antes = snapshotSQLitePersistente(tenant.dbPath);
+    let resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
+    mt1f1AssertFallo(resultado, TENANT_RUNTIME_ERROR_CODES.TENANT_SCHEMA_NOT_CURRENT, "schema AHEAD");
+    assertSame(resultado.details.state, "AHEAD", "estado AHEAD");
+    assertSame(JSON.stringify(snapshotSQLitePersistente(tenant.dbPath)), JSON.stringify(antes), "AHEAD: sin mutacion persistente");
+
+    // INVALID_HISTORY: la migracion 1 dice otra cosa.
+    await runSql(tenant.dbPath, "DELETE FROM atlas_schema_migrations WHERE sequence = 2");
+    await runSql(tenant.dbPath, "UPDATE atlas_schema_migrations SET migration_id = '001_otra_cosa' WHERE sequence = 1");
+    antes = snapshotSQLitePersistente(tenant.dbPath);
+    resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
+    mt1f1AssertFallo(resultado, TENANT_RUNTIME_ERROR_CODES.TENANT_SCHEMA_NOT_CURRENT, "schema INVALID_HISTORY");
+    assertSame(resultado.details.state, "INVALID_HISTORY", "estado INVALID_HISTORY");
+    assertSame(JSON.stringify(snapshotSQLitePersistente(tenant.dbPath)), JSON.stringify(antes), "INVALID_HISTORY: sin mutacion persistente");
+
+    // Restaurado el historial exacto, la MISMA tenant resuelve: los fallos previos no quedaron cacheados.
+    await runSql(tenant.dbPath, "UPDATE atlas_schema_migrations SET migration_id = '001_legacy_runtime_baseline' WHERE sequence = 1");
+    resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
+    assertSame(resultado.ok, true, `restaurado el historial exacto la tenant debe resolver (resultado=${JSON.stringify(resultado)})`);
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F1HandleInmutable() {
+  const escenario = await mt1f1CrearEscenario(["inmutable"]);
+  try {
+    const [tenant] = escenario.tenants;
+    const resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
+    assertSame(resultado.ok, true, "la resolucion debe funcionar");
+    const handle = resultado.handle;
+    const instantanea = JSON.stringify({ ...handle, db: undefined });
+    const dbOriginal = handle.db;
+
+    assertSame(Object.isFrozen(handle), true, "el handle publicado debe estar congelado");
+    assertSame(Object.isFrozen(resultado), true, "el resultado exitoso tambien esta congelado");
+    assertSame(Object.isFrozen(handle.db), false, "la conexion sqlite NO se congela");
+
+    const mutaciones = [
+      () => { "use strict"; handle.empresaId = 999; },
+      () => { "use strict"; handle.empresaSlug = "otro"; },
+      () => { "use strict"; handle.registeredPath = "otro.db"; },
+      () => { "use strict"; handle.canonicalPath = "C:\\otro.db"; },
+      () => { "use strict"; handle.db = null; },
+      () => { "use strict"; handle.verifiedAt = "1970-01-01T00:00:00.000Z"; },
+      () => { "use strict"; handle.extra = true; },
+      () => { "use strict"; delete handle.db; }
+    ];
+    for (let indice = 0; indice < mutaciones.length; indice += 1) {
+      assertThrows(mutaciones[indice], `la mutacion #${indice + 1} del handle debe ser rechazada`);
+    }
+    assertSame(JSON.stringify({ ...handle, db: undefined }), instantanea, "el binding del handle no cambio tras los intentos de mutacion");
+    assertSame(handle.db, dbOriginal, "la conexion del handle no cambio");
+
+    const otra = await mt1f1Resolver(tenant, escenario.controlDbPath);
+    assertSame(otra.handle, handle, "una nueva resolucion devuelve el mismo handle inmutable");
+    assertEqual(otra.handle.empresaId, tenant.empresa.id, "empresaId intacto");
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F1MismoTenantCacheaMismoHandle() {
+  const escenario = await mt1f1CrearEscenario(["cache"]);
+  const instrumento = mt1f1InstrumentarSqlite();
+  try {
+    const [tenant] = escenario.tenants;
+    const primero = await mt1f1Resolver(tenant, escenario.controlDbPath);
+    const segundo = await mt1f1Resolver(tenant, escenario.controlDbPath);
+    assertSame(primero.ok && segundo.ok, true, "ambas resoluciones deben funcionar");
+    assertSame(segundo.handle, primero.handle, "el cache positivo devuelve el MISMO handle");
+    assertSame(segundo.handle.verifiedAt, primero.handle.verifiedAt, "no hay reverificacion en un hit de cache");
+    assertEqual(instrumento.de(tenant.dbPath).length, 1, "el hit de cache no abre otra conexion");
+
+    // Binding de Control obsoleto: el mismo slug/id ahora mapea a OTRO path. Debe fallar cerrado, sin
+    // reemplazar el handle vivo (no hay hot swap) y sin abrir el path nuevo.
+    const otroNombre = `tenant-test-otro-${Date.now()}-${Math.random().toString(16).slice(2, 8)}.db`;
+    await runSql(escenario.controlDbPath, "UPDATE empresas SET db_path = ? WHERE id = ?", [otroNombre, tenant.empresa.id]);
+    const conflicto = await mt1f1Resolver(tenant, escenario.controlDbPath);
+    mt1f1AssertFallo(conflicto, TENANT_RUNTIME_ERROR_CODES.TENANT_BINDING_CONFLICT, "Control ahora mapea la empresa a otro path");
+    assertEqual(instrumento.de(resolveEmpresaDbPath(otroNombre)).length, 0, "el path nuevo jamas se abre");
+    const filas = await mt1f1Consultar(primero.handle.db, "SELECT 1 AS uno");
+    assertEqual(filas[0].uno, 1, "el handle vivo no fue reemplazado ni cerrado");
+
+    // Restaurado el binding original, vuelve el mismo handle.
+    await runSql(escenario.controlDbPath, "UPDATE empresas SET db_path = ? WHERE id = ?", [path.basename(tenant.dbPath), tenant.empresa.id]);
+    const restaurado = await mt1f1Resolver(tenant, escenario.controlDbPath);
+    assertSame(restaurado.handle, primero.handle, "restaurado el binding, se sigue sirviendo el mismo handle");
+    assertEqual(instrumento.de(tenant.dbPath).length, 1, "sigue habiendo una sola apertura de la business DB");
+  } finally {
+    instrumento.restaurar();
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F1MismoTenantConcurrenteSingleFlight() {
+  const escenario = await mt1f1CrearEscenario(["singleflight"]);
+  const instrumento = mt1f1InstrumentarSqlite();
+  try {
+    const [tenant] = escenario.tenants;
+    const resultados = await Promise.all(Array.from({ length: 8 }, () => mt1f1Resolver(tenant, escenario.controlDbPath)));
+    for (const resultado of resultados) {
+      assertSame(resultado.ok, true, `todas las resoluciones concurrentes deben funcionar (resultado=${JSON.stringify(resultado)})`);
+      assertSame(resultado.handle, resultados[0].handle, "todas reciben el MISMO handle publicado");
+    }
+    assertEqual(instrumento.de(tenant.dbPath).length, 1, "8 llamadas concurrentes: exactamente UN open (y por lo tanto UNA verificacion de identity/baseline/schema)");
+  } finally {
+    instrumento.restaurar();
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F1FalloConcurrenteNoQuedaCacheado() {
+  const escenario = await mt1f1CrearEscenario(["fallo"]);
+  const instrumento = mt1f1InstrumentarSqlite();
+  try {
+    const [tenant] = escenario.tenants;
+    // UNVERSIONED corre baseline completo antes de fallar (~cientos de ms): todas las llamadas
+    // concurrentes llegan mientras la verificacion sigue en vuelo.
+    await runSql(tenant.dbPath, "DROP TABLE atlas_schema_migrations");
+
+    const resultados = await Promise.all(Array.from({ length: 5 }, () => mt1f1Resolver(tenant, escenario.controlDbPath)));
+    for (const resultado of resultados) {
+      mt1f1AssertFallo(resultado, TENANT_RUNTIME_ERROR_CODES.TENANT_SCHEMA_NOT_CURRENT, "fallo concurrente");
+    }
+    assertEqual(instrumento.de(tenant.dbPath).length, 1, "el fallo tambien es single-flight: un solo open para las 5 llamadas");
+    assertSame(await mt1f1ConexionCerrada(instrumento.de(tenant.dbPath)[0].instancia), true, "la conexion del fallo se cerro");
+
+    // Reparacion EXTERNA (operador): la proxima llamada reintenta limpiamente, sin reiniciar el proceso.
+    stamparHistorialBaselineActual(tenant.dbPath);
+    const recuperado = await mt1f1Resolver(tenant, escenario.controlDbPath);
+    assertSame(recuperado.ok, true, `tras la reparacion externa la tenant debe resolver: el fallo no quedo cacheado (resultado=${JSON.stringify(recuperado)})`);
+    assertEqual(instrumento.de(tenant.dbPath).length, 2, "el reintento abrio una conexion nueva (no reutilizo estado de fallo)");
+  } finally {
+    instrumento.restaurar();
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F1TenantAErrorNoAfectaTenantB() {
+  const escenario = await mt1f1CrearEscenario(["aislaA", "aislaB"]);
+  try {
+    const [tenantA, tenantB] = escenario.tenants;
+    await runSql(tenantA.dbPath, "UPDATE tenant_identity SET tenant_slug = 'identity-ajena' WHERE id = 1");
+
+    const [resultadoA, resultadoB] = await Promise.all([
+      mt1f1Resolver(tenantA, escenario.controlDbPath),
+      mt1f1Resolver(tenantB, escenario.controlDbPath)
+    ]);
+    mt1f1AssertFallo(resultadoA, TENANT_RUNTIME_ERROR_CODES.TENANT_IDENTITY_INVALID, "tenant A con identity ajena");
+    assertSame(resultadoB.ok, true, `la tenant B sana debe resolver aunque A falle (resultado=${JSON.stringify(resultadoB)})`);
+
+    const otraVezB = await mt1f1Resolver(tenantB, escenario.controlDbPath);
+    assertSame(otraVezB.handle, resultadoB.handle, "el fallo de A no invalido el handle publicado de B");
+    const filas = await mt1f1Consultar(resultadoB.handle.db, "SELECT tenant_slug FROM tenant_identity WHERE id = 1");
+    assertSame(filas[0].tenant_slug, tenantB.slug, "la conexion de B sigue sirviendo la DB de B");
+
+    const otraVezA = await mt1f1Resolver(tenantA, escenario.controlDbPath);
+    mt1f1AssertFallo(otraVezA, TENANT_RUNTIME_ERROR_CODES.TENANT_IDENTITY_INVALID, "A sigue rechazada, sin fallback a B");
+
+    // A se corrige: se recupera sin reiniciar, y B sigue intacta.
+    await runSql(tenantA.dbPath, "UPDATE tenant_identity SET tenant_slug = ? WHERE id = 1", [tenantA.slug]);
+    const recuperadaA = await mt1f1Resolver(tenantA, escenario.controlDbPath);
+    assertSame(recuperadaA.ok, true, "A corregida debe resolver");
+    assertEqual(recuperadaA.handle.empresaId, tenantA.empresa.id, "el handle de A queda atado a A, no a B");
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F1TenantsDistintosHandlesDistintos() {
+  const escenario = await mt1f1CrearEscenario(["distintoA", "distintoB"]);
+  const instrumento = mt1f1InstrumentarSqlite();
+  try {
+    const [tenantA, tenantB] = escenario.tenants;
+    const [resultadoA, resultadoB] = await Promise.all([
+      mt1f1Resolver(tenantA, escenario.controlDbPath),
+      mt1f1Resolver(tenantB, escenario.controlDbPath)
+    ]);
+    assertSame(resultadoA.ok && resultadoB.ok, true, "ambas tenants deben resolver en paralelo");
+    const handleA = resultadoA.handle;
+    const handleB = resultadoB.handle;
+
+    assertSame(handleA === handleB, false, "handles distintos");
+    assertSame(handleA.db === handleB.db, false, "conexiones distintas");
+    assertSame(handleA.canonicalPath === handleB.canonicalPath, false, "paths canonicos distintos");
+    assertSame(handleA.empresaId === handleB.empresaId, false, "empresaId distintos");
+    assertEqual(instrumento.de(tenantA.dbPath).length, 1, "A se abre una sola vez");
+    assertEqual(instrumento.de(tenantB.dbPath).length, 1, "B se abre una sola vez");
+
+    const filasA = await mt1f1Consultar(handleA.db, "SELECT empresa_control_id, tenant_slug FROM tenant_identity WHERE id = 1");
+    const filasB = await mt1f1Consultar(handleB.db, "SELECT empresa_control_id, tenant_slug FROM tenant_identity WHERE id = 1");
+    assertEqual(filasA[0].empresa_control_id, tenantA.empresa.id, "la conexion de A lee la identity de A");
+    assertSame(filasA[0].tenant_slug, tenantA.slug, "slug de A");
+    assertEqual(filasB[0].empresa_control_id, tenantB.empresa.id, "la conexion de B lee la identity de B");
+    assertSame(filasB[0].tenant_slug, tenantB.slug, "slug de B");
+  } finally {
+    instrumento.restaurar();
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F1PathDuplicadoEntreEmpresasFailsClosed() {
+  const escenario = await mt1f1CrearEscenario(["dupA"]);
+  const instrumento = mt1f1InstrumentarSqlite();
+  try {
+    const [tenantA] = escenario.tenants;
+    const slugB = mt1f1Slug("dupB");
+    const empresaB = await mt1f1RegistrarEmpresaExtra(escenario.controlDbPath, { slug: slugB, dbPath: path.basename(tenantA.dbPath), activa: 1 });
+    const tenantB = { slug: slugB, empresa: empresaB };
+
+    // Dos empresas ACTIVAS en el mismo path canonico: ambas fallan cerrado, sin importar el orden.
+    const resultadoA = await mt1f1Resolver(tenantA, escenario.controlDbPath);
+    const resultadoB = await mt1f1Resolver(tenantB, escenario.controlDbPath);
+    mt1f1AssertFallo(resultadoA, TENANT_RUNTIME_ERROR_CODES.TENANT_PATH_COLLISION, "empresa A con path duplicado");
+    mt1f1AssertFallo(resultadoB, TENANT_RUNTIME_ERROR_CODES.TENANT_PATH_COLLISION, "empresa B con path duplicado");
+    assertEqual(instrumento.de(tenantA.dbPath).length, 0, "la colision se detecta ANTES de abrir la business DB");
+
+    // Si la otra empresa esta INACTIVA no hay colision: la duplicidad solo cuenta entre activas.
+    await runSql(escenario.controlDbPath, "UPDATE empresas SET activa = 0 WHERE id = ?", [empresaB.id]);
+    const sinColision = await mt1f1Resolver(tenantA, escenario.controlDbPath);
+    assertSame(sinColision.ok, true, `con la duplicada inactiva A debe resolver (resultado=${JSON.stringify(sinColision)})`);
+    assertEqual(instrumento.de(tenantA.dbPath).length, 1, "ahora si se abre, una sola vez");
+
+    // Reactivada la duplicada: incluso con un handle YA publicado para A, la resolucion falla cerrado.
+    await runSql(escenario.controlDbPath, "UPDATE empresas SET activa = 1 WHERE id = ?", [empresaB.id]);
+    const conCache = await mt1f1Resolver(tenantA, escenario.controlDbPath);
+    mt1f1AssertFallo(conCache, TENANT_RUNTIME_ERROR_CODES.TENANT_PATH_COLLISION, "colision sobreviniente con handle cacheado");
+    const conCacheB = await mt1f1Resolver(tenantB, escenario.controlDbPath);
+    mt1f1AssertFallo(conCacheB, TENANT_RUNTIME_ERROR_CODES.TENANT_PATH_COLLISION, "B tampoco puede tomar el path publicado para A");
+    assertEqual(instrumento.de(tenantA.dbPath).length, 1, "ninguna resolucion colisionada abrio otra conexion");
+  } finally {
+    instrumento.restaurar();
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F1CerrarTenantNoCierraOtro() {
+  const escenario = await mt1f1CrearEscenario(["cierraA", "cierraB"]);
+  try {
+    const [tenantA, tenantB] = escenario.tenants;
+    const resultadoA = await mt1f1Resolver(tenantA, escenario.controlDbPath);
+    const resultadoB = await mt1f1Resolver(tenantB, escenario.controlDbPath);
+    assertSame(resultadoA.ok && resultadoB.ok, true, "ambas tenants deben resolver");
+
+    const cierre = await closeTenantHandle(resultadoA.handle);
+    assertSame(cierre.ok, true, "cerrar A debe funcionar");
+    assertSame(cierre.closed, true, "A estaba publicado y se cerro");
+    assertSame(await mt1f1ConexionCerrada(resultadoA.handle.db), true, "la conexion de A quedo cerrada");
+    const filasB = await mt1f1Consultar(resultadoB.handle.db, "SELECT 1 AS uno");
+    assertEqual(filasB[0].uno, 1, "cerrar A no cerro B");
+    const otraVezB = await mt1f1Resolver(tenantB, escenario.controlDbPath);
+    assertSame(otraVezB.handle, resultadoB.handle, "B sigue cacheada con el mismo handle");
+
+    const reabiertaA = await mt1f1Resolver(tenantA, escenario.controlDbPath);
+    assertSame(reabiertaA.ok, true, "tras cerrar, A se resuelve de nuevo");
+    assertSame(reabiertaA.handle === resultadoA.handle, false, "A reabre con un handle NUEVO");
+    assertEqual((await mt1f1Consultar(reabiertaA.handle.db, "SELECT 1 AS uno"))[0].uno, 1, "el handle nuevo de A funciona");
+
+    // Un handle viejo (ya no publicado) es un no-op: no cierra el handle nuevo.
+    const cierreViejo = await closeTenantHandle(resultadoA.handle);
+    assertSame(cierreViejo.ok, true, "cerrar un handle ya cerrado es idempotente");
+    assertSame(cierreViejo.closed, false, "no cierra nada");
+    assertEqual((await mt1f1Consultar(reabiertaA.handle.db, "SELECT 1 AS uno"))[0].uno, 1, "el handle nuevo de A sigue vivo");
+
+    const invalido = await closeTenantHandle(null);
+    mt1f1AssertFallo(invalido, TENANT_RUNTIME_ERROR_CODES.TENANT_HANDLE_INVALID, "handle nulo");
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F1CerrarTodosPermiteReabrir() {
+  const escenario = await mt1f1CrearEscenario(["todosA", "todosB"]);
+  const instrumento = mt1f1InstrumentarSqlite();
+  try {
+    const [tenantA, tenantB] = escenario.tenants;
+    const resultadoA = await mt1f1Resolver(tenantA, escenario.controlDbPath);
+    const resultadoB = await mt1f1Resolver(tenantB, escenario.controlDbPath);
+    assertSame(resultadoA.ok && resultadoB.ok, true, "ambas tenants deben resolver");
+
+    const cierre = await closeAllTenantHandles();
+    assertSame(cierre.ok, true, "cerrar todo debe funcionar");
+    assertEqual(cierre.closed, 2, "se cerraron los 2 handles publicados");
+    assertEqual(cierre.failed, 0, "ningun cierre fallo");
+    assertSame(await mt1f1ConexionCerrada(resultadoA.handle.db), true, "conexion A cerrada");
+    assertSame(await mt1f1ConexionCerrada(resultadoB.handle.db), true, "conexion B cerrada");
+
+    const reabiertaA = await mt1f1Resolver(tenantA, escenario.controlDbPath);
+    const reabiertaB = await mt1f1Resolver(tenantB, escenario.controlDbPath);
+    assertSame(reabiertaA.ok && reabiertaB.ok, true, "tras cerrar todo ambas tenants reabren y reverifican");
+    assertSame(reabiertaA.handle === resultadoA.handle, false, "A: handle nuevo");
+    assertSame(reabiertaB.handle === resultadoB.handle, false, "B: handle nuevo");
+    assertEqual((await mt1f1Consultar(reabiertaA.handle.db, "SELECT 1 AS uno"))[0].uno, 1, "A reabierta funciona");
+    assertEqual((await mt1f1Consultar(reabiertaB.handle.db, "SELECT 1 AS uno"))[0].uno, 1, "B reabierta funciona");
+    assertEqual(instrumento.de(tenantA.dbPath).length, 2, "A: dos aperturas totales (original + reapertura)");
+    assertEqual(instrumento.de(tenantB.dbPath).length, 2, "B: dos aperturas totales (original + reapertura)");
+
+    const segundoCierre = await closeAllTenantHandles();
+    assertEqual(segundoCierre.closed, 2, "el segundo cierre total cierra las dos reaperturas");
+    const vacio = await closeAllTenantHandles();
+    assertSame(vacio.ok, true, "cerrar todo sin handles es un no-op exitoso");
+    assertEqual(vacio.closed, 0, "nada que cerrar");
+  } finally {
+    instrumento.restaurar();
+    await mt1f1Limpiar(escenario);
   }
 }
