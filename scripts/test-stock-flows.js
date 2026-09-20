@@ -20804,6 +20804,16 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1F3ApexFailsClosedEnRutaTenant);
   await _run(testMT1F3NoFallbackAGuernicaEnMulti);
   await _run(testMT1F3ErrorRequestLimpiaContexto);
+  await _run(testMT1F4MultiLoginUsaTenantContexto);
+  await _run(testMT1F4MultiLoginMembershipOtroTenantNoAutoriza);
+  await _run(testMT1F4MultiColisionUsuarioABNoCruzaMembership);
+  await _run(testMT1F4MultiSesionValidaLigadaATenant);
+  await _run(testMT1F4MultiSesionCrossTenantFailsClosed);
+  await _run(testMT1F4MultiMembershipYEmpresaRevocanSesion);
+  await _run(testMT1F4MultiBridgeUsaEmpresaExplicita);
+  await _run(testMT1F4MultiLogoutNoRevocaOtroTenant);
+  await _run(testMT1F4MultiSinContextoNoFallback);
+  await _run(testMT1F4MultiLoginNoEnumeraMembership);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -33844,6 +33854,272 @@ async function testMT1F2ErrorLimpiaContextoSinAfectarOtro() {
 //    diagnostico interno. El singleton de db.js se ejercita solo via instancia aislada sobre un decoy.
 // El Host resuelve CONTEXTO, no autoriza: nada de esto prueba ni afirma autorizacion (eso es MT-1F4).
 // ====================================================================================================
+// MT-1F4: servidor real, Control desechable y colision deliberada admin/id entre A y B.
+async function mt1f4ConEscenario(fn, { membershipB = true, bridge = false } = {}) {
+  const escenario = await mt1f1CrearEscenario(["a", "b"]);
+  const decoyPath = tempDbPath();
+  try {
+    const control = await bootstrapControlDb(escenario.controlDbPath, { seed: false });
+    try {
+      for (const tenant of escenario.tenants) {
+        tenant.local = (await allSql(tenant.dbPath, "SELECT * FROM usuarios WHERE usuario = 'admin'"))[0];
+        await runSql(tenant.dbPath, "UPDATE usuarios SET rol = 'colaborador' WHERE id = ?", [tenant.local.id]);
+        tenant.password = `CentralF4-${tenant.tag}-123`;
+        tenant.central = await crearUsuarioCentral(control, { nombre: `Central ${tenant.tag}`, usuarioReferencia: "admin", passwordHash: await bcrypt.hash(tenant.password, 10) });
+        if (tenant.tag === "a" || membershipB) {
+          tenant.membership = await crearMembership(control, { usuarioId: tenant.central.id, empresaId: tenant.empresa.id, usuarioLocalId: tenant.local.id, rol: "admin" });
+        }
+      }
+    } finally { await closeControlDb(control); }
+    const [a, b] = escenario.tenants;
+    assertEqual(a.local.id, b.local.id, "colision local deliberada: mismo ID");
+    assertSame(a.local.usuario, b.local.usuario, "colision local deliberada: mismo login");
+    await mt1f3ConServidor({ ...mt1f3EntornoMulti(escenario, decoyPath), ATLAS_USER_BRIDGE_MODE: bridge ? "shadow" : "off" }, async (servidor) => {
+      const pedir = (tenant, metodo, ruta, cuerpo = null, token = null) => mt1f3Pedir(servidor.port, { host: mt1f3Host(tenant), metodo, ruta, cuerpo, autorizacion: token ? `Bearer ${token}` : null });
+      const loginTenant = async (tenant) => {
+        const respuesta = await pedir(tenant, "POST", "/login", { usuario: "admin", password: tenant.password });
+        assertEqual(respuesta.status, 200, `login ${tenant.tag}: ${respuesta.texto}`);
+        assertSame(typeof respuesta.json.token, "string", "login emite token");
+        return respuesta.json.token;
+      };
+      await fn({ escenario, a, b, pedir, loginTenant });
+      assertSame(servidor.salio(), null, "servidor permanece vivo sin fallback");
+    });
+    assertSame(fs.existsSync(decoyPath), false, "singleton inexistente no se crea");
+  } finally { await mt1f1Limpiar(escenario); }
+}
+
+async function mt1f4Sesion(tenant, token) {
+  return (await allSql(tenant.dbPath, "SELECT * FROM sesiones WHERE token = ?", [token]))[0];
+}
+
+async function testMT1F4MultiLoginUsaTenantContexto() {
+  await mt1f4ConEscenario(async ({ a, b, pedir, loginTenant }) => {
+    for (const [tenant, otro] of [[a, b], [b, a]]) {
+      const token = await loginTenant(tenant);
+      const sesion = await mt1f4Sesion(tenant, token);
+      assertSame(sesion.auth_mode, "central", "procedencia central");
+      assertEqual(sesion.empresa_id, tenant.empresa.id, "empresa del Host/ALS");
+      assertEqual(sesion.membership_id, tenant.membership.id, "membership de ese tenant");
+      assertEqual(sesion.central_id, tenant.central.id, "identidad central correcta");
+      assertSame(await mt1f4Sesion(otro, token), undefined, "sesion solo en su DB");
+      assertEqual((await pedir(tenant, "GET", "/configuracion", null, token)).status, 200, "sesion revalidable sin slug de entorno");
+    }
+  });
+}
+
+async function testMT1F4MultiLoginMembershipOtroTenantNoAutoriza() {
+  await mt1f4ConEscenario(async ({ a, b, pedir, loginTenant }) => {
+    await loginTenant(a);
+    const rechazo = await pedir(b, "POST", "/login", { usuario: a.local.usuario, password: a.password, empresaSlug: a.slug, empresaId: a.empresa.id });
+    assertSame(mt1f3EsNoAutenticado(rechazo), true, "credencial A no autoriza B aunque usuario local exista y body reclame A");
+    assertEqual((await allSql(b.dbPath, "SELECT * FROM sesiones")).length, 0, "B no emite sesion");
+  }, { membershipB: false });
+}
+
+async function testMT1F4MultiColisionUsuarioABNoCruzaMembership() {
+  await mt1f4ConEscenario(async ({ a, b, pedir, loginTenant }) => {
+    for (const [tenant, otro] of [[a, b], [b, a]]) {
+      const rechazo = await pedir(tenant, "POST", "/login", { usuario: "admin", password: otro.password });
+      assertSame(mt1f3EsNoAutenticado(rechazo), true, "mismo usuario/id local no cruza identidades centrales");
+      assertEqual((await allSql(tenant.dbPath, "SELECT * FROM sesiones")).length, 0, "sin sesion por credencial ajena");
+      const token = await loginTenant(tenant);
+      assertEqual((await mt1f4Sesion(tenant, token)).central_id, tenant.central.id, "credencial propia resuelve su membership");
+      await pedir(tenant, "POST", "/logout", null, token);
+    }
+  });
+}
+
+async function testMT1F4MultiSesionValidaLigadaATenant() {
+  await mt1f4ConEscenario(async ({ escenario, a, pedir, loginTenant }) => {
+    const token = await loginTenant(a);
+    const sesion = await mt1f4Sesion(a, token);
+    const binding = (await allSql(escenario.controlDbPath, "SELECT * FROM usuario_empresas WHERE id = ?", [sesion.membership_id]))[0];
+    assertEqual(sesion.usuario_id, a.local.id, "ID local persistido sin endpoint debug");
+    assertEqual(binding.usuario_local_id, sesion.usuario_id, "Control vincula exactamente ese usuario local");
+    assertEqual(binding.usuario_id, sesion.central_id, "Control vincula identidad central");
+    assertEqual(binding.empresa_id, sesion.empresa_id, "Control vincula empresa");
+    assertSame(sesion.rol, "admin", "rol de membership, local es colaborador");
+    for (let i = 0; i < 2; i += 1) assertEqual((await pedir(a, "GET", "/configuracion", null, token)).status, 200, "revalidacion real repetida");
+    assertSame(Boolean(await mt1f4Sesion(a, token)), true, "slug env vacio no revoca A");
+  });
+}
+
+async function testMT1F4MultiSesionCrossTenantFailsClosed() {
+  await mt1f4ConEscenario(async ({ a, b, pedir, loginTenant }) => {
+    const token = await loginTenant(a);
+    assertSame(mt1f3EsNoAutenticado(await pedir(b, "GET", "/configuracion", null, token)), true, "token A ausente en B");
+    const sesion = await mt1f4Sesion(a, token);
+    for (const empresaId of [a.empresa.id, b.empresa.id]) {
+      await runSql(b.dbPath, "INSERT INTO sesiones (token, usuario_id, nombre, rol, expira, auth_mode, central_id, membership_id, empresa_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [token, sesion.usuario_id, sesion.nombre, sesion.rol, sesion.expira, sesion.auth_mode, sesion.central_id, sesion.membership_id, empresaId]);
+      assertSame(mt1f3EsNoAutenticado(await pedir(b, "GET", "/configuracion", null, token)), true, "fila inyectada denegada por empresa/membership incluso con empresa_id B");
+      assertSame(await mt1f4Sesion(b, token), undefined, "fila ajena revocada en B");
+      assertEqual((await pedir(a, "GET", "/configuracion", null, token)).status, 200, "A no se revoca por rechazo en B");
+    }
+  });
+}
+
+async function testMT1F4MultiMembershipYEmpresaRevocanSesion() {
+  await mt1f4ConEscenario(async ({ escenario, a, b, pedir, loginTenant }) => {
+    const control = escenario.controlDbPath;
+    const restaurar = async () => {
+      await runSql(control, "UPDATE usuarios SET activo = 1 WHERE id = ?", [a.central.id]);
+      await runSql(control, "INSERT OR REPLACE INTO usuario_empresas (id, usuario_id, empresa_id, usuario_local_id, rol, activo) VALUES (?, ?, ?, ?, 'admin', 1)", [a.membership.id, a.central.id, a.empresa.id, a.local.id]);
+    };
+    const cambios = [
+      ["UPDATE usuario_empresas SET activo = 0 WHERE id = ?", [a.membership.id]],
+      ["DELETE FROM usuario_empresas WHERE id = ?", [a.membership.id]],
+      ["UPDATE usuario_empresas SET usuario_id = ? WHERE id = ?", [b.central.id, a.membership.id]],
+      ["UPDATE usuario_empresas SET usuario_local_id = 987654 WHERE id = ?", [a.membership.id]],
+      ["UPDATE usuarios SET activo = 0 WHERE id = ?", [a.central.id]]
+    ];
+    for (const [sql, params] of cambios) {
+      await restaurar();
+      const token = await loginTenant(a);
+      await runSql(control, sql, params);
+      assertSame(mt1f3EsNoAutenticado(await pedir(a, "GET", "/configuracion", null, token)), true, `revocacion: ${sql}`);
+      assertSame(await mt1f4Sesion(a, token), undefined, "sesion revocada sin rebind");
+    }
+    await restaurar();
+    for (const columna of ["central_id", "membership_id", "empresa_id"]) {
+      const token = await loginTenant(a);
+      await runSql(a.dbPath, `UPDATE sesiones SET ${columna} = -1 WHERE token = ?`, [token]);
+      assertSame(mt1f3EsNoAutenticado(await pedir(a, "GET", "/configuracion", null, token)), true, `ancla invalida ${columna}`);
+    }
+    const token = await loginTenant(a);
+    await runSql(control, "UPDATE empresas SET activa = 0 WHERE id = ?", [a.empresa.id]);
+    assertSame(mt1f3EsNoAutenticado(await pedir(a, "GET", "/configuracion", null, token)), true, "empresa inactiva falla cerrado desde routing/revalidacion");
+    const tokenB = await loginTenant(b);
+    assertEqual((await pedir(b, "GET", "/configuracion", null, tokenB)).status, 200, "empresa B permanece autorizada");
+  });
+}
+
+async function testMT1F4MultiBridgeUsaEmpresaExplicita() {
+  await mt1f4ConEscenario(async ({ escenario, a, b, pedir, loginTenant }) => {
+    const tokens = new Map([[a, await loginTenant(a)], [b, await loginTenant(b)]]);
+    const creados = new Map();
+    for (const tenant of [a, b]) {
+      const payload = { nombre: "Bridge F4", usuario: "bridge-f4", password: "BridgeF4pass123", confirmar_password: "BridgeF4pass123", rol: "colaborador", activo: true };
+      const respuesta = await pedir(tenant, "POST", "/usuarios", payload, tokens.get(tenant));
+      assertEqual(respuesta.status, 200, `bridge create ${tenant.tag}: ${respuesta.texto}`);
+      const local = (await allSql(tenant.dbPath, "SELECT * FROM usuarios WHERE usuario = 'bridge-f4'"))[0];
+      const membership = (await allSql(escenario.controlDbPath, "SELECT * FROM usuario_empresas WHERE empresa_id = ? AND usuario_local_id = ?", [tenant.empresa.id, local.id]))[0];
+      assertSame(Boolean(membership), true, "create sincroniza empresa explicita");
+      creados.set(tenant, { local, membership });
+    }
+    assertEqual(creados.get(a).local.id, creados.get(b).local.id, "bridge tambien usa IDs locales colisionados");
+    assertSame(creados.get(a).membership.usuario_id !== creados.get(b).membership.usuario_id, true, "create no auto-link entre empresas");
+    for (const [tenant, otro] of [[a, b], [b, a]]) {
+      const { local, membership } = creados.get(tenant);
+      const fotoOtro = JSON.stringify(await allSql(escenario.controlDbPath, "SELECT m.*, u.password_hash FROM usuario_empresas m JOIN usuarios u ON u.id = m.usuario_id WHERE m.empresa_id = ?", [otro.empresa.id]));
+      const pedirCambio = async (metodo, ruta, cuerpo) => {
+        const respuesta = await pedir(tenant, metodo, ruta, cuerpo, tokens.get(tenant));
+        assertEqual(respuesta.status, 200, `${ruta}: ${respuesta.texto}`);
+      };
+      await pedirCambio("PUT", `/usuarios/${local.id}`, { nombre: "Bridge edit", usuario: "bridge-f4", rol: "encargado", activo: true });
+      assertSame((await allSql(escenario.controlDbPath, "SELECT rol FROM usuario_empresas WHERE id = ?", [membership.id]))[0].rol, "encargado", "access sincroniza rol");
+      await pedirCambio("PATCH", `/usuarios/${local.id}/estado`, { activo: false });
+      assertEqual((await allSql(escenario.controlDbPath, "SELECT activo FROM usuario_empresas WHERE id = ?", [membership.id]))[0].activo, 0, "activo sincroniza membership");
+      const password = `BridgeNuevo-${tenant.tag}-456`;
+      await pedirCambio("PATCH", `/usuarios/${local.id}/password`, { password, confirmar_password: password });
+      const central = (await allSql(escenario.controlDbPath, "SELECT password_hash FROM usuarios WHERE id = ?", [membership.usuario_id]))[0];
+      assertSame(await bcrypt.compare(password, central.password_hash), true, "password sincroniza identidad correcta");
+      assertSame(JSON.stringify(await allSql(escenario.controlDbPath, "SELECT m.*, u.password_hash FROM usuario_empresas m JOIN usuarios u ON u.id = m.usuario_id WHERE m.empresa_id = ?", [otro.empresa.id])), fotoOtro, "los cuatro bridges no mutan otra empresa");
+    }
+  }, { bridge: true });
+}
+
+async function testMT1F4MultiLogoutNoRevocaOtroTenant() {
+  await mt1f4ConEscenario(async ({ a, b, pedir, loginTenant }) => {
+    const tokenA = await loginTenant(a);
+    const tokenB = await loginTenant(b);
+    assertEqual((await pedir(a, "POST", "/logout", null, tokenB)).status, 200, "logout publico en A");
+    assertEqual((await pedir(b, "GET", "/configuracion", null, tokenB)).status, 200, "token B sigue autorizado");
+    assertSame(Boolean(await mt1f4Sesion(b, tokenB)), true, "fila B intacta");
+    await pedir(a, "POST", "/logout", null, tokenA);
+    assertSame(await mt1f4Sesion(a, tokenA), undefined, "logout propio borra A");
+    assertSame(mt1f3EsNoAutenticado(await pedir(a, "GET", "/configuracion", null, tokenA)), true, "token A revocado");
+  });
+}
+
+// Ejecuta funciones REALES de server.js aisladas, sin arrancar servidor ni agregar endpoints.
+// Permite inducir contexto ausente/corrupto y resultado central inconsistente, imposibles desde Host sano.
+function mt1f4AuthAislada(overrides = {}) {
+  const fuente = fs.readFileSync(path.join(ROOT, "backend/server.js"), "utf8");
+  const nombres = ["empresaAuthDelRequest", "rechazarNoAutenticado", "requireAuth", "loginCentral", "responderFalloAuthCentral"];
+  const funciones = nombres.map((nombre) => {
+    const match = fuente.match(new RegExp(`^(?:async )?function ${nombre}\\([^]*?^\\}`, "m"));
+    if (!match) throw new Error(`Funcion real no encontrada: ${nombre}`);
+    return match[0];
+  }).join("\n");
+  const prohibido = () => { throw new Error("Acceso fuera del contexto autorizado"); };
+  return require("vm").runInNewContext(`${funciones}\n({ ${nombres.join(", ")} })`, {
+    ATLAS_TENANCY_MODE: "multi", TENANCY_MODES, ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: "fallback-prohibido",
+    PREAUTH_UNIFORME: true, getTenantContext: () => null,
+    responderNoAutenticado: require("../backend/tenantRequestMiddleware").responderNoAutenticado,
+    getQuery: prohibido, runQuery: prohibido, autenticarCredencialCentral: prohibido, revalidarSesionCentral: prohibido,
+    esRutaPublicaSinAuth: () => false, process: { env: { GUERNICA_DB_PATH: "fallback-prohibido" } }, console,
+    ...overrides
+  });
+}
+
+async function testMT1F4MultiSinContextoNoFallback() {
+  const respuesta = () => ({ statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } });
+  for (const contexto of [null, {}, { empresaId: 0, empresaSlug: "a" }, { empresaId: 1.5, empresaSlug: "a" }, { empresaId: "1", empresaSlug: "a" }, { empresaId: 1, empresaSlug: "" }, { empresaId: 1, empresaSlug: " a " }]) {
+    const auth = mt1f4AuthAislada({ getTenantContext: () => contexto });
+    assertSame(auth.empresaAuthDelRequest(), null, "contexto invalido no toma env/body/ultimo tenant");
+    const loginRes = respuesta();
+    await auth.loginCentral({ body: { empresaSlug: "fallback-prohibido" } }, loginRes, { usuario: "admin", password: "123" });
+    assertEqual(loginRes.statusCode, 401, "sin contexto login rechaza antes de DB/Control");
+    const authRes = respuesta();
+    await auth.requireAuth({ path: "/configuracion", headers: { authorization: "Bearer valido" } }, authRes, () => { throw new Error("next no autorizado"); });
+    assertEqual(authRes.statusCode, 401, "sin contexto requireAuth rechaza antes de DB/Control");
+  }
+  let autenticaciones = 0;
+  const auth = mt1f4AuthAislada({
+    getTenantContext: () => ({ empresaId: 1, empresaSlug: "a" }),
+    getQuery: async () => ({ id: 7 }),
+    autenticarCredencialCentral: async ({ empresaSlug, usuarioLocalId }) => {
+      autenticaciones += 1;
+      assertSame(empresaSlug, "a", "se pasa slug ALS");
+      assertEqual(usuarioLocalId, 7, "se pasa ID local");
+      return { ok: true, empresa: { id: 2 } };
+    }
+  });
+  const res = respuesta();
+  await auth.loginCentral({}, res, { usuario: "admin", password: "123" });
+  assertEqual(autenticaciones, 1, "resultado central inconsistente ejercitado");
+  assertEqual(res.statusCode, 401, "empresa distinta no emite token ni escribe sesion");
+}
+
+async function testMT1F4MultiLoginNoEnumeraMembership() {
+  await mt1f4ConEscenario(async ({ escenario, a, b, pedir }) => {
+    const respuestas = [];
+    respuestas.push(await pedir(a, "POST", "/login", { usuario: "no-existe-f4", password: a.password }));
+    respuestas.push(await pedir(b, "POST", "/login", { usuario: "admin", password: a.password }));
+    await runSql(escenario.controlDbPath, "UPDATE usuario_empresas SET activo = 0 WHERE id = ?", [a.membership.id]);
+    respuestas.push(await pedir(a, "POST", "/login", { usuario: "admin", password: a.password }));
+    await runSql(escenario.controlDbPath, "UPDATE usuario_empresas SET activo = 1 WHERE id = ?", [a.membership.id]);
+    await runSql(escenario.controlDbPath, "UPDATE usuarios SET activo = 0 WHERE id = ?", [a.central.id]);
+    respuestas.push(await pedir(a, "POST", "/login", { usuario: "admin", password: a.password }));
+    await runSql(escenario.controlDbPath, "UPDATE usuarios SET activo = 1 WHERE id = ?", [a.central.id]);
+    respuestas.push(await pedir(a, "POST", "/login", { usuario: "admin", password: "incorrecta" }));
+    const firma = (r) => JSON.stringify([r.status, r.contentType, r.texto]);
+    for (const r of respuestas) {
+      assertSame(mt1f3EsNoAutenticado(r), true, "login anonimo generico sin token");
+      assertSame(firma(r), firma(respuestas[0]), "mismo 401, Content-Type y body");
+    }
+    assertEqual((await allSql(a.dbPath, "SELECT * FROM sesiones")).length, 0, "ningun fallo emite sesion A");
+    assertEqual((await allSql(b.dbPath, "SELECT * FROM sesiones")).length, 0, "ningun fallo emite sesion B");
+    await runSql(escenario.controlDbPath, "UPDATE usuarios SET intentos_fallidos = 99, bloqueado_hasta = ? WHERE id = ?", [new Date(Date.now() + 600000).toISOString(), a.central.id]);
+    assertEqual((await pedir(a, "POST", "/login", { usuario: "admin", password: a.password })).status, 429, "lockout central conserva 429");
+    await runSql(escenario.controlDbPath, "ALTER TABLE usuario_empresas RENAME TO membresias_indisponibles_f4");
+    const operacional = await pedir(a, "POST", "/login", { usuario: "admin", password: a.password });
+    assertEqual(operacional.status, 503, "error operacional Control conserva 503");
+    assertSame(operacional.json.message, "Servicio de autenticacion no disponible", "503 no filtra detalles Control");
+  }, { membershipB: false });
+}
+
 const MT1F3_DOMINIO = "atlasos.com.ar";
 const MT1F3_MENSAJE_NO_AUTENTICADO = "No autenticado. Iniciá sesión.";
 
@@ -34423,12 +34699,19 @@ async function testMT1F3FallosTenantNoEnumerables() {
         }
       }
 
-      // Control positivo (servidor real): una sesion REAL en la DB del tenant sano se BUSCA en esa DB (el contexto llevo a
-      // requireAuth a la DB correcta). No es autorizacion de F4: hoy la revalidacion central aun no puede completarse en
-      // multi; solo se afirma que la respuesta deja de ser el 401 generico de pre-autenticacion.
-      await runSql(tenantSano.dbPath, "INSERT INTO sesiones (token, usuario_id, nombre, rol, expira, auth_mode, central_id, membership_id, empresa_id) VALUES ('mt1f3-c1-valido', 1, 'Usuario OK', 'admin', datetime('now', '+1 hour'), 'central', 1, 1, ?)", [tenantSano.empresa.id]);
+      // Control positivo: F4 revalida autoridad real. Una fila con anclas inventadas ya no es
+      // evidencia positiva de routing; debe tener identidad y membership validas en Control.
+      const controlPositivo = await bootstrapControlDb(escenario.controlDbPath, { seed: false });
+      let centralPositiva;
+      let membershipPositiva;
+      const usuarioPositivo = (await allSql(tenantSano.dbPath, "SELECT id FROM usuarios WHERE usuario = 'admin'"))[0];
+      try {
+        centralPositiva = await crearUsuarioCentral(controlPositivo, { nombre: "F3 positivo", passwordHash: await bcrypt.hash("F3Positivo123", 10) });
+        membershipPositiva = await crearMembership(controlPositivo, { usuarioId: centralPositiva.id, empresaId: tenantSano.empresa.id, usuarioLocalId: usuarioPositivo.id, rol: "admin" });
+      } finally { await closeControlDb(controlPositivo); }
+      await runSql(tenantSano.dbPath, "INSERT INTO sesiones (token, usuario_id, nombre, rol, expira, auth_mode, central_id, membership_id, empresa_id) VALUES ('mt1f3-c1-valido', ?, 'Usuario OK', 'admin', datetime('now', '+1 hour'), 'central', ?, ?, ?)", [usuarioPositivo.id, centralPositiva.id, membershipPositiva.id, tenantSano.empresa.id]);
       const conSesion = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenantSano), ruta: "/productos", autorizacion: "Bearer mt1f3-c1-valido" });
-      assertSame(mt1f3EsNoAutenticado(conSesion), false, `la sesion existente en la DB del tenant sano SE ENCONTRO: ya no es la respuesta generica (status=${conSesion.status})`);
+      assertEqual(conSesion.status, 200, "la sesion del tenant sano se encuentra y revalida con su autoridad real");
       for (const ajeno of [fallos[0].host, `127.0.0.1:${servidor.port}`]) {
         const otroHost = await mt1f3Pedir(servidor.port, { host: ajeno, ruta: "/productos", autorizacion: "Bearer mt1f3-c1-valido" });
         assertSame(mt1f3EsNoAutenticado(otroHost), true, `el mismo token en otro Host (${ajeno}) sigue siendo la respuesta generica: la sesion no existe en ninguna otra DB`);

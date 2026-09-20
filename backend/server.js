@@ -9,6 +9,7 @@ const { runQuery, getQuery, allQuery } = require("./db");
 const userControlBridge = require("./userControlBridge");
 const { autenticarCredencialCentral } = require("./centralAuthSecurity");
 const { revalidarSesionCentral } = require("./centralAuthResolver");
+const { getTenantContext } = require("./tenantRequestContext");
 const { resolverTenantDbRegistradoPorSlug } = require("./tenantDbRegistry");
 const { verificarTenantDbIdentity } = require("./tenantDbIdentity");
 const { verificarLegacyBaseline } = require("./legacyBaselineVerifier");
@@ -274,9 +275,8 @@ const PORT = Number(process.env.PORT) || 3000;
 
 // MT-1C.2B.2B: modo de autenticacion del proceso, resuelto una unica vez al cargar el modulo --
 // nunca por request. Fail-closed deliberado: un valor invalido o "central" sin empresa declarada
-// deben tumbar el proceso ANTES de app.listen(), nunca degradar silenciosamente a legacy. La
-// empresa sigue siendo process-bound (nunca se acepta desde el body de /login ni desde el
-// frontend): este proceso representa una unica empresa central, declarada por env.
+// deben tumbar el proceso ANTES de app.listen(), nunca degradar silenciosamente a legacy.
+// En single la empresa es fija; en multi proviene exclusivamente del contexto de tenant.
 const ATLAS_AUTH_MODE = (() => {
   const raw = String(process.env.ATLAS_AUTH_MODE || "").trim().toLowerCase();
   const modo = raw || "legacy";
@@ -461,6 +461,17 @@ function esRutaPublicaSinAuth(rutaPath) {
 // incompatible" tambien colapsan en esa respuesta. Fuera de central + multi los mensajes historicos no cambian.
 const PREAUTH_UNIFORME = ATLAS_AUTH_MODE === "central" && ATLAS_TENANCY_MODE === TENANCY_MODES.MULTI;
 
+// MT-1F4: Host resuelve contexto; la membership autoriza dentro de esa empresa.
+// Sin ALS valido no existe empresa de request ni fallback en multi.
+function empresaAuthDelRequest() {
+  if (ATLAS_TENANCY_MODE === TENANCY_MODES.SINGLE) return { empresaSlug: ATLAS_EMPRESA_SLUG };
+  const contexto = getTenantContext();
+  if (!contexto || !Number.isInteger(contexto.empresaId) || contexto.empresaId <= 0
+      || typeof contexto.empresaSlug !== "string" || !contexto.empresaSlug.trim()
+      || contexto.empresaSlug !== contexto.empresaSlug.trim()) return null;
+  return { empresaId: contexto.empresaId, empresaSlug: contexto.empresaSlug };
+}
+
 function rechazarNoAutenticado(res, mensajeHistorico) {
   if (PREAUTH_UNIFORME) return responderNoAutenticado(res);
   return res.status(401).json({ message: mensajeHistorico });
@@ -496,6 +507,8 @@ async function requireAuth(req, res, next) {
   }
 
   try {
+    const empresaRequest = empresaAuthDelRequest();
+    if (PREAUTH_UNIFORME && !empresaRequest) return responderNoAutenticado(res);
     const sesion = await getQuery(
       "SELECT usuario_id, nombre, rol, auth_mode, central_id, membership_id, empresa_id FROM sesiones WHERE token = ? AND expira > datetime('now')",
       [token]
@@ -520,8 +533,12 @@ async function requireAuth(req, res, next) {
       return next();
     }
 
+    if (PREAUTH_UNIFORME && Number(sesion.empresa_id) !== empresaRequest.empresaId) {
+      await runQuery("DELETE FROM sesiones WHERE token = ?", [token]);
+      return responderNoAutenticado(res);
+    }
     const revalidacion = await revalidarSesionCentral({
-      empresaSlug: ATLAS_EMPRESA_SLUG,
+      empresaSlug: empresaRequest.empresaSlug,
       empresaId: sesion.empresa_id,
       membershipId: sesion.membership_id,
       centralId: sesion.central_id,
@@ -537,7 +554,7 @@ async function requireAuth(req, res, next) {
         } catch (deleteError) {
           logError("Error revocando sesion central invalida", deleteError, `errorCode=${errorCode}`);
         }
-        return res.status(401).json({ message: CENTRAL_SESSION_INVALID_MESSAGE });
+        return rechazarNoAutenticado(res, CENTRAL_SESSION_INVALID_MESSAGE);
       }
       if (!CENTRAL_SESSION_OPERATIONAL_ERRORS.has(errorCode)) {
         logError("Error desconocido revalidando sesion central", new Error(revalidacion.message || errorCode), `errorCode=${errorCode}`);
@@ -2045,13 +2062,15 @@ app.post("/login", rateLimitLogin, async (req, res) => {
 // funcion no reimplementa bcrypt, transacciones ni revalidacion -- solo mapea su resultado a HTTP.
 async function loginCentral(req, res, { usuario, password, remember }) {
   try {
+    const empresaRequest = empresaAuthDelRequest();
+    if (PREAUTH_UNIFORME && !empresaRequest) return responderNoAutenticado(res);
     const user = await getQuery("SELECT * FROM usuarios WHERE usuario = ?", [usuario]);
     if (!user) {
-      return res.status(401).json({ message: "Usuario no encontrado" });
+      return rechazarNoAutenticado(res, "Usuario no encontrado");
     }
 
     const resultado = await autenticarCredencialCentral({
-      empresaSlug: ATLAS_EMPRESA_SLUG,
+      empresaSlug: empresaRequest.empresaSlug,
       usuarioLocalId: user.id,
       password,
       controlDbPath: process.env.ATLAS_CONTROL_DB_PATH || undefined
@@ -2059,6 +2078,9 @@ async function loginCentral(req, res, { usuario, password, remember }) {
 
     if (!resultado.ok) {
       return responderFalloAuthCentral(res, resultado);
+    }
+    if (PREAUTH_UNIFORME && Number(resultado.empresa?.id) !== empresaRequest.empresaId) {
+      return responderNoAutenticado(res);
     }
 
     const expiresInMs = remember ? 7 * 24 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000;
@@ -2105,6 +2127,10 @@ async function loginCentral(req, res, { usuario, password, remember }) {
 // cae en el default 503 -- nunca fallback a legacy, nunca se vuelve a evaluar password local,
 // nunca se expone membership/central IDs ni hashes en el mensaje publico.
 function responderFalloAuthCentral(res, resultado) {
+  if (PREAUTH_UNIFORME && (
+    ["MEMBERSHIP_NO_EXISTE", "MEMBERSHIP_INACTIVA", "CENTRAL_INACTIVA", "EMPRESA_INACTIVA"].includes(resultado.errorCode)
+    || (resultado.errorCode === "CREDENCIAL_INVALIDA" && !resultado.bloqueado_hasta)
+  )) return responderNoAutenticado(res);
   switch (resultado.errorCode) {
     case "CREDENCIAL_INVALIDA":
       if (resultado.bloqueado_hasta) {
@@ -2262,6 +2288,7 @@ app.post("/usuarios", async (req, res) => {
     if (userControlBridge.getBridgeMode() === "shadow") {
       try {
         await userControlBridge.syncUserCreate({
+          empresaSlug: empresaAuthDelRequest().empresaSlug,
           usuarioLocal: {
             id: usuarioLocalId,
             nombre: data.nombre,
@@ -2322,6 +2349,7 @@ app.put("/usuarios/:id", async (req, res) => {
     if (userControlBridge.getBridgeMode() === "shadow") {
       try {
         await userControlBridge.syncMembershipAccess({
+          empresaSlug: empresaAuthDelRequest().empresaSlug,
           usuarioLocalId: usuarioId,
           rol: usuarioActualizado.rol,
           activo: usuarioActualizado.activo
@@ -2356,7 +2384,7 @@ app.patch("/usuarios/:id/estado", async (req, res) => {
 
     if (userControlBridge.getBridgeMode() === "shadow") {
       try {
-        await userControlBridge.syncMembershipActivo({ usuarioLocalId: usuarioId, activo });
+        await userControlBridge.syncMembershipActivo({ empresaSlug: empresaAuthDelRequest().empresaSlug, usuarioLocalId: usuarioId, activo });
       } catch (bridgeError) {
         logError("bridge active divergence", bridgeError);
         return res.status(503).json({ message: "El estado se actualizo pero no pudo sincronizarse completamente. Intenta nuevamente en unos minutos." });
@@ -2404,7 +2432,7 @@ app.patch("/usuarios/:id/password", async (req, res) => {
 
     if (userControlBridge.getBridgeMode() === "shadow") {
       try {
-        await userControlBridge.syncPasswordHash({ usuarioLocalId: usuarioId, passwordHash });
+        await userControlBridge.syncPasswordHash({ empresaSlug: empresaAuthDelRequest().empresaSlug, usuarioLocalId: usuarioId, passwordHash });
       } catch (bridgeError) {
         logError("bridge password divergence", bridgeError);
         return res.status(503).json({ message: "La contrasena se actualizo pero no pudo sincronizarse completamente. Intenta nuevamente en unos minutos." });
