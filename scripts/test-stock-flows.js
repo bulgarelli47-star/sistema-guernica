@@ -7,7 +7,7 @@ const crypto = require("crypto");
 const { spawn, spawnSync } = require("child_process");
 const sqlite3 = require("sqlite3").verbose();
 const bcrypt = require("bcrypt");
-const { closeDb: closeBackendDb } = require("../backend/db");
+const { closeDb: closeBackendDb, runQuery: dbRunQuery, getQuery: dbGetQuery } = require("../backend/db");
 const { buildDetalleVentaSnapshotFiscal, buildResumenFiscalVenta } = require("../backend/services/ventaService");
 const {
   buildResumenItemsCompra,
@@ -20814,6 +20814,10 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1F4MultiLogoutNoRevocaOtroTenant);
   await _run(testMT1F4MultiSinContextoNoFallback);
   await _run(testMT1F4MultiLoginNoEnumeraMembership);
+  await _run(testMT1F5AColaStockSeParticionaPorTenant);
+  await _run(testMT1F5AMismoTenantConservaSerializacion);
+  await _run(testMT1F5AColaPreservaContextoTenant);
+  await _run(testMT1F5AMultiSinContextoNoFallback);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -34118,6 +34122,184 @@ async function testMT1F4MultiLoginNoEnumeraMembership() {
     assertEqual(operacional.status, 503, "error operacional Control conserva 503");
     assertSame(operacional.json.message, "Servicio de autenticacion no disponible", "503 no filtra detalles Control");
   }, { membershipB: false });
+}
+
+// ====================================================================================================
+// MT-1F5A: la cola de ingreso fisico de stock (backend/server.js) pasa de UNA sola Promise
+// process-global a una lane por tenant (Map<key, Promise>). Los tests extraen el codigo REAL de
+// server.js via vm (misma tecnica que mt1f4AuthAislada) en vez de reimplementar la logica, para
+// probar el comportamiento shippeado, no una copia.
+// ====================================================================================================
+function mt1f5aColaAislada(overrides = {}) {
+  const fuente = fs.readFileSync(path.join(ROOT, "backend/server.js"), "utf8");
+  const constantes = fuente.match(/^const stockIngresoFisicoQueues = new Map\(\);\r?\nconst STOCK_INGRESO_FISICO_QUEUE_KEY_SINGLE = "single";\r?$/m);
+  if (!constantes) throw new Error("Constantes reales de la cola de stock no encontradas en server.js");
+  const nombresFn = ["resolverStockIngresoFisicoQueueKey", "encolarIngresoFisicoStock"];
+  const funciones = nombresFn.map((nombre) => {
+    const match = fuente.match(new RegExp(`^(?:async )?function ${nombre}\\([^]*?^\\}`, "m"));
+    if (!match) throw new Error(`Funcion real no encontrada: ${nombre}`);
+    return match[0];
+  }).join("\n");
+  const bloque = `${constantes[0]}\n${funciones}`;
+  const nombres = ["stockIngresoFisicoQueues", "resolverStockIngresoFisicoQueueKey", "encolarIngresoFisicoStock"];
+  return require("vm").runInNewContext(`${bloque}\n({ ${nombres.join(", ")} })`, {
+    ATLAS_TENANCY_MODE: "multi",
+    TENANCY_MODES,
+    getTenantContext: () => null,
+    ...overrides
+  });
+}
+
+async function testMT1F5AColaStockSeParticionaPorTenant() {
+  let contextoActual = null;
+  const { encolarIngresoFisicoStock } = mt1f5aColaAislada({ getTenantContext: () => contextoActual });
+  const eventos = [];
+
+  let liberarA;
+  const gateA = new Promise((resolve) => { liberarA = resolve; });
+
+  contextoActual = { empresaId: 501 };
+  const promesaA = encolarIngresoFisicoStock(async () => {
+    eventos.push("A-inicio");
+    await gateA;
+    eventos.push("A-fin");
+    return "A";
+  });
+
+  contextoActual = { empresaId: 502 };
+  const promesaB = encolarIngresoFisicoStock(async () => {
+    eventos.push("B-inicio");
+    eventos.push("B-fin");
+    return "B";
+  });
+
+  const resultadoB = await promesaB;
+  assertSame(resultadoB, "B", "B (tenant 502) debe completar sin esperar a A (tenant 501)");
+  assertSame(eventos.includes("A-fin"), false, "A debe seguir pendiente en su gate cuando B ya termino: sin head-of-line blocking cruzado");
+  assertSame(JSON.stringify(eventos), JSON.stringify(["A-inicio", "B-inicio", "B-fin"]), "orden de eventos: B se ejecuta y termina integramente mientras A sigue bloqueado en su propio gate");
+
+  liberarA();
+  const resultadoA = await promesaA;
+  assertSame(resultadoA, "A", "A completa recien al liberar su gate, en su propia lane");
+  assertSame(JSON.stringify(eventos), JSON.stringify(["A-inicio", "B-inicio", "B-fin", "A-fin"]), "orden final: A termina despues, sin haber afectado a B");
+}
+
+async function testMT1F5AMismoTenantConservaSerializacion() {
+  const contexto = { empresaId: 601 };
+  const { encolarIngresoFisicoStock } = mt1f5aColaAislada({ getTenantContext: () => contexto });
+  const eventos = [];
+
+  let liberarA1;
+  const gateA1 = new Promise((resolve) => { liberarA1 = resolve; });
+  const promesaA1 = encolarIngresoFisicoStock(async () => {
+    eventos.push("A1-inicio");
+    await gateA1;
+    eventos.push("A1-fin");
+    return "A1";
+  });
+  const promesaA2 = encolarIngresoFisicoStock(async () => {
+    eventos.push("A2-inicio");
+    return "A2";
+  });
+
+  // Evidencia primaria: la dependencia estructural de la cadena de promesas (A2 solo puede
+  // iniciar despues de que A1 asiente, sea cual sea el timing real). El delay es solo una
+  // confirmacion adicional, no la prueba.
+  await delay(30);
+  assertSame(JSON.stringify(eventos), JSON.stringify(["A1-inicio"]), "A2 no debe iniciar mientras A1 (mismo tenant) sigue pendiente en su gate");
+
+  liberarA1();
+  const [resultadoA1, resultadoA2] = await Promise.all([promesaA1, promesaA2]);
+  assertSame(resultadoA1, "A1", "A1 completa tras liberar su gate");
+  assertSame(resultadoA2, "A2", "A2 completa despues de A1");
+  assertSame(JSON.stringify(eventos), JSON.stringify(["A1-inicio", "A1-fin", "A2-inicio"]), "orden estricto: A1 termina antes de que A2 inicie, mismo tenant sigue serializado FIFO");
+
+  // Una operacion rechazada no debe envenenar la lane: la siguiente operacion del MISMO tenant
+  // debe seguir ejecutandose con normalidad.
+  let capturado = null;
+  try {
+    await encolarIngresoFisicoStock(async () => { throw new Error("falla deliberada A3"); });
+  } catch (error) {
+    capturado = error;
+  }
+  assertSame(capturado?.message, "falla deliberada A3", "A3 rechaza propagando el error real del callback");
+
+  const resultadoA4 = await encolarIngresoFisicoStock(async () => "A4");
+  assertSame(resultadoA4, "A4", "una operacion posterior del MISMO tenant sigue ejecutandose tras un fallo previo: la lane no queda envenenada");
+}
+
+async function testMT1F5AColaPreservaContextoTenant() {
+  const escenario = await mt1f1CrearEscenario(["a", "b"]);
+  try {
+    const [resultadoA, resultadoB] = await Promise.all([
+      mt1f1Resolver(escenario.tenants[0], escenario.controlDbPath),
+      mt1f1Resolver(escenario.tenants[1], escenario.controlDbPath)
+    ]);
+    assertSame(resultadoA.ok, true, "handle A debe resolver");
+    assertSame(resultadoB.ok, true, "handle B debe resolver");
+    const handleA = resultadoA.handle;
+    const handleB = resultadoB.handle;
+
+    // getTenantContext REAL (no mockeado): probamos que la cola vm-extraida, corriendo dentro de
+    // runWithTenantHandle REAL, ve el contexto ALS verdadero -- no una copia de test.
+    const { encolarIngresoFisicoStock } = mt1f5aColaAislada({ getTenantContext });
+
+    const valorA = `f5a-marca-a-${Date.now()}`;
+    const valorB = `f5a-marca-b-${Date.now()}`;
+
+    const promesaA = runWithTenantHandle(handleA, () => encolarIngresoFisicoStock(async () => {
+      const contexto = getTenantContext();
+      assertEqual(contexto.empresaId, escenario.tenants[0].empresa.id, "callback encolado desde A ve el empresaId de A dentro de la lane");
+      await dbRunQuery("INSERT OR REPLACE INTO configuracion_global (clave, valor, seccion, actualizado_en) VALUES ('f5a_marca_disponible', ?, 'test', datetime('now'))", [JSON.stringify(valorA)]);
+      return "A";
+    }));
+
+    const promesaB = runWithTenantHandle(handleB, () => encolarIngresoFisicoStock(async () => {
+      const contexto = getTenantContext();
+      assertEqual(contexto.empresaId, escenario.tenants[1].empresa.id, "callback encolado desde B ve el empresaId de B dentro de la lane");
+      await dbRunQuery("INSERT OR REPLACE INTO configuracion_global (clave, valor, seccion, actualizado_en) VALUES ('f5a_marca_disponible', ?, 'test', datetime('now'))", [JSON.stringify(valorB)]);
+      return "B";
+    }));
+
+    const [okA, okB] = await Promise.all([promesaA, promesaB]);
+    assertSame(okA, "A", "operacion A completa dentro de su propia lane/contexto");
+    assertSame(okB, "B", "operacion B completa dentro de su propia lane/contexto");
+
+    const filaA = (await allSql(escenario.tenants[0].dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'f5a_marca_disponible'"))[0];
+    const filaB = (await allSql(escenario.tenants[1].dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'f5a_marca_disponible'"))[0];
+    assertSame(JSON.parse(filaA.valor), valorA, "la DB fisica de A tiene el valor escrito por el callback A -- prueba empirica, no solo teoria de ALS");
+    assertSame(JSON.parse(filaB.valor), valorB, "la DB fisica de B tiene el valor escrito por el callback B, nunca el de A: sin cruce de escritura entre lanes");
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F5AMultiSinContextoNoFallback() {
+  const contextosInvalidos = [null, {}, { empresaId: 0 }, { empresaId: -1 }, { empresaId: 1.5 }, { empresaId: "1" }];
+  for (const contexto of contextosInvalidos) {
+    let ejecutado = false;
+    const { encolarIngresoFisicoStock } = mt1f5aColaAislada({ ATLAS_TENANCY_MODE: "multi", getTenantContext: () => contexto });
+    let error = null;
+    try {
+      await encolarIngresoFisicoStock(async () => { ejecutado = true; return "no-debe-pasar"; });
+    } catch (err) {
+      error = err;
+    }
+    assertSame(ejecutado, false, `contexto invalido ${JSON.stringify(contexto)}: el callback NO debe ejecutarse`);
+    assertSame(error !== null, true, `contexto invalido ${JSON.stringify(contexto)}: debe fallar cerrado (rechazar), nunca caer a una lane global/SINGLE`);
+  }
+
+  // Contexto multi valido SI debe ejecutar (no es que la cola este rota en general).
+  const { encolarIngresoFisicoStock: encolarValido } = mt1f5aColaAislada({ ATLAS_TENANCY_MODE: "multi", getTenantContext: () => ({ empresaId: 777, empresaSlug: "ok" }) });
+  const resultadoValido = await encolarValido(async () => "ejecutado");
+  assertSame(resultadoValido, "ejecutado", "un contexto multi valido SI ejecuta el callback normalmente");
+
+  // Modo single: key estable, getTenantContext NUNCA se consulta (short-circuit antes de leerlo).
+  const prohibido = () => { throw new Error("getTenantContext no debe consultarse en modo single"); };
+  const { encolarIngresoFisicoStock: encolarSingle, stockIngresoFisicoQueues: colasSingle } = mt1f5aColaAislada({ ATLAS_TENANCY_MODE: "single", getTenantContext: prohibido });
+  const resultadoSingle = await encolarSingle(async () => "single-ok");
+  assertSame(resultadoSingle, "single-ok", "modo single ejecuta con su key estable sin tocar getTenantContext");
+  assertEqual(colasSingle.size, 0, "tras asentarse, la lane single tambien se limpia del Map (sin fuga)");
 }
 
 const MT1F3_DOMINIO = "atlasos.com.ar";

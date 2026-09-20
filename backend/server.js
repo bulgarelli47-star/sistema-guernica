@@ -4049,11 +4049,35 @@ async function validarMovimientoStockVinculableARecepcion({ movimientoId, produc
   return movimiento;
 }
 
-let stockIngresoFisicoQueue = Promise.resolve();
+// MT-1F5A: una lane de serializacion por tenant en vez de una cola process-global unica --
+// la cola anterior encadenaba TODAS las operaciones de ingreso fisico de stock de TODOS los
+// tenants en un unico Promise, permitiendo que un tenant bloquee a otro (head-of-line blocking
+// cross-tenant). La key se resuelve desde el contexto ya verificado por F3/F4 (getTenantContext),
+// nunca reparseando Host ni derivando tenencia del body/query.
+const stockIngresoFisicoQueues = new Map();
+const STOCK_INGRESO_FISICO_QUEUE_KEY_SINGLE = "single";
+
+function resolverStockIngresoFisicoQueueKey() {
+  if (ATLAS_TENANCY_MODE === TENANCY_MODES.SINGLE) return STOCK_INGRESO_FISICO_QUEUE_KEY_SINGLE;
+  const contexto = getTenantContext();
+  if (!contexto || !Number.isInteger(contexto.empresaId) || contexto.empresaId <= 0) return null;
+  return contexto.empresaId;
+}
 
 function encolarIngresoFisicoStock(fn) {
-  const ejecucion = stockIngresoFisicoQueue.then(fn, fn);
-  stockIngresoFisicoQueue = ejecucion.catch(() => {});
+  const key = resolverStockIngresoFisicoQueueKey();
+  if (key === null) {
+    return Promise.reject(new Error("Contexto de tenant invalido para operacion de stock"));
+  }
+  const colaPrevia = stockIngresoFisicoQueues.get(key) || Promise.resolve();
+  const ejecucion = colaPrevia.then(fn, fn);
+  const colaTras = ejecucion.catch(() => {});
+  stockIngresoFisicoQueues.set(key, colaTras);
+  colaTras.finally(() => {
+    if (stockIngresoFisicoQueues.get(key) === colaTras) {
+      stockIngresoFisicoQueues.delete(key);
+    }
+  });
   return ejecucion;
 }
 
