@@ -16,6 +16,7 @@ const { verificarLegacyBaseline } = require("./legacyBaselineVerifier");
 const { verificarBusinessSchemaVersion } = require("./businessSchemaVersion");
 const { resolveBusinessDbPath } = require("./resolveBusinessDbPath");
 const { parseTenantHost } = require("./tenantHostContext");
+const { crearTenantUploadStorage } = require("./tenantUploadStorage");
 const {
   TENANCY_MODES,
   parsearTenancyMode,
@@ -432,13 +433,6 @@ const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_LOCK_MS = 10 * 60 * 1000;
 
 app.use(express.json({ limit: "15mb" }));
-app.use("/uploads", express.static(path.join(__dirname, "../uploads"), {
-  etag: false,
-  lastModified: false,
-  setHeaders(res) {
-    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-  }
-}));
 app.use(express.static(path.join(__dirname, "../frontend"), {
   etag: false,
   lastModified: false,
@@ -450,10 +444,85 @@ app.use(express.static(path.join(__dirname, "../frontend"), {
 const RUTAS_PUBLICAS = new Set(["/", "/login", "/logout", "/tienda/publica", "/tienda/publica/productos", "/tienda/publica/pedidos"]);
 
 // Clasificacion publica/protegida: UNICA fuente de verdad. La usan requireAuth y, via callback, el middleware
-// de contexto de tenant (MT-1F3-C1), que no mantiene ninguna copia de esta tabla.
+// de contexto de tenant (MT-1F3-C1), que no mantiene ninguna copia de esta tabla. MT-1F5B: /uploads/ entra
+// aca (no por RUTAS_PUBLICAS exacto) para que un fallo de resolucion de tenant sobre un media publico responda
+// el 404 generico de ruta inexistente, nunca el 401 de autenticacion -- no hay concepto de auth en /uploads.
 function esRutaPublicaSinAuth(rutaPath) {
-  return RUTAS_PUBLICAS.has(rutaPath) || rutaPath.startsWith("/tienda/publica/");
+  return RUTAS_PUBLICAS.has(rutaPath) || rutaPath.startsWith("/tienda/publica/") || rutaPath.startsWith("/uploads/");
 }
+
+// MT-1F3: contexto de tenant por request, SOLO en central + multi. Va DESPUES de la Clase 0 (estaticos
+// del frontend, ya registrados arriba, jamas resuelven tenant) y ANTES de requireAuth, del handler de
+// /uploads (MT-1F5B) y de todas las rutas de aplicacion, para que autenticacion, media y negocio corran
+// dentro del contexto. Las unicas rutas exentas son el HTML de login (GET / y GET /login), que no toca
+// la business DB. En los demas modos es un passthrough. Esto resuelve CONTEXTO; el Host no autoriza a
+// nadie (autorizacion: MT-1F4).
+app.use(crearTenantRequestMiddleware({
+  authMode: ATLAS_AUTH_MODE,
+  tenancyMode: ATLAS_TENANCY_MODE,
+  controlDbPath: process.env.ATLAS_CONTROL_DB_PATH || undefined,
+  eximirRuta: (req) => (req.method === "GET" || req.method === "HEAD") && (req.path === "/" || req.path === "/login"),
+  esRutaProtegida: (req) => !esRutaPublicaSinAuth(req.path),
+  alFallar: (diagnostico) => {
+    console.error(`[TENANT] request sin contexto de tenant: reason=${diagnostico.reason} hostKind=${diagnostico.hostKind} errorCode=${diagnostico.errorCode} cause=${diagnostico.cause} slug=${JSON.stringify(diagnostico.tenantSlug)}`);
+  }
+}));
+
+// MT-1F5B: reemplaza el mount tenant-blind de /uploads (express.static de una sola raiz compartida,
+// servida ANTES de requireAuth y del middleware de tenant) por lectura/escritura resuelta por tenant.
+// Va DESPUES del middleware de tenant de arriba: getTenantContext() ya es valido (en multi) para
+// cuando esta cola se ejecuta. El modulo backend/tenantUploadStorage.js decide rutas fisicas puras;
+// aca solo se conecta con HTTP real: status codes, sendFile, cache headers, mkdir y write de bytes.
+const tenantUploadStorage = crearTenantUploadStorage({
+  tenancyMode: ATLAS_TENANCY_MODE,
+  getTenantContext,
+  uploadsRoot: path.join(__dirname, "../uploads"),
+  legacyTenantSlug: "guernica"
+});
+
+function responderUploadInexistente(req, res) {
+  if (res.headersSent) return;
+  res.status(404).json({ ok: false, message: `Ruta no encontrada: ${req.method} ${req.path}` });
+}
+
+function servirPrimerCandidatoUpload(candidatos, indice, req, res) {
+  if (indice >= candidatos.length) {
+    responderUploadInexistente(req, res);
+    return;
+  }
+  const candidato = candidatos[indice];
+  res.sendFile(path.basename(candidato), {
+    root: path.dirname(candidato),
+    dotfiles: "deny",
+    etag: false,
+    lastModified: false,
+    headers: { "Cache-Control": "public, max-age=31536000, immutable" }
+  }, (error) => {
+    if (!error) return;
+    if (res.headersSent) return;
+    servirPrimerCandidatoUpload(candidatos, indice + 1, req, res);
+  });
+}
+
+// GET/HEAD /uploads/<categoria>/<filename> -- exactamente dos segmentos: Express no hace matchear
+// :filename contra un path con "/" adicionales, asi que una request con subdirectorios anidados
+// jamas entra aca (cae al 404 generico de fin de archivo). categoria/filename se validan de nuevo
+// dentro de tenantUploadStorage (allow-list exacta + basename puro), nunca se confia solo en el
+// matching de rutas de Express.
+function manejarUploadTenant(req, res) {
+  const candidatos = tenantUploadStorage.resolverCandidatosLectura({
+    categoria: req.params.categoria,
+    filename: req.params.filename
+  });
+  if (!candidatos.length) {
+    responderUploadInexistente(req, res);
+    return;
+  }
+  servirPrimerCandidatoUpload(candidatos, 0, req, res);
+}
+
+app.get("/uploads/:categoria/:filename", manejarUploadTenant);
+app.head("/uploads/:categoria/:filename", manejarUploadTenant);
 
 // MT-1F3-C1: en central + multi, antes de que exista autenticacion, la respuesta externa a una ruta protegida
 // es UNA sola (401 generico), sin importar si el tenant existe, esta activo o tiene DB sana. El Authorization
@@ -569,22 +638,6 @@ async function requireAuth(req, res, next) {
     return res.status(500).json({ message: "Error de autenticación" });
   }
 }
-
-// MT-1F3: contexto de tenant por request, SOLO en central + multi. Va DESPUES de la Clase 0 (estaticos
-// del frontend y /uploads, ya registrados arriba, jamas resuelven tenant) y ANTES de requireAuth y de
-// todas las rutas de aplicacion, para que autenticacion y negocio corran dentro del contexto. Las unicas
-// rutas exentas son el HTML de login (GET / y GET /login), que no toca la business DB. En los demas
-// modos es un passthrough. Esto resuelve CONTEXTO; el Host no autoriza a nadie (autorizacion: MT-1F4).
-app.use(crearTenantRequestMiddleware({
-  authMode: ATLAS_AUTH_MODE,
-  tenancyMode: ATLAS_TENANCY_MODE,
-  controlDbPath: process.env.ATLAS_CONTROL_DB_PATH || undefined,
-  eximirRuta: (req) => (req.method === "GET" || req.method === "HEAD") && (req.path === "/" || req.path === "/login"),
-  esRutaProtegida: (req) => !esRutaPublicaSinAuth(req.path),
-  alFallar: (diagnostico) => {
-    console.error(`[TENANT] request sin contexto de tenant: reason=${diagnostico.reason} hostKind=${diagnostico.hostKind} errorCode=${diagnostico.errorCode} cause=${diagnostico.cause} slug=${JSON.stringify(diagnostico.tenantSlug)}`);
-  }
-}));
 
 app.use(requireAuth);
 
@@ -2463,11 +2516,11 @@ app.post("/usuarios/foto", async (req, res) => {
     const extension = match[1].toLowerCase().replace("jpeg", "jpg");
     const baseName = String(nombre || "perfil").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "perfil";
     const fileName = `${Date.now()}-${baseName.slice(0, 32)}-${crypto.randomBytes(4).toString("hex")}.${extension}`;
-    const uploadDir = path.join(__dirname, "../uploads/usuarios");
-    const filePath = path.join(uploadDir, fileName);
+    const destino = tenantUploadStorage.resolverDestinoEscritura({ categoria: "usuarios", filename: fileName });
+    if (!destino) throw new Error("Contexto de tenant invalido para operacion de upload");
 
-    await fs.promises.mkdir(uploadDir, { recursive: true });
-    await fs.promises.writeFile(filePath, buffer);
+    await fs.promises.mkdir(destino.directorio, { recursive: true });
+    await fs.promises.writeFile(destino.ruta, buffer);
 
     return res.status(201).json({ url: `/uploads/usuarios/${fileName}` });
   } catch (error) {
@@ -2556,11 +2609,11 @@ app.post("/productos/imagen", async (req, res) => {
     const extension = match[1].toLowerCase().replace("jpeg", "jpg");
     const baseName = String(nombre || "producto").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "producto";
     const fileName = `${Date.now()}-${baseName.slice(0, 32)}-${crypto.randomBytes(4).toString("hex")}.${extension}`;
-    const uploadDir = path.join(__dirname, "../uploads/productos");
-    const filePath = path.join(uploadDir, fileName);
+    const destino = tenantUploadStorage.resolverDestinoEscritura({ categoria: "productos", filename: fileName });
+    if (!destino) throw new Error("Contexto de tenant invalido para operacion de upload");
 
-    await fs.promises.mkdir(uploadDir, { recursive: true });
-    await fs.promises.writeFile(filePath, buffer);
+    await fs.promises.mkdir(destino.directorio, { recursive: true });
+    await fs.promises.writeFile(destino.ruta, buffer);
 
     return res.status(201).json({ url: `/uploads/productos/${fileName}` });
   } catch (err) {
@@ -10382,11 +10435,11 @@ app.post("/clientes/imagen", async (req, res) => {
     const extension = match[1].toLowerCase().replace("jpeg", "jpg");
     const baseName = String(nombre || "cliente").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "cliente";
     const fileName = `${Date.now()}-${baseName.slice(0, 32)}-${crypto.randomBytes(4).toString("hex")}.${extension}`;
-    const uploadDir = path.join(__dirname, "../uploads/clientes");
-    const filePath = path.join(uploadDir, fileName);
+    const destino = tenantUploadStorage.resolverDestinoEscritura({ categoria: "clientes", filename: fileName });
+    if (!destino) throw new Error("Contexto de tenant invalido para operacion de upload");
 
-    await fs.promises.mkdir(uploadDir, { recursive: true });
-    await fs.promises.writeFile(filePath, buffer);
+    await fs.promises.mkdir(destino.directorio, { recursive: true });
+    await fs.promises.writeFile(destino.ruta, buffer);
 
     return res.status(201).json({ url: `/uploads/clientes/${fileName}` });
   } catch (error) {
@@ -10412,11 +10465,11 @@ app.post("/configuracion/logo", async (req, res) => {
     const extension = match[1].toLowerCase().replace("jpeg", "jpg");
     const baseName = String(nombre || "logo").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "logo";
     const fileName = `${Date.now()}-${baseName.slice(0, 32)}-${crypto.randomBytes(4).toString("hex")}.${extension}`;
-    const uploadDir = path.join(__dirname, "../uploads/configuracion");
-    const filePath = path.join(uploadDir, fileName);
+    const destino = tenantUploadStorage.resolverDestinoEscritura({ categoria: "configuracion", filename: fileName });
+    if (!destino) throw new Error("Contexto de tenant invalido para operacion de upload");
 
-    await fs.promises.mkdir(uploadDir, { recursive: true });
-    await fs.promises.writeFile(filePath, buffer);
+    await fs.promises.mkdir(destino.directorio, { recursive: true });
+    await fs.promises.writeFile(destino.ruta, buffer);
 
     return res.status(201).json({ url: `/uploads/configuracion/${fileName}` });
   } catch (error) {

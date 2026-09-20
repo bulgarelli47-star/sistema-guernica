@@ -20818,6 +20818,15 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1F5AMismoTenantConservaSerializacion);
   await _run(testMT1F5AColaPreservaContextoTenant);
   await _run(testMT1F5AMultiSinContextoNoFallback);
+  await _run(testMT1F5BMultiWriteUsaRootTenant);
+  await _run(testMT1F5BMismoPathAisladoEntreTenants);
+  await _run(testMT1F5BHostANoLeeArchivoB);
+  await _run(testMT1F5BPublicProductosYLogoSinAuth);
+  await _run(testMT1F5BUsuariosClientesSinBearerSiguenSirviendo);
+  await _run(testMT1F5BMultiSinContextoNoFallback);
+  await _run(testMT1F5BLegacySoloGuernica);
+  await _run(testMT1F5BSingleConservaUploadsLegacy);
+  await _run(testMT1F5BTraversalFailsClosed);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -34302,6 +34311,333 @@ async function testMT1F5AMultiSinContextoNoFallback() {
   assertEqual(colasSingle.size, 0, "tras asentarse, la lane single tambien se limpia del Map (sin fuga)");
 }
 
+// ====================================================================================================
+// MT-1F5B: almacenamiento de uploads tenant-aware. Los helpers de fixture SOLO escriben bajo
+// uploads/tenants/<empresaId>/... (namespace que no existia antes de F5B) o bajo un archivo LEGACY con
+// nombre inequivocamente de test (mt1f5b-...) -- jamas tocan ninguno de los 61 archivos reales. Todo
+// fixture se limpia deterministicamente en finally.
+// ====================================================================================================
+function mt1f5bRutaTenant(empresaId, categoria, filename) {
+  return path.join(ROOT, "uploads", "tenants", String(empresaId), categoria, filename);
+}
+function mt1f5bSembrarTenant(empresaId, categoria, filename, contenido) {
+  const ruta = mt1f5bRutaTenant(empresaId, categoria, filename);
+  fs.mkdirSync(path.dirname(ruta), { recursive: true });
+  fs.writeFileSync(ruta, contenido, "utf8");
+  return ruta;
+}
+function mt1f5bLimpiarTenant(empresaId) {
+  fs.rmSync(path.join(ROOT, "uploads", "tenants", String(empresaId)), { recursive: true, force: true });
+}
+function mt1f5bRutaLegacy(categoria, filename) {
+  return path.join(ROOT, "uploads", categoria, filename);
+}
+function mt1f5bSembrarLegacy(categoria, filename, contenido) {
+  const ruta = mt1f5bRutaLegacy(categoria, filename);
+  fs.mkdirSync(path.dirname(ruta), { recursive: true });
+  fs.writeFileSync(ruta, contenido, "utf8");
+  return ruta;
+}
+function mt1f5bLimpiarLegacy(categoria, filename) {
+  fs.rmSync(mt1f5bRutaLegacy(categoria, filename), { force: true });
+}
+function mt1f5bNombreTest(etiqueta) {
+  return `mt1f5b-test-${etiqueta}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}.txt`;
+}
+// fetch() trata "Host" como forbidden header y lo ignora silenciosamente (manda el Host real de la
+// conexion, no el que uno pide) -- por eso estos tests reusan mt1f3Pedir (http.request crudo, mismo
+// mecanismo ya probado por toda la suite MT-1F3/F4/F5A) en vez de fetch().
+async function mt1f5bGetTexto(port, ruta, host) {
+  const respuesta = await mt1f3Pedir(port, { host, ruta });
+  return { status: respuesta.status, texto: respuesta.texto, contentType: respuesta.contentType };
+}
+
+async function testMT1F5BMultiWriteUsaRootTenant() {
+  const { crearTenantUploadStorage, CATEGORIAS_VALIDAS } = require("../backend/tenantUploadStorage");
+  const uploadsRoot = path.join(ROOT, "uploads");
+  let contexto = null;
+  const storage = crearTenantUploadStorage({ tenancyMode: "multi", getTenantContext: () => contexto, uploadsRoot });
+
+  const tenants = [
+    { empresaId: 910001, empresaSlug: "mt1f5b-tenant-a" },
+    { empresaId: 910002, empresaSlug: "mt1f5b-tenant-b" },
+    { empresaId: 1, empresaSlug: "guernica" }
+  ];
+  for (const tenant of tenants) {
+    contexto = tenant;
+    for (const categoria of CATEGORIAS_VALIDAS) {
+      const destino = storage.resolverDestinoEscritura({ categoria, filename: "archivo-test.png" });
+      assertSame(Boolean(destino), true, `destino de escritura valido: empresaId=${tenant.empresaId} categoria=${categoria}`);
+      const relativo = path.relative(path.join(uploadsRoot, "tenants"), destino.ruta);
+      const segmentos = relativo.split(path.sep);
+      assertSame(segmentos[0], String(tenant.empresaId), `segmento de empresa exacto (empresaId=${tenant.empresaId})`);
+      assertSame(segmentos[1], categoria, "segmento de categoria exacto");
+      assertSame(segmentos[2], "archivo-test.png", "segmento de filename exacto");
+      assertSame(destino.ruta.startsWith(uploadsRoot + path.sep + "tenants" + path.sep), true, "jamas la raiz legacy compartida como destino de escritura en multi (incluye Guernica)");
+    }
+  }
+}
+
+async function testMT1F5BMismoPathAisladoEntreTenants() {
+  const { crearTenantUploadStorage } = require("../backend/tenantUploadStorage");
+  const uploadsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mt1f5b-aislado-"));
+  try {
+    let contexto = { empresaId: 501, empresaSlug: "tenant-a" };
+    const storage = crearTenantUploadStorage({ tenancyMode: "multi", getTenantContext: () => contexto, uploadsRoot });
+
+    const destinoA = storage.resolverDestinoEscritura({ categoria: "productos", filename: "mismo.png" });
+    fs.mkdirSync(destinoA.directorio, { recursive: true });
+    fs.writeFileSync(destinoA.ruta, "CONTENIDO-A");
+
+    contexto = { empresaId: 502, empresaSlug: "tenant-b" };
+    const destinoB = storage.resolverDestinoEscritura({ categoria: "productos", filename: "mismo.png" });
+    fs.mkdirSync(destinoB.directorio, { recursive: true });
+    fs.writeFileSync(destinoB.ruta, "CONTENIDO-B");
+
+    assertSame(destinoA.ruta !== destinoB.ruta, true, "misma categoria+filename produce rutas fisicas distintas para A y B (misma forma de URL externa: productos/mismo.png)");
+
+    contexto = { empresaId: 501, empresaSlug: "tenant-a" };
+    const candidatosA = storage.resolverCandidatosLectura({ categoria: "productos", filename: "mismo.png" });
+    assertEqual(candidatosA.length, 1, "A no tiene fallback legacy (no es guernica)");
+    assertSame(fs.readFileSync(candidatosA[0], "utf8"), "CONTENIDO-A", "lectura bajo contexto A produce bytes de A");
+
+    contexto = { empresaId: 502, empresaSlug: "tenant-b" };
+    const candidatosB = storage.resolverCandidatosLectura({ categoria: "productos", filename: "mismo.png" });
+    assertSame(fs.readFileSync(candidatosB[0], "utf8"), "CONTENIDO-B", "lectura bajo contexto B produce bytes de B, nunca los de A");
+  } finally {
+    fs.rmSync(uploadsRoot, { recursive: true, force: true });
+  }
+}
+
+async function testMT1F5BHostANoLeeArchivoB() {
+  const escenario = await mt1f1CrearEscenario(["a", "b"]);
+  const decoyPath = tempDbPath();
+  const [tenantA, tenantB] = escenario.tenants;
+  const nombreArchivo = mt1f5bNombreTest("solo-b");
+  try {
+    mt1f5bSembrarTenant(tenantB.empresa.id, "productos", nombreArchivo, "SOLO-B");
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      // control: B lee su propio archivo.
+      const propio = await mt1f5bGetTexto(servidor.port, `/uploads/productos/${nombreArchivo}`, mt1f3Host(tenantB));
+      assertEqual(propio.status, 200, "B lee su propio archivo (control positivo)");
+      assertSame(propio.texto, "SOLO-B", "B recibe sus propios bytes");
+
+      // A no tiene ese archivo en su propia raiz: debe fallar cerrado, sin buscar en B ni en legacy.
+      const viaA = await mt1f5bGetTexto(servidor.port, `/uploads/productos/${nombreArchivo}`, mt1f3Host(tenantA));
+      assertEqual(viaA.status, 404, "A no puede leer un archivo que solo existe en la raiz de B");
+      assertSame(viaA.texto.includes("SOLO-B"), false, "la respuesta a A no filtra el contenido de B");
+    });
+  } finally {
+    mt1f5bLimpiarTenant(tenantA.empresa.id);
+    mt1f5bLimpiarTenant(tenantB.empresa.id);
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F5BPublicProductosYLogoSinAuth() {
+  const escenario = await mt1f1CrearEscenario(["a"]);
+  const decoyPath = tempDbPath();
+  const [tenantA] = escenario.tenants;
+  const nombreProducto = mt1f5bNombreTest("producto-publico");
+  const nombreLogo = mt1f5bNombreTest("logo-publico");
+  try {
+    mt1f5bSembrarTenant(tenantA.empresa.id, "productos", nombreProducto, "IMAGEN-PRODUCTO-PUBLICA");
+    mt1f5bSembrarTenant(tenantA.empresa.id, "configuracion", nombreLogo, "IMAGEN-LOGO-PUBLICA");
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      const port = servidor.port;
+      const producto = await mt1f5bGetTexto(port, `/uploads/productos/${nombreProducto}`, mt1f3Host(tenantA));
+      assertEqual(producto.status, 200, "producto se sirve sin Authorization en central+multi");
+      assertSame(producto.texto, "IMAGEN-PRODUCTO-PUBLICA", "bytes correctos de producto");
+
+      const logo = await mt1f5bGetTexto(port, `/uploads/configuracion/${nombreLogo}`, mt1f3Host(tenantA));
+      assertEqual(logo.status, 200, "logo se sirve sin Authorization en central+multi");
+      assertSame(logo.texto, "IMAGEN-LOGO-PUBLICA", "bytes correctos de logo");
+
+      // el storefront publico sigue alcanzable y no requiere auth: la forma de URL /uploads/... que
+      // devuelve (si el producto la tuviera) no cambia -- eso ya lo prueban los tests de arriba.
+      const storefront = await mt1f5bGetTexto(port, "/tienda/publica/productos", mt1f3Host(tenantA));
+      assertEqual(storefront.status, 200, "el storefront publico sigue respondiendo sin auth");
+      const logoInfo = await mt1f5bGetTexto(port, "/tienda/publica", mt1f3Host(tenantA));
+      assertEqual(logoInfo.status, 200, "GET /tienda/publica (nombre+logo_url) sigue respondiendo sin auth");
+    });
+  } finally {
+    mt1f5bLimpiarTenant(tenantA.empresa.id);
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F5BUsuariosClientesSinBearerSiguenSirviendo() {
+  const escenario = await mt1f1CrearEscenario(["a"]);
+  const decoyPath = tempDbPath();
+  const [tenantA] = escenario.tenants;
+  const nombreUsuario = mt1f5bNombreTest("avatar-usuario");
+  const nombreCliente = mt1f5bNombreTest("foto-cliente");
+  try {
+    mt1f5bSembrarTenant(tenantA.empresa.id, "usuarios", nombreUsuario, "AVATAR-USUARIO");
+    mt1f5bSembrarTenant(tenantA.empresa.id, "clientes", nombreCliente, "FOTO-CLIENTE");
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      const port = servidor.port;
+      // Deliberadamente SIN Authorization: user-menu.js/perfil.html/clientes.html usan <img src>/
+      // background-image nativos, que el navegador jamas manda con Bearer (F5B no cambia eso).
+      const usuario = await mt1f5bGetTexto(port, `/uploads/usuarios/${nombreUsuario}`, mt1f3Host(tenantA));
+      assertEqual(usuario.status, 200, "avatar de usuario se sirve sin Authorization dentro del tenant correcto");
+      assertSame(usuario.texto, "AVATAR-USUARIO", "bytes correctos de avatar");
+
+      const cliente = await mt1f5bGetTexto(port, `/uploads/clientes/${nombreCliente}`, mt1f3Host(tenantA));
+      assertEqual(cliente.status, 200, "foto de cliente se sirve sin Authorization dentro del tenant correcto");
+      assertSame(cliente.texto, "FOTO-CLIENTE", "bytes correctos de foto de cliente");
+    });
+  } finally {
+    mt1f5bLimpiarTenant(tenantA.empresa.id);
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F5BMultiSinContextoNoFallback() {
+  const escenario = await mt1f1CrearEscenario(["a"]);
+  const decoyPath = tempDbPath();
+  const nombreLegacy = mt1f5bNombreTest("cebo-legacy");
+  try {
+    mt1f5bSembrarLegacy("productos", nombreLegacy, "CEBO-LEGACY-NO-DEBE-SERVIRSE");
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      const port = servidor.port;
+      // Host sin candidato de tenant resuelto (tenant desconocido): debe fallar cerrado, JAMAS caer
+      // a la raiz legacy compartida (que si tiene el archivo, si se buscara ahi).
+      const desconocido = await mt1f5bGetTexto(port, `/uploads/productos/${nombreLegacy}`, `no-existe-${Date.now()}.${MT1F3_DOMINIO}`);
+      assertEqual(desconocido.status, 404, "tenant desconocido: no se sirve ni el archivo legacy");
+      assertSame(desconocido.texto.includes("CEBO-LEGACY"), false, "no se filtra contenido de la raiz legacy compartida");
+
+      // LOCAL/APEX tampoco tienen candidato de tenant.
+      const local = await mt1f5bGetTexto(port, `/uploads/productos/${nombreLegacy}`, "127.0.0.1");
+      assertEqual(local.status, 404, "Host LOCAL: no se sirve el archivo legacy");
+      const apex = await mt1f5bGetTexto(port, `/uploads/productos/${nombreLegacy}`, MT1F3_DOMINIO);
+      assertEqual(apex.status, 404, "Host APEX/RESERVED: no se sirve el archivo legacy");
+    });
+  } finally {
+    mt1f5bLimpiarLegacy("productos", nombreLegacy);
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F5BLegacySoloGuernica() {
+  const tenants = [
+    { tag: "guernica", slug: "guernica", dbPath: bootstrapFreshRegisteredTenantDb(), empresa: null },
+    { tag: "otro", slug: mt1f1Slug("otro"), dbPath: bootstrapFreshRegisteredTenantDb(), empresa: null }
+  ];
+  const controlDbPath = tempDbPath();
+  const decoyPath = tempDbPath();
+  const nombreCasoA = mt1f5bNombreTest("caso-a");
+  const nombreCasoB = mt1f5bNombreTest("caso-b");
+  let escenario = { tenants, controlDbPath };
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      for (const tenant of tenants) {
+        tenant.empresa = await registrarEmpresa(controlDb, { slug: tenant.slug, nombre: `MT1F5B ${tenant.tag}`, dbPath: path.basename(tenant.dbPath), activa: 1 });
+      }
+    } finally {
+      await closeControlDb(controlDb);
+    }
+    for (const tenant of tenants) {
+      await insertarTenantIdentityTest(tenant.dbPath, tenant.empresa.id, tenant.slug);
+    }
+    const [guernica, otro] = tenants;
+    assertSame(guernica.slug, "guernica", "el tenant de prueba usa exactamente el slug guernica");
+
+    // Caso A: mismo archivo relativo en tenant-root y legacy con bytes distintos -- gana tenant-root.
+    mt1f5bSembrarTenant(guernica.empresa.id, "productos", nombreCasoA, "TENANT-ROOT");
+    mt1f5bSembrarLegacy("productos", nombreCasoA, "LEGACY-ROOT");
+    // Caso B: archivo SOLO en legacy -- Guernica lo recibe via fallback de solo-lectura.
+    mt1f5bSembrarLegacy("productos", nombreCasoB, "LEGACY-ONLY");
+
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      const port = servidor.port;
+
+      const casoA = await mt1f5bGetTexto(port, `/uploads/productos/${nombreCasoA}`, mt1f3Host(guernica));
+      assertEqual(casoA.status, 200, "caso A: guernica lee el archivo existente en ambas raices");
+      assertSame(casoA.texto, "TENANT-ROOT", "caso A: gana la raiz tenant-especifica, no la legacy");
+
+      const casoB = await mt1f5bGetTexto(port, `/uploads/productos/${nombreCasoB}`, mt1f3Host(guernica));
+      assertEqual(casoB.status, 200, "caso B: guernica lee el archivo que SOLO existe en legacy");
+      assertSame(casoB.texto, "LEGACY-ONLY", "caso B: sirve los bytes legacy via fallback de solo lectura");
+
+      // El mismo archivo solo-legacy, pedido por un tenant NO guernica: jamas cae a legacy.
+      const otroTenant = await mt1f5bGetTexto(port, `/uploads/productos/${nombreCasoB}`, mt1f3Host(otro));
+      assertEqual(otroTenant.status, 404, "un tenant no-guernica NUNCA recibe el fallback legacy");
+      assertSame(otroTenant.texto.includes("LEGACY-ONLY"), false, "no se filtra contenido legacy a un tenant no-guernica");
+    });
+  } finally {
+    mt1f5bLimpiarTenant(tenants[0].empresa?.id);
+    mt1f5bLimpiarTenant(tenants[1].empresa?.id);
+    mt1f5bLimpiarLegacy("productos", nombreCasoA);
+    mt1f5bLimpiarLegacy("productos", nombreCasoB);
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F5BSingleConservaUploadsLegacy() {
+  // El modulo tenantUploadStorage solo distingue por tenancyMode ("single"/"multi"); ATLAS_AUTH_MODE
+  // (legacy vs central) no participa de su decision -- legacy+single y central+single comparten la
+  // MISMA rama "single" (ya probado por smoke: getTenantContext nunca se consulta en modo single).
+  // Aca se prueba end-to-end sobre legacy+single, la configuracion mas simple del harness real.
+  const dbPath = bootstrapFreshTestDb();
+  const nombreLegacy = mt1f5bNombreTest("single-legacy");
+  try {
+    mt1f5bSembrarLegacy("productos", nombreLegacy, "SINGLE-LEGACY-OK");
+    await withServer(dbPath, async (baseUrl) => {
+      const port = Number(new URL(baseUrl).port);
+      const respuesta = await mt1f5bGetTexto(port, `/uploads/productos/${nombreLegacy}`, undefined);
+      assertEqual(respuesta.status, 200, "single mode sirve desde la raiz legacy compartida sin subdirectorio de tenant");
+      assertSame(respuesta.texto, "SINGLE-LEGACY-OK", "bytes correctos, sin migracion ni reescritura de URL");
+    });
+
+    const { crearTenantUploadStorage } = require("../backend/tenantUploadStorage");
+    const prohibido = () => { throw new Error("getTenantContext no debe consultarse en modo single"); };
+    const storage = crearTenantUploadStorage({ tenancyMode: "single", getTenantContext: prohibido, uploadsRoot: path.join(ROOT, "uploads") });
+    const destino = storage.resolverDestinoEscritura({ categoria: "productos", filename: "cualquiera.png" });
+    assertSame(destino.ruta, path.join(ROOT, "uploads", "productos", "cualquiera.png"), "escritura single = raiz legacy, sin uploads/tenants");
+  } finally {
+    mt1f5bLimpiarLegacy("productos", nombreLegacy);
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1F5BTraversalFailsClosed() {
+  const escenario = await mt1f1CrearEscenario(["a"]);
+  const decoyPath = tempDbPath();
+  const [tenantA] = escenario.tenants;
+  const nombreValido = mt1f5bNombreTest("valido-control");
+  try {
+    mt1f5bSembrarTenant(tenantA.empresa.id, "productos", nombreValido, "ARCHIVO-VALIDO");
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      const port = servidor.port;
+      const host = mt1f3Host(tenantA);
+
+      const control = await mt1f5bGetTexto(port, `/uploads/productos/${nombreValido}`, host);
+      assertEqual(control.status, 200, "control: un filename valido generado por el server SI se sirve");
+      assertSame(control.texto, "ARCHIVO-VALIDO", "control: bytes correctos");
+
+      const intentos = [
+        `/uploads/productos/${encodeURIComponent("../" + nombreValido)}`,
+        `/uploads/productos/..%2f..%2fpackage.json`,
+        `/uploads/productos/..%5c..%5cpackage.json`,
+        `/uploads/productos/%2e%2e%2fpackage.json`,
+        `/uploads/noexiste/${nombreValido}`,
+        `/uploads/productos/sub/${nombreValido}`,
+        `/uploads/productos/%2fetc%2fpasswd`
+      ];
+      for (const ruta of intentos) {
+        const respuesta = await mt1f5bGetTexto(port, ruta, host);
+        assertEqual(respuesta.status, 404, `traversal/invalido rechazado: ${ruta} (status=${respuesta.status})`);
+        assertSame(respuesta.texto.includes("ARCHIVO-VALIDO"), false, `${ruta}: no filtra contenido de otro archivo`);
+      }
+    });
+  } finally {
+    mt1f5bLimpiarTenant(tenantA.empresa.id);
+    await mt1f1Limpiar(escenario);
+  }
+}
+
 const MT1F3_DOMINIO = "atlasos.com.ar";
 const MT1F3_MENSAJE_NO_AUTENTICADO = "No autenticado. Iniciá sesión.";
 
@@ -34393,7 +34729,7 @@ function mt1f3EsNoAutenticado(respuesta) {
 
 // Rutas PROTEGIDAS que usan estos tests (clasificacion real: backend/server.js). Un fallo de tenant en una ruta
 // protegida es el 401 generico; en una ruta publica de tenant (tienda, login, logout) sigue siendo el 404 generico.
-const MT1F3_RUTAS_PROTEGIDAS_DE_PRUEBA = new Set(["/productos", "/ruta-que-no-existe", "/uploads/no-existe.png", "/protegida/perfil"]);
+const MT1F3_RUTAS_PROTEGIDAS_DE_PRUEBA = new Set(["/productos", "/ruta-que-no-existe", "/protegida/perfil"]);
 function mt1f3EsFalloCerrado(respuesta, ruta, metodo = "GET") {
   return MT1F3_RUTAS_PROTEGIDAS_DE_PRUEBA.has(ruta) ? mt1f3EsNoAutenticado(respuesta) : mt1f3EsGenerica404(respuesta, ruta, metodo);
 }
@@ -34854,7 +35190,7 @@ async function testMT1F3FallosTenantNoEnumerables() {
       const firmaDe = (respuesta) => JSON.stringify({ status: respuesta.status, cabeceras: respuesta.firmaCabeceras, texto: respuesta.texto });
       const firmasPreAuth = new Set();
       let combinaciones = 0;
-      for (const [metodo, rutaProtegida] of [["GET", "/productos"], ["GET", "/ruta-que-no-existe"], ["GET", "/uploads/no-existe.png"], ["POST", "/productos"]]) {
+      for (const [metodo, rutaProtegida] of [["GET", "/productos"], ["GET", "/ruta-que-no-existe"], ["POST", "/productos"]]) {
         for (const credencial of credenciales) {
           let firmaSano = null;
           for (const objetivo of objetivos) {
@@ -35072,7 +35408,7 @@ async function testMT1F3NoFallbackAGuernicaEnMulti() {
   const serverSrc = fs.readFileSync(path.join(ROOT, "backend", "server.js"), "utf8");
   assertSame(serverSrc.includes("esRutaProtegida: (req) => !esRutaPublicaSinAuth(req.path)"), true, "server.js entrega la clasificacion al middleware reutilizando su propia tabla");
   assertEqual((serverSrc.match(/esRutaPublicaSinAuth\(/g) || []).length, 3, "esRutaPublicaSinAuth: definicion + requireAuth + callback del middleware (una sola autoridad)");
-  assertSame(/function esRutaPublicaSinAuth\(rutaPath\) \{\s*return RUTAS_PUBLICAS\.has\(rutaPath\) \|\| rutaPath\.startsWith\("\/tienda\/publica\/"\);/.test(serverSrc), true, "la clasificacion sigue derivando de RUTAS_PUBLICAS");
+  assertSame(/function esRutaPublicaSinAuth\(rutaPath\) \{\s*return RUTAS_PUBLICAS\.has\(rutaPath\) \|\| rutaPath\.startsWith\("\/tienda\/publica\/"\) \|\| rutaPath\.startsWith\("\/uploads\/"\);/.test(serverSrc), true, "la clasificacion sigue derivando de RUTAS_PUBLICAS (incluye /uploads/ desde MT-1F5B)");
   const inicioGate = serverSrc.indexOf("async function validarTenantAntesDeAbrirDb()");
   const ramaMulti = serverSrc.slice(inicioGate, serverSrc.indexOf("const configuredPath = resolveBusinessDbPath();", inicioGate));
   assertSame(/ATLAS_TENANCY_MODE === TENANCY_MODES\.MULTI/.test(ramaMulti), true, "la rama multi del gate existe");
