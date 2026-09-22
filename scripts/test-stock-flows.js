@@ -8,6 +8,8 @@ const { spawn, spawnSync } = require("child_process");
 const sqlite3 = require("sqlite3").verbose();
 const bcrypt = require("bcrypt");
 const { closeDb: closeBackendDb, runQuery: dbRunQuery, getQuery: dbGetQuery } = require("../backend/db");
+const { crearIntegracionTenantService } = require("../backend/services/integracionTenantService");
+const { encriptarSecreto: mt1f5c1Encriptar, desencriptarSecreto: mt1f5c1Desencriptar } = require("../backend/integrationSecretCrypto");
 const { buildDetalleVentaSnapshotFiscal, buildResumenFiscalVenta } = require("../backend/services/ventaService");
 const {
   buildResumenItemsCompra,
@@ -96,25 +98,72 @@ function tempDbPath() {
 // ~120 call-sites existentes de bootstrapFreshTestDb()/bootstrapFreshRegisteredTenantDb() son
 // sincronas y no-await en toda la suite -- convertir esta funcion en async forzaria tocar cada una
 // de esas call-sites, un refactor masivo fuera de proposito para un fix de test harness.
+// MT-1F5C1: aplica el catalogo REAL completo (baseline 001 + toda migration real posterior), no
+// solo BUSINESS_MIGRATIONS[0] -- desde que existe una migration 002+ real, una fixture con solo el
+// baseline en su historial clasificaria BEHIND (nunca CURRENT), y el boot gate rechazaria arrancar
+// backend/server.js contra ella. El proceso hijo re-require-ea database/business-migrations.js (la
+// MISMA autoridad real, nunca una copia) para poder invocar up(db) de cada migration real.
+//
+// MT-1F5C1-R1B: idempotente respecto de historial YA existente -- no asume mas una DB "en blanco".
+// Si atlas_schema_migrations ya existe (caso: copia de SOURCE_DB, que trae el historial real y
+// legitimo de database/guernica.db, congelado en 001 por la Real Guernica Rule), NO recrea la tabla
+// (evita "table already exists") y sólo aplica -- via up(db), nunca hardcodeado -- las migrations
+// del catalogo cuya sequence sea posterior a lo ya presente. Antes de continuar valida que el
+// prefijo ya aplicado coincida exactamente con el catalogo real (mismo sequence+migrationId en el
+// mismo orden); si no coincide, falla cerrado en vez de forzar un estado inconsistente. Para una DB
+// en blanco (ninguna fila previa) el comportamiento es exactamente el de antes: crea la tabla y
+// aplica el catalogo completo desde sequence=1.
 function stamparHistorialBaselineActual(dbPath) {
-  const migracion = BUSINESS_MIGRATIONS[0];
+  const businessMigrationsPath = path.join(ROOT, "database", "business-migrations.js");
   const script = `
     const sqlite3 = require("sqlite3").verbose();
-    const db = new sqlite3.Database(${JSON.stringify(dbPath)});
-    db.serialize(() => {
-      db.run(\`CREATE TABLE atlas_schema_migrations (
-        sequence INTEGER NOT NULL UNIQUE CHECK(sequence >= 1),
-        migration_id TEXT PRIMARY KEY NOT NULL,
-        applied_at TEXT NOT NULL
-      )\`);
-      db.run(
-        "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (?, ?, datetime('now'))",
-        [${migracion.sequence}, ${JSON.stringify(migracion.migrationId)}],
-        (error) => {
-          db.close(() => { if (error) { console.error(error.message); process.exitCode = 1; } });
+    const { BUSINESS_MIGRATIONS } = require(${JSON.stringify(businessMigrationsPath)});
+    function runQuery(db, sql, params = []) {
+      return new Promise((resolve, reject) => {
+        db.run(sql, params, function (error) { if (error) { reject(error); return; } resolve(this); });
+      });
+    }
+    function allQuery(db, sql, params = []) {
+      return new Promise((resolve, reject) => {
+        db.all(sql, params, (error, rows) => { if (error) reject(error); else resolve(rows); });
+      });
+    }
+    (async () => {
+      const db = new sqlite3.Database(${JSON.stringify(dbPath)});
+      try {
+        const tablaExistente = await allQuery(db, "SELECT name FROM sqlite_master WHERE type='table' AND name='atlas_schema_migrations'");
+        if (tablaExistente.length === 0) {
+          await runQuery(db, \`CREATE TABLE atlas_schema_migrations (
+            sequence INTEGER NOT NULL UNIQUE CHECK(sequence >= 1),
+            migration_id TEXT PRIMARY KEY NOT NULL,
+            applied_at TEXT NOT NULL
+          )\`);
         }
-      );
-    });
+        const yaAplicadas = await allQuery(db, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence ASC");
+        for (let i = 0; i < yaAplicadas.length; i++) {
+          const esperada = BUSINESS_MIGRATIONS[i];
+          const coincide = esperada
+            && Number(yaAplicadas[i].sequence) === esperada.sequence
+            && yaAplicadas[i].migration_id === esperada.migrationId;
+          if (!coincide) {
+            throw new Error(\`stamparHistorialBaselineActual: historial existente en \${${JSON.stringify(dbPath)}} no coincide con el catalogo real en la posicion \${i} (encontrado sequence=\${yaAplicadas[i].sequence} migration_id=\${yaAplicadas[i].migration_id})\`);
+          }
+        }
+        for (const migracion of BUSINESS_MIGRATIONS) {
+          if (migracion.sequence <= yaAplicadas.length) continue;
+          if (migracion.sequence > 1) await migracion.up(db);
+          await runQuery(
+            db,
+            "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (?, ?, datetime('now'))",
+            [migracion.sequence, migracion.migrationId]
+          );
+        }
+        await new Promise((resolve, reject) => db.close((error) => { if (error) reject(error); else resolve(); }));
+      } catch (error) {
+        console.error(error.message);
+        process.exitCode = 1;
+      }
+    })();
   `;
   const resultado = spawnSync(process.execPath, ["-e", script], { cwd: ROOT, encoding: "utf8" });
   if (resultado.error) {
@@ -122,6 +171,32 @@ function stamparHistorialBaselineActual(dbPath) {
   }
   if (resultado.status !== 0) {
     throw new Error(`stamparHistorialBaselineActual: fallo con status=${resultado.status}\n${resultado.stderr || resultado.stdout}`);
+  }
+}
+
+// MT-1F5C1-R1B: unico punto de entrada para "copiar SOURCE_DB (database/guernica.db real, usado
+// solo como fuente de lectura -- jamas se abre en escritura ni se le crea backup) y llevar la copia
+// disposable a CURRENT". Reutiliza stamparHistorialBaselineActual() (ya idempotente respecto de
+// historial existente) -- ninguna segunda autoridad de migracion dentro del harness, ningun 002
+// hardcodeado: sigue automaticamente el catalogo real, crezca lo que crezca. Reemplaza el patron
+// previo "fs.copyFileSync(SOURCE_DB, dbPath)" a secas, que dejaba el historial congelado en lo que
+// sea que tenga hoy database/guernica.db en disco (001, por la Real Guernica Rule) y por eso
+// clasificaba BEHIND en cuanto el catalogo crecio a 002 (ver MT-1F5C1-R1/R1A).
+// MT-1F5C1-R1D: guard de autoproteccion -- mismo patron ya usado en bootstrapFreshRegisteredTenantDb()
+// para el mismo riesgo -- antes de cualquier I/O. Si dbPath resolviera al mismo archivo que SOURCE_DB
+// (database/guernica.db real), copyFileSync(SOURCE_DB, dbPath) copiaria el archivo sobre si mismo
+// (comportamiento no garantizado por Node, con riesgo real de truncar/corromper la autoridad real).
+// Ningun caller actual (los 43 usan tempDbPath()) dispara esto hoy -- el guard es pura defensa contra
+// un futuro call-site equivocado, y falla cerrado ANTES de tocar el filesystem.
+async function copiarSourceDbCurrent(dbPath) {
+  if (path.resolve(dbPath) === path.resolve(SOURCE_DB)) {
+    throw new Error("copiarSourceDbCurrent: dbPath no puede resolver a database/guernica.db real -- SOURCE_DB jamas puede ser destino de una fixture disposable");
+  }
+  fs.copyFileSync(SOURCE_DB, dbPath);
+  stamparHistorialBaselineActual(dbPath);
+  const estado = await verificarBusinessSchemaVersion(dbPath);
+  if (estado.state !== "CURRENT") {
+    throw new Error(`copiarSourceDbCurrent: la copia disposable de SOURCE_DB no quedo CURRENT (state=${estado.state})`);
   }
 }
 
@@ -6699,7 +6774,7 @@ async function testCompraRecepcionReversaCostoReferencialF3D4() {
 // (a diferencia de una recepcion historica, cubierta en testCompraRecepcionReversaCostoReferencialF3D4).
 async function testCompraRecepcionNuevaNoActualizaCostoProveedorF3D4bis() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -6781,7 +6856,7 @@ async function testCompraRecepcionNuevaNoActualizaCostoProveedorF3D4bis() {
 // reparar el dato silenciosamente, y el dato sucio debe quedar intacto.
 async function testProductoProveedorBackfillF3D4bisObsoletoPorE7B() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     let productoLegacyId, productoConRelacionId, proveedorId;
@@ -6840,7 +6915,7 @@ async function testProductoProveedorBackfillF3D4bisObsoletoPorE7B() {
 // una actualizacion silenciosa originada por factura.
 async function testProductoProveedorAltaEdicionSincronizaF3D4bis() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -6917,7 +6992,7 @@ async function testProductoProveedorAltaEdicionSincronizaF3D4bis() {
 // producido) en vez de depender de un reinicio que ahora fallaria cerrado por baseline.
 async function testF3D4bisSobreProductoMigradoGeneraRevisionF3D4bis() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     let productoId, proveedorId, compraId;
@@ -7008,7 +7083,7 @@ async function testF3D4bisSobreProductoMigradoGeneraRevisionF3D4bis() {
 // nunca toca productos, nunca actualiza producto_proveedores excepto al aprobar.
 async function testProductoRevisionPendienteCostoProveedorF3D4bis() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -7170,7 +7245,7 @@ async function testProductoRevisionPendienteCostoProveedorF3D4bis() {
 // sin perder el registro (no se borra ni se reabre nada).
 async function testProductoRevisionPendienteNoAccionableSiCompraOComprobanteAnuladoF3D4bis() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -7341,7 +7416,7 @@ async function testStockAjustesPendientesTabNoDesaparaceConSoloRevisionCostoF3D4
 // sin tocar productos.precio_compra/costo_final ni el stock.
 async function testProductoCostoProveedorVisibleEnStockF3D4bis() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -7570,7 +7645,7 @@ async function testProductoStockRefrescaPendientesAlVolverAFocoF3D4bis() {
 // nunca tiene efectos laterales sobre stock ni costo. Caja/Pago quedan totalmente fuera.
 async function testStockComprasPendientesCantidadF3E3B() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -7662,7 +7737,7 @@ async function testStockComprasPendientesCantidadF3E3B() {
 // tocar es_principal -- este es un GET, cero escritura.
 async function testStockComprasPendientesCostoProveedorEventualF3E3B() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -7730,7 +7805,7 @@ async function testStockComprasPendientesCostoProveedorEventualF3E3B() {
 // *Stock -- nunca de un nombre de rol.
 async function testStockComprasPendientesFiltroCombinadoYPermisosF3E3B() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -7844,7 +7919,7 @@ async function testStockComprasPendientesFiltroCombinadoYPermisosF3E3B() {
 // con movimiento_stock_id vinculado.
 async function testStockRecepcionAceptarCompletoF3E3C() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -7919,7 +7994,7 @@ async function testStockRecepcionAceptarCompletoF3E3C() {
 // pendiente) se rechaza en el backend sin tocar el stock.
 async function testStockRecepcionModificarParcialLuegoAceptarRestoF3E3C() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -7996,7 +8071,7 @@ async function testStockRecepcionModificarParcialLuegoAceptarRestoF3E3C() {
 // replay debe reusar la cantidad YA registrada la primera vez, no recalcular "pendiente ahora").
 async function testStockRecepcionIdempotenciaF3E3C() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -8060,7 +8135,7 @@ async function testStockRecepcionIdempotenciaF3E3C() {
 // gating del otro. Tambien cubre compra sin comprobante activo y compra anulada.
 async function testStockRecepcionPermisosYEstadosInvalidosF3E3C() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -8306,7 +8381,7 @@ async function snapshotFinancieroCompraF3E3D1(baseUrl, token, dbPath, compraId) 
 
 async function testStockReversaRecepcionDtoIdempotenciaF3E3D1() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -8351,7 +8426,7 @@ async function testStockReversaRecepcionDtoIdempotenciaF3E3D1() {
 
 async function testStockReversaRecepcionParcialPendientesF3E3D1() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -8388,7 +8463,7 @@ async function testStockReversaRecepcionParcialPendientesF3E3D1() {
 
 async function testStockReversaRecepcionStockActualEInsuficienteF3E3D1() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -8433,7 +8508,7 @@ async function testStockReversaRecepcionStockActualEInsuficienteF3E3D1() {
 
 async function testStockReversaRecepcionPermisosFinanzasYCostoF3E3D1() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -8564,7 +8639,7 @@ async function testStockReversaRecepcionUiRefrescaMovimientosF3E3D1() {
 
 async function testStockProvenanceRecepcionReversaManualF3E3E1() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -8610,7 +8685,7 @@ async function testStockProvenanceRecepcionReversaManualF3E3E1() {
 // (corria en cada boot). Ese backfill ya no se invoca -- ver comentario dentro del test.
 async function testStockProvenanceBackfillDemostrableF3E3E1ObsoletoPorE7B() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     const movRecepcion = await runSql(dbPath, `
@@ -8668,7 +8743,7 @@ async function testStockProvenanceBackfillDemostrableF3E3E1ObsoletoPorE7B() {
 
 async function testStockMovimientoManualIdempotenteF3E3E1() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -8710,7 +8785,7 @@ async function testStockMovimientoManualIdempotenteF3E3E1() {
 
 async function testStockMovimientoManualConcurrenteMismaKeyF3E3E1b() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -8752,7 +8827,7 @@ async function testStockMovimientoManualConcurrenteMismaKeyF3E3E1b() {
 
 async function testStockMovimientoManualConcurrenteKeysDistintasF3E3E1b() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -8807,7 +8882,7 @@ async function testStockMovimientoManualConcurrenteKeysDistintasF3E3E1b() {
 
 async function testStockMovimientoManualConcurrenteMismaKeyPayloadDistintoF3E3E1b() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -8860,7 +8935,7 @@ async function testStockMovimientoManualConcurrenteMismaKeyPayloadDistintoF3E3E1
 
 async function testStockWarningDuplicadoManualConfirmadoF3E3E1() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -8907,7 +8982,7 @@ async function testStockWarningDuplicadoManualConfirmadoF3E3E1() {
 
 async function testStockManualNoReducePendienteRecepcionF3E3E1() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -8944,7 +9019,7 @@ async function testStockManualNoReducePendienteRecepcionF3E3E1() {
 
 async function testStockWarningDuplicadoNoCandidatosF3E3E1() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9061,7 +9136,7 @@ function assertWarningIngresoDuplicado(result, message) {
 
 async function testStockDedupBidireccionalCasoUsuarioF3E3E3() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9108,7 +9183,7 @@ async function testStockDedupBidireccionalCasoUsuarioF3E3E3() {
 
 async function testStockDedupBidireccionalMatrizF3E3E3() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9173,7 +9248,7 @@ async function testStockDedupBidireccionalMatrizF3E3E3() {
 
 async function testStockDedupControlesF3E3E3() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9232,7 +9307,7 @@ async function testStockDedupControlesF3E3E3() {
 
 async function testStockDedupConcurrenciaManualRecepcionF3E3E3() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9266,7 +9341,7 @@ async function recibirCompraYaIngresadoF3E3E4(baseUrl, token, itemId, cantidad, 
 
 async function testStockRecepcionYaIngresadoManualF3E3E4() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9301,7 +9376,7 @@ async function testStockRecepcionYaIngresadoManualF3E3E4() {
 
 async function testStockRecepcionYaIngresadoAjusteYReversaF3E3E4() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9336,7 +9411,7 @@ async function testStockRecepcionYaIngresadoAjusteYReversaF3E3E4() {
 
 async function testStockRecepcionYaIngresadoParcialEIdempotenciaF3E3E4() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9368,7 +9443,7 @@ async function testStockRecepcionYaIngresadoParcialEIdempotenciaF3E3E4() {
 
 async function testStockRecepcionYaIngresadoMovimientoInvalidoF3E3E4() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9422,7 +9497,7 @@ async function revertirMovimientoStockF3E3E5(baseUrl, token, movimientoId) {
 
 async function testStockRevertirMovimientoManualF3E3E5() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9460,7 +9535,7 @@ async function testStockRevertirMovimientoManualF3E3E5() {
 
 async function testStockRevertirMovimientoManualCompensatorioRealF3E3E5() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9487,7 +9562,7 @@ async function testStockRevertirMovimientoManualCompensatorioRealF3E3E5() {
 
 async function testStockRevertirMovimientoAjusteInformadoF3E3E5() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9510,7 +9585,7 @@ async function testStockRevertirMovimientoAjusteInformadoF3E3E5() {
 
 async function testStockRevertirMovimientoStockInsuficienteF3E3E5() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9538,7 +9613,7 @@ async function testStockRevertirMovimientoStockInsuficienteF3E3E5() {
 
 async function testStockRevertirMovimientoYaIngresadoReabreRecepcionF3E3E5() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9567,7 +9642,7 @@ async function testStockRevertirMovimientoYaIngresadoReabreRecepcionF3E3E5() {
 
 async function testStockRevertirRecepcionVinculadaNoRevierteMovimientoF3E3E5() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9593,7 +9668,7 @@ async function testStockRevertirRecepcionVinculadaNoRevierteMovimientoF3E3E5() {
 
 async function testStockRevertirMovimientoNoReversibleYPermisosF3E3E5() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -9687,7 +9762,7 @@ async function testStockProvenanceUiMovimientoManualF3E3E1() {
 // distinto resultado.
 async function testProductoRevisionPendientePermisosStockF3D4bis() {
   const dbPath = tempDbPath();
-  fs.copyFileSync(SOURCE_DB, dbPath);
+  await copiarSourceDbCurrent(dbPath);
   try {
     await prepareDb(dbPath, resetOperationalDataStatements());
     await withServer(dbPath, async (baseUrl) => {
@@ -20827,6 +20902,22 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1F5BLegacySoloGuernica);
   await _run(testMT1F5BSingleConservaUploadsLegacy);
   await _run(testMT1F5BTraversalFailsClosed);
+  await _run(testMT1F5C1Catalogo002Real);
+  await _run(testMT1F5C1Migracion002Desde001QuedaCurrent);
+  await _run(testMT1F5C1Migracion002CreaTablasVacias);
+  await _run(testMT1F5C1ProvisionFreshQuedaCurrent002);
+  await _run(testMT1F5C1ProviderUnico);
+  await _run(testMT1F5C1CryptoRoundTrip);
+  await _run(testMT1F5C1CryptoSinMasterKeyFailsClosed);
+  await _run(testMT1F5C1CryptoTamperFailsClosed);
+  await _run(testMT1F5C1SingleAbsentUsaEnvLegacy);
+  await _run(testMT1F5C1SingleDisabledNoUsaEnv);
+  await _run(testMT1F5C1SingleSinSecretoNoUsaEnv);
+  await _run(testMT1F5C1SingleSecretoCorruptoNoUsaEnv);
+  await _run(testMT1F5C1SingleSecretoValidoUsaDb);
+  await _run(testMT1F5C1MultiNuncaUsaEnv);
+  await _run(testMT1F5C1TenantAisladoCredenciales);
+  await _run(testMT1F5C1RemoveNoRestauraEnv);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -26800,6 +26891,11 @@ async function testMT1E2BSchemaVerifierUnversioned() {
 }
 
 async function testMT1E2BSchemaVerifierCurrent() {
+  // MT-1F5C1: el catalogo real ya no es solo [001] -- una tabla contractual debe declarar el
+  // historial COMPLETO (BUSINESS_MIGRATIONS entero, derivado en vivo del catalogo real, nunca
+  // hardcodeado) para resolver CURRENT. currentMigrationId/expectedMigrationId son la ULTIMA
+  // entrada del catalogo real, sea cual sea, para que este test no vuelva a quedar obsoleto si el
+  // catalogo crece de nuevo.
   const dbPath = tempDbPath();
   try {
     await runSql(dbPath, `
@@ -26809,14 +26905,18 @@ async function testMT1E2BSchemaVerifierCurrent() {
         applied_at TEXT NOT NULL
       )
     `);
-    await runSql(
-      dbPath,
-      "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (1, '001_legacy_runtime_baseline', datetime('now'))"
-    );
+    for (const migracion of BUSINESS_MIGRATIONS) {
+      await runSql(
+        dbPath,
+        "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (?, ?, datetime('now'))",
+        [migracion.sequence, migracion.migrationId]
+      );
+    }
+    const ultimaId = BUSINESS_MIGRATIONS[BUSINESS_MIGRATIONS.length - 1].migrationId;
     const resultado = await verificarBusinessSchemaVersion(dbPath);
-    assertSame(resultado.state, "CURRENT", "tabla contractual con el baseline real debe resolver CURRENT");
-    assertSame(resultado.currentMigrationId, "001_legacy_runtime_baseline", "currentMigrationId debe ser el baseline real");
-    assertSame(resultado.expectedMigrationId, "001_legacy_runtime_baseline", "expectedMigrationId debe ser el baseline real");
+    assertSame(resultado.state, "CURRENT", "tabla contractual con el catalogo real completo debe resolver CURRENT");
+    assertSame(resultado.currentMigrationId, ultimaId, "currentMigrationId debe ser la ultima entrada real del catalogo");
+    assertSame(resultado.expectedMigrationId, ultimaId, "expectedMigrationId debe ser la ultima entrada real del catalogo");
   } finally {
     fs.rmSync(dbPath, { force: true });
   }
@@ -27367,6 +27467,8 @@ async function testMT1E2C2ALegacyVerifierEnConexion() {
 }
 
 async function testMT1E2C2ASchemaVersionEnConexion() {
+  // MT-1F5C1: historial completo del catalogo real (ver testMT1E2BSchemaVerifierCurrent) -- no
+  // solo 001 -- para seguir resolviendo CURRENT ahora que existe una migration 002+ real.
   const dbPath = tempDbPath();
   try {
     await runSql(
@@ -27377,10 +27479,14 @@ async function testMT1E2C2ASchemaVersionEnConexion() {
         applied_at TEXT NOT NULL
       )`
     );
-    await runSql(
-      dbPath,
-      "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (1, '001_legacy_runtime_baseline', datetime('now'))"
-    );
+    for (const migracion of BUSINESS_MIGRATIONS) {
+      await runSql(
+        dbPath,
+        "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (?, ?, datetime('now'))",
+        [migracion.sequence, migracion.migrationId]
+      );
+    }
+    const ultimaId = BUSINESS_MIGRATIONS[BUSINESS_MIGRATIONS.length - 1].migrationId;
 
     const resultadoPath = await verificarBusinessSchemaVersion(dbPath);
 
@@ -27394,7 +27500,7 @@ async function testMT1E2C2ASchemaVersionEnConexion() {
       "EnConexion y path API deben resolver el mismo currentMigrationId"
     );
     assertSame(resultadoConexion.state, "CURRENT", "fixture certificada debe resolver CURRENT");
-    assertSame(resultadoConexion.currentMigrationId, "001_legacy_runtime_baseline", "currentMigrationId debe ser el baseline real");
+    assertSame(resultadoConexion.currentMigrationId, ultimaId, "currentMigrationId debe ser la ultima entrada real del catalogo");
 
     const sanity = await selectUnoSobreConexion(db);
     assertEqual(sanity.uno, 1, "la conexion debe seguir usable despues del helper EnConexion");
@@ -28635,25 +28741,36 @@ const CATALOG_EXTENDS_SINGLE_SOURCE = [
   "]"
 ].join("\n");
 
+// MT-1F5C1-R2B: ALREADY_CURRENT debe partir de una DB genuinamente CURRENT (schema fisico completo
+// + historial completo del catalogo real), nunca de bootstrapReadyLegacyFixture()+adoptarLegacyBaseline()
+// -- ese camino deja el historial capado en 001 (adoptarLegacyBaseline nunca escribe mas alla del
+// baseline, por diseno) mientras el schema fisico ya tiene las tablas de 002 (bootstrapReadyLegacyFixture
+// aplica el catalogo completo antes de dropear solo la tabla de historial) -- una combinacion
+// fisicamente imposible en produccion que hacia que migrarTenantDb clasificara BEHIND e intentara
+// reaplicar up(002), colisionando con las tablas ya existentes (ver MT-1F5C1-R2/R2A). bootstrapFreshTestDb()
+// ya construye CURRENT genuino (stamparHistorialBaselineActual aplica BUSINESS_MIGRATIONS dinamicamente,
+// nunca hardcodea un migrationId) -- se reutiliza tal cual, sin adoption de por medio.
 async function testMT1E2C3MigratorAlreadyCurrent() {
-  const dbPath = await bootstrapReadyLegacyFixture();
-  const adoptBackup = `${dbPath}.adoptbackup`;
+  const dbPath = bootstrapFreshTestDb();
   const migBackup = `${dbPath}.migbackup`;
   try {
-    const adoptResult = await adoptarLegacyBaseline({ mode: "LEGACY", businessDbPath: dbPath, backupPath: adoptBackup });
-    assertSame(adoptResult.status, "ADOPTED", "fixture debe adoptarse primero");
+    const estadoPrevio = await verificarBusinessSchemaVersion(dbPath);
+    assertSame(estadoPrevio.state, "CURRENT", "fixture fresh debe ser genuinamente CURRENT antes del migrator");
 
     const antes = fs.readFileSync(dbPath);
     const resultado = await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath: migBackup });
     assertSame(resultado.status, "ALREADY_CURRENT", "DB ya en CURRENT debe resolver ALREADY_CURRENT");
-    assertSame(resultado.migrationId, "001_legacy_runtime_baseline", "migrationId debe ser el ultimo del catalogo");
+    assertSame(
+      resultado.migrationId,
+      BUSINESS_MIGRATIONS[BUSINESS_MIGRATIONS.length - 1].migrationId,
+      "migrationId debe ser el ultimo del catalogo real"
+    );
     assertSame(fs.existsSync(migBackup), false, "no debe crearse backup para ALREADY_CURRENT");
 
     const despues = fs.readFileSync(dbPath);
     assertSame(Buffer.compare(antes, despues), 0, "la fuente no debe mutar");
   } finally {
-    limpiarLegacyFixture(dbPath);
-    fs.rmSync(adoptBackup, { force: true });
+    fs.rmSync(dbPath, { force: true });
     fs.rmSync(migBackup, { force: true });
   }
 }
@@ -29566,7 +29683,12 @@ async function testMT1E2C3MigratorCatalogValidation() {
     assertSame(resultado.dbCreated, false, `caso "${caso.nombre}": no debe abrirse/crearse ningun SQLite antes de validar el catalogo`);
   }
 
-  assertEqual(BUSINESS_MIGRATIONS.length, 1, "catalogo de produccion debe tener exactamente 1 entrada");
+  // MT-1F5C1: "002_tenant_integration_credentials" es ahora la primera migration REAL del catalogo
+  // de produccion (ver database/business-migrations.js) -- este test ya no puede afirmar que el
+  // catalogo tiene exactamente 1 entrada ni que 002_ esta prohibido; se actualiza para certificar la
+  // FORMA exacta del catalogo real actual en su lugar (contrato equivalente al que
+  // testMT1F5C1Catalogo002Real certifica de forma dedicada).
+  assertEqual(BUSINESS_MIGRATIONS.length, 2, "catalogo de produccion debe tener exactamente 2 entradas");
   assertEqual(BUSINESS_MIGRATIONS[0].sequence, 1, "catalogo de produccion: sequence de la primera entrada debe ser 1");
   assertSame(
     BUSINESS_MIGRATIONS[0].migrationId, "001_legacy_runtime_baseline",
@@ -29574,8 +29696,15 @@ async function testMT1E2C3MigratorCatalogValidation() {
   );
   assertSame(BUSINESS_MIGRATIONS[0].kind, "BASELINE", "catalogo de produccion: kind de la primera entrada debe ser BASELINE");
   assertSame(BUSINESS_MIGRATIONS[0].up, undefined, "catalogo de produccion: la entrada BASELINE no debe tener up");
-  const tieneAlgun002 = BUSINESS_MIGRATIONS.some((m) => typeof m.migrationId === "string" && m.migrationId.startsWith("002_"));
-  assertSame(tieneAlgun002, false, "catalogo de produccion NO debe contener ningun migrationId que empiece con 002_ (PROHIBIDO)");
+  assertEqual(BUSINESS_MIGRATIONS[1].sequence, 2, "catalogo de produccion: sequence de la segunda entrada debe ser 2");
+  assertSame(
+    BUSINESS_MIGRATIONS[1].migrationId, "002_tenant_integration_credentials",
+    "catalogo de produccion: migrationId de la segunda entrada debe ser 002_tenant_integration_credentials"
+  );
+  assertSame(BUSINESS_MIGRATIONS[1].kind, "MIGRATION", "catalogo de produccion: kind de la segunda entrada debe ser MIGRATION");
+  assertSame(typeof BUSINESS_MIGRATIONS[1].up, "function", "catalogo de produccion: la entrada 002 debe tener up(db) callable");
+  const tieneAlgun003 = BUSINESS_MIGRATIONS.some((m) => typeof m.migrationId === "string" && m.migrationId.startsWith("003_"));
+  assertSame(tieneAlgun003, false, "catalogo de produccion NO debe contener ningun migrationId que empiece con 003_ (PROHIBIDO todavia)");
 }
 
 // MT-1E3B: helpers para tests del puente pre-baseline legacy. dropSesionesColumns simula el
@@ -31344,6 +31473,11 @@ function mt1e5dAbrirBusinessFrescaEnPath(businessPath) {
 // mismos pasos que usa provisionarTenantDb -- para fixtures de retry/mismatch que necesitan un
 // estado "ya provisionado" sin pasar por una invocation completa (o con una identity deliberadamente
 // distinta a la reservada en Control).
+// MT-1F5C1-R1B: aplica el catalogo real COMPLETO via BUSINESS_MIGRATIONS (up(db) real de cada
+// migration con sequence>1), nunca solo BUSINESS_MIGRATIONS[0] -- antes el nombre/contrato de esta
+// funcion prometia CURRENT pero solo dejaba stampeado el baseline (BEHIND en cuanto el catalogo
+// crecio a 002). Sigue automaticamente cualquier crecimiento futuro del catalogo, sin hardcodear
+// ningun migrationId.
 async function mt1e5dConstruirBusinessCurrentManual(businessPath, { empresaId, empresaSlug }) {
   const db = await mt1e5dAbrirBusinessFrescaEnPath(businessPath);
   await new Promise((res, rej) => db.run("BEGIN IMMEDIATE", (e) => (e ? rej(e) : res())));
@@ -31357,11 +31491,14 @@ async function mt1e5dConstruirBusinessCurrentManual(businessPath, { empresaId, e
     )`,
     (e) => (e ? rej(e) : res())
   ));
-  await new Promise((res, rej) => db.run(
-    "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (1, ?, datetime('now'))",
-    [BUSINESS_MIGRATIONS[0].migrationId],
-    (e) => (e ? rej(e) : res())
-  ));
+  for (const migracion of BUSINESS_MIGRATIONS) {
+    if (migracion.sequence > 1) await migracion.up(db);
+    await new Promise((res, rej) => db.run(
+      "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (?, ?, datetime('now'))",
+      [migracion.sequence, migracion.migrationId],
+      (e) => (e ? rej(e) : res())
+    ));
+  }
   await new Promise((res, rej) => db.run("COMMIT", (e) => (e ? rej(e) : res())));
   await new Promise((res) => db.close(() => res()));
 }
@@ -31471,6 +31608,11 @@ async function testMT1E5DFreshIdentityExact() {
   }
 }
 
+// MT-1F5C1-R3B: fresh provisioning escribe una fila de history por CADA entrada del catalogo real
+// (provisionarTenantDb aplica BUSINESS_MIGRATIONS completo y exige CURRENT antes de comprometer, ver
+// database/provision-tenant-db.js) -- nunca "exactamente 1 fila". La comparacion es dinamica contra
+// BUSINESS_MIGRATIONS completo, fila a fila, sin hardcodear cardinalidad ni ningun migrationId: sigue
+// funcionando igual si el catalogo crece a 003+.
 async function testMT1E5DFreshHistory001() {
   const controlDbPath = await mt1e5dControlDbVacio();
   const businessName = `mt1e5d-history-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
@@ -31479,11 +31621,17 @@ async function testMT1E5DFreshHistory001() {
     await provisionarTenantDb({
       controlDbPath, empresaSlug: "mt1e5d-history", empresaNombre: "MT1E5D History", businessDbPath: businessName
     });
-    const filas = await allSql(businessPath, "SELECT sequence, migration_id, applied_at FROM atlas_schema_migrations");
-    assertEqual(filas.length, 1, "debe existir exactamente una fila de history");
-    assertEqual(filas[0].sequence, 1, "sequence debe ser 1");
-    assertSame(filas[0].migration_id, BUSINESS_MIGRATIONS[0].migrationId, "migration_id debe salir del catalogo, no hardcodeado");
-    assertSame(typeof filas[0].applied_at === "string" && filas[0].applied_at.length > 0, true, "applied_at debe ser un string no vacio");
+    const filas = await allSql(
+      businessPath,
+      "SELECT sequence, migration_id, applied_at FROM atlas_schema_migrations ORDER BY sequence ASC"
+    );
+    assertEqual(filas.length, BUSINESS_MIGRATIONS.length, "debe existir una fila de history por cada entrada del catalogo real");
+    for (let i = 0; i < BUSINESS_MIGRATIONS.length; i++) {
+      const esperada = BUSINESS_MIGRATIONS[i];
+      assertEqual(filas[i].sequence, esperada.sequence, `sequence de la fila ${i} debe coincidir con el catalogo`);
+      assertSame(filas[i].migration_id, esperada.migrationId, `migration_id de la fila ${i} debe salir del catalogo, no hardcodeado`);
+      assertSame(typeof filas[i].applied_at === "string" && filas[i].applied_at.length > 0, true, `applied_at de la fila ${i} debe ser un string no vacio`);
+    }
   } finally {
     fs.rmSync(controlDbPath, { force: true });
     for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
@@ -31872,6 +32020,10 @@ async function testMT1E5DModuleSinSideEffects() {
 }
 
 async function testMT1E5DUnsupportedFutureCatalogRejected() {
+  // MT-1F5C1: el provisioner ahora SI soporta catalogo [001,002+] bien formado (ver
+  // testMT1F5C1ProvisionFreshQuedaCurrent002) -- este test ya no puede usar un 002 valido para
+  // probar el guard. Se conserva el mismo proposito (fail-closed ante una FORMA de catalogo
+  // invalida) con una entrada 002 genuinamente malformada (sin up(db) callable).
   const controlDbPath = await mt1e5dControlDbVacio();
   const businessName = `mt1e5d-futurecat-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
   const businessPath = resolveEmpresaDbPath(businessName);
@@ -31879,7 +32031,7 @@ async function testMT1E5DUnsupportedFutureCatalogRejected() {
     const fakeCatalogSource = [
       "[",
       "  { sequence: 1, migrationId: '001_legacy_runtime_baseline', kind: 'BASELINE' },",
-      "  { sequence: 2, migrationId: '002_fake_future', kind: 'MIGRATION', up: async () => {} }",
+      "  { sequence: 2, migrationId: '002_fake_future', kind: 'MIGRATION' }",
       "]"
     ].join("\n");
     const prePatchSource = [
@@ -31892,7 +32044,7 @@ async function testMT1E5DUnsupportedFutureCatalogRejected() {
     const script = construirWorkerProvision({ prePatchSource });
     const salida = await ejecutarWorkerProvision(script, [controlDbPath, "mt1e5d-futurecat", "MT1E5D Future Catalog", businessName]);
 
-    assertSame(salida.resultado.outcome, "REJECTED", "con catalogo [001,002], el provisioner debe rechazar antes de mutar nada");
+    assertSame(salida.resultado.outcome, "REJECTED", "con catalogo [001,002] SIN up(db) callable, el provisioner debe rechazar antes de mutar nada");
     assertSame(salida.resultado.code, "MIGRATION_CATALOG_UNSUPPORTED", "codigo exacto debe ser MIGRATION_CATALOG_UNSUPPORTED");
 
     assertSame(fs.existsSync(businessPath), false, "no debe haberse creado ningun archivo business");
@@ -32683,8 +32835,11 @@ async function testMT1F1HandleCurrentValido() {
     assertEqual(baseline.failures.length, 0, "baseline sin failures");
     const schema = await verificarBusinessSchemaVersionEnConexion(handle.db);
     assertSame(schema.state, "CURRENT", "schema CURRENT");
-    assertSame(schema.currentMigrationId, "001_legacy_runtime_baseline", "currentMigrationId exacto");
-    assertSame(schema.expectedMigrationId, "001_legacy_runtime_baseline", "expectedMigrationId exacto");
+    // MT-1F5C1: stamparHistorialBaselineActual aplica el catalogo real completo -- currentMigrationId
+    // ya no es el baseline sino la ultima entrada real (derivada en vivo, nunca hardcodeada).
+    const ultimaIdCatalogoReal = BUSINESS_MIGRATIONS[BUSINESS_MIGRATIONS.length - 1].migrationId;
+    assertSame(schema.currentMigrationId, ultimaIdCatalogoReal, "currentMigrationId exacto");
+    assertSame(schema.expectedMigrationId, ultimaIdCatalogoReal, "expectedMigrationId exacto");
     const filas = await mt1f1Consultar(handle.db, "SELECT 1 AS uno");
     assertEqual(filas[0].uno, 1, "la conexion del handle debe ser usable");
   } finally {
@@ -32855,17 +33010,19 @@ async function testMT1F1SchemaNoCurrentFailsClosed() {
   try {
     const [tenant] = escenario.tenants;
 
-    // AHEAD: la DB declara una migracion que este runtime no conoce. (BEHIND es inalcanzable mientras
-    // el catalogo productivo sea exactamente [001]: un historial vacio ya es UNVERSIONED.)
-    await runSql(tenant.dbPath, "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (2, '999_migracion_futura', datetime('now'))");
+    // MT-1F5C1: stamparHistorialBaselineActual ya deja este tenant con el catalogo real COMPLETO
+    // aplicado (hoy [001,002]), asi que una fila AHEAD debe ir mas alla del catalogo conocido
+    // (sequence=3), no en sequence=2 (ya ocupado por la migration 002 real). BEHIND es alcanzable en
+    // principio ahora que el catalogo tiene mas de una entrada, pero no es el foco de este test.
+    await runSql(tenant.dbPath, "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (3, '999_migracion_futura', datetime('now'))");
     let antes = snapshotSQLitePersistente(tenant.dbPath);
     let resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
     mt1f1AssertFallo(resultado, TENANT_RUNTIME_ERROR_CODES.TENANT_SCHEMA_NOT_CURRENT, "schema AHEAD");
     assertSame(resultado.details.state, "AHEAD", "estado AHEAD");
     assertSame(JSON.stringify(snapshotSQLitePersistente(tenant.dbPath)), JSON.stringify(antes), "AHEAD: sin mutacion persistente");
 
-    // INVALID_HISTORY: la migracion 1 dice otra cosa.
-    await runSql(tenant.dbPath, "DELETE FROM atlas_schema_migrations WHERE sequence = 2");
+    // INVALID_HISTORY: la migracion 1 dice otra cosa (se quita antes la fila AHEAD agregada arriba).
+    await runSql(tenant.dbPath, "DELETE FROM atlas_schema_migrations WHERE sequence = 3");
     await runSql(tenant.dbPath, "UPDATE atlas_schema_migrations SET migration_id = '001_otra_cosa' WHERE sequence = 1");
     antes = snapshotSQLitePersistente(tenant.dbPath);
     resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
@@ -32973,8 +33130,50 @@ async function testMT1F1MismoTenantConcurrenteSingleFlight() {
 async function testMT1F1FalloConcurrenteNoQuedaCacheado() {
   const escenario = await mt1f1CrearEscenario(["fallo"]);
   const instrumento = mt1f1InstrumentarSqlite();
+  // MT-1F5C1-R4B: aperturas locales SIN modo explicito (igual que runSql) -- mt1f1InstrumentarSqlite()
+  // solo cuenta aperturas con modo numerico explicito (ver su propio comentario en su definicion), asi
+  // que estas lecturas/verificaciones de snapshot no contaminan las aserciones de "un solo open"/
+  // "conexion nueva" que este test certifica sobre el runtime productivo (a diferencia de allSql o
+  // verificarBusinessSchemaVersion(), que abren con sqlite3.OPEN_READONLY explicito y SI contarian).
+  function abrirSinContar(dbPath) {
+    return new Promise((resolve, reject) => {
+      const db = new sqlite3.Database(dbPath, (error) => {
+        if (error) { reject(error); return; }
+        resolve(db);
+      });
+    });
+  }
+  function cerrarSinContar(db) {
+    return new Promise((resolve) => db.close(() => resolve()));
+  }
+  function leerFilasSinContar(dbPath, sql, params = []) {
+    return new Promise((resolve, reject) => {
+      const db = new sqlite3.Database(dbPath);
+      db.all(sql, params, (error, rows) => {
+        db.close((closeErr) => {
+          if (error) reject(error);
+          else if (closeErr) reject(closeErr);
+          else resolve(rows);
+        });
+      });
+    });
+  }
   try {
     const [tenant] = escenario.tenants;
+
+    // MT-1F5C1-R4B: snapshot exacto del bookkeeping ANTES de corromperlo -- inverso exacto de la
+    // corrupcion deliberada de abajo. Nunca se sintetiza desde BUSINESS_MIGRATIONS ni se reaplica
+    // ninguna migration: se restaura tal cual estaba.
+    const ddlPrevio = (await leerFilasSinContar(
+      tenant.dbPath,
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='atlas_schema_migrations'"
+    ))[0].sql;
+    const filasPrevias = await leerFilasSinContar(
+      tenant.dbPath,
+      "SELECT sequence, migration_id, applied_at FROM atlas_schema_migrations ORDER BY sequence ASC"
+    );
+    assertEqual(filasPrevias.length, BUSINESS_MIGRATIONS.length, "snapshot PRE debe reflejar el catalogo real completo");
+
     // UNVERSIONED corre baseline completo antes de fallar (~cientos de ms): todas las llamadas
     // concurrentes llegan mientras la verificacion sigue en vuelo.
     await runSql(tenant.dbPath, "DROP TABLE atlas_schema_migrations");
@@ -32986,8 +33185,33 @@ async function testMT1F1FalloConcurrenteNoQuedaCacheado() {
     assertEqual(instrumento.de(tenant.dbPath).length, 1, "el fallo tambien es single-flight: un solo open para las 5 llamadas");
     assertSame(await mt1f1ConexionCerrada(instrumento.de(tenant.dbPath)[0].instancia), true, "la conexion del fallo se cerro");
 
-    // Reparacion EXTERNA (operador): la proxima llamada reintenta limpiamente, sin reiniciar el proceso.
-    stamparHistorialBaselineActual(tenant.dbPath);
+    // Reparacion EXTERNA (operador): inversa EXACTA de "DROP TABLE atlas_schema_migrations" -- mismo
+    // DDL, mismas filas, capturados antes de la corrupcion. Nunca stamparHistorialBaselineActual(): el
+    // schema fisico (incluidas las tablas de la migration 002) nunca dejo de existir, asi que reaplicar
+    // up() colisionaria exactamente como en #612 (ver MT-1F5C1-R4/R4A).
+    await runSql(tenant.dbPath, ddlPrevio);
+    for (const fila of filasPrevias) {
+      await runSql(
+        tenant.dbPath,
+        "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (?, ?, ?)",
+        [fila.sequence, fila.migration_id, fila.applied_at]
+      );
+    }
+    const filasRestauradas = await leerFilasSinContar(
+      tenant.dbPath,
+      "SELECT sequence, migration_id, applied_at FROM atlas_schema_migrations ORDER BY sequence ASC"
+    );
+    assertSame(JSON.stringify(filasRestauradas), JSON.stringify(filasPrevias), "el bookkeeping restaurado debe coincidir exactamente con el snapshot PRE-corrupcion");
+
+    const conexionVerificacion = await abrirSinContar(tenant.dbPath);
+    let estadoRestaurado;
+    try {
+      estadoRestaurado = await verificarBusinessSchemaVersionEnConexion(conexionVerificacion);
+    } finally {
+      await cerrarSinContar(conexionVerificacion);
+    }
+    assertSame(estadoRestaurado.state, "CURRENT", "restaurado exactamente el bookkeeping eliminado, el schema vuelve a CURRENT sin reaplicar ninguna migration");
+
     const recuperado = await mt1f1Resolver(tenant, escenario.controlDbPath);
     assertSame(recuperado.ok, true, `tras la reparacion externa la tenant debe resolver: el fallo no quedo cacheado (resultado=${JSON.stringify(recuperado)})`);
     assertEqual(instrumento.de(tenant.dbPath).length, 2, "el reintento abrio una conexion nueva (no reutilizo estado de fallo)");
@@ -34635,6 +34859,533 @@ async function testMT1F5BTraversalFailsClosed() {
   } finally {
     mt1f5bLimpiarTenant(tenantA.empresa.id);
     await mt1f1Limpiar(escenario);
+  }
+}
+
+// ====================================================================================================
+// MT-1F5C1: schema/repositorio/crypto de credenciales de integraciones tenant-owned. Ver
+// MT-1F5C-D1/D1A/D1B/D1C para la autoridad de diseno completa.
+// ====================================================================================================
+
+// DB disposable con SOLO el baseline 001 aplicado (BEHIND respecto del catalogo real de 2 entradas)
+// -- fixture necesaria para probar la migracion 001->002 en si misma. bootstrapFreshTestDb() ya deja
+// el catalogo COMPLETO aplicado (necesario para que el boot gate real la acepte via
+// stamparHistorialBaselineActual) -- aca se revierte EXACTAMENTE lo que up002TenantIntegrationCredentials
+// hizo (las 2 tablas nuevas, nada mas) y se recorta el historial a solo la fila 1, para reconstruir
+// el estado fisico real de una DB legacy nunca migrada a 002.
+async function mt1f5c1DbSoloBaseline001() {
+  const dbPath = bootstrapFreshTestDb();
+  await runSql(dbPath, "DROP TABLE integraciones_tenant_secretos");
+  await runSql(dbPath, "DROP TABLE integraciones_tenant");
+  await runSql(dbPath, "DELETE FROM atlas_schema_migrations WHERE sequence <> 1");
+  return dbPath;
+}
+
+// Ejecuta una secuencia de operaciones del servicio (tenancyMode=single) en un proceso hijo fresco,
+// con GUERNICA_DB_PATH apuntando a `dbPath` -- necesario porque backend/db.js resuelve su path de
+// singleton UNA sola vez al cargar el modulo (ya cargado por este mismo test runner al arrancar), asi
+// que la unica forma segura de dirigir el singleton legacy hacia una DB disposable especifica es un
+// proceso nuevo. Nunca toca database/guernica.db: cada test arma su propia DB disposable primero.
+function mt1f5c1ScriptServicioSingle(operaciones) {
+  const servicioPath = path.join(ROOT, "backend", "services", "integracionTenantService.js");
+  const contextPath = path.join(ROOT, "backend", "tenantRequestContext.js");
+  return [
+    `const { crearIntegracionTenantService } = require(${JSON.stringify(servicioPath)});`,
+    `const { getTenantContext } = require(${JSON.stringify(contextPath)});`,
+    `const servicio = crearIntegracionTenantService({ tenancyMode: "single", getTenantContext });`,
+    `const operaciones = ${JSON.stringify(operaciones)};`,
+    "(async () => {",
+    "  const resultados = [];",
+    "  for (const op of operaciones) {",
+    "    try {",
+    "      let valor;",
+    '      if (op.metodo === "establecerCredencial") valor = await servicio.establecerCredencial(op.provider, op.secreto, op.opts || {});',
+    '      else if (op.metodo === "quitarCredencial") valor = await servicio.quitarCredencial(op.provider);',
+    '      else if (op.metodo === "establecerHabilitado") valor = await servicio.establecerHabilitado(op.provider, op.enabled);',
+    '      else if (op.metodo === "resolverCredencial") valor = await servicio.resolverCredencial(op.provider);',
+    '      else if (op.metodo === "leerEstadoSeguro") valor = await servicio.leerEstadoSeguro(op.provider);',
+    '      else throw new Error("metodo desconocido: " + op.metodo);',
+    "      resultados.push({ ok: true, valor });",
+    "    } catch (error) {",
+    "      resultados.push({ ok: false, code: error.code || null, message: error.message });",
+    "    }",
+    "  }",
+    "  process.stdout.write(JSON.stringify(resultados));",
+    "})();"
+  ].join("\n");
+}
+
+function ejecutarWorkerServicioSingle(dbPath, operaciones, envExtra = {}) {
+  return new Promise((resolve, reject) => {
+    const script = mt1f5c1ScriptServicioSingle(operaciones);
+    const child = spawn(process.execPath, ["-e", script], {
+      cwd: ROOT,
+      env: { ...process.env, GUERNICA_DB_PATH: dbPath, ...envExtra }
+    });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => { out += d.toString(); });
+    child.stderr.on("data", (d) => { err += d.toString(); });
+    child.on("exit", () => {
+      if (!out.trim()) { reject(new Error(`ejecutarWorkerServicioSingle: sin output. stderr: ${err}`)); return; }
+      try { resolve(JSON.parse(out.trim())); } catch (parseError) { reject(new Error(`ejecutarWorkerServicioSingle: output invalido: ${out}\nstderr:${err}`)); }
+    });
+  });
+}
+
+function mt1f5c1MasterKeyDisponible(envExtra = {}) {
+  return { ATLAS_INTEGRATION_MASTER_KEY_B64: crypto.randomBytes(32).toString("base64"), ...envExtra };
+}
+
+async function testMT1F5C1Catalogo002Real() {
+  assertEqual(BUSINESS_MIGRATIONS.length, 2, "catalogo debe tener exactamente 2 entradas");
+  assertEqual(BUSINESS_MIGRATIONS[0].sequence, 1, "primera entrada sequence=1");
+  assertSame(BUSINESS_MIGRATIONS[0].migrationId, "001_legacy_runtime_baseline", "primera entrada es el baseline");
+  assertSame(BUSINESS_MIGRATIONS[0].kind, "BASELINE", "primera entrada kind BASELINE");
+  assertSame(BUSINESS_MIGRATIONS[0].up, undefined, "el baseline no tiene up");
+  assertEqual(BUSINESS_MIGRATIONS[1].sequence, 2, "segunda entrada sequence=2");
+  assertSame(BUSINESS_MIGRATIONS[1].migrationId, "002_tenant_integration_credentials", "segunda entrada es la migration real");
+  assertSame(BUSINESS_MIGRATIONS[1].kind, "MIGRATION", "segunda entrada kind MIGRATION");
+  assertSame(typeof BUSINESS_MIGRATIONS[1].up, "function", "segunda entrada tiene up(db) callable");
+  assertSame(BUSINESS_MIGRATIONS[2], undefined, "no existe una tercera entrada (003)");
+}
+
+async function testMT1F5C1Migracion002Desde001QuedaCurrent() {
+  const dbPath = await mt1f5c1DbSoloBaseline001();
+  const backupPath = `${dbPath}.f5c1backup`;
+  try {
+    const antes = await verificarBusinessSchemaVersion(dbPath);
+    assertSame(antes.state, "BEHIND", "un 001-only debe clasificar BEHIND contra el catalogo real de 2 entradas");
+
+    const resultado = await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+    assertSame(resultado.status, "MIGRATED", "status debe ser MIGRATED");
+    assertSame(JSON.stringify(resultado.applied), JSON.stringify(["002_tenant_integration_credentials"]), "applied debe ser exactamente [002]");
+
+    const historia = await allSql(dbPath, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence ASC");
+    assertEqual(historia.length, 2, "historial final debe tener 2 filas");
+    assertSame(historia[0].migration_id, "001_legacy_runtime_baseline", "fila 1 exacta");
+    assertSame(historia[1].migration_id, "002_tenant_integration_credentials", "fila 2 exacta");
+
+    const despues = await verificarBusinessSchemaVersion(dbPath);
+    assertSame(despues.state, "CURRENT", "despues de migrar debe ser CURRENT");
+
+    assertSame(fs.existsSync(backupPath), true, "el backup debe existir");
+    const integridad = (await allSql(backupPath, "PRAGMA integrity_check"))[0];
+    assertSame(integridad.integrity_check, "ok", "backup debe pasar integrity_check");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(backupPath, { force: true });
+  }
+}
+
+async function testMT1F5C1Migracion002CreaTablasVacias() {
+  const dbPath = await mt1f5c1DbSoloBaseline001();
+  const backupPath = `${dbPath}.f5c1backup`;
+  try {
+    await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+
+    const tablas = new Set((await allSql(dbPath, "SELECT name FROM sqlite_master WHERE type='table'")).map((r) => r.name));
+    assertSame(tablas.has("integraciones_tenant"), true, "tabla integraciones_tenant debe existir");
+    assertSame(tablas.has("integraciones_tenant_secretos"), true, "tabla integraciones_tenant_secretos debe existir");
+
+    const columnasMeta = (await allSql(dbPath, "PRAGMA table_info(integraciones_tenant)")).map((c) => c.name).sort();
+    assertSame(JSON.stringify(columnasMeta), JSON.stringify(["config_json", "created_at", "enabled", "id", "provider", "updated_at"].sort()), "columnas exactas de integraciones_tenant");
+
+    const columnasSecreto = (await allSql(dbPath, "PRAGMA table_info(integraciones_tenant_secretos)")).map((c) => c.name).sort();
+    assertSame(JSON.stringify(columnasSecreto), JSON.stringify(["created_at", "integracion_id", "secret_encrypted", "secret_meta_json", "updated_at"].sort()), "columnas exactas de integraciones_tenant_secretos");
+
+    const indicesProvider = await allSql(dbPath, "PRAGMA index_list(integraciones_tenant)");
+    assertSame(indicesProvider.some((idx) => Number(idx.unique) === 1), true, "debe existir un indice UNIQUE sobre integraciones_tenant");
+
+    const filasMeta = await allSql(dbPath, "SELECT * FROM integraciones_tenant");
+    assertEqual(filasMeta.length, 0, "integraciones_tenant debe estar vacia");
+    const filasSecreto = await allSql(dbPath, "SELECT * FROM integraciones_tenant_secretos");
+    assertEqual(filasSecreto.length, 0, "integraciones_tenant_secretos debe estar vacia");
+    const mpSeed = await allSql(dbPath, "SELECT * FROM integraciones_tenant WHERE provider = 'mercadopago_point'");
+    assertEqual(mpSeed.length, 0, "no debe existir ninguna fila sembrada de mercadopago_point");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(backupPath, { force: true });
+  }
+}
+
+async function testMT1F5C1ProvisionFreshQuedaCurrent002() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `mt1f5c1-fresh-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    const resultado = await provisionarTenantDb({
+      controlDbPath, empresaSlug: "mt1f5c1-fresh", empresaNombre: "MT1F5C1 Fresh", businessDbPath: businessName
+    });
+    assertSame(resultado.status, "PROVISIONED", "fresh provisioning debe resultar en PROVISIONED");
+    assertSame(resultado.schemaState, "CURRENT", "schemaState debe ser CURRENT");
+
+    const identidad = await allSql(businessPath, "SELECT * FROM tenant_identity");
+    assertEqual(identidad.length, 1, "debe existir exactamente una fila de identity");
+
+    const historia = await allSql(businessPath, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence ASC");
+    assertEqual(historia.length, 2, "historial debe tener 2 filas (001, 002)");
+    assertSame(historia[0].migration_id, "001_legacy_runtime_baseline", "fila 1 exacta");
+    assertSame(historia[1].migration_id, "002_tenant_integration_credentials", "fila 2 exacta");
+
+    const schema = await verificarBusinessSchemaVersion(businessPath);
+    assertSame(schema.state, "CURRENT", "verificacion independiente debe confirmar CURRENT");
+
+    const tablas = new Set((await allSql(businessPath, "SELECT name FROM sqlite_master WHERE type='table'")).map((r) => r.name));
+    assertSame(tablas.has("integraciones_tenant"), true, "integraciones_tenant debe existir en el tenant fresco");
+    assertSame(tablas.has("integraciones_tenant_secretos"), true, "integraciones_tenant_secretos debe existir en el tenant fresco");
+    const filas = await allSql(businessPath, "SELECT * FROM integraciones_tenant");
+    assertEqual(filas.length, 0, "integraciones_tenant debe nacer vacia en un tenant fresco");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+async function testMT1F5C1ProviderUnico() {
+  const dbPath = await mt1f5c1DbSoloBaseline001();
+  const backupPath = `${dbPath}.f5c1backup`;
+  try {
+    await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+    await runSql(dbPath, "INSERT INTO integraciones_tenant (provider, enabled, config_json, created_at, updated_at) VALUES ('mercadopago_point', 0, '{}', datetime('now'), datetime('now'))");
+
+    let lanzo = null;
+    try {
+      await runSql(dbPath, "INSERT INTO integraciones_tenant (provider, enabled, config_json, created_at, updated_at) VALUES ('mercadopago_point', 0, '{}', datetime('now'), datetime('now'))");
+    } catch (error) {
+      lanzo = error;
+    }
+    assertSame(lanzo !== null, true, "segunda fila con el mismo provider debe fallar");
+    assertSame(String((lanzo && lanzo.code) || "").includes("SQLITE_CONSTRAINT"), true, "debe ser un error de constraint (UNIQUE)");
+
+    const filas = await allSql(dbPath, "SELECT * FROM integraciones_tenant WHERE provider = 'mercadopago_point'");
+    assertEqual(filas.length, 1, "debe seguir existiendo exactamente 1 fila para mercadopago_point (multiples cuentas_cobro son irrelevantes a esta constraint)");
+  } finally {
+    limpiarLegacyFixture(dbPath);
+    fs.rmSync(backupPath, { force: true });
+  }
+}
+
+async function testMT1F5C1CryptoRoundTrip() {
+  const anterior = process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+  process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = crypto.randomBytes(32).toString("base64");
+  try {
+    const plaintext = "MT1F5C1-FAKE-TEST-SECRET-nunca-real";
+    const { secret_encrypted, secret_meta_json } = mt1f5c1Encriptar(plaintext);
+    assertSame(secret_encrypted !== plaintext, true, "ciphertext debe diferir del plaintext");
+    assertSame(secret_meta_json.includes(plaintext), false, "meta no debe contener el plaintext");
+    const meta = JSON.parse(secret_meta_json);
+    assertEqual(meta.version, 1, "version exacta");
+    assertSame(meta.algorithm, "aes-256-gcm", "algorithm exacto");
+    assertEqual(meta.key_version, 1, "key_version exacta");
+    const recuperado = mt1f5c1Desencriptar(secret_encrypted, secret_meta_json);
+    assertSame(recuperado, plaintext, "decrypt debe devolver el original exacto");
+  } finally {
+    if (anterior === undefined) delete process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+    else process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = anterior;
+  }
+}
+
+async function testMT1F5C1CryptoSinMasterKeyFailsClosed() {
+  const anterior = process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+  try {
+    delete process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+    let lanzo = null;
+    try { mt1f5c1Encriptar("x"); } catch (e) { lanzo = e; }
+    assertSame(lanzo && lanzo.code, "MASTER_KEY_MISSING", "encrypt sin key debe fallar MASTER_KEY_MISSING");
+    lanzo = null;
+    try { mt1f5c1Desencriptar("x", "{}"); } catch (e) { lanzo = e; }
+    assertSame(lanzo && lanzo.code, "MASTER_KEY_MISSING", "decrypt sin key debe fallar MASTER_KEY_MISSING");
+
+    process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = "no-es-base64-valido!!";
+    lanzo = null;
+    try { mt1f5c1Encriptar("x"); } catch (e) { lanzo = e; }
+    assertSame(lanzo && lanzo.code, "MASTER_KEY_INVALID", "base64 invalido debe fallar MASTER_KEY_INVALID");
+
+    process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = Buffer.alloc(16).toString("base64");
+    lanzo = null;
+    try { mt1f5c1Encriptar("x"); } catch (e) { lanzo = e; }
+    assertSame(lanzo && lanzo.code, "MASTER_KEY_INVALID", "longitud decodificada != 32 debe fallar MASTER_KEY_INVALID");
+  } finally {
+    if (anterior === undefined) delete process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+    else process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = anterior;
+  }
+}
+
+async function testMT1F5C1CryptoTamperFailsClosed() {
+  const anterior = process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+  process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = crypto.randomBytes(32).toString("base64");
+  try {
+    const plaintext = "MT1F5C1-FAKE-TAMPER-TEST";
+    const { secret_encrypted, secret_meta_json } = mt1f5c1Encriptar(plaintext);
+
+    const cifradoRoto = Buffer.from(secret_encrypted, "base64");
+    cifradoRoto[0] ^= 0xff;
+    let lanzo = null;
+    try { mt1f5c1Desencriptar(cifradoRoto.toString("base64"), secret_meta_json); } catch (e) { lanzo = e; }
+    assertSame(lanzo && lanzo.code, "SECRET_DECRYPT_FAILED", "ciphertext alterado debe fallar SECRET_DECRYPT_FAILED");
+    assertSame(String((lanzo && lanzo.message) || "").includes(plaintext), false, "el error nunca debe filtrar el plaintext");
+
+    const metaObj = JSON.parse(secret_meta_json);
+    const tagRoto = Buffer.from(metaObj.auth_tag_b64, "base64");
+    tagRoto[0] ^= 0xff;
+    const metaConTagRoto = JSON.stringify({ ...metaObj, auth_tag_b64: tagRoto.toString("base64") });
+    lanzo = null;
+    try { mt1f5c1Desencriptar(secret_encrypted, metaConTagRoto); } catch (e) { lanzo = e; }
+    assertSame(lanzo && lanzo.code, "SECRET_DECRYPT_FAILED", "auth tag alterado debe fallar SECRET_DECRYPT_FAILED");
+
+    const ivRoto = Buffer.from(metaObj.iv_b64, "base64");
+    ivRoto[0] ^= 0xff;
+    const metaConIvRoto = JSON.stringify({ ...metaObj, iv_b64: ivRoto.toString("base64") });
+    lanzo = null;
+    try { mt1f5c1Desencriptar(secret_encrypted, metaConIvRoto); } catch (e) { lanzo = e; }
+    assertSame(lanzo && lanzo.code, "SECRET_DECRYPT_FAILED", "iv alterado debe fallar SECRET_DECRYPT_FAILED");
+
+    lanzo = null;
+    try { mt1f5c1Desencriptar(secret_encrypted, "esto no es json"); } catch (e) { lanzo = e; }
+    assertSame(lanzo && lanzo.code, "SECRET_DECRYPT_FAILED", "meta invalida (no JSON) debe fallar SECRET_DECRYPT_FAILED");
+  } finally {
+    if (anterior === undefined) delete process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+    else process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = anterior;
+  }
+}
+
+async function testMT1F5C1SingleAbsentUsaEnvLegacy() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    const envToken = "mt1f5c1-fake-env-token-absent-case";
+    const resultados = await ejecutarWorkerServicioSingle(
+      dbPath,
+      [{ metodo: "resolverCredencial", provider: "mercadopago_point" }],
+      { MERCADOPAGO_ACCESS_TOKEN: envToken }
+    );
+    assertSame(resultados[0].ok, true, "resolucion no debe lanzar");
+    assertSame(resultados[0].valor.state, "LEGACY_UNMANAGED", "state debe ser LEGACY_UNMANAGED");
+    assertSame(resultados[0].valor.credential, envToken, "credential debe ser el token de env");
+    assertSame(resultados[0].valor.source, "env", "source debe ser env");
+
+    const filas = await allSql(dbPath, "SELECT * FROM integraciones_tenant");
+    assertEqual(filas.length, 0, "no debe haberse escrito ninguna fila de metadata automaticamente");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1F5C1SingleDisabledNoUsaEnv() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    const envToken = "mt1f5c1-fake-env-token-disabled-case";
+    const resultados = await ejecutarWorkerServicioSingle(
+      dbPath,
+      [
+        { metodo: "establecerCredencial", provider: "mercadopago_point", secreto: "mt1f5c1-fake-db-secret-disabled" },
+        { metodo: "resolverCredencial", provider: "mercadopago_point" }
+      ],
+      mt1f5c1MasterKeyDisponible({ MERCADOPAGO_ACCESS_TOKEN: envToken })
+    );
+    assertSame(resultados[0].ok, true, "set inicial no debe fallar");
+    assertSame(resultados[1].ok, true, "resolucion no debe lanzar");
+    assertSame(resultados[1].valor.state, "DISABLED", "state debe ser DISABLED (enabled=0 por defecto tras el primer set)");
+    assertSame(resultados[1].valor.credential, null, "credential debe ser null");
+    assertSame(resultados[1].valor.source, null, "source debe ser null");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1F5C1SingleSinSecretoNoUsaEnv() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    const envToken = "mt1f5c1-fake-env-token-sinsecreto-case";
+    const resultados = await ejecutarWorkerServicioSingle(
+      dbPath,
+      [
+        { metodo: "establecerCredencial", provider: "mercadopago_point", secreto: "mt1f5c1-temp" },
+        { metodo: "establecerHabilitado", provider: "mercadopago_point", enabled: true },
+        { metodo: "quitarCredencial", provider: "mercadopago_point" },
+        { metodo: "resolverCredencial", provider: "mercadopago_point" }
+      ],
+      mt1f5c1MasterKeyDisponible({ MERCADOPAGO_ACCESS_TOKEN: envToken })
+    );
+    assertSame(resultados[3].ok, true, "resolucion no debe lanzar");
+    assertSame(resultados[3].valor.state, "NOT_CONFIGURED", "state debe ser NOT_CONFIGURED");
+    assertSame(resultados[3].valor.credential, null, "credential debe ser null");
+    assertSame(resultados[3].valor.source, null, "source debe ser null");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1F5C1SingleSecretoCorruptoNoUsaEnv() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    const envToken = "mt1f5c1-fake-env-token-corrupto-case";
+    const envConKey = mt1f5c1MasterKeyDisponible({ MERCADOPAGO_ACCESS_TOKEN: envToken });
+
+    let resultados = await ejecutarWorkerServicioSingle(
+      dbPath,
+      [
+        { metodo: "establecerCredencial", provider: "mercadopago_point", secreto: "mt1f5c1-fake-db-secret-corrupto" },
+        { metodo: "establecerHabilitado", provider: "mercadopago_point", enabled: true }
+      ],
+      envConKey
+    );
+    assertSame(resultados[1].ok, true, "enable no debe fallar");
+
+    await runSql(
+      dbPath,
+      "UPDATE integraciones_tenant_secretos SET secret_encrypted = 'ZGVsaWJlcmF0ZWx5LWNvcnJ1cHRlZA==' WHERE integracion_id = (SELECT id FROM integraciones_tenant WHERE provider = 'mercadopago_point')"
+    );
+
+    resultados = await ejecutarWorkerServicioSingle(
+      dbPath,
+      [{ metodo: "resolverCredencial", provider: "mercadopago_point" }],
+      envConKey
+    );
+    assertSame(resultados[0].ok, true, "resolucion no debe lanzar (debe devolver un estado, no una excepcion no controlada)");
+    assertSame(resultados[0].valor.state, "OPERATIONAL_SECRET_FAILURE", "state debe ser OPERATIONAL_SECRET_FAILURE");
+    assertSame(resultados[0].valor.credential, null, "credential debe ser null, nunca el de env");
+    assertSame(resultados[0].valor.source, null, "source debe ser null");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1F5C1SingleSecretoValidoUsaDb() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    const envToken = "mt1f5c1-fake-env-token-DIFERENTE-del-db";
+    const dbSecret = "mt1f5c1-fake-db-secret-VALIDO";
+    const resultados = await ejecutarWorkerServicioSingle(
+      dbPath,
+      [
+        { metodo: "establecerCredencial", provider: "mercadopago_point", secreto: dbSecret },
+        { metodo: "establecerHabilitado", provider: "mercadopago_point", enabled: true },
+        { metodo: "resolverCredencial", provider: "mercadopago_point" }
+      ],
+      mt1f5c1MasterKeyDisponible({ MERCADOPAGO_ACCESS_TOKEN: envToken })
+    );
+    assertSame(resultados[2].ok, true, "resolucion no debe lanzar");
+    assertSame(resultados[2].valor.state, "OK", "state debe ser OK");
+    assertSame(resultados[2].valor.credential, dbSecret, "credential debe ser el de DB");
+    assertSame(resultados[2].valor.credential !== envToken, true, "NUNCA debe ser el token de env, aunque este presente y sea distinto");
+    assertSame(resultados[2].valor.source, "db", "source debe ser db");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testMT1F5C1MultiNuncaUsaEnv() {
+  const escenario = await mt1f1CrearEscenario(["multinoenv"]);
+  const envAnterior = process.env.MERCADOPAGO_ACCESS_TOKEN;
+  const masterKeyAnterior = process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+  try {
+    process.env.MERCADOPAGO_ACCESS_TOKEN = "mt1f5c1-fake-env-multi-nunca";
+    process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = crypto.randomBytes(32).toString("base64");
+    const servicio = crearIntegracionTenantService({ tenancyMode: "multi", getTenantContext });
+
+    // 1) sin contexto de tenant activo -- debe fallar cerrado ANTES de tocar la DB (nunca cae al
+    // singleton legacy, nunca consulta env).
+    let lanzo = null;
+    try { await servicio.resolverCredencial("mercadopago_point"); } catch (error) { lanzo = error; }
+    assertSame(lanzo && lanzo.code, "TENANT_CONTEXT_REQUIRED", "sin contexto debe fallar cerrado con TENANT_CONTEXT_REQUIRED");
+
+    // 2) contexto valido, fila ausente.
+    const [tenant] = escenario.tenants;
+    const resultadoHandle = await mt1f1Resolver(tenant, escenario.controlDbPath);
+    assertSame(resultadoHandle.ok, true, "handle debe resolver");
+    const handle = resultadoHandle.handle;
+
+    const resuelto1 = await runWithTenantHandle(handle, () => servicio.resolverCredencial("mercadopago_point"));
+    assertSame(resuelto1.state, "NOT_CONFIGURED", "fila ausente en multi debe ser NOT_CONFIGURED, nunca env");
+    assertSame(resuelto1.credential, null, "credential debe ser null");
+
+    // 3) contexto valido, fila enabled pero sin secreto (creada y luego removida explicitamente).
+    await runWithTenantHandle(handle, () => servicio.establecerCredencial("mercadopago_point", "mt1f5c1-temp-multi"));
+    await runWithTenantHandle(handle, () => servicio.establecerHabilitado("mercadopago_point", true));
+    await runWithTenantHandle(handle, () => servicio.quitarCredencial("mercadopago_point"));
+    const resuelto2 = await runWithTenantHandle(handle, () => servicio.resolverCredencial("mercadopago_point"));
+    assertSame(resuelto2.state, "NOT_CONFIGURED", "enabled sin secreto en multi debe ser NOT_CONFIGURED, nunca env");
+    assertSame(resuelto2.credential, null, "credential debe ser null");
+  } finally {
+    if (envAnterior === undefined) delete process.env.MERCADOPAGO_ACCESS_TOKEN;
+    else process.env.MERCADOPAGO_ACCESS_TOKEN = envAnterior;
+    if (masterKeyAnterior === undefined) delete process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+    else process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = masterKeyAnterior;
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F5C1TenantAisladoCredenciales() {
+  const escenario = await mt1f1CrearEscenario(["aisladoa", "aisladob"]);
+  const masterKeyAnterior = process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+  try {
+    process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = crypto.randomBytes(32).toString("base64");
+    const servicio = crearIntegracionTenantService({ tenancyMode: "multi", getTenantContext });
+
+    const [a, b] = escenario.tenants;
+    const handleA = (await mt1f1Resolver(a, escenario.controlDbPath)).handle;
+    const handleB = (await mt1f1Resolver(b, escenario.controlDbPath)).handle;
+
+    const secretoA = "mt1f5c1-fake-secret-tenant-A";
+    const secretoB = "mt1f5c1-fake-secret-tenant-B";
+    await runWithTenantHandle(handleA, () => servicio.establecerCredencial("mercadopago_point", secretoA));
+    await runWithTenantHandle(handleA, () => servicio.establecerHabilitado("mercadopago_point", true));
+    await runWithTenantHandle(handleB, () => servicio.establecerCredencial("mercadopago_point", secretoB));
+    await runWithTenantHandle(handleB, () => servicio.establecerHabilitado("mercadopago_point", true));
+
+    const resueltoA = await runWithTenantHandle(handleA, () => servicio.resolverCredencial("mercadopago_point"));
+    const resueltoB = await runWithTenantHandle(handleB, () => servicio.resolverCredencial("mercadopago_point"));
+
+    assertSame(resueltoA.state, "OK", "A debe resolver OK");
+    assertSame(resueltoA.credential, secretoA, "A debe recibir su propio secreto");
+    assertSame(resueltoB.state, "OK", "B debe resolver OK");
+    assertSame(resueltoB.credential, secretoB, "B debe recibir su propio secreto");
+    assertSame(resueltoA.credential !== resueltoB.credential, true, "A y B tienen credenciales distintas, sin cruce");
+
+    const filasA = await allSql(a.dbPath, "SELECT * FROM integraciones_tenant_secretos");
+    const filasB = await allSql(b.dbPath, "SELECT * FROM integraciones_tenant_secretos");
+    assertEqual(filasA.length, 1, "solo debe existir 1 fila de secreto en la DB fisica de A");
+    assertEqual(filasB.length, 1, "solo debe existir 1 fila de secreto en la DB fisica de B");
+    assertSame(filasA[0].secret_encrypted !== filasB[0].secret_encrypted, true, "el ciphertext fisico de A y B debe ser distinto (IV aleatorio)");
+  } finally {
+    if (masterKeyAnterior === undefined) delete process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+    else process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = masterKeyAnterior;
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F5C1RemoveNoRestauraEnv() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    const envToken = "mt1f5c1-fake-env-token-remove-case";
+    const resultados = await ejecutarWorkerServicioSingle(
+      dbPath,
+      [
+        { metodo: "establecerCredencial", provider: "mercadopago_point", secreto: "mt1f5c1-fake-db-secret-remove" },
+        { metodo: "establecerHabilitado", provider: "mercadopago_point", enabled: true },
+        { metodo: "resolverCredencial", provider: "mercadopago_point" },
+        { metodo: "quitarCredencial", provider: "mercadopago_point" },
+        { metodo: "leerEstadoSeguro", provider: "mercadopago_point" },
+        { metodo: "resolverCredencial", provider: "mercadopago_point" }
+      ],
+      mt1f5c1MasterKeyDisponible({ MERCADOPAGO_ACCESS_TOKEN: envToken })
+    );
+
+    assertSame(resultados[2].valor.state, "OK", "antes de remove debe resolver OK con credencial de DB");
+
+    assertSame(resultados[4].ok, true, "leerEstadoSeguro no debe lanzar");
+    assertSame(resultados[4].valor.managed, true, "la fila de metadata debe seguir existiendo");
+    assertSame(resultados[4].valor.enabled, true, "enabled debe seguir en true");
+    assertSame(resultados[4].valor.credential_configured, false, "credential_configured debe ser false tras remove");
+    assertSame(resultados[4].valor.legacy_env_fallback_active, false, "jamas debe reactivarse el fallback de env solo por remove");
+
+    assertSame(resultados[5].ok, true, "resolucion final no debe lanzar");
+    assertSame(resultados[5].valor.state, "NOT_CONFIGURED", "state final debe ser NOT_CONFIGURED");
+    assertSame(resultados[5].valor.credential, null, "credential debe ser null");
+    assertSame(resultados[5].valor.source, null, "jamas debe volver a usar env tras haber sido DB_MANAGED");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
   }
 }
 

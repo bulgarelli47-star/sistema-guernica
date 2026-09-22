@@ -116,22 +116,40 @@ function mapearEmpresaControlRow(row) {
   return { id: row.id, slug: row.slug, nombre: row.nombre, dbPath: row.db_path, activa: Number(row.activa) === 1 };
 }
 
-// Catalogo productivo: este provisioner solo sabe construir baseline 001 + history [001]. Si el
-// catalogo alguna vez crece a 002+, este modulo debe rechazar explicitamente en vez de provisionar
-// con logica incompleta (nunca aplica 002+ aqui).
+// MT-1F5C1: valida la FORMA completa del catalogo (baseline 001 + cero o mas migraciones reales en
+// orden) en vez de exigir length===1 -- el provisioner ahora aplica TODA migracion posterior al
+// baseline dentro de la MISMA transaccion de creacion (ver construirBusinessFrescaComoOwner). Fail
+// closed ante cualquier forma inesperada: nunca provisiona con logica incompleta.
 function asegurarCatalogoSoportado() {
-  const soportado = BUSINESS_MIGRATIONS.length === 1
-    && BUSINESS_MIGRATIONS[0].sequence === 1
-    && BUSINESS_MIGRATIONS[0].kind === "BASELINE"
-    && typeof BUSINESS_MIGRATIONS[0].migrationId === "string"
-    && BUSINESS_MIGRATIONS[0].migrationId.length > 0;
-  if (!soportado) {
+  const primero = BUSINESS_MIGRATIONS[0];
+  const primeraValida = BUSINESS_MIGRATIONS.length >= 1
+    && primero
+    && primero.sequence === 1
+    && primero.kind === "BASELINE"
+    && typeof primero.migrationId === "string"
+    && primero.migrationId.length > 0;
+  if (!primeraValida) {
     throw crearError(
       "MIGRATION_CATALOG_UNSUPPORTED",
-      "provisionarTenantDb: el catalogo productivo de business-migrations.js ya no es exactamente [001] -- este provisioner no soporta 002+ todavia"
+      "provisionarTenantDb: la primera entrada del catalogo debe ser sequence=1, kind=BASELINE, migrationId valido"
     );
   }
-  return BUSINESS_MIGRATIONS[0].migrationId;
+  for (let i = 1; i < BUSINESS_MIGRATIONS.length; i += 1) {
+    const entrada = BUSINESS_MIGRATIONS[i];
+    const entradaValida = entrada
+      && entrada.sequence === i + 1
+      && entrada.kind === "MIGRATION"
+      && typeof entrada.migrationId === "string"
+      && entrada.migrationId.length > 0
+      && typeof entrada.up === "function";
+    if (!entradaValida) {
+      throw crearError(
+        "MIGRATION_CATALOG_UNSUPPORTED",
+        `provisionarTenantDb: entrada de catalogo invalida en posicion ${i} -- se esperaba sequence=${i + 1}, kind=MIGRATION, up(db) callable`
+      );
+    }
+  }
+  return primero.migrationId;
 }
 
 // Verifica que una business DB YA EXISTENTE (retry inactivo, o colision activa) sea EXACTAMENTE la
@@ -263,6 +281,20 @@ async function construirBusinessFrescaComoOwner({ controlDb, empresa, businessPa
       "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (1, ?, datetime('now'))",
       [migrationId]
     );
+
+    // MT-1F5C1: toda migration real posterior al baseline se aplica AQUI, dentro de la MISMA
+    // transaccion de creacion -- una tenant DB nueva nace directamente CURRENT contra el catalogo
+    // completo, nunca BEHIND. Nunca invoca database/migrate-tenant-db.js (herramienta separada,
+    // pensada para DBs YA EXISTENTES).
+    for (let i = 1; i < BUSINESS_MIGRATIONS.length; i += 1) {
+      const migracion = BUSINESS_MIGRATIONS[i];
+      await migracion.up(businessDb);
+      await runQuery(
+        businessDb,
+        "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (?, ?, datetime('now'))",
+        [migracion.sequence, migracion.migrationId]
+      );
+    }
 
     const identidad = await verificarTenantDbIdentityEnConexion(businessDb, { empresaId: empresa.id, empresaSlug });
     if (!identidad.ok) {
