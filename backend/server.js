@@ -225,6 +225,7 @@ const {
   obtenerProduccion,
   registrarProduccion
 } = require("./services/produccionService");
+const { crearIntegracionTenantService, PROVIDER_MERCADOPAGO_POINT } = require("./services/integracionTenantService");
 
 // Cargar variables de .env local si existe (sin dependencia dotenv)
 {
@@ -316,6 +317,13 @@ if (ATLAS_TENANCY_MODE === TENANCY_MODES.MULTI && ATLAS_EMPRESA_SLUG) {
   console.error("[FATAL] ATLAS_TENANCY_MODE=multi no admite ATLAS_EMPRESA_SLUG: el proceso no esta atado a una empresa.");
   process.exit(1);
 }
+
+// MT-1F5C2: instancia unica del servicio de credenciales tenant-owned (F5C1), compuesta con el
+// tenancy mode y getTenantContext ya resueltos arriba -- nunca duplica SQL/crypto/state machine.
+const integracionTenantServiceF5C2 = crearIntegracionTenantService({
+  tenancyMode: ATLAS_TENANCY_MODE,
+  getTenantContext
+});
 
 // MT-1E7B: Runtime Verify-Only Boot Gate. Corre en AMBOS modos, SIEMPRE antes de que el primer
 // runQuery/getQuery/allQuery dispare la apertura lazy de backend/db.js -- nunca crea, repara ni
@@ -6836,6 +6844,84 @@ app.post("/integraciones/mercadopago-point/debug/test-orden", async (req, res) =
   } catch (error) {
     logError("Error diagnóstico orden MP Point:", error);
     return res.json({ ok: false, origen: "server", message: error.message || "Error al crear orden de diagnóstico" });
+  }
+});
+
+// MT-1F5C2: administracion segura de la credencial tenant-local de mercadopago_point. Provider
+// SIEMPRE fijo (PROVIDER_MERCADOPAGO_POINT) -- jamas recibido del cliente. Nunca desvia hacia los
+// consumers debug de arriba (F5C3 los reemplaza mas adelante, sin tocar nada aca).
+app.get("/integraciones/mercadopago-point/credencial/estado", async (req, res) => {
+  try {
+    const seguro = await integracionTenantServiceF5C2.leerEstadoSeguro(PROVIDER_MERCADOPAGO_POINT);
+    const resolucion = await integracionTenantServiceF5C2.resolverCredencial(PROVIDER_MERCADOPAGO_POINT);
+    // CRITICO: resolucion.credential puede ser el secreto en texto plano -- se descarta de inmediato,
+    // solo se reenvia resolucion.state. Nunca loguear ni serializar `resolucion` completo.
+    return res.json({
+      provider: PROVIDER_MERCADOPAGO_POINT,
+      managed: seguro.managed,
+      enabled: seguro.enabled,
+      credential_configured: seguro.credential_configured,
+      legacy_env_fallback_active: seguro.legacy_env_fallback_active,
+      operational_state: resolucion.state
+    });
+  } catch (error) {
+    console.error(`[ERROR] GET /integraciones/mercadopago-point/credencial/estado: ${error.code || "UNKNOWN"}`);
+    return res.status(500).json({ message: "Error al obtener estado de la credencial", code: error.code || "OPERATIONAL_ERROR" });
+  }
+});
+
+app.put("/integraciones/mercadopago-point/credencial", async (req, res) => {
+  if (!puedeRol(req, ROLES.ADMIN)) {
+    return res.status(403).json({ message: "No tenes permisos para configurar esta credencial" });
+  }
+  const secret = req.body?.secret;
+  if (typeof secret !== "string" || secret.trim().length === 0) {
+    return res.status(400).json({ message: "El secreto es obligatorio", code: "SECRET_REQUIRED" });
+  }
+  try {
+    // Se guarda `secret` tal cual (nunca el resultado de .trim()): el trim es solo para validar
+    // blank/whitespace-only, jamas para alterar silenciosamente el valor persistido.
+    await integracionTenantServiceF5C2.establecerCredencial(PROVIDER_MERCADOPAGO_POINT, secret);
+    return res.json({ message: "Credencial guardada", managed: true });
+  } catch (error) {
+    if (error.code === "SECRET_REQUIRED") {
+      return res.status(400).json({ message: "El secreto es obligatorio", code: "SECRET_REQUIRED" });
+    }
+    console.error(`[ERROR] PUT /integraciones/mercadopago-point/credencial: ${error.code || "UNKNOWN"}`);
+    return res.status(500).json({ message: "Error al guardar la credencial", code: error.code || "OPERATIONAL_ERROR" });
+  }
+});
+
+app.delete("/integraciones/mercadopago-point/credencial", async (req, res) => {
+  if (!puedeRol(req, ROLES.ADMIN)) {
+    return res.status(403).json({ message: "No tenes permisos para eliminar esta credencial" });
+  }
+  try {
+    const resultado = await integracionTenantServiceF5C2.quitarCredencial(PROVIDER_MERCADOPAGO_POINT);
+    return res.json({ message: "Credencial eliminada", removed: resultado.removed });
+  } catch (error) {
+    console.error(`[ERROR] DELETE /integraciones/mercadopago-point/credencial: ${error.code || "UNKNOWN"}`);
+    return res.status(500).json({ message: "Error al eliminar la credencial", code: error.code || "OPERATIONAL_ERROR" });
+  }
+});
+
+app.patch("/integraciones/mercadopago-point/credencial/habilitado", async (req, res) => {
+  if (!puedeRol(req, ROLES.ADMIN_ENCARGADO)) {
+    return res.status(403).json({ message: "No tenes permisos para esta accion" });
+  }
+  const enabled = req.body?.enabled;
+  if (typeof enabled !== "boolean") {
+    return res.status(400).json({ message: "enabled debe ser boolean", code: "INVALID_BODY" });
+  }
+  try {
+    const resultado = await integracionTenantServiceF5C2.establecerHabilitado(PROVIDER_MERCADOPAGO_POINT, enabled);
+    return res.json({ message: enabled ? "Credencial habilitada" : "Credencial deshabilitada", managed: resultado.managed, enabled: resultado.enabled });
+  } catch (error) {
+    if (error.code === "INTEGRATION_NOT_MANAGED") {
+      return res.status(409).json({ message: "No hay una credencial configurada para habilitar/deshabilitar", code: "INTEGRATION_NOT_MANAGED" });
+    }
+    console.error(`[ERROR] PATCH /integraciones/mercadopago-point/credencial/habilitado: ${error.code || "UNKNOWN"}`);
+    return res.status(500).json({ message: "Error al cambiar el estado de la credencial", code: error.code || "OPERATIONAL_ERROR" });
   }
 });
 

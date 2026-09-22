@@ -287,6 +287,19 @@
               <div class="category-segment" id="cuentasCobroSegmento" style="margin-top:14px"><div class="section-head" style="margin-bottom:0"><div><h3>Canales / terminales de cobro</h3><p class="muted">Define por dónde se cobra y a qué cuenta operativa se asocia actualmente.</p></div><button class="button" id="abrirNuevaCuentaCobro" type="button">Nuevo canal</button></div><div style="overflow:auto;border:1px solid var(--border);border-radius:12px;margin-top:10px"><table class="compact-table" id="tablaCuentasCobro"><thead><tr><th>Nombre</th><th>Método</th><th>Cuenta / canal</th><th>Cuenta destino</th><th>Alias / Terminal</th><th>Orden</th><th>Estado</th><th></th></tr></thead><tbody><tr><td colspan="8" style="color:var(--muted)">Cargando...</td></tr></tbody></table></div></div>
               <div class="notice" style="margin-top:10px">Caja, arqueos y reportes usan cuentas destino reales cuando los canales están vinculados. Los canales sin cuenta destino se conservan como historial operativo.</div>
             </details>
+            <div class="category-segment" id="mpPointSegmento" style="margin-top:14px">
+              <div class="section-head" style="margin-bottom:0">
+                <div><h3>Mercado Pago Point</h3><p class="muted">Credencial propia de este comercio para cobrar con terminal Mercado Pago Point.</p></div>
+              </div>
+              <div class="summary" style="margin-top:8px">
+                <div class="summary-box"><span>Estado</span><strong id="mpPointEstadoTexto">Cargando…</strong></div>
+                <div class="summary-box"><span>Credencial</span><strong id="mpPointCredencialTexto">—</strong></div>
+                <div class="summary-box"><span>Habilitado</span><strong id="mpPointHabilitadoTexto">—</strong></div>
+              </div>
+              <div class="notice hidden" id="mpPointFallbackAviso">Fallback legado: Activo</div>
+              <p id="mpPointMensaje" class="modal-msg"></p>
+              <div class="inline-actions" id="mpPointAcciones" style="margin-top:8px"></div>
+            </div>
           </section>
           <section class="config-section" data-section="stock"><h2>Stock</h2><div class="toggle-list stock-toggle-group" id="stockToggles"></div><input type="hidden" data-key="stock_unidad_default"><input type="hidden" data-key="stock_valor_alerta"><div class="category-segment"><div class="section-head"><div><h3>Segmento Categorías</h3><p class="muted">Las categorías definen nombre y margen de ganancia para los productos.</p></div><div class="toolbar"><button class="button" id="abrirNuevaCategoria" type="button">Nueva categoría</button><button class="button secondary" id="abrirMostrarCategorias" type="button">Mostrar categorías</button></div></div><div id="categoriasStockResumen" class="summary"></div></div><h3>Redondeo</h3><div class="grid"><label>Redondeo por defecto<select data-key="redondeo_tipo"><option value="0">Sin redondeo</option><option value="5">$5</option><option value="10">$10</option><option value="50">$50</option><option value="100">$100</option><option value="500">$500</option><option value="1000">$1000</option></select></label></div><div class="notice">Unidad, alertas y costos compuestos quedan como variables de cada producto.</div></section>
           <section class="config-section" data-section="cuentas_corrientes"><h2>Cuentas corrientes</h2><p class="muted" style="margin:4px 0 10px">Reglas generales para ventas a cuenta. Cada cliente podrá tener reglas propias.</p><div class="toggle-list" id="ccToggles"></div><input type="hidden" data-key="cuentas_dias_a_costo"><input type="hidden" data-key="cuentas_permitir_exceder"><div class="rule-block"><div class="toggle" title="Activa el interés por mora usando el porcentaje definido."><div><strong>Interés por mora</strong><small>Aplica interés sobre cuentas vencidas.</small></div><label class="switch"><input data-key="cuentas_interes_mora_activo" type="checkbox"><span class="slider"></span></label></div><label class="rule-param">Interés por mora por defecto %<input data-key="cuentas_interes_mora" type="number" step="0.01"></label></div><div class="rule-block"><div class="toggle" title="Aplica el límite por defecto a nuevas cuentas, salvo reglas propias del cliente."><div><strong>Aplicar límite por defecto</strong><small>Usa el límite definido como regla general.</small></div><label class="switch"><input data-key="cuentas_limite_global_activo" type="checkbox"><span class="slider"></span></label></div><label class="rule-param">Límite por defecto<input data-key="cuentas_limite_global_monto" type="number" step="0.01"></label></div><div class="rule-block"><div class="toggle" title="Suspende cuentas sin pagos durante el período definido. La deuda no desaparece."><div><strong>Suspender cuenta sin pagos</strong><small>Suspende la cuenta si no registra pagos.</small></div><label class="switch"><input data-key="cuentas_desactivar_por_vencimiento" type="checkbox"><span class="slider"></span></label></div><label class="rule-param">Días sin registrar pago<input data-key="cuentas_dias_vencimiento" type="number" step="1" min="1"></label></div></section>
@@ -469,6 +482,22 @@
       </div>
     </article>
   </div>
+  <div class="modal" id="modalMpPointSecret" aria-hidden="true">
+    <article class="dialog cobro-modal-sm" role="dialog" aria-modal="true" aria-labelledby="mpPointSecretModalTitulo">
+      <div class="dialog-head">
+        <div><h2 id="mpPointSecretModalTitulo">Credencial de Mercado Pago Point</h2><p class="muted">El token no se muestra después de guardado. Ingresá uno nuevo solo si querés configurarlo o reemplazarlo.</p></div>
+        <button class="mib ghost icon-only atlas-close-button" id="cerrarModalMpPointSecret" type="button" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button>
+      </div>
+      <div class="channel-form">
+        <label>Access Token de Mercado Pago<input id="mpPointSecretInput" type="password" autocomplete="new-password" placeholder="Pegá el access token"></label>
+      </div>
+      <p id="mpPointSecretModalMensaje" class="modal-msg"></p>
+      <div class="dialog-actions">
+        <button class="button ghost" id="cancelarMpPointSecret" type="button">Cancelar</button>
+        <button class="button" id="guardarMpPointSecretBtn" type="button">Guardar</button>
+      </div>
+    </article>
+  </div>
   <script>
     const $=(id)=>document.getElementById(id);
     const sections=[["negocio","Datos del comercio"],["metodos_pago","Cobros"],["stock","Stock"],["cuentas_corrientes","Cuentas corrientes"],["usuarios_permisos","Usuarios / permisos"],["proveedores","Finanzas"],["alertas","Alertas"],["tickets","Tickets"],["reportes","Reportes y Seguridad"]];
@@ -547,6 +576,199 @@
     simularBackup.onclick=()=>{field("seguridad_ultimo_backup").value=new Date().toLocaleString("es-AR");renderResumen();msg("Backup marcado como realizado. Guardar cambios para persistirlo.")};
     cerrarSesiones.onclick=()=>msg("Solicitud preparada: cierre global de sesiones pendiente de backend de usuarios.");
     renderMenu();renderToggles();renderPermisosModulos();ordenarUsuariosPermisosUI();cargar();
+
+    // MT-1F5C2-B2: administracion segura de la credencial mercadopago_point. Consume EXCLUSIVAMENTE
+    // los 4 endpoints ya certificados en F5C2-B1. Nunca persiste el secreto fuera de mpPointSecretInput.value
+    // y la variable local del request; nunca lo loguea; nunca lo prellena. El backend sigue siendo la
+    // unica autoridad de permisos -- rolActual() aqui es solo UX.
+    const MP_POINT_ESTADO_RUTA = "/integraciones/mercadopago-point/credencial/estado";
+    const MP_POINT_CREDENCIAL_RUTA = "/integraciones/mercadopago-point/credencial";
+    const MP_POINT_HABILITADO_RUTA = "/integraciones/mercadopago-point/credencial/habilitado";
+    const MP_POINT_ESTADO_LABELS = {
+      NOT_CONFIGURED: "No configurado",
+      DISABLED: "Deshabilitado",
+      OK: "Configurado",
+      OPERATIONAL_SECRET_FAILURE: "Error de credencial"
+    };
+    let mpPointEstado = null;
+
+    function mpPointMsg(text, type) {
+      const el = $("mpPointMensaje");
+      if (!el) return;
+      el.className = `modal-msg${type ? " " + type : ""}`;
+      el.textContent = text || "";
+    }
+
+    function mpPointSecretModalMsg(text, type) {
+      const el = $("mpPointSecretModalMensaje");
+      if (!el) return;
+      el.className = `modal-msg${type ? " " + type : ""}`;
+      el.textContent = text || "";
+    }
+
+    function mpPointEtiquetaEstado(estado) {
+      if (!estado) return "Estado no disponible";
+      if (estado.managed === false && estado.legacy_env_fallback_active === true) return "No administrado / legado";
+      const label = MP_POINT_ESTADO_LABELS[estado.operational_state];
+      return label || "Estado no disponible";
+    }
+
+    function mpPointLimpiarInputSecret() {
+      const input = $("mpPointSecretInput");
+      if (input) input.value = "";
+    }
+
+    function mpPointRenderAcciones(estado) {
+      const cont = $("mpPointAcciones");
+      if (!cont) return;
+      cont.innerHTML = "";
+      const rol = rolActual();
+      const esAdmin = rol === "admin";
+      const esAdminOEncargado = rol === "admin" || rol === "encargado";
+
+      if (esAdmin) {
+        const btnCredencial = document.createElement("button");
+        btnCredencial.type = "button";
+        btnCredencial.className = "button";
+        btnCredencial.textContent = estado.credential_configured ? "Reemplazar credencial" : "Guardar credencial";
+        btnCredencial.onclick = mpPointAbrirModalSecret;
+        cont.appendChild(btnCredencial);
+
+        if (estado.credential_configured) {
+          const btnEliminar = document.createElement("button");
+          btnEliminar.type = "button";
+          btnEliminar.className = "button danger";
+          btnEliminar.textContent = "Eliminar credencial";
+          btnEliminar.onclick = mpPointEliminarCredencial;
+          cont.appendChild(btnEliminar);
+        }
+      }
+
+      if (esAdminOEncargado && estado.managed) {
+        const btnToggle = document.createElement("button");
+        btnToggle.type = "button";
+        btnToggle.className = "button secondary";
+        btnToggle.textContent = estado.enabled ? "Deshabilitar" : "Habilitar";
+        btnToggle.onclick = () => mpPointToggleHabilitado(!estado.enabled, btnToggle);
+        cont.appendChild(btnToggle);
+      }
+    }
+
+    function mpPointRender() {
+      const estado = mpPointEstado;
+      if (!estado) {
+        $("mpPointEstadoTexto").textContent = "Cargando…";
+        $("mpPointCredencialTexto").textContent = "—";
+        $("mpPointHabilitadoTexto").textContent = "—";
+        $("mpPointFallbackAviso").classList.add("hidden");
+        $("mpPointAcciones").innerHTML = "";
+        return;
+      }
+      $("mpPointEstadoTexto").textContent = mpPointEtiquetaEstado(estado);
+      $("mpPointCredencialTexto").textContent = estado.credential_configured ? "Configurada" : "No configurada";
+      $("mpPointHabilitadoTexto").textContent = estado.enabled ? "Sí" : "No";
+      $("mpPointFallbackAviso").classList.toggle("hidden", estado.legacy_env_fallback_active !== true);
+      mpPointRenderAcciones(estado);
+    }
+
+    async function mpPointCargarEstado() {
+      $("mpPointEstadoTexto").textContent = "Cargando…";
+      try {
+        const res = await fetch(MP_POINT_ESTADO_RUTA);
+        if (!res.ok) throw new Error("status_no_ok");
+        mpPointEstado = await res.json();
+        mpPointRender();
+      } catch {
+        mpPointEstado = null;
+        $("mpPointEstadoTexto").textContent = "No se pudo consultar el estado.";
+        $("mpPointCredencialTexto").textContent = "—";
+        $("mpPointHabilitadoTexto").textContent = "—";
+        $("mpPointFallbackAviso").classList.add("hidden");
+        $("mpPointAcciones").innerHTML = "";
+      }
+    }
+
+    function mpPointAbrirModalSecret() {
+      mpPointLimpiarInputSecret();
+      mpPointSecretModalMsg("");
+      const btn = $("guardarMpPointSecretBtn");
+      if (btn) { btn.disabled = false; btn.textContent = "Guardar"; }
+      abrirModal($("modalMpPointSecret"));
+    }
+
+    function mpPointCerrarModalSecret() {
+      mpPointLimpiarInputSecret();
+      mpPointSecretModalMsg("");
+      cerrarModal($("modalMpPointSecret"));
+    }
+
+    async function mpPointGuardarSecret() {
+      const input = $("mpPointSecretInput");
+      const valorOriginal = input ? input.value : "";
+      // El trim() es SOLO para validar blank/whitespace-only. El valor enviado al backend es
+      // siempre valorOriginal, nunca el resultado de trim().
+      if (typeof valorOriginal !== "string" || valorOriginal.trim().length === 0) {
+        mpPointSecretModalMsg("Ingresá un access token válido.", "error");
+        return;
+      }
+      const btn = $("guardarMpPointSecretBtn");
+      if (btn) { btn.disabled = true; btn.textContent = "Guardando..."; }
+      try {
+        const res = await fetch(MP_POINT_CREDENCIAL_RUTA, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ secret: valorOriginal })
+        });
+        if (res.status === 403) throw new Error("forbidden");
+        if (!res.ok) throw new Error("save_failed");
+        mpPointLimpiarInputSecret();
+        mpPointCerrarModalSecret();
+        await mpPointCargarEstado();
+        mpPointMsg("Credencial guardada.", "ok");
+      } catch (e) {
+        mpPointSecretModalMsg(e && e.message === "forbidden" ? "No tenés permisos para realizar esta acción." : "No se pudo guardar la credencial.", "error");
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "Guardar"; }
+      }
+    }
+
+    async function mpPointEliminarCredencial() {
+      if (!confirm("¿Eliminar la credencial de Mercado Pago Point?\n\nLa integración seguirá administrada, pero quedará sin credencial.")) return;
+      try {
+        const res = await fetch(MP_POINT_CREDENCIAL_RUTA, { method: "DELETE" });
+        if (res.status === 403) throw new Error("forbidden");
+        if (!res.ok) throw new Error("delete_failed");
+        await mpPointCargarEstado();
+        mpPointMsg("Credencial eliminada.", "ok");
+      } catch (e) {
+        mpPointMsg(e && e.message === "forbidden" ? "No tenés permisos para realizar esta acción." : "No se pudo eliminar la credencial.", "error");
+      }
+    }
+
+    async function mpPointToggleHabilitado(enabled, boton) {
+      if (boton) boton.disabled = true;
+      try {
+        const res = await fetch(MP_POINT_HABILITADO_RUTA, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: Boolean(enabled) })
+        });
+        if (res.status === 403) throw new Error("forbidden");
+        if (!res.ok) throw new Error("toggle_failed");
+        await mpPointCargarEstado();
+        mpPointMsg(enabled ? "Credencial habilitada." : "Credencial deshabilitada.", "ok");
+      } catch (e) {
+        mpPointMsg(e && e.message === "forbidden" ? "No tenés permisos para realizar esta acción." : "No se pudo actualizar el estado.", "error");
+      } finally {
+        if (boton) boton.disabled = false;
+      }
+    }
+
+    $("cerrarModalMpPointSecret").onclick = mpPointCerrarModalSecret;
+    $("cancelarMpPointSecret").onclick = mpPointCerrarModalSecret;
+    $("guardarMpPointSecretBtn").onclick = mpPointGuardarSecret;
+    $("modalMpPointSecret").addEventListener("click", (e) => { if (e.target === $("modalMpPointSecret")) mpPointCerrarModalSecret(); });
+    mpPointCargarEstado();
   </script>
   <script>
     // ── Administración de tipos de pago ──────────────────────────

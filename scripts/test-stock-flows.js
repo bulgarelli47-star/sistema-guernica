@@ -20918,6 +20918,31 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1F5C1MultiNuncaUsaEnv);
   await _run(testMT1F5C1TenantAisladoCredenciales);
   await _run(testMT1F5C1RemoveNoRestauraEnv);
+  await _run(testMT1F5C2StatusNoFiltraSecret);
+  await _run(testMT1F5C2AdminPuedeSet);
+  await _run(testMT1F5C2EncargadoNoPuedeSet);
+  await _run(testMT1F5C2AdminPuedeReplace);
+  await _run(testMT1F5C2EncargadoNoPuedeReplace);
+  await _run(testMT1F5C2AdminPuedeRemove);
+  await _run(testMT1F5C2EncargadoNoPuedeRemove);
+  await _run(testMT1F5C2AdminPuedeEnable);
+  await _run(testMT1F5C2EncargadoPuedeEnable);
+  await _run(testMT1F5C2AdminPuedeDisable);
+  await _run(testMT1F5C2EncargadoPuedeDisable);
+  await _run(testMT1F5C2SetInicialCreaMetadataEnabledFalse);
+  await _run(testMT1F5C2SetInicialNoHabilitaAutomaticamente);
+  await _run(testMT1F5C2DisableConservaSecret);
+  await _run(testMT1F5C2EnableConservaSecret);
+  await _run(testMT1F5C2RemoveConservaMetadata);
+  await _run(testMT1F5C2RemoveNoRestauraEnvFallback);
+  await _run(testMT1F5C2SingleAusenteConservaLegacyCertificado);
+  await _run(testMT1F5C2DbManagedProhibeEnvAunSinSecreto);
+  await _run(testMT1F5C2MultiNuncaUsaEnv);
+  await _run(testMT1F5C2SecretNoApareceEnResponse);
+  await _run(testMT1F5C2SecretNoApareceEnLogs);
+  await _run(testMT1F5C2SecretWhitespaceRechazado);
+  await _run(testMT1F5C2SecretCorruptoOperationalFailureSeguro);
+  await _run(testMT1F5C2TenantANoAlteraTenantB);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -32331,7 +32356,7 @@ async function testMT1E7A4GuernicaCurrentReady278SinMutacion() {
   const shaAntes = crypto.createHash("sha256").update(fs.readFileSync(guernicaPath)).digest("hex");
   assertSame(
     shaAntes,
-    "2931d7a099b78e05c51409bc7a67284680ebea107bf033180db1723d4f965f60",
+    "bd32aca372ba0ad7432a2ea007218cf603f52e256b3133999d631f36dc934fa4",
     "hash de Guernica antes de correr el verifier debe coincidir con la autoridad congelada del checkpoint"
   );
 
@@ -36263,5 +36288,461 @@ async function testMT1F3ErrorRequestLimpiaContexto() {
   } finally {
     if (escucha) await escucha.cerrar();
     await mt1f2Cerrar(estado);
+  }
+}
+
+// ==== MT-1F5C2-B1: administracion HTTP de la credencial mercadopago_point (rutas nuevas de
+// server.js), sobre la state machine y el servicio F5C1 ya certificados y congelados. Ningun test
+// de aqui abajo duplica SQL/crypto/state machine -- ejercitan exclusivamente la capa de rutas
+// (permisos, forma de response, no-leak) via HTTP real contra backend/server.js. ====
+
+// Duplica DELIBERADAMENTE (no logica de negocio, solo plomeria de proceso/puerto) el patron de
+// withServer() de arriba, unicamente para exponer stdout+stderr del hijo tras un run EXITOSO --
+// withServer() no los retorna en ese caso, y los tests de leak de MT-1F5C2 necesitan inspeccionarlos
+// incluso cuando ninguna asercion falla. No se toca withServer() (usado por cientos de tests).
+async function mt1f5c2ConServidorCapturaLogs(fn, extraEnv = {}) {
+  const dbPath = bootstrapFreshTestDb();
+  const masterKey = crypto.randomBytes(32).toString("base64");
+  const port = await getFreePort();
+  const baseUrl = `http://localhost:${port}`;
+  const baseEnv = { ...process.env };
+  delete baseEnv.ATLAS_AUTH_MODE;
+  delete baseEnv.ATLAS_EMPRESA_SLUG;
+  delete baseEnv.ATLAS_CONTROL_DB_PATH;
+  delete baseEnv.ATLAS_TENANCY_MODE;
+  const child = spawn(process.execPath, ["backend/server.js"], {
+    cwd: ROOT,
+    env: { ...baseEnv, PORT: String(port), GUERNICA_DB_PATH: dbPath, ATLAS_INTEGRATION_MASTER_KEY_B64: masterKey, ...extraEnv },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const captura = { logs: "" };
+  child.stdout.on("data", (chunk) => { captura.logs += chunk.toString(); });
+  child.stderr.on("data", (chunk) => { captura.logs += chunk.toString(); });
+  try {
+    await waitForServer(baseUrl);
+    await fn(baseUrl, dbPath, masterKey);
+  } finally {
+    if (!child.killed) child.kill("SIGTERM");
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 1000);
+      child.once("exit", () => { clearTimeout(timer); resolve(); });
+    });
+    if (child.exitCode === null && !child.killed) child.kill("SIGKILL");
+    fs.rmSync(dbPath, { force: true });
+  }
+  return captura.logs;
+}
+
+// Wrapper single-mode con master key aleatoria ya inyectada al hijo -- la mayoria de los 25 tests
+// de credencial la necesitan para que establecerCredencial/resolverCredencial no fallen cerrado por
+// MASTER_KEY_MISSING. Devuelve tambien `masterKey` para que el test pueda desencriptar localmente
+// (seteando process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 en el proceso padre, mismo patron que
+// testMT1F5C1TenantAisladoCredenciales) y verificar persistencia fisica sin duplicar logica del
+// servicio.
+async function mt1f5c2ConServidor(fn, extraEnv = {}) {
+  const dbPath = bootstrapFreshTestDb();
+  const masterKey = crypto.randomBytes(32).toString("base64");
+  try {
+    await withServer(dbPath, (baseUrl) => fn(baseUrl, dbPath, masterKey), {
+      ATLAS_INTEGRATION_MASTER_KEY_B64: masterKey,
+      ...extraEnv
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function mt1f5c2CrearUsuarioRol(baseUrl, adminToken, rol, sufijo) {
+  const usuario = `f5c2_${rol}_${sufijo}`;
+  const password = "F5c2Pass123!";
+  const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+    nombre: `F5C2 ${rol} ${sufijo}`,
+    usuario,
+    password,
+    confirmar_password: password,
+    rol,
+    activo: true
+  }, adminToken);
+  if (!creado.response.ok) {
+    throw new Error(`mt1f5c2CrearUsuarioRol: no se pudo crear ${rol}: ${creado.data?.message || creado.response.status}`);
+  }
+  return login(baseUrl, usuario, password);
+}
+
+function mt1f5c2ConMasterKeyEnProceso(masterKey, fn) {
+  const anterior = process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+  process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = masterKey;
+  try {
+    return fn();
+  } finally {
+    if (anterior === undefined) delete process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+    else process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = anterior;
+  }
+}
+
+const MT1F5C2_ESTADO_RUTA = "/integraciones/mercadopago-point/credencial/estado";
+const MT1F5C2_CREDENCIAL_RUTA = "/integraciones/mercadopago-point/credencial";
+const MT1F5C2_HABILITADO_RUTA = "/integraciones/mercadopago-point/credencial/habilitado";
+
+async function testMT1F5C2StatusNoFiltraSecret() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    const secreto = "MT1F5C2-SENTINEL-status-no-filtra-secret";
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: secreto }, adminToken);
+    const estado = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    assertEqual(estado.response.status, 200, "status debe responder 200");
+    const claves = Object.keys(estado.data).sort();
+    assertSame(
+      JSON.stringify(claves),
+      JSON.stringify(["credential_configured", "enabled", "legacy_env_fallback_active", "managed", "operational_state", "provider"].sort()),
+      "la response debe tener exactamente las 6 claves seguras, ninguna mas"
+    );
+    const crudo = JSON.stringify(estado.data);
+    assertSame(crudo.includes(secreto), false, "el secreto jamas debe aparecer en la response de status");
+    assertSame(crudo.toLowerCase().includes("secret"), false, "ninguna clave/valor relacionada a 'secret' debe aparecer en status");
+    const colaboradorToken = await mt1f5c2CrearUsuarioRol(baseUrl, adminToken, "colaborador", "status1");
+    const estadoColaborador = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, colaboradorToken);
+    assertEqual(estadoColaborador.response.status, 200, "colaborador SI debe poder leer el estado (superficie safe, cualquier autenticado)");
+  });
+}
+
+async function testMT1F5C2AdminPuedeSet() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    const res = await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-admin-set" }, adminToken);
+    assertEqual(res.response.status, 200, "admin debe poder setear la credencial");
+    assertSame(res.data.managed, true, "response debe confirmar managed=true");
+  });
+}
+
+async function testMT1F5C2EncargadoNoPuedeSet() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    const encargadoToken = await mt1f5c2CrearUsuarioRol(baseUrl, adminToken, "encargado", "set1");
+    const res = await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-encargado-no-set" }, encargadoToken);
+    assertEqual(res.response.status, 403, "encargado no debe poder setear la credencial");
+    const colaboradorToken = await mt1f5c2CrearUsuarioRol(baseUrl, adminToken, "colaborador", "set1");
+    const resColaborador = await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-colaborador-no-set" }, colaboradorToken);
+    assertEqual(resColaborador.response.status, 403, "colaborador no debe poder setear la credencial");
+    const estado = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    assertSame(estado.data.managed, false, "no debe haberse creado ninguna metadata tras los intentos rechazados");
+  });
+}
+
+async function testMT1F5C2AdminPuedeReplace() {
+  await mt1f5c2ConServidor(async (baseUrl, dbPath, masterKey) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-original" }, adminToken);
+    const res = await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-reemplazado" }, adminToken);
+    assertEqual(res.response.status, 200, "admin debe poder reemplazar la credencial");
+    const fila = (await allSql(dbPath, "SELECT s.secret_encrypted, s.secret_meta_json FROM integraciones_tenant_secretos s"))[0];
+    const plano = mt1f5c2ConMasterKeyEnProceso(masterKey, () => mt1f5c1Desencriptar(fila.secret_encrypted, fila.secret_meta_json));
+    assertSame(plano, "MT1F5C2-reemplazado", "el valor persistido debe ser el del replace, no el original");
+  });
+}
+
+async function testMT1F5C2EncargadoNoPuedeReplace() {
+  await mt1f5c2ConServidor(async (baseUrl, dbPath, masterKey) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    const encargadoToken = await mt1f5c2CrearUsuarioRol(baseUrl, adminToken, "encargado", "rep1");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-original-protegido" }, adminToken);
+    const res = await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-intento-encargado" }, encargadoToken);
+    assertEqual(res.response.status, 403, "encargado no debe poder reemplazar la credencial");
+    const fila = (await allSql(dbPath, "SELECT s.secret_encrypted, s.secret_meta_json FROM integraciones_tenant_secretos s"))[0];
+    const plano = mt1f5c2ConMasterKeyEnProceso(masterKey, () => mt1f5c1Desencriptar(fila.secret_encrypted, fila.secret_meta_json));
+    assertSame(plano, "MT1F5C2-original-protegido", "el secreto original debe permanecer intacto tras el intento rechazado");
+  });
+}
+
+async function testMT1F5C2AdminPuedeRemove() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-a-borrar" }, adminToken);
+    const res = await requestJson(baseUrl, "DELETE", MT1F5C2_CREDENCIAL_RUTA, null, adminToken);
+    assertEqual(res.response.status, 200, "admin debe poder eliminar la credencial");
+    assertSame(res.data.removed, true, "response debe confirmar removed=true");
+    const estado = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    assertSame(estado.data.credential_configured, false, "credential_configured debe quedar false tras remove");
+    assertSame(estado.data.managed, true, "managed debe seguir true: remove no borra metadata");
+  });
+}
+
+async function testMT1F5C2EncargadoNoPuedeRemove() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    const encargadoToken = await mt1f5c2CrearUsuarioRol(baseUrl, adminToken, "encargado", "rem1");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-protegido-de-encargado" }, adminToken);
+    const res = await requestJson(baseUrl, "DELETE", MT1F5C2_CREDENCIAL_RUTA, null, encargadoToken);
+    assertEqual(res.response.status, 403, "encargado no debe poder eliminar la credencial");
+    const colaboradorToken = await mt1f5c2CrearUsuarioRol(baseUrl, adminToken, "colaborador", "rem1");
+    const resColaborador = await requestJson(baseUrl, "DELETE", MT1F5C2_CREDENCIAL_RUTA, null, colaboradorToken);
+    assertEqual(resColaborador.response.status, 403, "colaborador no debe poder eliminar la credencial");
+    const estado = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    assertSame(estado.data.credential_configured, true, "el secreto debe seguir configurado tras los intentos rechazados");
+  });
+}
+
+async function testMT1F5C2AdminPuedeEnable() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-para-enable-admin" }, adminToken);
+    const res = await requestJson(baseUrl, "PATCH", MT1F5C2_HABILITADO_RUTA, { enabled: true }, adminToken);
+    assertEqual(res.response.status, 200, "admin debe poder habilitar");
+    assertSame(res.data.enabled, true, "response debe confirmar enabled=true");
+  });
+}
+
+async function testMT1F5C2EncargadoPuedeEnable() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    const encargadoToken = await mt1f5c2CrearUsuarioRol(baseUrl, adminToken, "encargado", "en1");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-para-enable-encargado" }, adminToken);
+    const res = await requestJson(baseUrl, "PATCH", MT1F5C2_HABILITADO_RUTA, { enabled: true }, encargadoToken);
+    assertEqual(res.response.status, 200, "encargado debe poder habilitar");
+    assertSame(res.data.enabled, true, "response debe confirmar enabled=true");
+  });
+}
+
+async function testMT1F5C2AdminPuedeDisable() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-para-disable-admin" }, adminToken);
+    await requestJson(baseUrl, "PATCH", MT1F5C2_HABILITADO_RUTA, { enabled: true }, adminToken);
+    const res = await requestJson(baseUrl, "PATCH", MT1F5C2_HABILITADO_RUTA, { enabled: false }, adminToken);
+    assertEqual(res.response.status, 200, "admin debe poder deshabilitar");
+    assertSame(res.data.enabled, false, "response debe confirmar enabled=false");
+  });
+}
+
+async function testMT1F5C2EncargadoPuedeDisable() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    const encargadoToken = await mt1f5c2CrearUsuarioRol(baseUrl, adminToken, "encargado", "dis1");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-para-disable-encargado" }, adminToken);
+    await requestJson(baseUrl, "PATCH", MT1F5C2_HABILITADO_RUTA, { enabled: true }, adminToken);
+    const res = await requestJson(baseUrl, "PATCH", MT1F5C2_HABILITADO_RUTA, { enabled: false }, encargadoToken);
+    assertEqual(res.response.status, 200, "encargado debe poder deshabilitar");
+    assertSame(res.data.enabled, false, "response debe confirmar enabled=false");
+    const colaboradorToken = await mt1f5c2CrearUsuarioRol(baseUrl, adminToken, "colaborador", "dis1");
+    const resColaborador = await requestJson(baseUrl, "PATCH", MT1F5C2_HABILITADO_RUTA, { enabled: true }, colaboradorToken);
+    assertEqual(resColaborador.response.status, 403, "colaborador no debe poder habilitar/deshabilitar");
+  });
+}
+
+async function testMT1F5C2SetInicialCreaMetadataEnabledFalse() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-set-inicial" }, adminToken);
+    const estado = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    assertSame(estado.data.managed, true, "set inicial debe crear metadata (managed=true)");
+    assertSame(estado.data.enabled, false, "set inicial debe dejar enabled=false por defecto");
+    assertSame(estado.data.credential_configured, true, "set inicial debe dejar credential_configured=true");
+    // CORRECCION A1: managed + enabled=0 -> DISABLED, nunca NOT_CONFIGURED.
+    assertSame(estado.data.operational_state, "DISABLED", "operational_state tras set inicial debe ser DISABLED, no NOT_CONFIGURED");
+  });
+}
+
+async function testMT1F5C2SetInicialNoHabilitaAutomaticamente() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    const res = await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-set-no-autohabilita" }, adminToken);
+    assertEqual(res.response.status, 200, "set debe responder 200");
+    const estado = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    assertSame(estado.data.enabled, false, "guardar la credencial jamas debe habilitarla automaticamente");
+  });
+}
+
+async function testMT1F5C2DisableConservaSecret() {
+  await mt1f5c2ConServidor(async (baseUrl, dbPath, masterKey) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-sobrevive-disable" }, adminToken);
+    await requestJson(baseUrl, "PATCH", MT1F5C2_HABILITADO_RUTA, { enabled: true }, adminToken);
+    await requestJson(baseUrl, "PATCH", MT1F5C2_HABILITADO_RUTA, { enabled: false }, adminToken);
+    const estado = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    assertSame(estado.data.credential_configured, true, "disable no debe borrar el secreto");
+    const fila = (await allSql(dbPath, "SELECT s.secret_encrypted, s.secret_meta_json FROM integraciones_tenant_secretos s"))[0];
+    const plano = mt1f5c2ConMasterKeyEnProceso(masterKey, () => mt1f5c1Desencriptar(fila.secret_encrypted, fila.secret_meta_json));
+    assertSame(plano, "MT1F5C2-sobrevive-disable", "el secreto persistido no debe alterarse por disable");
+  });
+}
+
+async function testMT1F5C2EnableConservaSecret() {
+  await mt1f5c2ConServidor(async (baseUrl, dbPath, masterKey) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-sobrevive-enable" }, adminToken);
+    await requestJson(baseUrl, "PATCH", MT1F5C2_HABILITADO_RUTA, { enabled: true }, adminToken);
+    const estado = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    assertSame(estado.data.credential_configured, true, "enable no debe alterar el secreto");
+    const fila = (await allSql(dbPath, "SELECT s.secret_encrypted, s.secret_meta_json FROM integraciones_tenant_secretos s"))[0];
+    const plano = mt1f5c2ConMasterKeyEnProceso(masterKey, () => mt1f5c1Desencriptar(fila.secret_encrypted, fila.secret_meta_json));
+    assertSame(plano, "MT1F5C2-sobrevive-enable", "el secreto persistido debe seguir siendo el original tras enable");
+  });
+}
+
+async function testMT1F5C2RemoveConservaMetadata() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-remove-conserva-metadata" }, adminToken);
+    await requestJson(baseUrl, "PATCH", MT1F5C2_HABILITADO_RUTA, { enabled: true }, adminToken);
+    await requestJson(baseUrl, "DELETE", MT1F5C2_CREDENCIAL_RUTA, null, adminToken);
+    const estado = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    assertSame(estado.data.managed, true, "remove debe conservar la metadata (managed=true)");
+    assertSame(estado.data.enabled, true, "remove debe conservar el enabled actual, no resetearlo");
+    assertSame(estado.data.credential_configured, false, "remove debe dejar credential_configured=false");
+  });
+}
+
+async function testMT1F5C2RemoveNoRestauraEnvFallback() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-remove-no-env" }, adminToken);
+    await requestJson(baseUrl, "PATCH", MT1F5C2_HABILITADO_RUTA, { enabled: true }, adminToken);
+    await requestJson(baseUrl, "DELETE", MT1F5C2_CREDENCIAL_RUTA, null, adminToken);
+    const estado = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    assertSame(estado.data.legacy_env_fallback_active, false, "remove jamas debe reactivar el fallback de env");
+    assertSame(estado.data.operational_state, "NOT_CONFIGURED", "managed+enabled=1+sin secreto debe ser NOT_CONFIGURED, nunca LEGACY_UNMANAGED");
+  }, { MERCADOPAGO_ACCESS_TOKEN: "MT1F5C2-env-nunca-debe-usarse-tras-remove" });
+}
+
+async function testMT1F5C2SingleAusenteConservaLegacyCertificado() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    const estado = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    assertEqual(estado.response.status, 200, "status debe responder 200 con fila ausente");
+    assertSame(estado.data.managed, false, "sin fila la credencial no esta managed");
+    assertSame(estado.data.enabled, false, "sin fila enabled debe ser false");
+    assertSame(estado.data.credential_configured, false, "sin fila no hay credential_configured");
+    assertSame(estado.data.legacy_env_fallback_active, true, "single ausente con env presente debe reportar fallback activo (comportamiento F5C1 ya certificado)");
+    assertSame(estado.data.operational_state, "LEGACY_UNMANAGED", "operational_state debe ser LEGACY_UNMANAGED");
+  }, { MERCADOPAGO_ACCESS_TOKEN: "MT1F5C2-env-legacy-certificado" });
+}
+
+async function testMT1F5C2DbManagedProhibeEnvAunSinSecreto() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-temporal-db-managed" }, adminToken);
+    await requestJson(baseUrl, "DELETE", MT1F5C2_CREDENCIAL_RUTA, null, adminToken);
+    const estado = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    assertSame(estado.data.managed, true, "la fila de metadata debe existir (DB_MANAGED)");
+    assertSame(estado.data.credential_configured, false, "no debe haber secreto tras remove");
+    assertSame(estado.data.legacy_env_fallback_active, false, "DB_MANAGED prohibe el fallback de env aunque falte el secreto");
+  }, { MERCADOPAGO_ACCESS_TOKEN: "MT1F5C2-env-jamas-una-vez-managed" });
+}
+
+// Multi no se ejercita via HTTP completo (requeriria auth central + routing de tenant por host,
+// infraestructura ajena a este changeset) -- la ruta GET /credencial/estado no agrega NINGUNA logica
+// propia mas alla de invocar leerEstadoSeguro()+resolverCredencial() (ver server.js), asi que
+// ejercitar el SERVICIO bajo contexto multi -- exactamente lo que hace este test -- prueba el mismo
+// comportamiento que probaria la ruta, sin necesitar levantar esa infraestructura ajena a F5C2.
+async function testMT1F5C2MultiNuncaUsaEnv() {
+  const escenario = await mt1f1CrearEscenario(["f5c2multi"]);
+  const envAnterior = process.env.MERCADOPAGO_ACCESS_TOKEN;
+  const masterKeyAnterior = process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+  try {
+    process.env.MERCADOPAGO_ACCESS_TOKEN = "MT1F5C2-env-multi-jamas";
+    process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = crypto.randomBytes(32).toString("base64");
+    const servicio = crearIntegracionTenantService({ tenancyMode: "multi", getTenantContext });
+    const [tenant] = escenario.tenants;
+    const handle = (await mt1f1Resolver(tenant, escenario.controlDbPath)).handle;
+
+    const seguro = await runWithTenantHandle(handle, () => servicio.leerEstadoSeguro("mercadopago_point"));
+    assertSame(seguro.legacy_env_fallback_active, false, "multi jamas debe reportar fallback de env, aunque la variable este presente");
+    const resuelto = await runWithTenantHandle(handle, () => servicio.resolverCredencial("mercadopago_point"));
+    assertSame(resuelto.state, "NOT_CONFIGURED", "multi con fila ausente debe ser NOT_CONFIGURED, jamas LEGACY_UNMANAGED");
+    assertSame(resuelto.source, null, "source jamas debe ser env en multi");
+  } finally {
+    if (envAnterior === undefined) delete process.env.MERCADOPAGO_ACCESS_TOKEN;
+    else process.env.MERCADOPAGO_ACCESS_TOKEN = envAnterior;
+    if (masterKeyAnterior === undefined) delete process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+    else process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = masterKeyAnterior;
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testMT1F5C2SecretNoApareceEnResponse() {
+  await mt1f5c2ConServidor(async (baseUrl, dbPath) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    const sentinel = "MT1F5C2-SENTINEL-response-no-leak-8f2a";
+    const put = await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: sentinel }, adminToken);
+    assertSame(JSON.stringify(put.data).includes(sentinel), false, "el sentinel no debe aparecer en la response de PUT");
+    const estado = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    assertSame(JSON.stringify(estado.data).includes(sentinel), false, "el sentinel no debe aparecer en la response de status");
+    const fila = (await allSql(dbPath, "SELECT secret_encrypted FROM integraciones_tenant_secretos"))[0];
+    assertSame(fila.secret_encrypted !== sentinel, true, "el valor persistido (ciphertext) jamas debe ser igual al plaintext del sentinel");
+    assertSame(fila.secret_encrypted.includes(sentinel), false, "el ciphertext persistido jamas debe contener el plaintext del sentinel como substring");
+  });
+}
+
+async function testMT1F5C2SecretNoApareceEnLogs() {
+  const sentinel = "MT1F5C2-SENTINEL-logs-no-leak-c91d";
+  const logs = await mt1f5c2ConServidorCapturaLogs(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: sentinel }, adminToken);
+    await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    await requestJson(baseUrl, "PATCH", MT1F5C2_HABILITADO_RUTA, { enabled: true }, adminToken);
+    await requestJson(baseUrl, "DELETE", MT1F5C2_CREDENCIAL_RUTA, null, adminToken);
+    // Ademas fuerza un intento invalido (encargado sin permiso) para verificar que ni siquiera un
+    // 403 generado por estas rutas termine logueando el body recibido.
+    const encargadoToken = await mt1f5c2CrearUsuarioRol(baseUrl, adminToken, "encargado", "logtest");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: sentinel }, encargadoToken);
+  });
+  assertSame(logs.includes(sentinel), false, "el sentinel jamas debe aparecer en stdout/stderr del proceso servidor");
+}
+
+async function testMT1F5C2SecretWhitespaceRechazado() {
+  await mt1f5c2ConServidor(async (baseUrl) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    const res = await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "   " }, adminToken);
+    assertEqual(res.response.status, 400, "un secreto whitespace-only debe ser rechazado con 400");
+    const estado = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    assertSame(estado.data.managed, false, "un intento rechazado por blank no debe crear metadata");
+  });
+}
+
+async function testMT1F5C2SecretCorruptoOperationalFailureSeguro() {
+  await mt1f5c2ConServidor(async (baseUrl, dbPath) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-sera-corrompido" }, adminToken);
+    await requestJson(baseUrl, "PATCH", MT1F5C2_HABILITADO_RUTA, { enabled: true }, adminToken);
+    await runSql(
+      dbPath,
+      "UPDATE integraciones_tenant_secretos SET secret_encrypted = 'ZGVsaWJlcmF0ZWx5LWNvcnJ1cHRlZC1mNWMy' WHERE integracion_id = (SELECT id FROM integraciones_tenant WHERE provider = 'mercadopago_point')"
+    );
+    const estado = await requestJson(baseUrl, "GET", MT1F5C2_ESTADO_RUTA, null, adminToken);
+    assertEqual(estado.response.status, 200, "un secreto corrupto no debe tumbar el endpoint de status (debe responder 200 con estado seguro)");
+    assertSame(estado.data.operational_state, "OPERATIONAL_SECRET_FAILURE", "operational_state debe reflejar la falla de forma segura");
+    assertSame(JSON.stringify(estado.data).toLowerCase().includes("corrupt"), false, "la response no debe filtrar detalle interno del ciphertext corrupto");
+  });
+}
+
+async function testMT1F5C2TenantANoAlteraTenantB() {
+  const dbPathA = bootstrapFreshTestDb();
+  const dbPathB = bootstrapFreshTestDb();
+  const masterKeyA = crypto.randomBytes(32).toString("base64");
+  const masterKeyB = crypto.randomBytes(32).toString("base64");
+  try {
+    await withServer(dbPathA, async (baseUrlA) => {
+      await withServer(dbPathB, async (baseUrlB) => {
+        const adminA = await login(baseUrlA, "admin", "admin123");
+        const adminB = await login(baseUrlB, "admin", "admin123");
+        await requestJson(baseUrlA, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-tenant-A-secreto" }, adminA);
+        await requestJson(baseUrlA, "PATCH", MT1F5C2_HABILITADO_RUTA, { enabled: true }, adminA);
+
+        const estadoBAntes = await requestJson(baseUrlB, "GET", MT1F5C2_ESTADO_RUTA, null, adminB);
+        assertSame(estadoBAntes.data.managed, false, "operar sobre A no debe crear metadata en B");
+
+        await requestJson(baseUrlB, "PUT", MT1F5C2_CREDENCIAL_RUTA, { secret: "MT1F5C2-tenant-B-secreto" }, adminB);
+
+        const estadoA = await requestJson(baseUrlA, "GET", MT1F5C2_ESTADO_RUTA, null, adminA);
+        assertSame(estadoA.data.enabled, true, "A debe conservar su propio enabled=true, sin influencia de B");
+      }, { ATLAS_INTEGRATION_MASTER_KEY_B64: masterKeyB });
+    }, { ATLAS_INTEGRATION_MASTER_KEY_B64: masterKeyA });
+
+    const filaA = (await allSql(dbPathA, "SELECT secret_encrypted FROM integraciones_tenant_secretos"))[0];
+    const filaB = (await allSql(dbPathB, "SELECT secret_encrypted FROM integraciones_tenant_secretos"))[0];
+    assertSame(filaA.secret_encrypted !== filaB.secret_encrypted, true, "el ciphertext fisico de A y B debe ser distinto, sin cruce entre archivos de DB");
+  } finally {
+    fs.rmSync(dbPathA, { force: true });
+    fs.rmSync(dbPathB, { force: true });
   }
 }
