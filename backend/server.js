@@ -6794,28 +6794,56 @@ app.get("/integraciones/mercadopago-point/intentos/:id", async (req, res) => {
   }
 });
 
+// MT-1F5C3: resuelve el token operativo de mercadopago_point via el resolvedor tenant-local
+// certificado (F5C1), en vez de leer process.env directamente. Reusa exactamente los estados ya
+// congelados por F5C1/F5C2 -- no crea una segunda maquina de estados, no decide fallback: eso es
+// responsabilidad exclusiva de integracionTenantService.js (protegido, sin tocar). El token
+// resuelto (`.token`) NUNCA debe loguearse ni incluirse en una response -- solo se usa para
+// invocar mercadoPagoPointService.js, que tampoco lo expone.
+async function resolverTokenMpPointDebug() {
+  let resolucion;
+  try {
+    resolucion = await integracionTenantServiceF5C2.resolverCredencial(PROVIDER_MERCADOPAGO_POINT);
+  } catch (error) {
+    return { ok: false, message: "No se pudo resolver la credencial de Mercado Pago Point para este tenant." };
+  }
+  if (resolucion.state === "OK" || resolucion.state === "LEGACY_UNMANAGED") {
+    return { ok: true, token: resolucion.credential };
+  }
+  const MENSAJES_ESTADO_INOPERABLE = {
+    NOT_CONFIGURED: "No hay una credencial de Mercado Pago Point configurada para este comercio.",
+    DISABLED: "La integración de Mercado Pago Point está deshabilitada para este comercio.",
+    OPERATIONAL_SECRET_FAILURE: "La credencial de Mercado Pago Point no pudo utilizarse. Reconfigurala en Configuración."
+  };
+  return {
+    ok: false,
+    message: MENSAJES_ESTADO_INOPERABLE[resolucion.state] || "No se pudo obtener una credencial operativa de Mercado Pago Point."
+  };
+}
+
 app.get("/integraciones/mercadopago-point/debug/terminales", async (req, res) => {
   if (!puedeRol(req, ROLES.ADMIN))
     return res.status(403).json({ message: "No tenes permisos para usar herramientas de diagnóstico." });
-  const token = process.env.MERCADOPAGO_ACCESS_TOKEN;
-  if (!token || !token.trim()) {
-    return res.json({
-      ok: false,
-      origen: "config",
-      message: "MERCADOPAGO_ACCESS_TOKEN no configurado. Creá un archivo .env en la raíz del proyecto con esa variable."
-    });
+  const credencial = await resolverTokenMpPointDebug();
+  if (!credencial.ok) {
+    return res.json({ ok: false, origen: "config", message: credencial.message });
   }
   try {
     const store_id = String(req.query.store_id || "").trim() || undefined;
     const pos_id = String(req.query.pos_id || "").trim() || undefined;
-    const resultado = await listarTerminalesPoint(token.trim(), { store_id, pos_id });
+    const resultado = await listarTerminalesPoint(String(credencial.token).trim(), { store_id, pos_id });
     return res.json({ ok: true, ...resultado });
   } catch (error) {
-    logError("Error diagnóstico terminales MP Point:", error);
+    // MT-1F5C3-B1B/B1D: jamas reenviar error.message del proveedor/cliente HTTP (podria reflejar el
+    // token u otro detalle sensible) ni pasar el objeto error crudo a logError (expone .message y
+    // .stack). Se loguea un identificador FIJO controlado por ATLAS -- no se lee ninguna propiedad
+    // del objeto `error` externo (ni siquiera `.code`), para no depender de que ese objeto siga
+    // siendo inofensivo si el codigo de mas abajo cambia en el futuro.
+    console.error("[ERROR] GET /integraciones/mercadopago-point/debug/terminales: MP_DEBUG_TERMINALES_ERROR");
     return res.json({
       ok: false,
       origen: "mercadopago",
-      message: error.message || "Error al consultar terminales Mercado Pago Point"
+      message: "No se pudo consultar terminales Mercado Pago Point"
     });
   }
 });
@@ -6825,9 +6853,9 @@ app.post("/integraciones/mercadopago-point/debug/test-orden", async (req, res) =
     return res.status(403).json({ message: "No tenes permisos para usar herramientas de diagnóstico." });
   res.setHeader("Content-Type", "application/json");
   try {
-    const token = process.env.MERCADOPAGO_ACCESS_TOKEN;
-    if (!token || !token.trim()) {
-      return res.json({ ok: false, origen: "config", message: "MERCADOPAGO_ACCESS_TOKEN no configurado en .env" });
+    const credencial = await resolverTokenMpPointDebug();
+    if (!credencial.ok) {
+      return res.json({ ok: false, origen: "config", message: credencial.message });
     }
     const terminal_id = String(req.body?.terminal_id || "").trim();
     if (!terminal_id) {
@@ -6839,17 +6867,49 @@ app.post("/integraciones/mercadopago-point/debug/test-orden", async (req, res) =
     }
     const store_id = String(req.body?.store_id || "").trim() || undefined;
     const pos_id = String(req.body?.pos_id || "").trim() || undefined;
-    const resultado = await crearOrdenPointDiagnostico(token.trim(), { terminal_id, monto, store_id, pos_id });
-    return res.json({ ok: true, ...resultado });
+    const resultado = await crearOrdenPointDiagnostico(String(credencial.token).trim(), { terminal_id, monto, store_id, pos_id });
+
+    // MT-1F5C3-B1D: politica congelada (checkpoint B1D, seccion 4) -- ok:true SOLO si ambas
+    // solicitudes (payment-intents y v1/orders) obtuvieron HTTP 2xx. Un HTTP 2xx no confirma que el
+    // pago haya sido aprobado ni que la operacion comercial concluyo: esta ruta es un diagnostico de
+    // conectividad/credencial, no una confirmacion de pago. resultado.payment_intents/v1_orders ya
+    // vienen saneados por llamarMpDebug (solo ok/http_status/tipo_error -- jamas texto de error ni
+    // cuerpo crudo del proveedor), asi que se reenvian tal cual.
+    const okPaymentIntents = resultado.payment_intents.ok === true;
+    const okOrders = resultado.v1_orders.ok === true;
+    const ok = okPaymentIntents && okOrders;
+    const parcial = !ok && okPaymentIntents !== okOrders;
+    let message;
+    if (parcial) {
+      message =
+        "Resultado parcial: una de las dos solicitudes a Mercado Pago fue exitosa y la otra falló. " +
+        "Un HTTP 2xx no confirma que el pago haya sido aprobado ni que la operación comercial concluyó. " +
+        "Verificá el estado real en Mercado Pago antes de repetir la operación manualmente, para evitar órdenes duplicadas.";
+    } else if (!ok) {
+      message = "No se pudo completar el diagnóstico de la orden en Mercado Pago.";
+    }
+    return res.json({
+      ok,
+      parcial,
+      origen: ok ? undefined : "mercadopago",
+      message,
+      external_reference: resultado.external_reference,
+      idempotency_key: resultado.idempotency_key,
+      terminal_id: resultado.terminal_id,
+      monto: resultado.monto,
+      payment_intents: resultado.payment_intents,
+      v1_orders: resultado.v1_orders
+    });
   } catch (error) {
-    logError("Error diagnóstico orden MP Point:", error);
-    return res.json({ ok: false, origen: "server", message: error.message || "Error al crear orden de diagnóstico" });
+    // MT-1F5C3-B1B/B1D: mismo tratamiento seguro que la ruta de terminales -- ver comentario arriba.
+    console.error("[ERROR] POST /integraciones/mercadopago-point/debug/test-orden: MP_DEBUG_TEST_ORDEN_ERROR");
+    return res.json({ ok: false, origen: "server", message: "No se pudo crear la orden de diagnóstico" });
   }
 });
 
 // MT-1F5C2: administracion segura de la credencial tenant-local de mercadopago_point. Provider
-// SIEMPRE fijo (PROVIDER_MERCADOPAGO_POINT) -- jamas recibido del cliente. Nunca desvia hacia los
-// consumers debug de arriba (F5C3 los reemplaza mas adelante, sin tocar nada aca).
+// SIEMPRE fijo (PROVIDER_MERCADOPAGO_POINT) -- jamas recibido del cliente. Los consumers debug de
+// arriba ya resuelven su token via el mismo resolvedor (MT-1F5C3) -- sin cambios en estas 4 rutas.
 app.get("/integraciones/mercadopago-point/credencial/estado", async (req, res) => {
   try {
     const seguro = await integracionTenantServiceF5C2.leerEstadoSeguro(PROVIDER_MERCADOPAGO_POINT);

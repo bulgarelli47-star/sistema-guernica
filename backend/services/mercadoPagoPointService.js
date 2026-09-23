@@ -260,42 +260,35 @@ async function listarTerminalesPoint(accessToken, { store_id, pos_id } = {}) {
   };
 }
 
+// MT-1F5C3-B1D: `llamarMpDebug` NUNCA debe devolver texto arbitrario de una excepcion externa ni el
+// cuerpo crudo de la respuesta del proveedor -- ambos son datos no confiables que terminan
+// expuestos tal cual en la respuesta publica de /debug/test-orden. El unico contrato de salida
+// permitido es: { ok, http_status, tipo_error }. Nunca agregar aqui `raw`, `raw_text`,
+// `content_type` ni el mensaje de la excepcion -- ver MT-1F5C3-B1C-R3 para el analisis que motivo
+// este cambio.
 async function llamarMpDebug(url, options) {
   let res;
   try {
     res = await fetch(url, options);
   } catch (netErr) {
-    return { error_red: netErr.message, http_status: null, content_type: null, raw: null, raw_text: null };
+    return { ok: false, http_status: null, tipo_error: "red" };
   }
 
-  const content_type = res.headers.get("content-type") || "";
-  let raw_text = null;
+  // Se drena el body para liberar la conexion, pero jamas se expone ni se loguea su contenido.
   try {
-    raw_text = await res.text();
-  } catch (textErr) {
-    raw_text = `[no se pudo leer body: ${textErr.message}]`;
-  }
-
-  let raw = null;
-  if (raw_text) {
-    try {
-      raw = JSON.parse(raw_text);
-    } catch {
-      // body no es JSON, raw_text lo conserva
-    }
+    await res.text();
+  } catch {
+    // ignorado: solo interesa liberar el stream, no el contenido
   }
 
   if (process.env.MP_DEBUG === "1") {
-    console.log(
-      `[MP Debug] ${options.method || "GET"} ${url} → HTTP ${res.status} | content-type: ${content_type} | body(120): ${String(raw_text || "").slice(0, 120)}`
-    );
+    console.log(`[MP Debug] ${options.method || "GET"} ${url} → HTTP ${res.status}`);
   }
 
   return {
+    ok: res.ok,
     http_status: res.status,
-    content_type,
-    raw: raw || null,
-    raw_text: raw ? undefined : String(raw_text || "").slice(0, 2000)
+    tipo_error: res.ok ? null : "http"
   };
 }
 

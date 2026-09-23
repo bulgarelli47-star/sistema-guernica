@@ -20943,6 +20943,18 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1F5C2SecretWhitespaceRechazado);
   await _run(testMT1F5C2SecretCorruptoOperationalFailureSeguro);
   await _run(testMT1F5C2TenantANoAlteraTenantB);
+  await _run(testMT1F5C3DebugSingleLegacyUsaFallback);
+  await _run(testMT1F5C3DebugSingleGestionadoUsaCredencialDb);
+  await _run(testMT1F5C3DebugDeshabilitadaNoLlama);
+  await _run(testMT1F5C3DebugSecretoCorruptoRespuestaSegura);
+  await _run(testMT1F5C3DebugSinPermisoAdminMantiene403);
+  await _run(testMT1F5C3DebugSinFiltracionEnResponseYLogs);
+  await _run(testMT1F5C3DebugMultiAisladoTokenPorTenant);
+  await _run(testMT1F5C3DebugMultiNuncaUsaEnvNiSinContexto);
+  await _run(testMT1F5C3DebugErrorExternoNoFiltraCredencial);
+  await _run(testMT1F5C3DebugErrorHttpEsNoExitoso);
+  await _run(testMT1F5C3DebugParcialSeInformaComoParcial);
+  await _run(testMT1F5C3MockFetchBloqueaSolicitudNoReconocida);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -36744,5 +36756,544 @@ async function testMT1F5C2TenantANoAlteraTenantB() {
   } finally {
     fs.rmSync(dbPathA, { force: true });
     fs.rmSync(dbPathB, { force: true });
+  }
+}
+
+// ==== MT-1F5C3-B1/B1B: aislamiento de las 2 rutas debug de mercadopago_point (server.js), que
+// resuelven el token via integracionTenantServiceF5C2.resolverCredencial() en vez de process.env.
+// NO se realiza trafico real a Mercado Pago: se intercepta fetch() DENTRO del proceso hijo que
+// efectivamente lo invoca (mercadoPagoPointService.js), via un modulo precargado con
+// NODE_OPTIONS=--require, generado en un archivo temporal a partir de una fuente embebida aqui
+// mismo (nunca depende de un archivo externo al harness). El log de llamadas interceptadas se
+// escribe a otro archivo temporal que el proceso padre del test lee despues.
+//
+// B1B (fail-closed): ya NO existe un `original` fetch de respaldo -- cualquier solicitud cuyo
+// origen no sea EXACTAMENTE "https://api.mercadopago.com" (comparado via new URL(...).origin, no
+// por coincidencia parcial de string) o cuya ruta no coincida con una de las 3 rutas reales que
+// mercadoPagoPointService.js puede invocar, se rechaza LOCALMENTE (throw), sin acceder jamas a la
+// red real. Cada intento bloqueado tambien se registra en el log (bloqueado:true) para que un test
+// pueda verificarlo deterministicamente. ====
+const MT1F5C3_MOCK_FETCH_SOURCE = `
+const fs = require("fs");
+const logPath = process.env.MP_MOCK_LOG_PATH;
+const modo = process.env.MP_MOCK_MODE || "success";
+const ORIGEN_MP = "https://api.mercadopago.com";
+const RUTAS_RECONOCIDAS = [
+  { metodo: "GET", prueba: function (u) { return u.pathname === "/terminals/v1/list"; } },
+  { metodo: "POST", prueba: function (u) { return /^\\/point\\/integration-api\\/devices\\/[^/]+\\/payment-intents$/.test(u.pathname); } },
+  { metodo: "POST", prueba: function (u) { return u.pathname === "/v1/orders"; } }
+];
+function registrar(entrada) {
+  try { fs.appendFileSync(logPath, JSON.stringify(entrada) + "\\n"); } catch (error) {}
+}
+globalThis.fetch = async function (recurso, opciones) {
+  const metodo = (opciones && opciones.method) || "GET";
+  const crudo = String(recurso);
+  let parsed = null;
+  try { parsed = new URL(crudo); } catch (error) { parsed = null; }
+  const origenValido = parsed !== null && parsed.origin === ORIGEN_MP;
+  const rutaReconocida = origenValido && RUTAS_RECONOCIDAS.some(function (r) { return r.metodo === metodo && r.prueba(parsed); });
+  if (!rutaReconocida) {
+    // Fail-closed: NUNCA se delega a un fetch original ni se accede a la red real.
+    registrar({ bloqueado: true, url: crudo, metodo: metodo, en: new Date().toISOString() });
+    throw new Error("MP_MOCK_BLOCKED_UNEXPECTED_REQUEST");
+  }
+  const headers = (opciones && opciones.headers) || {};
+  const auth = headers.Authorization || headers.authorization || null;
+  registrar({ url: parsed.href, metodo: metodo, authorization: auth, en: new Date().toISOString() });
+  if (modo === "reject") {
+    throw new Error("MP_MOCK_NETWORK_ERROR");
+  }
+  if (modo === "leak") {
+    // Simula un proveedor/cliente HTTP que devuelve un detalle de error que incluye la cabecera de
+    // autorizacion recibida -- worst case para probar que la ruta jamas reenvia error.message.
+    throw new Error("Mercado Pago rechazo la credencial recibida: " + (auth || "(sin auth)"));
+  }
+  if (modo === "http_error") {
+    // MT-1F5C3-B1D: simula una respuesta HTTP NO exitosa (sin excepcion de red) cuyo cuerpo
+    // -- deliberadamente malicioso/adversarial -- refleja la cabecera de autorizacion recibida.
+    // Sirve para probar dos cosas a la vez: (1) un HTTP no-2xx nunca debe traducirse en ok:true,
+    // y (2) el cuerpo crudo del proveedor (real o malicioso) jamas debe reenviarse al cliente.
+    const cuerpo = { message: "Error simulado del proveedor", detalle_no_confiable: "credencial-vista-por-el-mock:" + (auth || "(sin auth)") };
+    return new Response(JSON.stringify(cuerpo), { status: 500, headers: { "content-type": "application/json" } });
+  }
+  if (modo === "partial") {
+    // Solo tiene sentido para las 2 llamadas de /debug/test-orden: payment-intents exitoso,
+    // v1/orders falla con HTTP no-2xx. Bajo GET /debug/terminales responde success (no hay
+    // nocion de "parcial" para una unica llamada).
+    if (/\\/point\\/integration-api\\/devices\\/[^/]+\\/payment-intents$/.test(parsed.pathname)) {
+      return new Response(JSON.stringify({ id: "MOCK-ORDER-ID", status: "created" }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (parsed.pathname === "/v1/orders") {
+      return new Response(JSON.stringify({ message: "error simulado v1/orders" }), { status: 502, headers: { "content-type": "application/json" } });
+    }
+  }
+  let cuerpo;
+  if (parsed.pathname === "/terminals/v1/list") {
+    cuerpo = { terminals: [{ id: "MOCKTERM1", store_id: "S1", pos_id: "P1", operating_mode: "PDV", status: "active", name: "Mock Terminal" }], paging: { total: 1 } };
+  } else {
+    cuerpo = { id: "MOCK-ORDER-ID", status: "created" };
+  }
+  return new Response(JSON.stringify(cuerpo), { status: 200, headers: { "content-type": "application/json" } });
+};
+`;
+
+function mt1f5c3EscribirMockFetch() {
+  const mockPath = path.join(os.tmpdir(), `mp-mock-fetch-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.js`);
+  fs.writeFileSync(mockPath, MT1F5C3_MOCK_FETCH_SOURCE, "utf8");
+  return mockPath;
+}
+
+function mt1f5c3CrearMockLogPath() {
+  const logPath = path.join(os.tmpdir(), `mp-mock-log-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`);
+  fs.writeFileSync(logPath, "", "utf8");
+  return logPath;
+}
+
+function mt1f5c3LeerMockLog(logPath) {
+  if (!fs.existsSync(logPath)) return [];
+  return fs.readFileSync(logPath, "utf8").split("\n").filter(Boolean).map((linea) => JSON.parse(linea));
+}
+
+function mt1f5c3EnvMock(mockScriptPath, mockLogPath, modo = "success") {
+  // NODE_OPTIONS tiene su propio tokenizador (trata "\" como escape): en Windows un path con
+  // backslashes queda mutilado dentro de --require. Las forward slashes son validas para require()
+  // en Windows y evitan el problema sin tocar el path real del archivo en disco.
+  const requirePath = mockScriptPath.replace(/\\/g, "/");
+  return {
+    NODE_OPTIONS: `--require "${requirePath}"`,
+    MP_MOCK_LOG_PATH: mockLogPath,
+    MP_MOCK_MODE: modo
+  };
+}
+
+// Wrapper single-mode: fixture fresh + master key + mock de fetch inyectado en el hijo real.
+async function mt1f5c3ConServidor(fn, { modo = "success", extraEnv = {} } = {}) {
+  const dbPath = bootstrapFreshTestDb();
+  const masterKey = crypto.randomBytes(32).toString("base64");
+  const mockScriptPath = mt1f5c3EscribirMockFetch();
+  const mockLogPath = mt1f5c3CrearMockLogPath();
+  try {
+    await withServer(dbPath, (baseUrl) => fn(baseUrl, dbPath, masterKey, mockLogPath), {
+      ATLAS_INTEGRATION_MASTER_KEY_B64: masterKey,
+      ...mt1f5c3EnvMock(mockScriptPath, mockLogPath, modo),
+      ...extraEnv
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(mockScriptPath, { force: true });
+    fs.rmSync(mockLogPath, { force: true });
+  }
+}
+
+// Variante que ademas captura stdout/stderr del hijo (mismo patron de duplicacion deliberada de
+// plomeria de proceso que mt1f5c2ConServidorCapturaLogs -- withServer() no expone logs en el
+// camino exitoso).
+async function mt1f5c3ConServidorCapturaLogs(fn, { modo = "success", extraEnv = {} } = {}) {
+  const dbPath = bootstrapFreshTestDb();
+  const masterKey = crypto.randomBytes(32).toString("base64");
+  const mockScriptPath = mt1f5c3EscribirMockFetch();
+  const mockLogPath = mt1f5c3CrearMockLogPath();
+  const port = await getFreePort();
+  const baseUrl = `http://localhost:${port}`;
+  const baseEnv = { ...process.env };
+  delete baseEnv.ATLAS_AUTH_MODE;
+  delete baseEnv.ATLAS_EMPRESA_SLUG;
+  delete baseEnv.ATLAS_CONTROL_DB_PATH;
+  delete baseEnv.ATLAS_TENANCY_MODE;
+  const child = spawn(process.execPath, ["backend/server.js"], {
+    cwd: ROOT,
+    env: {
+      ...baseEnv, PORT: String(port), GUERNICA_DB_PATH: dbPath,
+      ATLAS_INTEGRATION_MASTER_KEY_B64: masterKey,
+      ...mt1f5c3EnvMock(mockScriptPath, mockLogPath, modo),
+      ...extraEnv
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const captura = { logs: "" };
+  child.stdout.on("data", (chunk) => { captura.logs += chunk.toString(); });
+  child.stderr.on("data", (chunk) => { captura.logs += chunk.toString(); });
+  try {
+    await waitForServer(baseUrl);
+    await fn(baseUrl, dbPath, masterKey, mockLogPath);
+  } finally {
+    if (!child.killed) child.kill("SIGTERM");
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 1000);
+      child.once("exit", () => { clearTimeout(timer); resolve(); });
+    });
+    if (child.exitCode === null && !child.killed) child.kill("SIGKILL");
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(mockScriptPath, { force: true });
+    fs.rmSync(mockLogPath, { force: true });
+  }
+  return captura.logs;
+}
+
+const MT1F5C3_TERMINALES_RUTA = "/integraciones/mercadopago-point/debug/terminales";
+const MT1F5C3_TEST_ORDEN_RUTA = "/integraciones/mercadopago-point/debug/test-orden";
+
+async function testMT1F5C3DebugSingleLegacyUsaFallback() {
+  const envToken = "MT1F5C3-env-legacy-fallback-token";
+  await mt1f5c3ConServidor(async (baseUrl, dbPath, masterKey, mockLogPath) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    const res = await requestJson(baseUrl, "GET", MT1F5C3_TERMINALES_RUTA, null, adminToken);
+    assertEqual(res.response.status, 200, "single legacy debe responder 200");
+    assertSame(res.data.ok, true, "sin fila managed, con env presente, debe usar el fallback legacy autorizado");
+    const entradas = mt1f5c3LeerMockLog(mockLogPath);
+    assertEqual(entradas.length, 1, "debe haber exactamente 1 llamada interceptada a Mercado Pago");
+    assertSame(entradas[0].authorization, `Bearer ${envToken}`, "el token usado debe ser exactamente el de env (fallback legacy)");
+  }, { extraEnv: { MERCADOPAGO_ACCESS_TOKEN: envToken } });
+}
+
+async function testMT1F5C3DebugSingleGestionadoUsaCredencialDb() {
+  const envToken = "MT1F5C3-env-NUNCA-debe-usarse";
+  const dbToken = "MT1F5C3-db-credencial-real";
+  await mt1f5c3ConServidor(async (baseUrl, dbPath, masterKey, mockLogPath) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", "/integraciones/mercadopago-point/credencial", { secret: dbToken }, adminToken);
+    await requestJson(baseUrl, "PATCH", "/integraciones/mercadopago-point/credencial/habilitado", { enabled: true }, adminToken);
+
+    const resGet = await requestJson(baseUrl, "GET", MT1F5C3_TERMINALES_RUTA, null, adminToken);
+    assertSame(resGet.data.ok, true, "gestionado+enabled+valido debe poder consultar terminales");
+
+    const resPost = await requestJson(baseUrl, "POST", MT1F5C3_TEST_ORDEN_RUTA, { terminal_id: "T1", monto: 100 }, adminToken);
+    assertSame(resPost.data.ok, true, "gestionado+enabled+valido debe poder crear la orden de diagnostico");
+
+    const entradas = mt1f5c3LeerMockLog(mockLogPath);
+    // GET terminales = 1 llamada; POST test-orden = 2 llamadas (payment-intents + v1/orders,
+    // crearOrdenPointDiagnostico las hace ambas incondicionalmente) = 3 en total.
+    assertEqual(entradas.length, 3, "GET terminales (1) + POST test-orden (2: payment-intents y v1/orders) = 3 llamadas");
+    for (const entrada of entradas) {
+      assertSame(entrada.authorization, `Bearer ${dbToken}`, "el token usado debe ser SIEMPRE el de la DB, nunca el de env");
+      assertSame(entrada.authorization !== `Bearer ${envToken}`, true, "jamas debe usarse el token de env estando DB_MANAGED");
+    }
+  }, { extraEnv: { MERCADOPAGO_ACCESS_TOKEN: envToken } });
+}
+
+async function testMT1F5C3DebugDeshabilitadaNoLlama() {
+  await mt1f5c3ConServidor(async (baseUrl, dbPath, masterKey, mockLogPath) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", "/integraciones/mercadopago-point/credencial", { secret: "MT1F5C3-deshabilitada" }, adminToken);
+    // enabled queda en false (default tras el set inicial) -- nunca se llama a /habilitado.
+    const res = await requestJson(baseUrl, "GET", MT1F5C3_TERMINALES_RUTA, null, adminToken);
+    assertSame(res.data.ok, false, "integracion deshabilitada no debe poder consultar terminales");
+    assertSame(res.data.origen, "config", "el origen del error debe ser config, no mercadopago");
+    const entradas = mt1f5c3LeerMockLog(mockLogPath);
+    assertEqual(entradas.length, 0, "una integracion deshabilitada jamas debe generar una llamada saliente a Mercado Pago");
+  });
+}
+
+async function testMT1F5C3DebugSecretoCorruptoRespuestaSegura() {
+  await mt1f5c3ConServidor(async (baseUrl, dbPath, masterKey, mockLogPath) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", "/integraciones/mercadopago-point/credencial", { secret: "MT1F5C3-sera-corrompido" }, adminToken);
+    await requestJson(baseUrl, "PATCH", "/integraciones/mercadopago-point/credencial/habilitado", { enabled: true }, adminToken);
+    await runSql(
+      dbPath,
+      "UPDATE integraciones_tenant_secretos SET secret_encrypted = 'ZGVsaWJlcmF0ZWx5LWNvcnJ1cHRlZC1mNWMz' WHERE integracion_id = (SELECT id FROM integraciones_tenant WHERE provider = 'mercadopago_point')"
+    );
+    const res = await requestJson(baseUrl, "GET", MT1F5C3_TERMINALES_RUTA, null, adminToken);
+    assertSame(res.data.ok, false, "secreto corrupto no debe poder consultar terminales");
+    assertSame(res.data.origen, "config", "el origen debe ser config, sin detalle criptografico");
+    assertSame(String(res.data.message).toLowerCase().includes("corrupt"), false, "el mensaje no debe filtrar detalle interno del ciphertext");
+    const entradas = mt1f5c3LeerMockLog(mockLogPath);
+    assertEqual(entradas.length, 0, "un secreto corrupto jamas debe generar una llamada saliente a Mercado Pago");
+  });
+}
+
+async function testMT1F5C3DebugSinPermisoAdminMantiene403() {
+  await mt1f5c3ConServidor(async (baseUrl, dbPath, masterKey, mockLogPath) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    const colaboradorToken = await mt1f5c2CrearUsuarioRol(baseUrl, adminToken, "colaborador", "f5c3deb1");
+    const resGet = await requestJson(baseUrl, "GET", MT1F5C3_TERMINALES_RUTA, null, colaboradorToken);
+    assertEqual(resGet.response.status, 403, "colaborador no debe poder usar la ruta debug de terminales");
+    const resPost = await requestJson(baseUrl, "POST", MT1F5C3_TEST_ORDEN_RUTA, { terminal_id: "T1", monto: 100 }, colaboradorToken);
+    assertEqual(resPost.response.status, 403, "colaborador no debe poder usar la ruta debug de test-orden");
+    const entradas = mt1f5c3LeerMockLog(mockLogPath);
+    assertEqual(entradas.length, 0, "un 403 jamas debe llegar a invocar a Mercado Pago");
+  });
+}
+
+async function testMT1F5C3DebugSinFiltracionEnResponseYLogs() {
+  const sentinel = "MT1F5C3-SENTINEL-no-leak-7d21";
+  const logs = await mt1f5c3ConServidorCapturaLogs(async (baseUrl, dbPath, masterKey) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", "/integraciones/mercadopago-point/credencial", { secret: sentinel }, adminToken);
+    await requestJson(baseUrl, "PATCH", "/integraciones/mercadopago-point/credencial/habilitado", { enabled: true }, adminToken);
+    const res = await requestJson(baseUrl, "GET", MT1F5C3_TERMINALES_RUTA, null, adminToken);
+    assertSame(JSON.stringify(res.data).includes(sentinel), false, "el sentinel no debe aparecer en la response de la ruta debug");
+  });
+  assertSame(logs.includes(sentinel), false, "el sentinel jamas debe aparecer en stdout/stderr del proceso servidor");
+}
+
+// Multi + HTTP real + ALS: dos tenants reales, cada uno con su propia credencial DB-managed,
+// autenticados via login central real (Host -> tenant middleware -> runWithTenantHandle envuelve
+// TODA la cadena, incluida la ruta debug y su llamada fetch() mockeada). No basta con invocar
+// resolverCredencial() de forma aislada -- esta prueba ejercita la ruta HTTP real de punta a punta.
+async function testMT1F5C3DebugMultiAisladoTokenPorTenant() {
+  const escenario = await mt1f1CrearEscenario(["f5c3a", "f5c3b"]);
+  const masterKeyAnterior = process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+  const masterKey = crypto.randomBytes(32).toString("base64");
+  const centralPassword = "F5c3CentralPass123!";
+  const mockScriptPath = mt1f5c3EscribirMockFetch();
+  const mockLogPath = mt1f5c3CrearMockLogPath();
+  try {
+    process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = masterKey;
+    const servicio = crearIntegracionTenantService({ tenancyMode: "multi", getTenantContext });
+    const [tenantA, tenantB] = escenario.tenants;
+    const handleA = (await mt1f1Resolver(tenantA, escenario.controlDbPath)).handle;
+    const handleB = (await mt1f1Resolver(tenantB, escenario.controlDbPath)).handle;
+    const secretoA = "MT1F5C3-multi-tenant-A-secreto";
+    const secretoB = "MT1F5C3-multi-tenant-B-secreto";
+    await runWithTenantHandle(handleA, () => servicio.establecerCredencial("mercadopago_point", secretoA));
+    await runWithTenantHandle(handleA, () => servicio.establecerHabilitado("mercadopago_point", true));
+    await runWithTenantHandle(handleB, () => servicio.establecerCredencial("mercadopago_point", secretoB));
+    await runWithTenantHandle(handleB, () => servicio.establecerHabilitado("mercadopago_point", true));
+
+    const controlDb = await bootstrapControlDb(escenario.controlDbPath, { seed: false });
+    const centralHash = await bcrypt.hash(centralPassword, 10);
+    const central = await crearUsuarioCentral(controlDb, { nombre: "MT1F5C3 Central", usuarioReferencia: "mt1f5c3-central", passwordHash: centralHash, activo: 1 });
+    for (const tenant of [tenantA, tenantB]) {
+      const localAdmin = (await allSql(tenant.dbPath, "SELECT id FROM usuarios WHERE usuario = 'admin'"))[0];
+      await crearMembership(controlDb, { usuarioId: central.id, empresaId: tenant.empresa.id, usuarioLocalId: localAdmin.id, rol: "admin", activo: 1 });
+    }
+    await closeControlDb(controlDb);
+
+    const decoyPath = tempDbPath();
+    await mt1f3ConServidor(
+      {
+        ...mt1f3EntornoMulti(escenario, decoyPath),
+        ATLAS_INTEGRATION_MASTER_KEY_B64: masterKey,
+        ...mt1f5c3EnvMock(mockScriptPath, mockLogPath, "success")
+      },
+      async ({ port }) => {
+        const loginA = await mt1f3Pedir(port, { host: mt1f3Host(tenantA), metodo: "POST", ruta: "/login", cuerpo: { usuario: "admin", password: centralPassword } });
+        assertEqual(loginA.status, 200, "login central real para tenant A debe funcionar");
+        const tokenA = loginA.json.token;
+
+        const respA = await mt1f3Pedir(port, { host: mt1f3Host(tenantA), metodo: "GET", ruta: MT1F5C3_TERMINALES_RUTA, autorizacion: `Bearer ${tokenA}` });
+        assertEqual(respA.status, 200, "la ruta debug debe responder 200 para tenant A autenticado");
+        assertSame(respA.json.ok, true, "tenant A tiene credencial DB_MANAGED habilitada: debe poder consultar terminales");
+
+        const loginB = await mt1f3Pedir(port, { host: mt1f3Host(tenantB), metodo: "POST", ruta: "/login", cuerpo: { usuario: "admin", password: centralPassword } });
+        const tokenB = loginB.json.token;
+        const respB = await mt1f3Pedir(port, { host: mt1f3Host(tenantB), metodo: "GET", ruta: MT1F5C3_TERMINALES_RUTA, autorizacion: `Bearer ${tokenB}` });
+        assertSame(respB.json.ok, true, "tenant B tambien debe poder consultar terminales con su propia credencial");
+
+        const entradas = mt1f5c3LeerMockLog(mockLogPath);
+        assertEqual(entradas.length, 2, "deben registrarse exactamente 2 llamadas salientes interceptadas, una por tenant");
+        assertSame(entradas[0].authorization, `Bearer ${secretoA}`, "la primera llamada (tenant A via HTTP real) debe usar EXACTAMENTE el secreto de A");
+        assertSame(entradas[1].authorization, `Bearer ${secretoB}`, "la segunda llamada (tenant B via HTTP real) debe usar EXACTAMENTE el secreto de B");
+        assertSame(entradas[0].authorization !== entradas[1].authorization, true, "los tokens efectivos de A y B jamas deben cruzarse");
+      }
+    );
+  } finally {
+    if (masterKeyAnterior === undefined) delete process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+    else process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = masterKeyAnterior;
+    fs.rmSync(mockScriptPath, { force: true });
+    fs.rmSync(mockLogPath, { force: true });
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+// MT-1F5C3-B1B (documentacion explicita de cobertura, exigida por B1A hallazgo 1): esta funcion
+// contiene DOS aserciones de naturaleza distinta que NO deben confundirse:
+//   1) "sin contexto" (mas abajo, primeras lineas del try) es una INVOCACION DIRECTA DEL SERVICIO
+//      (crearIntegracionTenantService + resolverCredencial sin runWithTenantHandle activo) --
+//      NO ejercita ninguna ruta HTTP. Se prueba asi porque, en este codebase, el middleware de
+//      tenant (tenantRequestMiddleware.js) envuelve TODA la cadena de rutas dentro de
+//      runWithTenantHandle antes de que cualquier handler se ejecute en modo multi autenticado --
+//      por lo tanto no existe una request HTTP legitima que alcance la ruta debug sin contexto ya
+//      establecido, y este edge case solo es observable en el limite del propio servicio.
+//   2) "multi nunca usa env" (el resto de la funcion, con mt1f3ConServidor + mt1f3Pedir + Host real)
+//      SI es HTTP real de punta a punta: login central real, Host real, la ruta debug real, y el
+//      mock de fetch real -- demuestra la propagacion ALS completa, no solo el servicio aislado.
+async function testMT1F5C3DebugMultiNuncaUsaEnvNiSinContexto() {
+  const envToken = "MT1F5C3-multi-env-jamas";
+  const escenario = await mt1f1CrearEscenario(["f5c3multi"]);
+  const masterKeyAnterior = process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+  const masterKey = crypto.randomBytes(32).toString("base64");
+  const centralPassword = "F5c3MultiNoEnvPass123!";
+  const mockScriptPath = mt1f5c3EscribirMockFetch();
+  const mockLogPath = mt1f5c3CrearMockLogPath();
+  try {
+    process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = masterKey;
+    // Sin fila managed para este tenant: el servicio, en multi, jamas debe caer al env aunque este seteada.
+    const servicio = crearIntegracionTenantService({ tenancyMode: "multi", getTenantContext });
+    let lanzo = null;
+    try { await servicio.resolverCredencial("mercadopago_point"); } catch (error) { lanzo = error; }
+    assertSame(lanzo && lanzo.code, "TENANT_CONTEXT_REQUIRED", "sin contexto de tenant activo, resolverCredencial debe fallar cerrado ANTES de considerar env");
+
+    const [tenant] = escenario.tenants;
+    const controlDb = await bootstrapControlDb(escenario.controlDbPath, { seed: false });
+    const centralHash = await bcrypt.hash(centralPassword, 10);
+    const central = await crearUsuarioCentral(controlDb, { nombre: "MT1F5C3 MultiNoEnv", usuarioReferencia: "mt1f5c3-multi-noenv", passwordHash: centralHash, activo: 1 });
+    const localAdmin = (await allSql(tenant.dbPath, "SELECT id FROM usuarios WHERE usuario = 'admin'"))[0];
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: tenant.empresa.id, usuarioLocalId: localAdmin.id, rol: "admin", activo: 1 });
+    await closeControlDb(controlDb);
+
+    const decoyPath = tempDbPath();
+    await mt1f3ConServidor(
+      {
+        ...mt1f3EntornoMulti(escenario, decoyPath),
+        ATLAS_INTEGRATION_MASTER_KEY_B64: masterKey,
+        MERCADOPAGO_ACCESS_TOKEN: envToken,
+        ...mt1f5c3EnvMock(mockScriptPath, mockLogPath, "success")
+      },
+      async ({ port }) => {
+        const loginResp = await mt1f3Pedir(port, { host: mt1f3Host(tenant), metodo: "POST", ruta: "/login", cuerpo: { usuario: "admin", password: centralPassword } });
+        assertEqual(loginResp.status, 200, "login central real debe funcionar");
+        const token = loginResp.json.token;
+
+        const resp = await mt1f3Pedir(port, { host: mt1f3Host(tenant), metodo: "GET", ruta: MT1F5C3_TERMINALES_RUTA, autorizacion: `Bearer ${token}` });
+        assertEqual(resp.status, 200, "la ruta debug responde 200 (respuesta segura, no una excepcion)");
+        assertSame(resp.json.ok, false, "sin fila managed en multi, aunque MERCADOPAGO_ACCESS_TOKEN este seteada, debe fallar de forma segura");
+        assertSame(resp.json.origen, "config", "origen debe ser config, nunca un intento fallido contra mercadopago");
+
+    const entradas = mt1f5c3LeerMockLog(mockLogPath);
+        assertEqual(entradas.length, 0, "en multi, sin fila managed, jamas debe llamarse a Mercado Pago con el token de env");
+      }
+    );
+  } finally {
+    if (masterKeyAnterior === undefined) delete process.env.ATLAS_INTEGRATION_MASTER_KEY_B64;
+    else process.env.ATLAS_INTEGRATION_MASTER_KEY_B64 = masterKeyAnterior;
+    fs.rmSync(mockScriptPath, { force: true });
+    fs.rmSync(mockLogPath, { force: true });
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+// ==== MT-1F5C3-B1B: pruebas negativas exigidas por el hallazgo de auditoria B1A. ====
+
+// Ambas rutas: el proveedor/cliente HTTP falla con un detalle que incluye una credencial ficticia
+// identificable (modo "leak" del mock -- simula el peor caso, un error que ecoa la cabecera de
+// autorizacion recibida). La respuesta HTTP y los logs del proceso hijo NO deben contener el
+// sentinel bajo ninguna circunstancia.
+// MT-1F5C3-B1D: version definitiva (post R3/B1D), usa el helper permanente de captura de logs --
+// sin instrumentacion diagnostica temporal. Los mensajes de asercion de GET y POST se prefijan
+// explicitamente para que un futuro fallo jamas vuelva a ser ambiguo entre ambas rutas (leccion de
+// B1C-R0/D1/D2: un mensaje compartido entre 2 aserciones distintas oculto la causa raiz real).
+async function testMT1F5C3DebugErrorExternoNoFiltraCredencial() {
+  const sentinel = "MT1F5C3-SENTINEL-leak-en-error-a91f";
+  const logs = await mt1f5c3ConServidorCapturaLogs(async (baseUrl, dbPath, masterKey) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", "/integraciones/mercadopago-point/credencial", { secret: sentinel }, adminToken);
+    await requestJson(baseUrl, "PATCH", "/integraciones/mercadopago-point/credencial/habilitado", { enabled: true }, adminToken);
+
+    const resGet = await requestJson(baseUrl, "GET", MT1F5C3_TERMINALES_RUTA, null, adminToken);
+    assertSame(resGet.data.ok, false, "GET: un error de red externo debe resultar en ok:false");
+    assertSame(resGet.data.origen, "mercadopago", "GET: origen debe seguir siendo mercadopago en un fallo externo real");
+    assertSame(JSON.stringify(resGet.data).includes(sentinel), false, "GET: el sentinel no debe aparecer en la response ante un error externo");
+    assertSame(JSON.stringify(resGet.data).includes("Bearer"), false, "GET: la response no debe contener ninguna cabecera de autorizacion");
+
+    const resPost = await requestJson(baseUrl, "POST", MT1F5C3_TEST_ORDEN_RUTA, { terminal_id: "T1", monto: 100 }, adminToken);
+    assertSame(resPost.data.ok, false, "POST: un error de red externo en ambas llamadas debe resultar en ok:false");
+    assertSame(resPost.data.parcial, false, "POST: si ambas llamadas fallan por red no es un resultado parcial");
+    assertSame(resPost.data.payment_intents.ok, false, "POST: payment_intents debe reportar ok:false ante un error de red");
+    assertSame(resPost.data.v1_orders.ok, false, "POST: v1_orders debe reportar ok:false ante un error de red");
+    assertSame(JSON.stringify(resPost.data).includes(sentinel), false, "POST: el sentinel no debe aparecer en la response ante un error externo");
+    assertSame(JSON.stringify(resPost.data).includes("Bearer"), false, "POST: la response no debe contener ninguna cabecera de autorizacion");
+  }, { modo: "leak" });
+  assertSame(logs.includes(sentinel), false, "el sentinel jamas debe aparecer en stdout/stderr del proceso servidor, ni siquiera en la rama de error");
+  assertSame(logs.includes("Bearer"), false, "los logs del proceso servidor no deben contener ninguna cabecera de autorizacion, ni siquiera en la rama de error");
+}
+
+// MT-1F5C3-B1D: un HTTP no-2xx del proveedor (sin excepcion de red) jamas debe traducirse en
+// ok:true, y el cuerpo de esa respuesta -- deliberadamente adversarial, refleja el Authorization
+// recibido -- jamas debe reenviarse al cliente. Cubre 2 defectos reales de R3: la falta de chequeo
+// de res.ok en llamarMpDebug, y la exposicion de raw/raw_text/error_red sin sanitizar.
+async function testMT1F5C3DebugErrorHttpEsNoExitoso() {
+  const sentinel = "MT1F5C3-SENTINEL-http-error-body-c4e1";
+  await mt1f5c3ConServidor(async (baseUrl, dbPath, masterKey, mockLogPath) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", "/integraciones/mercadopago-point/credencial", { secret: sentinel }, adminToken);
+    await requestJson(baseUrl, "PATCH", "/integraciones/mercadopago-point/credencial/habilitado", { enabled: true }, adminToken);
+
+    const resGet = await requestJson(baseUrl, "GET", MT1F5C3_TERMINALES_RUTA, null, adminToken);
+    assertSame(resGet.data.ok, false, "GET: un HTTP no-2xx del proveedor debe resultar en ok:false");
+    assertSame(JSON.stringify(resGet.data).includes(sentinel), false, "GET: el cuerpo adversarial del proveedor no debe filtrar el sentinel");
+
+    const resPost = await requestJson(baseUrl, "POST", MT1F5C3_TEST_ORDEN_RUTA, { terminal_id: "T1", monto: 100 }, adminToken);
+    assertSame(resPost.data.ok, false, "POST: un HTTP no-2xx en ambas llamadas debe resultar en ok:false");
+    assertSame(resPost.data.parcial, false, "POST: si ambas llamadas fallan con HTTP no-2xx no es un resultado parcial");
+    assertSame(resPost.data.payment_intents.ok, false, "POST: payment_intents debe reportar ok:false ante HTTP no-2xx");
+    assertSame(resPost.data.v1_orders.ok, false, "POST: v1_orders debe reportar ok:false ante HTTP no-2xx");
+    assertSame(resPost.data.payment_intents.http_status, 500, "POST: debe preservarse el codigo HTTP numerico devuelto por el proveedor");
+    assertSame(resPost.data.v1_orders.http_status, 500, "POST: debe preservarse el codigo HTTP numerico devuelto por el proveedor");
+    assertSame(JSON.stringify(resPost.data).includes(sentinel), false, "POST: el cuerpo adversarial del proveedor no debe filtrar el sentinel");
+    assertSame(JSON.stringify(resPost.data).includes("raw"), false, "POST: la response publica jamas debe incluir un campo raw/raw_text del proveedor");
+  }, { modo: "http_error" });
+}
+
+// MT-1F5C3-B1D: exito parcial (una de las 2 llamadas de test-orden 2xx, la otra no) jamas debe
+// reportarse como ok:true -- decision funcional congelada en el checkpoint B1D seccion 4.
+async function testMT1F5C3DebugParcialSeInformaComoParcial() {
+  await mt1f5c3ConServidor(async (baseUrl, dbPath, masterKey, mockLogPath) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    await requestJson(baseUrl, "PUT", "/integraciones/mercadopago-point/credencial", { secret: "MT1F5C3-partial-token" }, adminToken);
+    await requestJson(baseUrl, "PATCH", "/integraciones/mercadopago-point/credencial/habilitado", { enabled: true }, adminToken);
+
+    const resPost = await requestJson(baseUrl, "POST", MT1F5C3_TEST_ORDEN_RUTA, { terminal_id: "T1", monto: 100 }, adminToken);
+    assertSame(resPost.data.ok, false, "un exito parcial NUNCA debe reportarse como ok:true");
+    assertSame(resPost.data.parcial, true, "debe marcarse explicitamente como resultado parcial");
+    assertSame(resPost.data.payment_intents.ok, true, "payment-intents debio ser exitoso en este escenario");
+    assertSame(resPost.data.v1_orders.ok, false, "v1/orders debio fallar en este escenario");
+    assertSame(typeof resPost.data.message, "string", "debe incluir un mensaje explicando el resultado parcial");
+    assertSame(resPost.data.message.toLowerCase().includes("parcial"), true, "el mensaje debe advertir explicitamente que el resultado es parcial");
+  }, { modo: "partial" });
+}
+
+// El preloader debe rechazar localmente CUALQUIER solicitud no reconocida (dominio distinto o ruta
+// MP no reconocida), sin acceder jamas al fetch original ni a la red real. Prueba determinista y
+// sin dependencia de conectividad: el mock lanza sincronicamente antes de intentar cualquier
+// conexion real. Se ejercita el MISMO modulo (MT1F5C3_MOCK_FETCH_SOURCE) que usan las 2 rutas
+// reales, en un proceso hijo minimo sin backend/server.js ni base de datos.
+async function testMT1F5C3MockFetchBloqueaSolicitudNoReconocida() {
+  const mockScriptPath = mt1f5c3EscribirMockFetch();
+  const mockLogPath = mt1f5c3CrearMockLogPath();
+  const probeSource = [
+    "const assert = require(\"assert\");",
+    "(async () => {",
+    "  let error1 = null;",
+    "  try { await fetch(\"https://example.com/no-es-mercadopago\"); } catch (e) { error1 = e; }",
+    "  assert.ok(error1 && /MP_MOCK_BLOCKED_UNEXPECTED_REQUEST/.test(error1.message), \"debe bloquear un dominio no reconocido\");",
+    "",
+    "  let error2 = null;",
+    "  try { await fetch(\"https://api.mercadopago.com/no/es/una/ruta/reconocida\"); } catch (e) { error2 = e; }",
+    "  assert.ok(error2 && /MP_MOCK_BLOCKED_UNEXPECTED_REQUEST/.test(error2.message), \"debe bloquear una ruta MP no reconocida aunque el origen sea correcto\");",
+    "",
+    "  let error3 = null;",
+    "  try { await fetch(\"https://api.mercadopago.com.evil.example/terminals/v1/list\"); } catch (e) { error3 = e; }",
+    "  assert.ok(error3 && /MP_MOCK_BLOCKED_UNEXPECTED_REQUEST/.test(error3.message), \"debe bloquear un origen que solo contiene el dominio real como substring\");",
+    "",
+    "  console.log(\"MOCK_FAIL_CLOSED_OK\");",
+    "})().catch((e) => { console.error(e.message); process.exit(1); });"
+  ].join("\n");
+  const probePath = path.join(os.tmpdir(), `mp-mock-probe-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.js`);
+  fs.writeFileSync(probePath, probeSource, "utf8");
+  try {
+    const resultado = await new Promise((resolve, reject) => {
+      const hijo = spawn(process.execPath, [probePath], {
+        cwd: ROOT,
+        env: { ...process.env, ...mt1f5c3EnvMock(mockScriptPath, mockLogPath, "success") },
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      let salida = "";
+      hijo.stdout.on("data", (d) => { salida += d.toString(); });
+      hijo.stderr.on("data", (d) => { salida += d.toString(); });
+      hijo.once("exit", (codigo) => resolve({ codigo, salida }));
+      hijo.once("error", reject);
+    });
+    assertEqual(resultado.codigo, 0, `el proceso de prueba del mock debe salir 0: ${resultado.salida}`);
+    assertSame(resultado.salida.includes("MOCK_FAIL_CLOSED_OK"), true, "el mock debe bloquear las 3 solicitudes no reconocidas, deterministicamente y sin red real");
+    const entradas = mt1f5c3LeerMockLog(mockLogPath);
+    assertEqual(entradas.length, 3, "las 3 solicitudes bloqueadas deben quedar registradas");
+    assertSame(entradas.every((e) => e.bloqueado === true), true, "toda entrada registrada para una solicitud no reconocida debe estar marcada bloqueado:true");
+  } finally {
+    fs.rmSync(mockScriptPath, { force: true });
+    fs.rmSync(mockLogPath, { force: true });
+    fs.rmSync(probePath, { force: true });
   }
 }
