@@ -2719,19 +2719,10 @@ app.post("/productos", async (req, res) => {
     const configGlobal = await getConfiguracionGlobal();
     const codigoManual = String(codigo || "").trim();
     const codigoAutomaticoActivo = configGlobal.stock_codigo_automatico !== false;
-    const codigoFinal = codigoManual || (codigoAutomaticoActivo ? await generarCodigoProducto(Number(categoria_id)) : "");
 
-    if (codigoFinal) {
-      const codDuplicado = await getQuery(
-        "SELECT id FROM productos WHERE codigo = ? AND eliminado = 0",
-        [codigoFinal]
-      );
-      if (codDuplicado) {
-        return res.status(409).json({ message: `Ya existe un producto con el código "${codigoFinal}"` });
-      }
-    }
-
-    const result = await runQuery(
+    // PRODUCT-CODE-D1: el INSERT se aisla en una funcion local parametrizada por codigo para poder
+    // reintentarlo (solo en la rama de codigo AUTOMATICO, mas abajo) sin duplicar las 38 columnas.
+    const insertarProducto = (codigoParaInsertar) => runQuery(
       `INSERT INTO productos
       (nombre, categoria, precio_compra, precio_venta, stock, maneja_stock, proveedor_principal, proveedor_id, activo, observaciones, imagen_url, iva_porcentaje, precio_compra_incluye_iva, costo_final, categoria_id, redondeo,
        codigo, descripcion, stock_minimo, unidad_medida, codigo_barras, marca, presentacion, ubicacion, vencimiento, alerta_stock_minimo, usa_costos_varios, precio_referencial_proveedor, agregar_proveedor_info, es_combo, aplica_para_combo, tipo, rendimiento_receta,
@@ -2754,7 +2745,7 @@ app.post("/productos", async (req, res) => {
         costoFinal,
         categoria_id ? Number(categoria_id) : null,
         Number(redondeo) || 0,
-        codigoFinal,
+        codigoParaInsertar,
         descripcion || "",
         recetaSinStockFisico ? 0 : Number(stock_minimo) || 0,
         unidad_medida || "unidad",
@@ -2778,6 +2769,66 @@ app.post("/productos", async (req, res) => {
         precioVentaModo
       ]
     );
+
+    const esColisionCodigoAutomatico = (error) =>
+      String(error?.message || "").includes("UNIQUE constraint failed: productos.codigo");
+    const errorCodigoAutomaticoAgotado = () => {
+      const error = new Error("No se pudo generar un código automático único para el producto. Intentá nuevamente.");
+      error.statusCode = 409;
+      return error;
+    };
+
+    let codigoFinal;
+    let result;
+
+    if (codigoManual) {
+      // Codigo MANUAL: contrato identico al existente, sin reintentos -- un duplicado manual sigue
+      // siendo un 409 inmediato, nunca se regenera.
+      codigoFinal = codigoManual;
+      const codDuplicado = await getQuery(
+        "SELECT id FROM productos WHERE codigo = ? AND eliminado = 0",
+        [codigoFinal]
+      );
+      if (codDuplicado) {
+        return res.status(409).json({ message: `Ya existe un producto con el código "${codigoFinal}"` });
+      }
+      result = await insertarProducto(codigoFinal);
+    } else if (!codigoAutomaticoActivo) {
+      // Generacion automatica desactivada y sin codigo manual: comportamiento identico al existente
+      // (codigo vacio, sin chequeo de duplicado, sin reintento).
+      codigoFinal = "";
+      result = await insertarProducto(codigoFinal);
+    } else {
+      // Codigo AUTOMATICO (MT-1G-R2 / PRODUCT-CODE-D1): reintento acotado ante colision, cubriendo
+      // tanto el chequeo previo (codDuplicado) como el UNIQUE real detectado recien en el INSERT --
+      // la condicion de carrera demostrada en R2 (dos solicitudes concurrentes del mismo tenant
+      // pueden calcular el mismo codigo antes de que cualquiera complete su INSERT). Nunca reintenta
+      // un error SQLite ajeno a esta colision especifica (se relanza tal cual), ni repite el INSERT
+      // una vez que ya tuvo exito. La restriccion UNIQUE de SQLite sigue siendo la autoridad
+      // definitiva de unicidad: este mecanismo solo reacciona a ella, no la reemplaza ni la
+      // anticipa con una transaccion propia sobre la conexion compartida del tenant.
+      const MAX_INTENTOS_CODIGO_AUTOMATICO = 5;
+      let intento = 0;
+      for (;;) {
+        intento += 1;
+        codigoFinal = await generarCodigoProducto(Number(categoria_id));
+        const codDuplicado = await getQuery(
+          "SELECT id FROM productos WHERE codigo = ? AND eliminado = 0",
+          [codigoFinal]
+        );
+        if (codDuplicado) {
+          if (intento >= MAX_INTENTOS_CODIGO_AUTOMATICO) throw errorCodigoAutomaticoAgotado();
+          continue;
+        }
+        try {
+          result = await insertarProducto(codigoFinal);
+          break;
+        } catch (insertError) {
+          if (!esColisionCodigoAutomatico(insertError)) throw insertError;
+          if (intento >= MAX_INTENTOS_CODIGO_AUTOMATICO) throw errorCodigoAutomaticoAgotado();
+        }
+      }
+    }
 
     if (usaCostos) await guardarInsumosProducto(result.lastID, costos_insumos);
     if (tipoProducto === "compuesto") await guardarProductoCompuestoConfig(result.lastID, componentes, costos_extra);

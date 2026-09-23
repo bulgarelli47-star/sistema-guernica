@@ -20955,6 +20955,12 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1F5C3DebugErrorHttpEsNoExitoso);
   await _run(testMT1F5C3DebugParcialSeInformaComoParcial);
   await _run(testMT1F5C3MockFetchBloqueaSolicitudNoReconocida);
+  await _run(testMT1G1LecturaAutenticadaCrossTenantDenegada);
+  await _run(testMT1G2EscrituraAutenticadaCrossTenantDenegada);
+  await _run(testMT1G5UsuarioDualMembershipResuelveEmpresas);
+  await _run(testMT1G7ConcurrenteAutenticadoAislado);
+  await _run(testProductoCodigoAutomaticoConcurrenteMismoTenant);
+  await _run(testProductoCodigoAutomaticoReintentoDeterminista);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -37295,5 +37301,467 @@ async function testMT1F5C3MockFetchBloqueaSolicitudNoReconocida() {
     fs.rmSync(mockScriptPath, { force: true });
     fs.rmSync(mockLogPath, { force: true });
     fs.rmSync(probePath, { force: true });
+  }
+}
+
+// ==================================================================================
+// MT-1G-D1: certificacion cross-tenant end-to-end (G1, G2, G5, G7). Reutiliza integramente la
+// infraestructura F1/F3/F4 ya existente (mt1f1CrearEscenario, mt1f3ConServidor/Pedir/Host/Sembrar,
+// mt1f4ConEscenario) -- ningun fixture nuevo salvo el helper de membership dual exigido por G5.
+// Contrato de rechazo reutilizado sin cambios: mt1f3EsNoAutenticado (401, uniforme, no-enumerable).
+// Endpoint de negocio real elegido tras inspeccionar server.js: GET/POST /productos -- ya estaba
+// clasificado como ruta protegida real en MT1F3_RUTAS_PROTEGIDAS_DE_PRUEBA (no un endpoint de
+// diagnostico). POST /productos exige categoria_id valida (backend/server.js linea ~2680); se
+// siembra una categoria minima por tenant via SQL directo, igual patron que mt1f3Sembrar.
+// ==================================================================================
+
+// Helper especifico de G5: UN UNICO usuario central U con membership real en A y en B (nunca dos
+// usuarios). Preserva intacto mt1f4ConEscenario -- este helper es aditivo, no lo modifica.
+async function mt1gCrearUsuarioDualMembership(controlDbPath, tenantA, tenantB, password) {
+  const control = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    const localA = (await allSql(tenantA.dbPath, "SELECT * FROM usuarios WHERE usuario = 'admin'"))[0];
+    const localB = (await allSql(tenantB.dbPath, "SELECT * FROM usuarios WHERE usuario = 'admin'"))[0];
+    const central = await crearUsuarioCentral(control, {
+      nombre: "MT1G Dual",
+      usuarioReferencia: "admin",
+      passwordHash: await bcrypt.hash(password, 10),
+      activo: 1
+    });
+    const membershipA = await crearMembership(control, { usuarioId: central.id, empresaId: tenantA.empresa.id, usuarioLocalId: localA.id, rol: "admin", activo: 1 });
+    const membershipB = await crearMembership(control, { usuarioId: central.id, empresaId: tenantB.empresa.id, usuarioLocalId: localB.id, rol: "admin", activo: 1 });
+    return { central, membershipA, membershipB };
+  } finally {
+    await closeControlDb(control);
+  }
+}
+
+async function mt1gSembrarCategoriaMinima(dbPath, nombre) {
+  await runSql(dbPath, "INSERT INTO categorias (nombre, margen_porcentaje, maneja_stock, usa_costos_varios, activo) VALUES (?, 0, 0, 0, 1)", [nombre]);
+  return (await allSql(dbPath, "SELECT id FROM categorias WHERE nombre = ?", [nombre]))[0];
+}
+
+// G1: lectura autenticada de negocio real (GET /productos) contra el Host de B usando un token
+// valido SOLO en A. Debe rechazarse con el contrato uniforme (401, no-enumerable), sin filtrar
+// ningun dato de B, y sin mutar ninguna de las dos bases.
+async function testMT1G1LecturaAutenticadaCrossTenantDenegada() {
+  await mt1f4ConEscenario(async ({ escenario, a, b, pedir, loginTenant }) => {
+    await mt1f3Sembrar(escenario);
+    const tokenA = await loginTenant(a);
+
+    const legitimo = await pedir(a, "GET", "/productos", null, tokenA);
+    assertEqual(legitimo.status, 200, `el acceso legitimo de A a sus propios productos debe funcionar: ${legitimo.texto}`);
+    assertSame(Array.isArray(legitimo.json) && legitimo.json.some((p) => p.nombre === "Producto A"), true, "A ve su propio producto sembrado");
+
+    const productosBAntes = await allSql(b.dbPath, "SELECT * FROM productos");
+    const sesionesBAntes = await allSql(b.dbPath, "SELECT * FROM sesiones");
+
+    const cruzado = await pedir(b, "GET", "/productos", null, tokenA);
+    assertSame(mt1f3EsNoAutenticado(cruzado), true, `el token de A debe ser rechazado contra el Host de B con el contrato uniforme (status=${cruzado.status} ${cruzado.texto.slice(0, 150)})`);
+    assertSame(JSON.stringify(cruzado.json).includes("Producto B"), false, "la respuesta rechazada no debe filtrar ningun dato de negocio de B");
+
+    const productosBDespues = await allSql(b.dbPath, "SELECT * FROM productos");
+    const sesionesBDespues = await allSql(b.dbPath, "SELECT * FROM sesiones");
+    assertEqual(productosBDespues.length, productosBAntes.length, "B no debe sufrir ninguna mutacion de productos por el intento de lectura rechazado");
+    assertEqual(sesionesBDespues.length, sesionesBAntes.length, "B no debe registrar ninguna sesion nueva por el intento rechazado");
+    assertSame(productosBDespues[0]?.nombre, "Producto B", "el unico producto de B sigue siendo exactamente el sembrado, sin alteracion");
+  });
+}
+
+// G2: escritura autenticada de negocio real (POST /productos) contra el Host de B usando un token
+// valido SOLO en A. Primero demuestra que la MISMA operacion esta legitimamente autorizada en A.
+async function testMT1G2EscrituraAutenticadaCrossTenantDenegada() {
+  await mt1f4ConEscenario(async ({ escenario, a, b, pedir, loginTenant }) => {
+    await mt1f3Sembrar(escenario);
+    const categoriaA = await mt1gSembrarCategoriaMinima(a.dbPath, "MT1G2 Categoria");
+    const tokenA = await loginTenant(a);
+
+    const cuerpoLegitimo = { nombre: "MT1G2 Producto Legitimo A", categoria_id: categoriaA.id, precio_compra: 10, precio_venta: 50, maneja_stock: 0, activo: 1 };
+    const legitimo = await pedir(a, "POST", "/productos", cuerpoLegitimo, tokenA);
+    assertSame(legitimo.status >= 200 && legitimo.status < 300, true, `la escritura legitima de A debe estar autorizada (status=${legitimo.status} ${legitimo.texto.slice(0, 150)})`);
+    const productosAAntes = await allSql(a.dbPath, "SELECT * FROM productos");
+    assertSame(productosAAntes.some((p) => p.nombre === "MT1G2 Producto Legitimo A"), true, "el producto legitimo de A quedo persistido en la DB de A");
+
+    const productosBAntes = await allSql(b.dbPath, "SELECT * FROM productos");
+    const sesionesBAntes = await allSql(b.dbPath, "SELECT * FROM sesiones");
+
+    const cuerpoCruzado = { nombre: "MT1G2 Producto Cruzado", categoria_id: categoriaA.id, precio_compra: 10, precio_venta: 50, maneja_stock: 0, activo: 1 };
+    const cruzado = await pedir(b, "POST", "/productos", cuerpoCruzado, tokenA);
+    assertSame(mt1f3EsNoAutenticado(cruzado), true, `la escritura cruzada contra B con token de A debe ser rechazada con el contrato uniforme (status=${cruzado.status} ${cruzado.texto.slice(0, 150)})`);
+
+    // No se verifican caja/ventas por separado: POST /productos (backend/server.js) inserta
+    // exclusivamente en la tabla `productos` -- no existe ningun camino de codigo en ese handler
+    // hacia caja_movimientos/ventas, asi que "sin efectos secundarios en stock/caja/ventas" queda
+    // estructuralmente garantizado por la eleccion del endpoint, no por una asercion adicional sobre
+    // tablas que este endpoint no toca.
+    const productosBDespues = await allSql(b.dbPath, "SELECT * FROM productos");
+    const sesionesBDespues = await allSql(b.dbPath, "SELECT * FROM sesiones");
+    assertEqual(productosBDespues.length, productosBAntes.length, "B no debe ganar ninguna fila de producto por el intento rechazado");
+    assertEqual(sesionesBDespues.length, sesionesBAntes.length, "B no debe ganar ninguna sesion por el intento rechazado");
+    assertSame(productosBDespues.every((p) => p.nombre !== "MT1G2 Producto Cruzado"), true, "el producto del intento cruzado nunca debe aparecer en B");
+
+    const productosADespues = await allSql(a.dbPath, "SELECT * FROM productos");
+    assertEqual(productosADespues.length, productosAAntes.length, "el estado protegido de A tampoco debe cambiar como consecuencia del intento rechazado contra B");
+  });
+}
+
+// G5: un UNICO usuario central U, con membership real en A y en B. Atlas ata cada sesion a la DB de
+// negocio del tenant resuelto por Host (arquitectura de subdominio + una business DB por tenant, con
+// su propia tabla `sesiones`) -- se verifico por grep sobre backend/server.js que NO existe ningun
+// endpoint de "cambiar de empresa dentro de una sesion" (cero coincidencias de switch/seleccion de
+// empresa). El unico mecanismo real, coherente con esa arquitectura, es la autenticacion
+// INDEPENDIENTE del MISMO usuario central en cada Host -- exactamente lo que este test demuestra.
+// No se inventa una API de cambio de empresa dentro de sesion (opcion B de la seccion 7 del
+// checkpoint): esa opcion no existe en el codigo actual, y se deja constancia explicita de ello aqui
+// en vez de asumirla o de fabricarla.
+async function testMT1G5UsuarioDualMembershipResuelveEmpresas() {
+  const escenario = await mt1f1CrearEscenario(["a", "b"]);
+  const decoyPath = tempDbPath();
+  const password = "MT1G5-Dual-Pass-123!";
+  try {
+    await mt1f3Sembrar(escenario);
+    const [tenantA, tenantB] = escenario.tenants;
+    const { central, membershipA, membershipB } = await mt1gCrearUsuarioDualMembership(escenario.controlDbPath, tenantA, tenantB, password);
+    assertSame(membershipA.usuario_id === central.id && membershipB.usuario_id === central.id, true, "ambas memberships deben pertenecer exactamente al mismo usuario central U");
+    assertSame(membershipA.empresa_id !== membershipB.empresa_id, true, "las dos memberships deben apuntar a empresas distintas");
+
+    await mt1f3ConServidor(mt1f3EntornoMulti(escenario, decoyPath), async (servidor) => {
+      const loginEn = (tenant) => mt1f3Pedir(servidor.port, { host: mt1f3Host(tenant), metodo: "POST", ruta: "/login", cuerpo: { usuario: "admin", password } });
+      const pedirEn = (tenant, token) => mt1f3Pedir(servidor.port, { host: mt1f3Host(tenant), ruta: "/productos", autorizacion: `Bearer ${token}` });
+
+      const loginA = await loginEn(tenantA);
+      assertEqual(loginA.status, 200, `U debe poder autenticarse en A: ${loginA.texto}`);
+      const tokenA = loginA.json.token;
+      const sesionA = (await allSql(tenantA.dbPath, "SELECT * FROM sesiones WHERE token = ?", [tokenA]))[0];
+      assertEqual(sesionA.empresa_id, tenantA.empresa.id, "la sesion en A debe quedar ligada a la identidad de empresa A");
+      assertEqual(sesionA.membership_id, membershipA.id, "la sesion en A debe usar exactamente la membership de A");
+      assertEqual(sesionA.central_id, central.id, "la sesion en A debe pertenecer al usuario central U");
+
+      const productosDesdeA = await pedirEn(tenantA, tokenA);
+      assertEqual(productosDesdeA.status, 200, "U autorizado debe poder consultar productos de A");
+      assertSame(productosDesdeA.json.some((p) => p.nombre === "Producto A"), true, "U debe ver el producto de A");
+      assertSame(productosDesdeA.json.some((p) => p.nombre === "Producto B"), false, "U no debe ver el producto de B mientras opera sobre A");
+
+      const loginB = await loginEn(tenantB);
+      assertEqual(loginB.status, 200, `el MISMO usuario U debe poder autenticarse independientemente en B: ${loginB.texto}`);
+      const tokenB = loginB.json.token;
+      assertSame(tokenB !== tokenA, true, "cada autenticacion debe emitir un token propio: sesiones independientes por tenant");
+      const sesionB = (await allSql(tenantB.dbPath, "SELECT * FROM sesiones WHERE token = ?", [tokenB]))[0];
+      assertEqual(sesionB.empresa_id, tenantB.empresa.id, "la sesion en B debe quedar ligada a la identidad de empresa B");
+      assertEqual(sesionB.membership_id, membershipB.id, "la sesion en B debe usar exactamente la membership de B");
+      assertEqual(sesionB.central_id, central.id, "la sesion en B debe pertenecer al MISMO usuario central U");
+
+      const productosDesdeB = await pedirEn(tenantB, tokenB);
+      assertEqual(productosDesdeB.status, 200, "U autorizado debe poder consultar productos de B");
+      assertSame(productosDesdeB.json.some((p) => p.nombre === "Producto B"), true, "U debe ver el producto de B");
+      assertSame(productosDesdeB.json.some((p) => p.nombre === "Producto A"), false, "U no debe ver el producto de A mientras opera sobre B");
+
+      const tokenAContraB = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenantB), ruta: "/productos", autorizacion: `Bearer ${tokenA}` });
+      assertSame(mt1f3EsNoAutenticado(tokenAContraB), true, "el token de la sesion de A no debe autorizar en B, ni siquiera siendo el mismo usuario U");
+      const tokenBContraA = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenantA), ruta: "/productos", autorizacion: `Bearer ${tokenB}` });
+      assertSame(mt1f3EsNoAutenticado(tokenBContraA), true, "el token de la sesion de B no debe autorizar en A, ni siquiera siendo el mismo usuario U");
+
+      assertSame(servidor.salio(), null, "el servidor debe permanecer vivo durante todo el escenario dual-membership");
+    });
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+// G7: concurrencia AUTENTICADA real -- login previo (fuera de la medicion), luego lecturas y
+// escrituras intercaladas via Promise.all sobre las 2 DBs. Mismo patron de intercalado real que
+// testMT1F3ConcurrenteRequestARequestBAisladas, pero con tokens autenticados y endpoints de negocio
+// protegidos en vez de la tienda publica.
+async function testMT1G7ConcurrenteAutenticadoAislado() {
+  await mt1f4ConEscenario(async ({ escenario, a, b, pedir, loginTenant }) => {
+    await mt1f3Sembrar(escenario);
+    const categoriaA = await mt1gSembrarCategoriaMinima(a.dbPath, "MT1G7 Categoria");
+    const categoriaB = await mt1gSembrarCategoriaMinima(b.dbPath, "MT1G7 Categoria");
+    const tokenA = await loginTenant(a);
+    const tokenB = await loginTenant(b);
+
+    const operaciones = [];
+    for (let indice = 0; indice < 10; indice += 1) {
+      const esA = indice % 2 === 0;
+      const tenant = esA ? a : b;
+      const token = esA ? tokenA : tokenB;
+      const categoriaId = esA ? categoriaA.id : categoriaB.id;
+      const etiqueta = esA ? "A" : "B";
+      const ajeno = esA ? "Producto B" : "Producto A";
+      operaciones.push(
+        pedir(tenant, "GET", "/productos", null, token).then((respuesta) => ({ tipo: "lectura", respuesta, etiqueta, ajeno }))
+      );
+      operaciones.push(
+        pedir(tenant, "POST", "/productos", { nombre: `MT1G7 ${etiqueta} ${indice}`, categoria_id: categoriaId, precio_compra: 1, precio_venta: 2, maneja_stock: 0, activo: 1 }, token)
+          .then((respuesta) => ({ tipo: "escritura", respuesta, etiqueta, indice }))
+      );
+    }
+    const resultados = await Promise.all(operaciones);
+
+    for (const resultado of resultados) {
+      if (resultado.tipo === "lectura") {
+        assertEqual(resultado.respuesta.status, 200, `lectura concurrente autenticada de ${resultado.etiqueta} debe responder 200`);
+        assertSame(resultado.respuesta.json.some((p) => p.nombre === `Producto ${resultado.etiqueta}`), true, `lectura concurrente de ${resultado.etiqueta} debe ver su propio producto`);
+        assertSame(resultado.respuesta.json.some((p) => p.nombre === resultado.ajeno), false, `lectura concurrente de ${resultado.etiqueta} jamas debe ver ${resultado.ajeno}`);
+      } else {
+        assertSame(resultado.respuesta.status >= 200 && resultado.respuesta.status < 300, true, `escritura concurrente autenticada ${resultado.etiqueta}#${resultado.indice} debe registrarse (status=${resultado.respuesta.status} ${resultado.respuesta.texto.slice(0, 100)})`);
+      }
+    }
+
+    const productosA = await allSql(a.dbPath, "SELECT nombre FROM productos WHERE nombre LIKE 'MT1G7 A %'");
+    const productosB = await allSql(b.dbPath, "SELECT nombre FROM productos WHERE nombre LIKE 'MT1G7 B %'");
+    assertEqual(productosA.length, 5, "A debe recibir exactamente sus 5 escrituras concurrentes autenticadas");
+    assertEqual(productosB.length, 5, "B debe recibir exactamente sus 5 escrituras concurrentes autenticadas");
+    const cruceEnA = await allSql(a.dbPath, "SELECT nombre FROM productos WHERE nombre LIKE 'MT1G7 B %'");
+    const cruceEnB = await allSql(b.dbPath, "SELECT nombre FROM productos WHERE nombre LIKE 'MT1G7 A %'");
+    assertEqual(cruceEnA.length, 0, "ninguna escritura concurrente de B debe contaminar la DB de A");
+    assertEqual(cruceEnB.length, 0, "ninguna escritura concurrente de A debe contaminar la DB de B");
+  });
+}
+
+// PRODUCT-CODE-D1: regresion dirigida a la condicion de carrera demostrada en MT-1G-R2 -- codigos
+// automaticos de producto bajo escritura concurrente REAL dentro del MISMO tenant. Deliberadamente
+// en modo single (no requiere el fixture A/B de MT-1G): el defecto es intra-tenant, ortogonal al
+// aislamiento multi-tenant, y single mode es el fixture minimo ya establecido en este harness para
+// ejercitar POST /productos con servidor y autenticacion reales.
+async function testProductoCodigoAutomaticoConcurrenteMismoTenant() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await runSql(dbPath, "INSERT INTO categorias (nombre, margen_porcentaje, maneja_stock, usa_costos_varios, activo) VALUES ('PRODCODE Categoria', 0, 0, 0, 1)");
+      const categoria = (await allSql(dbPath, "SELECT id FROM categorias WHERE nombre = 'PRODCODE Categoria'"))[0];
+
+      const TOTAL = 5;
+      const creaciones = [];
+      for (let indice = 0; indice < TOTAL; indice += 1) {
+        creaciones.push(requestJson(baseUrl, "POST", "/productos", {
+          nombre: `PRODCODE Concurrente ${indice}`,
+          categoria_id: categoria.id,
+          precio_compra: 1,
+          precio_venta: 2,
+          maneja_stock: 0,
+          activo: 1
+        }, token));
+      }
+      const resultados = await Promise.all(creaciones);
+
+      resultados.forEach(({ response, data }, indice) => {
+        assertSame(response.status >= 200 && response.status < 300, true, `creacion concurrente #${indice} debe terminar correctamente, sin 500 por colision (status=${response.status} ${JSON.stringify(data)})`);
+      });
+
+      const productos = await allSql(dbPath, "SELECT nombre, codigo FROM productos WHERE nombre LIKE 'PRODCODE Concurrente %'");
+      assertEqual(productos.length, TOTAL, `deben crearse exactamente los ${TOTAL} productos solicitados`);
+      for (const producto of productos) {
+        assertSame(typeof producto.codigo === "string" && producto.codigo.trim().length > 0, true, `el producto "${producto.nombre}" debe tener un codigo automatico valido (no vacio)`);
+      }
+      const codigosUnicos = new Set(productos.map((p) => p.codigo));
+      assertEqual(codigosUnicos.size, TOTAL, "todos los codigos generados deben ser distintos dentro de la misma base");
+
+      // Creacion secuencial posterior: debe seguir funcionando y conservar el formato habitual
+      // (PREFIJO de 3 letras derivado de la categoria + 3 digitos), sin repetir ningun codigo ya usado.
+      const secuencial = await requestJson(baseUrl, "POST", "/productos", {
+        nombre: "PRODCODE Secuencial",
+        categoria_id: categoria.id,
+        precio_compra: 1,
+        precio_venta: 2,
+        maneja_stock: 0,
+        activo: 1
+      }, token);
+      assertSame(secuencial.response.status >= 200 && secuencial.response.status < 300, true, `la creacion secuencial posterior debe funcionar (status=${secuencial.response.status} ${JSON.stringify(secuencial.data)})`);
+      const productoSecuencial = (await allSql(dbPath, "SELECT codigo FROM productos WHERE nombre = 'PRODCODE Secuencial'"))[0];
+      assertSame(/^[A-Z]{3}\d{3}$/.test(productoSecuencial.codigo), true, `el codigo secuencial debe conservar el formato habitual PREFIJO+3digitos: "${productoSecuencial.codigo}"`);
+      assertSame(codigosUnicos.has(productoSecuencial.codigo), false, "el codigo secuencial tampoco debe repetir ninguno de los generados concurrentemente");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// ==================================================================================
+// PRODUCT-CODE-D2: prueba DETERMINISTA (no probabilistica) de que POST /productos recupera una
+// colision UNIQUE real sobre productos.codigo durante el INSERT. Instrumentacion exclusivamente de
+// prueba, cargada via NODE_OPTIONS=--require en un proceso hijo descartable dedicado a este test
+// unicamente -- mismo patron ya establecido y certificado por F5C3 (MT1F5C3_MOCK_FETCH_SOURCE).
+// No modifica backend/server.js ni backend/db.js. No afecta ninguna otra prueba: el hook solo
+// intercepta el INSERT cuyo primer parametro (nombre) coincide con un marcador unico generado por
+// esta prueba, y solo la PRIMERA vez que lo ve.
+//
+// Mecanismo: intercepta sqlite3.Database.prototype.run dentro del proceso hijo. Al ver el INSERT
+// marcado, inserta -- ANTES de dejarlo pasar -- una fila "decoy" con el MISMO codigo que el servidor
+// esta por usar (extraido dinamicamente de los parametros posicionales del propio INSERT, sin
+// asumir un indice fijo). Esto garantiza que el INSERT real choque contra
+// idx_productos_codigo_unique (indice UNICO parcial: database/business-schema-baseline.js,
+// "WHERE codigo IS NOT NULL AND codigo != '' AND eliminado = 0") -- el error SQLITE_CONSTRAINT
+// resultante es real, generado por el motor, no simulado. La restauracion del entorno no requiere
+// desmontar el monkeypatch dentro del proceso: el hijo entero se mata y sus archivos temporales se
+// borran en el finally (identico al patron ya usado por mt1f5c3ConServidorCapturaLogs), por lo que
+// ninguna otra prueba (que siempre spawnea su propio proceso hijo nuevo) puede verse afectada.
+//
+// NOTA: require("sqlite3") desde un archivo en os.tmpdir() no resolveria el mismo modulo que usa
+// backend/db.js (no hay node_modules ahi). Se usa module.createRequire anclado al package.json real
+// del proyecto para garantizar que ambos requires devuelvan la MISMA instancia de modulo cacheada
+// -- imprescindible para que el monkeypatch del prototipo afecte a las conexiones que abre db.js.
+const MT1PRODCODE_MOCK_SOURCE = `
+const path = require("path");
+const fs = require("fs");
+const { createRequire } = require("module");
+const requireDelProyecto = createRequire(process.env.PRODCODE_PACKAGE_JSON);
+const sqlite3 = requireDelProyecto("sqlite3").verbose();
+
+const MARCADOR = process.env.PRODCODE_MARCADOR;
+const diagPath = process.env.PRODCODE_DIAG_PATH;
+let decoyDisparado = false;
+let intentosVistos = 0;
+
+function diag(entrada) {
+  try { fs.appendFileSync(diagPath, JSON.stringify(Object.assign({ en: new Date().toISOString() }, entrada)) + "\\n"); } catch (e) {}
+}
+
+function indiceColumnaCodigo(sql) {
+  const inicio = sql.indexOf("(");
+  const fin = sql.indexOf(")", inicio);
+  const columnas = sql.slice(inicio + 1, fin).split(",").map(function (c) { return c.trim(); });
+  return columnas.indexOf("codigo");
+}
+
+const runOriginal = sqlite3.Database.prototype.run;
+sqlite3.Database.prototype.run = function (sql, ...resto) {
+  const params = Array.isArray(resto[0]) ? resto[0] : null;
+  const esInsertMarcado = typeof sql === "string" && sql.indexOf("INSERT INTO productos") !== -1 && params && params[0] === MARCADOR;
+  if (esInsertMarcado) {
+    intentosVistos += 1;
+    const idxCodigo = indiceColumnaCodigo(sql);
+    const codigoIntento = idxCodigo >= 0 ? params[idxCodigo] : undefined;
+    diag({ evento: "insert_intento", intento: intentosVistos, codigo: codigoIntento });
+
+    if (!decoyDisparado) {
+      decoyDisparado = true;
+      const conexion = this;
+      const argsOriginales = resto;
+      conexion.run(
+        "INSERT INTO productos (nombre, codigo) VALUES ('__PRODCODE_D2_DECOY__', ?)",
+        [codigoIntento],
+        function (errDecoy) {
+          diag({ evento: "decoy_insertado", ok: !errDecoy, error: errDecoy ? String(errDecoy.message) : null });
+          runOriginal.call(conexion, sql, ...argsOriginales);
+        }
+      );
+      return conexion;
+    }
+  }
+  return runOriginal.call(this, sql, ...resto);
+};
+`;
+
+function mt1prodcodeEscribirMock() {
+  const mockPath = path.join(os.tmpdir(), `prodcode-mock-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.js`);
+  fs.writeFileSync(mockPath, MT1PRODCODE_MOCK_SOURCE, "utf8");
+  return mockPath;
+}
+
+async function mt1prodcodeConServidorInstrumentado(dbPath, fn, { marcador, diagPath }) {
+  const port = await getFreePort();
+  const baseUrl = `http://localhost:${port}`;
+  const mockPath = mt1prodcodeEscribirMock();
+  const baseEnv = { ...process.env };
+  delete baseEnv.ATLAS_AUTH_MODE;
+  delete baseEnv.ATLAS_EMPRESA_SLUG;
+  delete baseEnv.ATLAS_CONTROL_DB_PATH;
+  delete baseEnv.ATLAS_TENANCY_MODE;
+  // MT-1F5C3: NODE_OPTIONS mangla backslashes en Windows -- normalizar a forward slashes.
+  const requirePath = mockPath.replace(/\\/g, "/");
+  const child = spawn(process.execPath, ["backend/server.js"], {
+    cwd: ROOT,
+    env: {
+      ...baseEnv, PORT: String(port), GUERNICA_DB_PATH: dbPath,
+      NODE_OPTIONS: `--require "${requirePath}"`,
+      PRODCODE_MARCADOR: marcador,
+      PRODCODE_DIAG_PATH: diagPath,
+      PRODCODE_PACKAGE_JSON: path.join(ROOT, "package.json")
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let logs = "";
+  child.stdout.on("data", (chunk) => { logs += chunk.toString(); });
+  child.stderr.on("data", (chunk) => { logs += chunk.toString(); });
+  try {
+    await waitForServer(baseUrl);
+    await fn(baseUrl);
+  } catch (error) {
+    error.message = `${error.message}\nServidor test pid=${child.pid} port=${port}\n${logs}`;
+    throw error;
+  } finally {
+    if (!child.killed) child.kill("SIGTERM");
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 1000);
+      child.once("exit", () => { clearTimeout(timer); resolve(); });
+    });
+    if (child.exitCode === null && !child.killed) child.kill("SIGKILL");
+    fs.rmSync(mockPath, { force: true });
+  }
+}
+
+function mt1prodcodeLeerDiag(diagPath) {
+  if (!fs.existsSync(diagPath)) return [];
+  return fs.readFileSync(diagPath, "utf8").split("\n").filter(Boolean).map((linea) => JSON.parse(linea));
+}
+
+async function testProductoCodigoAutomaticoReintentoDeterminista() {
+  const dbPath = bootstrapFreshTestDb();
+  const marcador = `PRODCODE-DETERMINISTA-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const diagPath = path.join(os.tmpdir(), `prodcode-diag-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`);
+  fs.writeFileSync(diagPath, "");
+  try {
+    await mt1prodcodeConServidorInstrumentado(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await runSql(dbPath, "INSERT INTO categorias (nombre, margen_porcentaje, maneja_stock, usa_costos_varios, activo) VALUES ('PRODCODE-D2 Categoria', 0, 0, 0, 1)");
+      const categoria = (await allSql(dbPath, "SELECT id FROM categorias WHERE nombre = 'PRODCODE-D2 Categoria'"))[0];
+
+      const { response, data } = await requestJson(baseUrl, "POST", "/productos", {
+        nombre: marcador,
+        categoria_id: categoria.id,
+        precio_compra: 5,
+        precio_venta: 10,
+        maneja_stock: 0,
+        activo: 1,
+        observaciones: "PRODCODE-D2 datos de negocio"
+      }, token);
+
+      assertEqual(response.status, 200, `la creacion final debe terminar correctamente tras el reintento (status=${response.status} ${JSON.stringify(data)})`);
+      assertSame(typeof data?.id === "number", true, "la respuesta debe incluir el id del producto creado");
+    }, { marcador, diagPath });
+
+    const trazas = mt1prodcodeLeerDiag(diagPath);
+    const intentos = trazas.filter((t) => t.evento === "insert_intento");
+    const decoy = trazas.filter((t) => t.evento === "decoy_insertado");
+
+    assertEqual(intentos.length, 2, `deben observarse exactamente 2 intentos de INSERT para el marcador -- la colision inducida y el reintento (traza=${JSON.stringify(trazas)})`);
+    assertEqual(decoy.length, 1, "el decoy debe insertarse exactamente una vez");
+    assertSame(decoy[0].ok, true, "el INSERT del decoy (la fila que provoca la colision) debe haberse completado con exito");
+    assertSame(typeof intentos[0].codigo === "string" && intentos[0].codigo.length > 0, true, "el primer intento debe llevar un codigo automatico no vacio");
+    assertSame(typeof intentos[1].codigo === "string" && intentos[1].codigo.length > 0, true, "el segundo intento (reintento) debe llevar un codigo automatico no vacio");
+    assertSame(intentos[0].codigo !== intentos[1].codigo, true, "el reintento debe haber generado un codigo DISTINTO al que colisiono");
+
+    const productos = await allSql(dbPath, "SELECT * FROM productos WHERE nombre = ?", [marcador]);
+    assertEqual(productos.length, 1, "debe existir EXACTAMENTE un producto final persistido con el nombre solicitado, sin duplicados por el reintento");
+    assertSame(productos[0].codigo, intentos[1].codigo, "el codigo final persistido debe ser el del segundo intento (el que tuvo exito)");
+    assertSame(productos[0].codigo !== intentos[0].codigo, true, "el producto final NUNCA debe quedar con el codigo que colisiono");
+    assertEqual(Number(productos[0].precio_compra), 5, "los datos de negocio (precio_compra) se conservan en el producto final");
+    assertEqual(Number(productos[0].precio_venta), 10, "los datos de negocio (precio_venta) se conservan en el producto final");
+    assertSame(productos[0].observaciones, "PRODCODE-D2 datos de negocio", "los datos de negocio (observaciones) se conservan en el producto final");
+
+    // No se duplican operaciones posteriores al INSERT exitoso: registrarCambiosProducto siempre
+    // registra el campo 'nombre' exactamente una vez por creacion (motivo='creacion'); si el bucle
+    // de reintento repitiera pasos posteriores al INSERT exitoso, este conteo seria 2.
+    const historialNombre = await allSql(
+      dbPath,
+      "SELECT * FROM historial_productos WHERE producto_id = ? AND campo_modificado = 'nombre' AND motivo = 'creacion'",
+      [productos[0].id]
+    );
+    assertEqual(historialNombre.length, 1, "el registro de historial de creacion no debe duplicarse -- confirma que las operaciones posteriores al INSERT exitoso se ejecutaron una sola vez");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(diagPath, { force: true });
   }
 }
