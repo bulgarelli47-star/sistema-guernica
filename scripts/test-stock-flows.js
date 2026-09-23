@@ -432,6 +432,7 @@ async function withServer(dbPath, fn, extraEnv = {}) {
   delete baseEnv.ATLAS_EMPRESA_SLUG;
   delete baseEnv.ATLAS_CONTROL_DB_PATH;
   delete baseEnv.ATLAS_TENANCY_MODE;
+  delete baseEnv.ATLAS_USER_BRIDGE_MODE;
   const child = spawn(process.execPath, ["backend/server.js"], {
     cwd: ROOT,
     env: { ...baseEnv, PORT: String(port), GUERNICA_DB_PATH: dbPath, ...extraEnv },
@@ -20961,6 +20962,13 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1G7ConcurrenteAutenticadoAislado);
   await _run(testProductoCodigoAutomaticoConcurrenteMismoTenant);
   await _run(testProductoCodigoAutomaticoReintentoDeterminista);
+  await _run(testAuthConfigB1SingleCentralOffRechazaArranque);
+  await _run(testAuthConfigB1MultiCentralOffRechazaArranque);
+  await _run(testAuthConfigB1CentralBridgeAusenteRechazaArranque);
+  await _run(testAuthConfigB1CentralShadowPasaSinRelajarOtrosGates);
+  await _run(testAuthConfigB1LegacyOffConservaComportamiento);
+  await _run(testAuthConfigB1LegacyShadowConservaComportamiento);
+  await _run(testAuthConfigB1BridgeInvalidoNoHabilitaCentralSilenciosamente);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -24432,8 +24440,12 @@ async function setupCentralFixture({
   return { controlDbPath, empresaSlug, empresa, central, membership, localUserId: localUser.id, localPassword, centralPassword };
 }
 
+// AUTH-CONFIG-FIX-B1: central ahora exige ATLAS_USER_BRIDGE_MODE=shadow para arrancar (ver
+// backend/server.js) -- todo fixture central de este archivo debe declararlo explicitamente para
+// seguir alcanzando el gate/comportamiento que cada test realmente ejercita, en vez de fallar antes
+// por la nueva precondicion de seguridad.
 function extraEnvCentral(fixture) {
-  return { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: fixture.empresaSlug, ATLAS_CONTROL_DB_PATH: fixture.controlDbPath };
+  return { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: fixture.empresaSlug, ATLAS_CONTROL_DB_PATH: fixture.controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" };
 }
 
 // Deteccion deterministica de "el servidor no debe quedar operativo" (config invalida). No
@@ -24448,6 +24460,7 @@ async function esperarStartupFallido(dbPath, extraEnv, timeoutMs = 8000) {
   delete baseEnv.ATLAS_EMPRESA_SLUG;
   delete baseEnv.ATLAS_CONTROL_DB_PATH;
   delete baseEnv.ATLAS_TENANCY_MODE;
+  delete baseEnv.ATLAS_USER_BRIDGE_MODE;
   const child = spawn(process.execPath, ["backend/server.js"], {
     cwd: ROOT,
     env: { ...baseEnv, GUERNICA_DB_PATH: dbPath, ...extraEnv },
@@ -24685,7 +24698,7 @@ async function testMT1C2B2BCentralControlDbFailCerrado503() {
   const dbPath = bootstrapFreshTestDb();
   const controlDbPathInexistente = path.join(os.tmpdir(), `mt1c2b2b-ausente-${Date.now()}-${Math.random().toString(16).slice(2)}`, "atlas_control.db");
   try {
-    await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: "empresa-inexistente-mt1c2b2b", ATLAS_CONTROL_DB_PATH: controlDbPathInexistente });
+    await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: "empresa-inexistente-mt1c2b2b", ATLAS_CONTROL_DB_PATH: controlDbPathInexistente, ATLAS_USER_BRIDGE_MODE: "shadow" });
     assertEqual(fs.existsSync(controlDbPathInexistente), false, "el fallo de control DB ausente no debe crear el archivo");
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -24828,6 +24841,140 @@ async function testMT1C2B2BCentralSinSlugNoLevanta() {
   }
 }
 
+// ====================================================================================================
+// AUTH-CONFIG-FIX-B1: central exige ATLAS_USER_BRIDGE_MODE=shadow para arrancar (backend/server.js).
+// Sin esta precondicion, PATCH/PUT /usuarios/:id(/estado|/password) siguen escribiendo unicamente en
+// la business DB local mientras que requireAuth (revalidarSesionCentral) y loginCentral
+// (autenticarCredencialCentral) leen EXCLUSIVAMENTE atlas_control.db: una desactivacion, cambio de
+// rol o rotacion de password locales nunca llegarian a la fuente de autoridad que una sesion o un
+// login central consultan. Analisis completo en MT-FOUNDATION-AUTH-CONFIG-GATE. Estos tests cubren
+// UNICAMENTE la validacion de arranque -- los fallos parciales de sincronizacion del bridge en si
+// (p.ej. 503 con la business DB ya mutada) quedan fuera de alcance, ver AUTH-SYNC-FIX-B2.
+// ====================================================================================================
+
+async function testAuthConfigB1SingleCentralOffRechazaArranque() {
+  const dbPath = bootstrapFreshTestDb();
+  const controlDbPathInexistente = path.join(os.tmpdir(), `authconfigb1-single-off-${Date.now()}-${Math.random().toString(16).slice(2)}`, "atlas_control.db");
+  try {
+    const resultado = await esperarStartupFallido(dbPath, {
+      ATLAS_AUTH_MODE: "central",
+      ATLAS_EMPRESA_SLUG: "authconfigb1-single-off",
+      ATLAS_CONTROL_DB_PATH: controlDbPathInexistente,
+      ATLAS_USER_BRIDGE_MODE: "off"
+    });
+    assertSame(resultado.logs.includes("ATLAS_AUTH_MODE=central requiere ATLAS_USER_BRIDGE_MODE=shadow"), true, "single+central+off debe rechazar el arranque con el FATAL de B1");
+    assertEqual(fs.existsSync(controlDbPathInexistente), false, "el rechazo no debe crear ni tocar la control DB");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAuthConfigB1MultiCentralOffRechazaArranque() {
+  const escenario = await mt1f1CrearEscenario(["a", "b"]);
+  const decoyPath = tempDbPath();
+  try {
+    const resultado = await esperarStartupFallido(decoyPath, {
+      ...mt1f3EntornoMulti(escenario, decoyPath),
+      ATLAS_USER_BRIDGE_MODE: "off"
+    });
+    assertSame(resultado.logs.includes("ATLAS_AUTH_MODE=central requiere ATLAS_USER_BRIDGE_MODE=shadow"), true, "multi+central+off debe rechazar el arranque con el FATAL de B1");
+    assertEqual(fs.existsSync(decoyPath), false, "el rechazo en multi jamas crea GUERNICA_DB_PATH");
+  } finally {
+    await mt1f1Limpiar(escenario);
+  }
+}
+
+async function testAuthConfigB1CentralBridgeAusenteRechazaArranque() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    const entorno = { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: "authconfigb1-ausente" };
+    assertSame(Object.prototype.hasOwnProperty.call(entorno, "ATLAS_USER_BRIDGE_MODE"), false, "fixture: la variable debe estar completamente ausente del entorno, no en \"\"");
+    const resultado = await esperarStartupFallido(dbPath, entorno);
+    assertSame(resultado.logs.includes("ATLAS_AUTH_MODE=central requiere ATLAS_USER_BRIDGE_MODE=shadow"), true, "central con el bridge completamente ausente del entorno debe rechazar el arranque (mismo FATAL que off)");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAuthConfigB1CentralShadowPasaSinRelajarOtrosGates() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/login`);
+      assertEqual(response.status, 200, "central+shadow con configuracion completa debe arrancar y responder /login");
+    }, extraEnvCentral(fixture));
+
+    // Negativo: shadow activo NO debe tapar un gate mas profundo (control DB inexistente) -- la
+    // precondicion de B1 se suma a los gates existentes, nunca los reemplaza ni los relaja.
+    const controlDbPathInexistente = path.join(os.tmpdir(), `authconfigb1-shadow-sin-control-${Date.now()}-${Math.random().toString(16).slice(2)}`, "atlas_control.db");
+    const resultado = await esperarStartupFallido(dbPath, {
+      ATLAS_AUTH_MODE: "central",
+      ATLAS_EMPRESA_SLUG: fixture.empresaSlug,
+      ATLAS_CONTROL_DB_PATH: controlDbPathInexistente,
+      ATLAS_USER_BRIDGE_MODE: "shadow"
+    });
+    assertSame(resultado.logs.includes("ATLAS_AUTH_MODE=central requiere ATLAS_USER_BRIDGE_MODE=shadow"), false, "con shadow activo, el rechazo NO debe ser el de B1");
+    assertEqual(fs.existsSync(controlDbPathInexistente), false, "el gate de control DB ausente sigue vigente con shadow activo");
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthConfigB1LegacyOffConservaComportamiento() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "admin123" }, null);
+      assertEqual(response.status, 200, "legacy+off debe seguir autenticando localmente sin cambios");
+      assertSame(typeof data.token, "string", "legacy+off sigue emitiendo token");
+    }, { ATLAS_USER_BRIDGE_MODE: "off" });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAuthConfigB1LegacyShadowConservaComportamiento() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "admin123" }, null);
+      assertEqual(response.status, 200, "legacy+shadow debe seguir autenticando localmente sin activar central");
+      assertSame(typeof data.token, "string", "legacy+shadow sigue emitiendo token");
+    }, { ATLAS_USER_BRIDGE_MODE: "shadow" });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAuthConfigB1BridgeInvalidoNoHabilitaCentralSilenciosamente() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    const resultado = await esperarStartupFallido(dbPath, {
+      ATLAS_AUTH_MODE: "central",
+      ATLAS_EMPRESA_SLUG: "authconfigb1-invalido",
+      ATLAS_USER_BRIDGE_MODE: "banana"
+    });
+    assertSame(resultado.logs.includes("ATLAS_AUTH_MODE=central requiere ATLAS_USER_BRIDGE_MODE=shadow"), true, "un valor invalido de bridge en central debe rechazar el arranque, nunca tratarse como shadow implicito");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+
+  const dbPathLegacy = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPathLegacy, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "admin123" }, null);
+      assertEqual(response.status, 200, "legacy con un valor invalido de bridge sigue arrancando y autenticando localmente (la precondicion de B1 solo aplica a central)");
+      assertSame(typeof data.token, "string", "legacy con bridge invalido sigue emitiendo token");
+    }, { ATLAS_USER_BRIDGE_MODE: "banana" });
+  } finally {
+    fs.rmSync(dbPathLegacy, { force: true });
+  }
+}
+
 async function testMT1C2B2BCentralRememberExpiracion() {
   const dbPath = bootstrapFreshRegisteredTenantDb();
   let controlDbPath;
@@ -24921,7 +25068,7 @@ async function testMT1C2B2BAuthModeNormalizacion() {
         assertEqual(response.status, 200, `ATLAS_AUTH_MODE=${JSON.stringify(valor)} debe normalizar a central y aceptar la password central`);
         const sesionRow = (await allSql(dbPath, "SELECT auth_mode FROM sesiones WHERE token = ?", [data.token]))[0];
         assertSame(sesionRow.auth_mode, "central", `ATLAS_AUTH_MODE=${JSON.stringify(valor)} debe resultar en sesion central`);
-      }, { ATLAS_AUTH_MODE: valor, ATLAS_EMPRESA_SLUG: fixture.empresaSlug, ATLAS_CONTROL_DB_PATH: fixture.controlDbPath });
+      }, { ATLAS_AUTH_MODE: valor, ATLAS_EMPRESA_SLUG: fixture.empresaSlug, ATLAS_CONTROL_DB_PATH: fixture.controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" });
     } finally {
       limpiarTenantTestDb(dbPath);
       if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
@@ -25017,7 +25164,7 @@ async function testMT1C2B2BCentralEmpresaNoExiste503() {
     await closeControlDb(controlDb);
 
     const estadoAntes = snapshotSQLitePersistente(dbPath);
-    await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: "slug-que-no-existe-mt1c2b2b", ATLAS_CONTROL_DB_PATH: controlDbPath });
+    await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: "slug-que-no-existe-mt1c2b2b", ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" });
     const estadoDespues = snapshotSQLitePersistente(dbPath);
     assertSame(JSON.stringify(estadoDespues), JSON.stringify(estadoAntes), "el rechazo del Central Boot Gate no debe mutar el estado persistente de SQLite -- archivo principal ni sidecars WAL/journal -- de la business DB (empresa inexistente)");
   } finally {
@@ -26443,7 +26590,7 @@ async function testMT1D2BCentralIdentityExactaArranca() {
       // aca; esta segunda comprobacion explicita es solo para que el test deje evidencia propia.
       const response = await fetch(`${baseUrl}/login`);
       assertEqual(response.status, 200, "con identidad exacta el servidor debe arrancar y responder /login");
-    }, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+    }, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" });
   } finally {
     limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
@@ -26467,7 +26614,7 @@ async function testMT1D2BSchemaMissingNoLevanta() {
     const tablas = await allSql(businessPath, "SELECT name FROM sqlite_master WHERE type='table' AND name='tenant_identity'");
     assertEqual(tablas.length, 0, "fixture debe iniciar sin tabla tenant_identity");
 
-    await esperarStartupFallido(businessPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+    await esperarStartupFallido(businessPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" });
   } finally {
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
     fs.rmSync(businessPath, { force: true });
@@ -26491,7 +26638,7 @@ async function testMT1D2BIdentityRowMissingNoLevanta() {
     const filas = await allSql(businessPath, "SELECT * FROM tenant_identity");
     assertEqual(filas.length, 0, "fixture debe iniciar con tabla tenant_identity presente pero vacia");
 
-    await esperarStartupFallido(businessPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+    await esperarStartupFallido(businessPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" });
   } finally {
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
     fs.rmSync(businessPath, { force: true });
@@ -26514,7 +26661,7 @@ async function testMT1D2BIdMismatchNoLevanta() {
     await runSql(businessPath, TENANT_IDENTITY_SCHEMA_SQL);
     await insertarTenantIdentityTest(businessPath, fixture.empresa.id + 1000, slug);
 
-    await esperarStartupFallido(businessPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+    await esperarStartupFallido(businessPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" });
   } finally {
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
     fs.rmSync(businessPath, { force: true });
@@ -26537,7 +26684,7 @@ async function testMT1D2BSlugMismatchNoLevanta() {
     await runSql(businessPath, TENANT_IDENTITY_SCHEMA_SQL);
     await insertarTenantIdentityTest(businessPath, fixture.empresa.id, `${slug}-otro`);
 
-    await esperarStartupFallido(businessPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+    await esperarStartupFallido(businessPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" });
   } finally {
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
     fs.rmSync(businessPath, { force: true });
@@ -26565,7 +26712,7 @@ async function testMT1D2BRegistryPathMismatchNoLevanta() {
     await runSql(pathReal, TENANT_IDENTITY_SCHEMA_SQL);
     await insertarTenantIdentityTest(pathReal, fixture.empresa.id, slug);
 
-    await esperarStartupFallido(pathReal, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+    await esperarStartupFallido(pathReal, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" });
   } finally {
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
     fs.rmSync(pathReal, { force: true });
@@ -26591,7 +26738,7 @@ async function testMT1D2BBusinessDbMissingNoLevantaNoCrea() {
     // Ejercita el camino real (backend/server.js -> require("./db") lazy -> gate central), no una
     // llamada aislada -- si el gate o el require de backend/db.js crearan el archivo, esta
     // asercion posterior al intento de boot lo detectaria.
-    await esperarStartupFallido(businessPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+    await esperarStartupFallido(businessPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" });
 
     assertEqual(fs.existsSync(businessPath), false, "el fallo por business DB ausente no debe crear el archivo (ni el gate ni el require lazy de backend/db.js)");
   } finally {
@@ -32597,7 +32744,7 @@ async function testMT1E7BIdentityMissingCentralFailsNoProvision() {
     const identidadAntes = await allSql(dbPath, "SELECT * FROM tenant_identity");
     assertEqual(identidadAntes.length, 0, "tenant_identity debe empezar vacia (nunca provisionada)");
 
-    await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+    await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" });
 
     const identidadDespues = await allSql(dbPath, "SELECT * FROM tenant_identity");
     assertEqual(identidadDespues.length, 0, "tenant_identity debe seguir vacia -- ningun provisioning automatico debe haber corrido");
@@ -32622,7 +32769,7 @@ async function testMT1E7BIdentityMismatchCentralFailsClosed() {
     // Identity real declarada, pero para OTRA empresa (id/slug que no coinciden con el registry).
     await insertarTenantIdentityTest(dbPath, fixture.empresa.id + 999, `${slug}-otra-empresa`);
 
-    await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath });
+    await esperarStartupFallido(dbPath, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" });
   } finally {
     limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
@@ -34135,7 +34282,12 @@ async function testMT1F2ErrorLimpiaContextoSinAfectarOtro() {
 // El Host resuelve CONTEXTO, no autoriza: nada de esto prueba ni afirma autorizacion (eso es MT-1F4).
 // ====================================================================================================
 // MT-1F4: servidor real, Control desechable y colision deliberada admin/id entre A y B.
-async function mt1f4ConEscenario(fn, { membershipB = true, bridge = false } = {}) {
+// AUTH-CONFIG-FIX-B1: bridge=true (shadow) por default -- central+multi ya no arranca con bridge
+// off (backend/server.js), y ninguno de los escenarios de este helper depende de que el bridge este
+// apagado (las fixtures de control DB se siembran por SQL directo, nunca via el bridge). El unico
+// llamador que ejercita el bridge en si (testMT1F4MultiBridgeUsaEmpresaExplicita) ya pasaba
+// {bridge:true} explicito -- queda igual, ahora redundante pero inofensivo.
+async function mt1f4ConEscenario(fn, { membershipB = true, bridge = true } = {}) {
   const escenario = await mt1f1CrearEscenario(["a", "b"]);
   const decoyPath = tempDbPath();
   try {
@@ -35467,7 +35619,7 @@ async function mt1f3ConServidor(entorno, fn) {
   const port = await getFreePort();
   const baseUrl = `http://localhost:${port}`;
   const baseEnv = { ...process.env };
-  for (const clave of ["ATLAS_AUTH_MODE", "ATLAS_EMPRESA_SLUG", "ATLAS_CONTROL_DB_PATH", "ATLAS_TENANCY_MODE"]) delete baseEnv[clave];
+  for (const clave of ["ATLAS_AUTH_MODE", "ATLAS_EMPRESA_SLUG", "ATLAS_CONTROL_DB_PATH", "ATLAS_TENANCY_MODE", "ATLAS_USER_BRIDGE_MODE"]) delete baseEnv[clave];
   const hijo = spawn(process.execPath, ["backend/server.js"], { cwd: ROOT, env: { ...baseEnv, PORT: String(port), ...entorno }, stdio: ["ignore", "pipe", "pipe"] });
   let logs = "";
   let salio = null;
@@ -35504,8 +35656,11 @@ async function mt1f3Sembrar(escenario) {
   }
 }
 
+// AUTH-CONFIG-FIX-B1: default con shadow -- central ahora lo exige para arrancar (backend/server.js).
+// Los tests que deliberadamente quieren ejercitar bridge=off (p.ej. via mt1f4ConEscenario) lo
+// sobrescriben explicitamente despues de este spread.
 function mt1f3EntornoMulti(escenario, decoyPath) {
-  return { ATLAS_AUTH_MODE: "central", ATLAS_TENANCY_MODE: "multi", ATLAS_CONTROL_DB_PATH: escenario.controlDbPath, GUERNICA_DB_PATH: decoyPath };
+  return { ATLAS_AUTH_MODE: "central", ATLAS_TENANCY_MODE: "multi", ATLAS_CONTROL_DB_PATH: escenario.controlDbPath, GUERNICA_DB_PATH: decoyPath, ATLAS_USER_BRIDGE_MODE: "shadow" };
 }
 
 function mt1f3EsGenerica404(respuesta, ruta, metodo = "GET") {

@@ -318,6 +318,23 @@ if (ATLAS_TENANCY_MODE === TENANCY_MODES.MULTI && ATLAS_EMPRESA_SLUG) {
   process.exit(1);
 }
 
+// AUTH-CONFIG-FIX-B1: en central, requireAuth (revalidarSesionCentral) y loginCentral
+// (autenticarCredencialCentral) leen EXCLUSIVAMENTE atlas_control.db -- nunca la business DB local.
+// La unica via que mantiene atlas_control.db al dia con una alta/baja/cambio de rol/rotacion de
+// password hecha via /usuarios es el bridge (userControlBridge.js) en modo "shadow": sus cuatro
+// sync solo corren si getBridgeMode()==="shadow" (ver server.js, handlers de /usuarios). Con el
+// bridge en "off" (default) o con cualquier valor invalido, esos cambios locales nunca llegan a la
+// fuente de autoridad que una sesion o un login central consultan -- una desactivacion o rotacion
+// de password administrativa quedaria sin efecto para central, dejando vigente una autorizacion que
+// deberia haber sido revocada. Aplica igual en single y en multi: el bridge resuelve la empresa por
+// request (empresaAuthDelRequest), nunca por una unica instancia de proceso. Analisis completo en
+// MT-FOUNDATION-AUTH-CONFIG-GATE. Este gate NO corrige fallos parciales de sincronizacion del propio
+// bridge (ver AUTH-SYNC-FIX-B2) -- solo impide arrancar central sin shadow activo.
+if (ATLAS_AUTH_MODE === "central" && userControlBridge.getBridgeMode() !== "shadow") {
+  console.error(`[FATAL] ATLAS_AUTH_MODE=central requiere ATLAS_USER_BRIDGE_MODE=shadow (valor actual: "${process.env.ATLAS_USER_BRIDGE_MODE || ""}").`);
+  process.exit(1);
+}
+
 // MT-1F5C2: instancia unica del servicio de credenciales tenant-owned (F5C1), compuesta con el
 // tenancy mode y getTenantContext ya resueltos arriba -- nunca duplica SQL/crypto/state machine.
 const integracionTenantServiceF5C2 = crearIntegracionTenantService({
