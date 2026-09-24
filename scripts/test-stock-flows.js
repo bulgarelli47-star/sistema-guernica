@@ -48,7 +48,8 @@ const {
   actualizarActivoMembership
 } = require("../database/init-control-db");
 const {
-  syncUsuariosShadowDesdeDbPath
+  syncUsuariosShadowDesdeDbPath,
+  syncUsuariosShadowEmpresa
 } = require("../database/sync-shadow-users");
 const userControlBridge = require("../backend/userControlBridge");
 const { reconcileShadowUsers } = require("../database/reconcile-shadow-users");
@@ -21019,6 +21020,11 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testAuthSyncB2S1A2CStateGuardEsquemaPreS0MismoBloqueo);
   await _run(testAuthSyncB2S1A2CStateGuardBridgeOffActivarYDesactivar);
   await _run(testAuthSyncB2S1A2CStateGuardMultiTenantSinEscriturasCruzadas);
+  await _run(testAuthSyncB2S1A2DLegacyImportS0CompletoSinLapidaRechazaSinEscribir);
+  await _run(testAuthSyncB2S1A2DLegacyImportS0LapidaPendienteRechazaSinTocarIdentidad);
+  await _run(testAuthSyncB2S1A2DLegacyImportS0LapidaProcesadaRechazaIgual);
+  await _run(testAuthSyncB2S1A2DLegacyImportEsquemaParcialRechaza);
+  await _run(testAuthSyncB2S1A2DLegacyImportSyncUsuariosShadowEmpresaTambienRechaza);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -21383,14 +21389,18 @@ async function testMT1BControlPlaneCreaUsuariosYMemberships() {
   }
 }
 
+// AUTH-SYNC-B2-S1A2D-LEGACY-SHADOW-IMPORT-SAFETY-GATE: convertida de bootstrapControlDb (que desde
+// S0-SCHEMA siempre instala esquema S0, sin importar el flag seed) a una Control DB pre-S0
+// explicita -- el comportamiento legacy que esta prueba verifica solo sigue siendo aplicable en ese
+// esquema; bajo S0 completo, syncUsuariosShadowDesdeDbPath ahora se rechaza incondicionalmente.
 async function testMT1BCopiaUsuarioEmpresaShadow() {
   const businessDbPath = bootstrapFreshTestDb();
   const controlDbPath = tempDbPath();
   try {
     await withServer(businessDbPath, async () => {});
-    const controlDb = await bootstrapControlDb(controlDbPath);
+    const controlDb = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
     try {
-      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      const guernica = await registrarEmpresa(controlDb, GUERNICA_SEED);
       const localAdmin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
 
       await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
@@ -21419,14 +21429,16 @@ async function testMT1BCopiaUsuarioEmpresaShadow() {
   }
 }
 
+// AUTH-SYNC-B2-S1A2D-LEGACY-SHADOW-IMPORT-SAFETY-GATE: ver comentario en
+// testMT1BCopiaUsuarioEmpresaShadow -- misma conversion a Control DB pre-S0 explicita.
 async function testMT1BCopiaHashSinModificarlo() {
   const businessDbPath = bootstrapFreshTestDb();
   const controlDbPath = tempDbPath();
   try {
     await withServer(businessDbPath, async () => {});
-    const controlDb = await bootstrapControlDb(controlDbPath);
+    const controlDb = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
     try {
-      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      const guernica = await registrarEmpresa(controlDb, GUERNICA_SEED);
       const localAdmin = (await allSql(businessDbPath, "SELECT password FROM usuarios WHERE usuario = ?", ["admin"]))[0];
 
       await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
@@ -21447,14 +21459,16 @@ async function testMT1BCopiaHashSinModificarlo() {
   }
 }
 
+// AUTH-SYNC-B2-S1A2D-LEGACY-SHADOW-IMPORT-SAFETY-GATE: ver comentario en
+// testMT1BCopiaUsuarioEmpresaShadow -- misma conversion a Control DB pre-S0 explicita.
 async function testMT1BConservaUsuarioLocalId() {
   const businessDbPath = bootstrapFreshTestDb();
   const controlDbPath = tempDbPath();
   try {
     await withServer(businessDbPath, async () => {});
-    const controlDb = await bootstrapControlDb(controlDbPath);
+    const controlDb = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
     try {
-      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      const guernica = await registrarEmpresa(controlDb, GUERNICA_SEED);
       const localAdmin = (await allSql(businessDbPath, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
 
       await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
@@ -21470,14 +21484,16 @@ async function testMT1BConservaUsuarioLocalId() {
   }
 }
 
+// AUTH-SYNC-B2-S1A2D-LEGACY-SHADOW-IMPORT-SAFETY-GATE: ver comentario en
+// testMT1BCopiaUsuarioEmpresaShadow -- misma conversion a Control DB pre-S0 explicita.
 async function testMT1BRolQuedaEnMembership() {
   const businessDbPath = bootstrapFreshTestDb();
   const controlDbPath = tempDbPath();
   try {
     await withServer(businessDbPath, async () => {});
-    const controlDb = await bootstrapControlDb(controlDbPath);
+    const controlDb = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
     try {
-      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      const guernica = await registrarEmpresa(controlDb, GUERNICA_SEED);
       const localAdmin = (await allSql(businessDbPath, "SELECT rol FROM usuarios WHERE usuario = ?", ["admin"]))[0];
 
       await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
@@ -21497,14 +21513,16 @@ async function testMT1BRolQuedaEnMembership() {
   }
 }
 
+// AUTH-SYNC-B2-S1A2D-LEGACY-SHADOW-IMPORT-SAFETY-GATE: ver comentario en
+// testMT1BCopiaUsuarioEmpresaShadow -- misma conversion a Control DB pre-S0 explicita.
 async function testMT1BImportIdempotente() {
   const businessDbPath = bootstrapFreshTestDb();
   const controlDbPath = tempDbPath();
   try {
     await withServer(businessDbPath, async () => {});
-    const controlDb = await bootstrapControlDb(controlDbPath);
+    const controlDb = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
     try {
-      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      const guernica = await registrarEmpresa(controlDb, GUERNICA_SEED);
 
       await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
       await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
@@ -21522,14 +21540,16 @@ async function testMT1BImportIdempotente() {
   }
 }
 
+// AUTH-SYNC-B2-S1A2D-LEGACY-SHADOW-IMPORT-SAFETY-GATE: ver comentario en
+// testMT1BCopiaUsuarioEmpresaShadow -- misma conversion a Control DB pre-S0 explicita.
 async function testMT1BShadowActualizaDesdeAutoridadLocal() {
   const businessDbPath = bootstrapFreshTestDb();
   const controlDbPath = tempDbPath();
   try {
     await withServer(businessDbPath, async () => {});
-    const controlDb = await bootstrapControlDb(controlDbPath);
+    const controlDb = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
     try {
-      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      const guernica = await registrarEmpresa(controlDb, GUERNICA_SEED);
 
       await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
 
@@ -21552,6 +21572,8 @@ async function testMT1BShadowActualizaDesdeAutoridadLocal() {
   }
 }
 
+// AUTH-SYNC-B2-S1A2D-LEGACY-SHADOW-IMPORT-SAFETY-GATE: ver comentario en
+// testMT1BCopiaUsuarioEmpresaShadow -- misma conversion a Control DB pre-S0 explicita.
 async function testMT1BUsernameDuplicadoNoFusiona() {
   const businessDbPathA = bootstrapFreshTestDb();
   const businessDbPathB = bootstrapFreshTestDb();
@@ -21575,7 +21597,7 @@ async function testMT1BUsernameDuplicadoNoFusiona() {
       idJuanB = creado.data.usuario.id;
     });
 
-    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const controlDb = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
     try {
       const empresaA = await registrarEmpresa(controlDb, { slug: "empresa-a-test-mt1b1", nombre: "Empresa A Test", dbPath: "guernica.db" });
       const empresaB = await registrarEmpresa(controlDb, { slug: "empresa-b-test-mt1b1", nombre: "Empresa B Test", dbPath: "guernica.db" });
@@ -21645,6 +21667,8 @@ async function testMT1BMismaIdentidadPuedeTenerDosEmpresas() {
   }
 }
 
+// AUTH-SYNC-B2-S1A2D-LEGACY-SHADOW-IMPORT-SAFETY-GATE: ver comentario en
+// testMT1BCopiaUsuarioEmpresaShadow -- misma conversion a Control DB pre-S0 explicita.
 async function testMT1BUsuarioLocalNoSeModifica() {
   const businessDbPath = bootstrapFreshTestDb();
   const controlDbPath = tempDbPath();
@@ -21652,9 +21676,9 @@ async function testMT1BUsuarioLocalNoSeModifica() {
     await withServer(businessDbPath, async () => {});
     const antes = await allSql(businessDbPath, "SELECT * FROM usuarios ORDER BY id ASC");
 
-    const controlDb = await bootstrapControlDb(controlDbPath);
+    const controlDb = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
     try {
-      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      const guernica = await registrarEmpresa(controlDb, GUERNICA_SEED);
       await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: guernica.id, businessDbPath });
     } finally {
       await closeControlDb(controlDb);
@@ -21811,14 +21835,16 @@ async function testMT1BUniqueUsuarioEmpresaAislado() {
 
 // MT-1B.1-CLOSE (seccion 7): con >1 membership, sincronizar UNA empresa no debe apagar la
 // identidad Atlas global -- solo debe reflejarse en la membership de esa empresa puntual.
+// AUTH-SYNC-B2-S1A2D-LEGACY-SHADOW-IMPORT-SAFETY-GATE: ver comentario en
+// testMT1BCopiaUsuarioEmpresaShadow -- misma conversion a Control DB pre-S0 explicita.
 async function testMT1BActivoGlobalNoLoDecideUnaMembershipAislada() {
   const businessDbGuernica = bootstrapFreshTestDb();
   const controlDbPath = tempDbPath();
   try {
     await withServer(businessDbGuernica, async () => {});
-    const controlDb = await bootstrapControlDb(controlDbPath);
+    const controlDb = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
     try {
-      const guernica = await getControlQuery(controlDb, "SELECT * FROM empresas WHERE slug = ?", ["guernica"]);
+      const guernica = await registrarEmpresa(controlDb, GUERNICA_SEED);
       const empresaB = await registrarEmpresa(controlDb, { slug: "comercio-b-activo-test", nombre: "Comercio B Activo Test", dbPath: "guernica.db" });
 
       // Primer sync de Guernica: crea la identidad central (admin) con 1 sola membership.
@@ -24886,6 +24912,193 @@ async function testAuthSyncB2S1A2CStateGuardMultiTenantSinEscriturasCruzadas() {
     const localBIntacto = (await allSql(b.dbPath, "SELECT activo FROM usuarios WHERE id = ?", [b.local.id]))[0];
     assertEqual(Number(localBIntacto.activo), Number(b.local.activo), "tenant B no debe verse afectado por el rechazo en A");
   }, { bridge: true });
+}
+
+// AUTH-SYNC-B2-S1A2D-LEGACY-SHADOW-IMPORT-SAFETY-GATE: database/sync-shadow-users.js es un
+// importador de mirror total (identidad + membership + password + perfil, sin excepcion) que nunca
+// tuvo conciencia de sync_pendiente/version -- se bloquea incondicionalmente sobre cualquier Control
+// DB con esquema S0 (completo o parcial), independientemente de si existe o no una lapida para una
+// membership especifica.
+async function testAuthSyncB2S1A2DLegacyImportS0CompletoSinLapidaRechazaSinEscribir() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const empresaSlug = `s1a2d-s0sinlapida-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A2D S0 Sin Lapida", dbPath: "guernica.db" });
+
+      let errorCapturado = null;
+      try {
+        await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: empresa.id, businessDbPath });
+      } catch (error) {
+        errorCapturado = error;
+      }
+      assertSame(Boolean(errorCapturado), true, "debe rechazar con un error sobre esquema S0 completo, aunque no exista ninguna lapida");
+
+      const usuariosCentral = await allControlQuery(controlDb, "SELECT * FROM usuarios");
+      const memberships = await allControlQuery(controlDb, "SELECT * FROM usuario_empresas");
+      assertEqual(usuariosCentral.length, 0, "no debe crearse ninguna identidad central");
+      assertEqual(memberships.length, 0, "no debe crearse ninguna membership");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2DLegacyImportS0LapidaPendienteRechazaSinTocarIdentidad() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const empresaSlug = `s1a2d-lapidapendiente-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A2D Lapida Pendiente", dbPath: "guernica.db" });
+      const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+      // Identidad y membership preexistentes, YA divergentes de lo local -- simula una decision
+      // central-first ya confirmada (nombre/rol/activo distintos de lo que el local todavia
+      // muestra). La importacion legacy, si no estuviera bloqueada, "repararia" esto pisando central
+      // con el valor local -- exactamente lo que este guard debe impedir.
+      const placeholderHash = await bcrypt.hash("PlaceholderLapida1", 10);
+      const central = await crearUsuarioCentral(controlDb, { nombre: "Nombre Central Protegido", usuarioReferencia: admin.usuario, passwordHash: placeholderHash, activo: 1 });
+      const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "encargado", activo: 0 });
+      await runControlQuery(
+        controlDb,
+        "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado) VALUES (?, ?, ?, ?, 'rol_activo', 1, 'pendiente')",
+        [central.id, empresa.id, membership.id, admin.id]
+      );
+
+      let errorCapturado = null;
+      try {
+        await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: empresa.id, businessDbPath });
+      } catch (error) {
+        errorCapturado = error;
+      }
+      assertSame(Boolean(errorCapturado), true, "debe rechazar la importacion cuando existe una lapida pendiente");
+
+      const centralDespues = await getControlQuery(controlDb, "SELECT nombre, activo FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespues.nombre, "Nombre Central Protegido", "la identidad central NO debe sobreescribirse con el nombre local");
+      const membershipDespues = await getControlQuery(controlDb, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespues.rol, "encargado", "la membership NO debe sobreescribirse con el rol local");
+      assertEqual(Number(membershipDespues.activo), 0, "la membership NO debe sobreescribirse con el activo local");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// Misma proteccion que la lapida pendiente -- la mera existencia de la fila en sync_pendiente
+// protege para siempre, sin filtrar por estado (mismo contrato ya establecido en S1A1).
+async function testAuthSyncB2S1A2DLegacyImportS0LapidaProcesadaRechazaIgual() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const empresaSlug = `s1a2d-lapidaprocesada-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A2D Lapida Procesada", dbPath: "guernica.db" });
+      const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+      const placeholderHash = await bcrypt.hash("PlaceholderLapida2", 10);
+      const central = await crearUsuarioCentral(controlDb, { nombre: "Nombre Central Protegido Procesado", usuarioReferencia: admin.usuario, passwordHash: placeholderHash, activo: 1 });
+      const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "encargado", activo: 0 });
+      await runControlQuery(
+        controlDb,
+        "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado, procesado_en) VALUES (?, ?, ?, ?, 'rol_activo', 1, 'procesado', datetime('now'))",
+        [central.id, empresa.id, membership.id, admin.id]
+      );
+
+      let errorCapturado = null;
+      try {
+        await syncUsuariosShadowDesdeDbPath(controlDb, { empresaId: empresa.id, businessDbPath });
+      } catch (error) {
+        errorCapturado = error;
+      }
+      assertSame(Boolean(errorCapturado), true, "debe rechazar la importacion aunque la lapida ya este procesada");
+
+      const membershipDespues = await getControlQuery(controlDb, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespues.rol, "encargado", "la membership NO debe sobreescribirse -- lapida procesada protege igual que pendiente");
+      assertEqual(Number(membershipDespues.activo), 0, "el activo tampoco debe sobreescribirse");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2DLegacyImportEsquemaParcialRechaza() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const dbParcial = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
+    // Esquema parcial deliberado: solo la columna version, SIN la tabla sync_pendiente -- CASO C,
+    // mismo patron ya usado en testAuthSyncB2S1A1EsquemaS0ParcialFallaCerrado.
+    await runControlQuery(dbParcial, "ALTER TABLE usuario_empresas ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
+    const empresaSlug = `s1a2d-parcial-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(dbParcial, { slug: empresaSlug, nombre: "S1A2D Esquema Parcial", dbPath: "guernica.db" });
+    await closeControlDb(dbParcial);
+
+    // Reapertura CRUDA (no bootstrapControlDb): bootstrapControlDb completaria el esquema parcial
+    // por su cuenta, invalidando la comprobacion de que este modulo nunca migra ni asume nada.
+    const dbReabierta = openControlDb(controlDbPath);
+    try {
+      let errorCapturado = null;
+      try {
+        await syncUsuariosShadowDesdeDbPath(dbReabierta, { empresaId: empresa.id, businessDbPath });
+      } catch (error) {
+        errorCapturado = error;
+      }
+      assertSame(Boolean(errorCapturado), true, "debe rechazar (fail closed) ante esquema S0 parcial");
+
+      const usuariosCentral = await allControlQuery(dbReabierta, "SELECT * FROM usuarios");
+      assertEqual(usuariosCentral.length, 0, "no debe crearse ninguna identidad central con esquema parcial");
+    } finally {
+      await closeControlDb(dbReabierta);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// Cobertura explicita de la segunda funcion publica (syncUsuariosShadowEmpresa, el wrapper por
+// slug) -- delega en syncUsuariosShadowDesdeDbPath, donde vive el guard, pero se verifica aca de
+// forma independiente para no asumir la delegacion sin probarla.
+async function testAuthSyncB2S1A2DLegacyImportSyncUsuariosShadowEmpresaTambienRechaza() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const empresaSlug = `s1a2d-wrapper-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A2D Wrapper Test", dbPath: "guernica.db" });
+
+      let errorCapturado = null;
+      try {
+        await syncUsuariosShadowEmpresa(controlDb, { empresaSlug });
+      } catch (error) {
+        errorCapturado = error;
+      }
+      assertSame(Boolean(errorCapturado), true, "syncUsuariosShadowEmpresa tambien debe rechazar sobre esquema S0 completo");
+
+      const usuariosCentral = await allControlQuery(controlDb, "SELECT * FROM usuarios");
+      assertEqual(usuariosCentral.length, 0, "no debe crearse ninguna identidad central via el wrapper por slug");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
 }
 
 async function testMT1C2AResolverHappyPath() {

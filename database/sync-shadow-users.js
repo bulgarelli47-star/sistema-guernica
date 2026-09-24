@@ -54,7 +54,62 @@ function cerrarDbEmpresa(db) {
   });
 }
 
+// AUTH-SYNC-B2-S1A2D-LEGACY-SHADOW-IMPORT-SAFETY-GATE: deteccion de esquema por introspeccion pura
+// (PRAGMA/sqlite_master), identica en criterio a detectarSoporteEsquemaS0 de
+// database/reconcile-shadow-users.js -- deliberadamente DUPLICADA aca, no importada desde alli, por
+// el mismo motivo ya documentado en ese modulo: este importador legacy no debe acoplarse al
+// reconciliador S1A1. soportaS0=false (CASO A, pre-S0): ni version ni sync_pendiente existen --
+// unico caso en que este modulo conserva su comportamiento legacy. soportaS0=true (CASO B, S0
+// completo) o soportaS0=null (CASO C, parcial/incompatible): ambos bloquean la importacion, sin
+// distincion de comportamiento entre si -- ver guardarComportamientoLegacyOFallarCerrado.
+async function detectarSoporteEsquemaS0(controlDb) {
+  const columnasMembership = await allQuery(controlDb, "PRAGMA table_info(usuario_empresas)");
+  const tieneVersion = columnasMembership.some((columna) => columna.name === "version");
+
+  const tablasSyncPendiente = await allQuery(
+    controlDb,
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='sync_pendiente'"
+  );
+  const tieneSyncPendiente = tablasSyncPendiente.length > 0;
+
+  if (!tieneVersion && !tieneSyncPendiente) {
+    return { soportaS0: false };
+  }
+
+  if (tieneVersion && tieneSyncPendiente) {
+    const columnasSyncPendiente = await allQuery(controlDb, "PRAGMA table_info(sync_pendiente)");
+    const nombresSyncPendiente = new Set(columnasSyncPendiente.map((columna) => columna.name));
+    const columnasEsperadas = ["membership_id", "tipo_operacion", "estado", "version_objetivo"];
+    const formaCorrecta = columnasEsperadas.every((columna) => nombresSyncPendiente.has(columna));
+    if (!formaCorrecta) {
+      return { soportaS0: null, motivo: "SYNC_PENDIENTE_FORMA_INCOMPATIBLE" };
+    }
+    return { soportaS0: true };
+  }
+
+  return { soportaS0: null, motivo: "ESQUEMA_S0_PARCIAL" };
+}
+
+// Guard incondicional: no importa si existen o no filas en sync_pendiente, ni si alguna membership
+// especifica tiene o no lapida -- la mera presencia (completa o parcial) del esquema S0 en la
+// Control DB basta para bloquear la importacion total de este modulo. Corre como la PRIMERA
+// operacion de la funcion, antes de abrir siquiera la conexion de solo lectura a la Business DB,
+// para que la deteccion de esquema ocurra estrictamente antes de cualquier lectura o escritura.
+async function guardarComportamientoLegacyOFallarCerrado(controlDb) {
+  const deteccion = await detectarSoporteEsquemaS0(controlDb);
+  if (deteccion.soportaS0 === false) {
+    return;
+  }
+  const motivo = deteccion.soportaS0 === true ? "ESQUEMA_S0_COMPLETO" : deteccion.motivo;
+  throw new Error(
+    `sync-shadow-users: importacion legacy bloqueada -- la Control DB ya tiene esquema S0 (completo o parcial: ${motivo}). ` +
+    "Este importador de mirror total no es seguro sobre un esquema S0: use el reconciliador S1A1 (database/reconcile-shadow-users.js) en su lugar."
+  );
+}
+
 async function syncUsuariosShadowDesdeDbPath(controlDb, { empresaId, businessDbPath }) {
+  await guardarComportamientoLegacyOFallarCerrado(controlDb);
+
   const businessDb = abrirDbEmpresaSoloLectura(businessDbPath);
   try {
     const usuariosLocales = await allQuery(businessDb, "SELECT * FROM usuarios");
