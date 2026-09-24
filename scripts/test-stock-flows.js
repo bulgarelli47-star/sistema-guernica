@@ -20984,6 +20984,16 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testAuthSyncB2S0OperacionIdempotenciaNuncaAlmacenaPassword);
   await _run(testAuthSyncB2S0ForeignKeysActivasEnTablasNuevas);
   await _run(testAuthSyncB2S0RollbackAnteErrorSqlPreservaEstadoYPermiteReintento);
+  await _run(testAuthSyncB2S1A1PreS0PreservaComportamientoLegacy);
+  await _run(testAuthSyncB2S1A1S0SinLapidaReparaEIncrementaVersionUnaVez);
+  await _run(testAuthSyncB2S1A1LapidaPendienteProtegeAccesoIntacto);
+  await _run(testAuthSyncB2S1A1LapidaProcesadaProtegeIgualQuePendiente);
+  await _run(testAuthSyncB2S1A1LapidaAccesoNoBloqueaPasswordLegacy);
+  await _run(testAuthSyncB2S1A1RollbackTrasErrorSqlPosteriorABegin);
+  await _run(testAuthSyncB2S1A1EsquemaS0ParcialFallaCerrado);
+  await _run(testAuthSyncB2S1A1SnapshotLocalDesactualizadoNoRevierteCentralFirst);
+  await _run(testAuthSyncB2S1A1CheckInformaSinMutarNingunaBase);
+  await _run(testAuthSyncB2S1A1AislamientoEntreEmpresasEnReconciliacion);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -23470,6 +23480,427 @@ async function testMT1DReconcileBrokenCentralRefYOrphanMembership() {
     assertEqual(apply.summary.critical, 2, "APPLY debe seguir reportando ambos como critical sin tocarlos");
   } finally {
     fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// ====================================================================================================
+// AUTH-SYNC-B2-S1A1: proteccion permanente de rol_activo contra reconciliacion inversa. Las pruebas
+// reutilizan authSyncB2S0CrearControlDbEsquemaViejo (definida en la seccion AUTH-SYNC-B2-S0 mas
+// abajo en este archivo) para construir escenarios CASO A (pre-S0) explicitos; bootstrapControlDb ya
+// produce CASO B (esquema S0 completo) desde que S0 se publico.
+// ====================================================================================================
+
+async function testAuthSyncB2S1A1PreS0PreservaComportamientoLegacy() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const dbVieja = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
+    const empresaSlug = `s1a1-preS0-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(dbVieja, { slug: empresaSlug, nombre: "S1A1 Pre-S0", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(dbVieja, { nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: admin.password, activo: 1 });
+    const membership = await crearMembership(dbVieja, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "colaborador", activo: 0 });
+    await closeControlDb(dbVieja);
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    if (!check.ok) throw new Error(`CHECK pre-S0 fallo: ${check.message}`);
+    assertSame(check.usuarios[0].estados.join(","), "MEMBERSHIP_ACCESS_MISMATCH", "CHECK pre-S0 debe comportarse exactamente como antes de S1A1");
+    assertEqual(check.summary.protected_central, 0, "sin esquema S0 no existe proteccion (ni tiene sentido evaluarla)");
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`APPLY pre-S0 fallo: ${apply.message}`);
+    assertEqual(apply.summary.repaired, 1, "APPLY pre-S0 debe reparar rol+activo exactamente como antes de S1A1");
+
+    const dbFinal = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membershipDespues = await getControlQuery(dbFinal, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespues.rol, admin.rol, "membership.rol debe quedar igual al local (legacy)");
+      assertEqual(Number(membershipDespues.activo), Number(admin.activo), "membership.activo debe quedar igual al local (legacy)");
+    } finally {
+      await closeControlDb(dbFinal);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A1S0SinLapidaReparaEIncrementaVersionUnaVez() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `s1a1-sinlapida-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A1 Sin Lapida", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(controlDb, { nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: admin.password, activo: 1 });
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "colaborador", activo: 0 });
+    await closeControlDb(controlDb);
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`APPLY S0 sin lapida fallo: ${apply.message}`);
+    assertEqual(apply.summary.repaired, 1, "debe reparar la membership sin lapida");
+    assertEqual(apply.summary.protected_central, 0, "sin lapida no hay proteccion que reportar");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membershipDespues = await getControlQuery(controlDb, "SELECT rol, activo, version FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespues.rol, admin.rol, "rol debe quedar igual al local");
+      assertEqual(Number(membershipDespues.version), 1, "version debe incrementarse EXACTAMENTE una vez");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A1LapidaPendienteProtegeAccesoIntacto() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `s1a1-lapida-pend-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A1 Lapida Pendiente", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(controlDb, { nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: admin.password, activo: 1 });
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "encargado", activo: 0 });
+    await runControlQuery(
+      controlDb,
+      "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado) VALUES (?, ?, ?, ?, 'rol_activo', 1, 'pendiente')",
+      [central.id, empresa.id, membership.id, admin.id]
+    );
+    await closeControlDb(controlDb);
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    if (!check.ok) throw new Error(`CHECK lapida pendiente fallo: ${check.message}`);
+    assertSame(check.usuarios[0].estados.includes("ACCESS_PROTECTED_CENTRAL_FIRST"), true, "CHECK debe reportar proteccion central-first");
+    assertSame(check.usuarios[0].estados.includes("MEMBERSHIP_ACCESS_MISMATCH"), false, "no debe reportarse como mismatch reparable");
+    assertEqual(check.summary.protected_central, 1, "CHECK debe contar protected_central");
+    assertEqual(check.summary.critical, 0, "una membership protegida no es critical");
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`APPLY lapida pendiente fallo: ${apply.message}`);
+    assertEqual(apply.summary.repaired, 0, "APPLY no debe reparar acceso protegido");
+    assertSame(apply.usuarios[0].acciones.includes("ACCESS"), false, "no debe registrarse ACCESS reparado");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membershipDespues = await getControlQuery(controlDb, "SELECT rol, activo, version FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespues.rol, "encargado", "el rol central (autoridad) debe permanecer intacto");
+      assertEqual(Number(membershipDespues.activo), 0, "el activo central (autoridad) debe permanecer intacto");
+      assertEqual(Number(membershipDespues.version), 0, "version no debe incrementarse cuando el acceso esta protegido");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A1LapidaProcesadaProtegeIgualQuePendiente() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `s1a1-lapida-proc-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A1 Lapida Procesada", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(controlDb, { nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: admin.password, activo: 1 });
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "encargado", activo: 0 });
+    await runControlQuery(
+      controlDb,
+      "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado, procesado_en) VALUES (?, ?, ?, ?, 'rol_activo', 1, 'procesado', datetime('now'))",
+      [central.id, empresa.id, membership.id, admin.id]
+    );
+    await closeControlDb(controlDb);
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`APPLY lapida procesada fallo: ${apply.message}`);
+    assertEqual(apply.summary.repaired, 0, "una lapida 'procesado' debe proteger igual que 'pendiente'");
+    assertEqual(apply.summary.protected_central, 1, "debe seguir contando como protegido aunque este procesada");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membershipDespues = await getControlQuery(controlDb, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespues.rol, "encargado", "el rol central debe permanecer intacto con lapida procesada");
+      assertEqual(Number(membershipDespues.activo), 0, "el activo central debe permanecer intacto con lapida procesada");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A1LapidaAccesoNoBloqueaPasswordLegacy() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `s1a1-pwd-legacy-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A1 Password Legacy", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: "hash-central-viejo-TEST", activo: 1
+    });
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "encargado", activo: 0 });
+    await runControlQuery(
+      controlDb,
+      "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado) VALUES (?, ?, ?, ?, 'rol_activo', 1, 'pendiente')",
+      [central.id, empresa.id, membership.id, admin.id]
+    );
+    await closeControlDb(controlDb);
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`APPLY password+lapida fallo: ${apply.message}`);
+    assertEqual(apply.summary.repaired, 1, "el password legacy debe repararse aunque el acceso este protegido");
+    assertEqual(apply.summary.protected_central, 1, "el acceso protegido debe seguir contandose por separado");
+    assertSame(apply.usuarios[0].acciones.includes("PASSWORD"), true, "debe registrarse PASSWORD reparado");
+    assertSame(apply.usuarios[0].acciones.includes("ACCESS"), false, "no debe registrarse ACCESS reparado");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralDespues = await getControlQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespues.password_hash, admin.password, "el password legacy debe quedar igual al local");
+      const membershipDespues = await getControlQuery(controlDb, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespues.rol, "encargado", "el rol protegido no debe tocarse por la reparacion de password");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A1RollbackTrasErrorSqlPosteriorABegin() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    await runSql(businessDbPath, "UPDATE usuarios SET rol = 'admin' WHERE id = ?", [admin.id]);
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `s1a1-rollback-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A1 Rollback", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(controlDb, { nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: admin.password, activo: 1 });
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "colaborador", activo: Number(admin.activo) });
+
+    // Obstaculo DETERMINISTICO: otra membership en la MISMA empresa ya con rol='admin', mas un
+    // indice unique de PRUEBA (nunca en produccion) que fuerza al UPDATE de reparacion a chocar
+    // con un error SQL real, ocurrido DESPUES de BEGIN IMMEDIATE.
+    const centralObstaculo = await crearUsuarioCentral(controlDb, { nombre: "Obstaculo TEST", usuarioReferencia: "obstaculo-rollback", passwordHash: "hash-obstaculo", activo: 1 });
+    await crearMembership(controlDb, { usuarioId: centralObstaculo.id, empresaId: empresa.id, usuarioLocalId: 777777, rol: "admin", activo: 1 });
+    await runControlQuery(controlDb, "CREATE UNIQUE INDEX test_only_s1a1_rollback ON usuario_empresas(empresa_id, rol)");
+    await closeControlDb(controlDb);
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`reconcileShadowUsers no debe fallar globalmente por un error puntual: ${apply.message}`);
+    const entry = apply.usuarios.find((u) => u.membership_id === membership.id);
+    if (!entry) throw new Error("debe existir una entrada para la membership en conflicto");
+    assertSame(entry.estados.includes("ERROR"), true, "debe registrar ERROR cuando el UPDATE choca con la restriccion de prueba");
+    assertSame(/UNIQUE constraint failed/i.test(entry.error || ""), true, "el error propagado debe ser el error SQL real (UNIQUE constraint), no uno generico");
+    assertEqual(apply.summary.errors, 1, "debe contarse como error, no como reparado");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membershipDespues = await getControlQuery(controlDb, "SELECT rol, activo, version FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespues.rol, "colaborador", "el ROLLBACK debe dejar el rol exactamente como estaba antes del intento");
+      assertEqual(Number(membershipDespues.version), 0, "version no debe incrementarse tras un rollback");
+      const prueba = await getControlQuery(controlDb, "SELECT 1 AS ok");
+      assertEqual(Number(prueba.ok), 1, "la conexion de control DB debe seguir utilizable inmediatamente despues del rollback");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A1EsquemaS0ParcialFallaCerrado() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const dbParcial = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
+    // Esquema parcial deliberado: solo la columna version, SIN la tabla sync_pendiente -- CASO C.
+    await runControlQuery(dbParcial, "ALTER TABLE usuario_empresas ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
+    const empresaSlug = `s1a1-parcial-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(dbParcial, { slug: empresaSlug, nombre: "S1A1 Esquema Parcial", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(dbParcial, { nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: admin.password, activo: 1 });
+    await crearMembership(dbParcial, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "colaborador", activo: 0 });
+    await closeControlDb(dbParcial);
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    assertSame(check.ok, false, "CHECK debe fallar cerrado ante esquema S0 parcial");
+    assertSame(check.errorCode, "SCHEMA_S0_INCOMPATIBLE", "el errorCode debe identificar el esquema incompatible");
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    assertSame(apply.ok, false, "APPLY debe fallar cerrado ante esquema S0 parcial");
+    assertSame(apply.errorCode, "SCHEMA_S0_INCOMPATIBLE", "el errorCode debe identificar el esquema incompatible en APPLY tambien");
+
+    // Verificacion con conexion CRUDA (no bootstrapControlDb): bootstrapControlDb llama a
+    // initControlSchema, que completaria por su cuenta el esquema S0 parcial -- eso invalidaria
+    // la comprobacion de que reconcileShadowUsers en si NUNCA migra. Se abre directo con sqlite3.
+    const dbFinal = openControlDb(controlDbPath);
+    try {
+      const membershipDespues = await getControlQuery(dbFinal, "SELECT rol, activo FROM usuario_empresas WHERE empresa_id = ? AND usuario_local_id = ?", [empresa.id, admin.id]);
+      assertSame(membershipDespues.rol, "colaborador", "ninguna escritura debe haber ocurrido con esquema parcial");
+      const tablas = await allControlQuery(dbFinal, "SELECT name FROM sqlite_master WHERE type='table' AND name='sync_pendiente'");
+      assertEqual(tablas.length, 0, "reconcileShadowUsers nunca debe crear sync_pendiente por su cuenta, ni siquiera al fallar cerrado");
+    } finally {
+      await closeControlDb(dbFinal);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A1SnapshotLocalDesactualizadoNoRevierteCentralFirst() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `s1a1-snapshot-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A1 Snapshot Desactualizado", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(controlDb, { nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: admin.password, activo: 1 });
+    // Arranca alineada con local (activo=1, mismo rol) -- todavia sin lapida.
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: admin.rol, activo: 1 });
+
+    // Simula una revocacion central-first CONFIRMADA (lo que un futuro endpoint haria de forma
+    // atomica): activo pasa a 0, version sube, se crea la lapida -- todo en una sola transaccion,
+    // como ya exige AUTH-SYNC-B2-S0-TX-FIX1. El local NUNCA se entera (sigue en activo=1: un
+    // snapshot ahora desactualizado respecto de la autoridad central).
+    await runControlQuery(controlDb, "BEGIN IMMEDIATE");
+    await runControlQuery(controlDb, "UPDATE usuario_empresas SET activo = 0, version = version + 1 WHERE id = ?", [membership.id]);
+    await runControlQuery(
+      controlDb,
+      "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado) VALUES (?, ?, ?, ?, 'rol_activo', 1, 'pendiente')",
+      [central.id, empresa.id, membership.id, admin.id]
+    );
+    await runControlQuery(controlDb, "COMMIT");
+    await closeControlDb(controlDb);
+
+    // El reconciliador ve: local.activo=1 (viejo) vs central.activo=0 (nuevo, confirmado) --
+    // exactamente un "snapshot local desactualizado". No debe revertir la revocacion central-first.
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`APPLY snapshot desactualizado fallo: ${apply.message}`);
+    assertEqual(apply.summary.repaired, 0, "no debe reparar (revertir) un cambio central-first confirmado");
+    assertEqual(apply.summary.protected_central, 1, "debe reportarse como protegido, no como reparado ni critico");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membershipDespues = await getControlQuery(controlDb, "SELECT activo, version FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertEqual(Number(membershipDespues.activo), 0, "la revocacion central-first confirmada debe seguir vigente tras la reconciliacion");
+      assertEqual(Number(membershipDespues.version), 1, "version no debe volver a incrementarse: nada se escribio");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A1CheckInformaSinMutarNingunaBase() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `s1a1-check-puro-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A1 Check Puro", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(controlDb, { nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: "hash-central-check-TEST", activo: 1 });
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "encargado", activo: 0 });
+    await runControlQuery(
+      controlDb,
+      "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado) VALUES (?, ?, ?, ?, 'rol_activo', 1, 'pendiente')",
+      [central.id, empresa.id, membership.id, admin.id]
+    );
+    const snapshotAntesMembership = await getControlQuery(controlDb, "SELECT rol, activo, version FROM usuario_empresas WHERE id = ?", [membership.id]);
+    const snapshotAntesCentral = await getControlQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [central.id]);
+    const snapshotAntesSyncPendiente = await allControlQuery(controlDb, "SELECT * FROM sync_pendiente");
+    await closeControlDb(controlDb);
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    if (!check.ok) throw new Error(`CHECK puro fallo: ${check.message}`);
+    assertSame(check.usuarios[0].estados.includes("ACCESS_PROTECTED_CENTRAL_FIRST"), true, "CHECK debe informar la proteccion central-first");
+    assertSame(check.usuarios[0].estados.includes("PASSWORD_MISMATCH"), true, "CHECK debe informar el mismatch de password por separado");
+    assertEqual(check.summary.protected_central, 1, "protected_central debe contarse en CHECK");
+    assertEqual(check.summary.critical, 1, "solo el password mismatch cuenta como critical, no el acceso protegido");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const snapshotDespuesMembership = await getControlQuery(controlDb, "SELECT rol, activo, version FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(JSON.stringify(snapshotDespuesMembership), JSON.stringify(snapshotAntesMembership), "CHECK no debe mutar la membership");
+      const snapshotDespuesCentral = await getControlQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(JSON.stringify(snapshotDespuesCentral), JSON.stringify(snapshotAntesCentral), "CHECK no debe mutar la identidad central");
+      const snapshotDespuesSyncPendiente = await allControlQuery(controlDb, "SELECT * FROM sync_pendiente");
+      assertSame(JSON.stringify(snapshotDespuesSyncPendiente), JSON.stringify(snapshotAntesSyncPendiente), "CHECK no debe mutar sync_pendiente");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A1AislamientoEntreEmpresasEnReconciliacion() {
+  const businessDbPathA = bootstrapFreshTestDb();
+  const businessDbPathB = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const adminA = (await allSql(businessDbPathA, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const adminB = (await allSql(businessDbPathB, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaASlug = `s1a1-aisla-a-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaBSlug = `s1a1-aisla-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaA = await registrarEmpresa(controlDb, { slug: empresaASlug, nombre: "S1A1 Aisla A", dbPath: "guernica.db" });
+    const empresaB = await registrarEmpresa(controlDb, { slug: empresaBSlug, nombre: "S1A1 Aisla B", dbPath: "guernica.db" });
+
+    const centralA = await crearUsuarioCentral(controlDb, { nombre: adminA.nombre, usuarioReferencia: adminA.usuario, passwordHash: adminA.password, activo: 1 });
+    const membershipA = await crearMembership(controlDb, { usuarioId: centralA.id, empresaId: empresaA.id, usuarioLocalId: adminA.id, rol: "colaborador", activo: 0 });
+    await runControlQuery(
+      controlDb,
+      "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado) VALUES (?, ?, ?, ?, 'rol_activo', 1, 'pendiente')",
+      [centralA.id, empresaA.id, membershipA.id, adminA.id]
+    );
+
+    const centralB = await crearUsuarioCentral(controlDb, { nombre: adminB.nombre, usuarioReferencia: adminB.usuario, passwordHash: adminB.password, activo: 1 });
+    const membershipB = await crearMembership(controlDb, { usuarioId: centralB.id, empresaId: empresaB.id, usuarioLocalId: adminB.id, rol: "colaborador", activo: 0 });
+    await closeControlDb(controlDb);
+
+    const applyA = await reconcileShadowUsers({ empresaSlug: empresaASlug, mode: "apply", controlDbPath, businessDbPath: businessDbPathA });
+    if (!applyA.ok) throw new Error(`APPLY empresa A fallo: ${applyA.message}`);
+    assertEqual(applyA.summary.repaired, 0, "empresa A esta protegida, no debe repararse");
+    assertEqual(applyA.summary.protected_central, 1, "empresa A debe reportarse protegida");
+
+    const applyB = await reconcileShadowUsers({ empresaSlug: empresaBSlug, mode: "apply", controlDbPath, businessDbPath: businessDbPathB });
+    if (!applyB.ok) throw new Error(`APPLY empresa B fallo: ${applyB.message}`);
+    assertEqual(applyB.summary.repaired, 1, "empresa B no tiene lapida, debe repararse normalmente");
+    assertEqual(applyB.summary.protected_central, 0, "empresa B no debe verse afectada por la proteccion de A");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membershipADespues = await getControlQuery(controlDb, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membershipA.id]);
+      assertSame(membershipADespues.rol, "colaborador", "la proteccion de A debe mantenerse tras reconciliar B");
+      const membershipBDespues = await getControlQuery(controlDb, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membershipB.id]);
+      assertSame(membershipBDespues.rol, adminB.rol, "B debe quedar reparada correctamente, sin relacion con A");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPathA, { force: true });
+    fs.rmSync(businessDbPathB, { force: true });
     fs.rmSync(controlDbPath, { force: true });
   }
 }

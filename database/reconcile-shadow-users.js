@@ -48,6 +48,44 @@ function abrirControlDbEscritura(dbPath) {
   });
 }
 
+// AUTH-SYNC-B2-S1A1: deteccion de soporte del esquema S0 (usuario_empresas.version + tabla
+// sync_pendiente), puramente por introspeccion -- nunca migra, nunca altera. Tres resultados:
+//   CASO A (soportaS0=false): ninguna de las dos estructuras existe -- Control DB legacy pre-S0,
+//     la reconciliacion se comporta EXACTAMENTE como antes de este checkpoint.
+//   CASO B (soportaS0=true): ambas existen con la forma minima esperada -- proteccion permanente
+//     de rol_activo y versionado CAS quedan activos.
+//   CASO C (soportaS0=null): estado parcial o incompatible (una existe sin la otra, o
+//     sync_pendiente existe pero le faltan columnas esperadas) -- FAIL CLOSED: el caller debe
+//     abortar sin escribir nada, en CHECK o en APPLY, porque no se puede determinar con certeza
+//     si una reparacion legacy seria segura.
+async function detectarSoporteEsquemaS0(controlDb) {
+  const columnasMembership = await allQuery(controlDb, "PRAGMA table_info(usuario_empresas)");
+  const tieneVersion = columnasMembership.some((columna) => columna.name === "version");
+
+  const tablasSyncPendiente = await allQuery(
+    controlDb,
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='sync_pendiente'"
+  );
+  const tieneSyncPendiente = tablasSyncPendiente.length > 0;
+
+  if (!tieneVersion && !tieneSyncPendiente) {
+    return { soportaS0: false };
+  }
+
+  if (tieneVersion && tieneSyncPendiente) {
+    const columnasSyncPendiente = await allQuery(controlDb, "PRAGMA table_info(sync_pendiente)");
+    const nombresSyncPendiente = new Set(columnasSyncPendiente.map((columna) => columna.name));
+    const columnasEsperadas = ["membership_id", "tipo_operacion", "estado", "version_objetivo"];
+    const formaCorrecta = columnasEsperadas.every((columna) => nombresSyncPendiente.has(columna));
+    if (!formaCorrecta) {
+      return { soportaS0: null, motivo: "SYNC_PENDIENTE_FORMA_INCOMPATIBLE" };
+    }
+    return { soportaS0: true };
+  }
+
+  return { soportaS0: null, motivo: "ESQUEMA_S0_PARCIAL" };
+}
+
 function normalizarModo(modoRaw) {
   const modo = String(modoRaw || "check").trim().toLowerCase();
   if (modo !== "check" && modo !== "apply") {
@@ -90,21 +128,80 @@ async function crearIdentidadYMembershipDesdeLocal(controlDb, empresaId, local) 
   }
 }
 
-// Password y acceso (rol+activo de membership) comparten la misma autoridad LOCAL durante
-// shadow, asi que se reparan en una unica transaccion por usuario: cada usuario existente queda
-// como una unidad atomica y consistente (ver MT-1C.1D-AUDIT seccion 17).
-async function repararPasswordYAcceso(controlDb, { centralId, membershipId, local, passwordMismatch, accessMismatch }) {
+// AUTH-SYNC-B2-S1A1: password y acceso (rol+activo de membership) ya NO comparten
+// incondicionalmente la misma autoridad -- acceso puede pasar a ser central-first (lapida en
+// sync_pendiente), password sigue con autoridad LOCAL mientras no exista un marcador propio para
+// la identidad (fuera de alcance de este checkpoint). Se reparan en la MISMA transaccion (una
+// unidad atomica por usuario, MT-1C.1D-AUDIT seccion 17), pero cada rama se decide y se re-verifica
+// por separado, DENTRO de la transaccion -- nunca confiando en el mismatch calculado antes de
+// BEGIN, para cerrar la carrera entre leer la lapida/version y escribir (ver
+// AUTH-SYNC-B2-S1-CONTRACT-RECTIFICATION seccion 2 y AUTH-SYNC-B2-S1A-SAFETY-GATE seccion 5).
+// `soportaS0` llega ya resuelto por detectarSoporteEsquemaS0 (una sola vez por corrida, no por
+// fila) -- en CASO A (legacy) nunca se consulta version/sync_pendiente, se preserva exactamente
+// la sentencia actualizarAccesoMembership de siempre.
+async function repararPasswordYAcceso(controlDb, { centralId, membershipId, local, passwordMismatch, accessMismatch, soportaS0 }) {
   await runQuery(controlDb, "BEGIN IMMEDIATE");
   let transactionStarted = true;
   try {
+    let escribioPassword = false;
+    let escribioAcceso = false;
+    let accesoProtegido = false;
+
     if (passwordMismatch) {
-      await actualizarPasswordUsuarioCentral(controlDb, centralId, local.password);
+      const centralActual = await getQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [centralId]);
+      if (centralActual && String(centralActual.password_hash) !== String(local.password)) {
+        await actualizarPasswordUsuarioCentral(controlDb, centralId, local.password);
+        escribioPassword = true;
+      }
     }
+
     if (accessMismatch) {
-      await actualizarAccesoMembership(controlDb, membershipId, { rol: local.rol, activo: local.activo });
+      let lapidaExiste = false;
+      if (soportaS0) {
+        // Releida DENTRO de la transaccion -- una comprobacion hecha antes de BEGIN nunca es
+        // autorizacion suficiente para escribir: podria haberse creado una lapida nueva mientras
+        // tanto (ver seccion 5 del checkpoint).
+        const lapida = await getQuery(
+          controlDb,
+          "SELECT 1 AS x FROM sync_pendiente WHERE membership_id = ? AND tipo_operacion = 'rol_activo'",
+          [membershipId]
+        );
+        lapidaExiste = Boolean(lapida);
+      }
+
+      if (lapidaExiste) {
+        accesoProtegido = true;
+      } else {
+        // En CASO A (pre-S0), la columna version NO existe -- pedirla incondicionalmente rompe la
+        // consulta con "no such column". Solo se selecciona cuando el esquema la soporta.
+        const membershipActual = soportaS0
+          ? await getQuery(controlDb, "SELECT rol, activo, version FROM usuario_empresas WHERE id = ?", [membershipId])
+          : await getQuery(controlDb, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membershipId]);
+        if (membershipActual) {
+          const rolMismatchFresco = String(local.rol) !== String(membershipActual.rol);
+          const activoMismatchFresco = Number(local.activo ? 1 : 0) !== Number(membershipActual.activo ? 1 : 0);
+          if (rolMismatchFresco || activoMismatchFresco) {
+            if (soportaS0) {
+              const result = await runQuery(
+                controlDb,
+                "UPDATE usuario_empresas SET rol = ?, activo = ?, version = version + 1, actualizado_en = datetime('now') WHERE id = ? AND version = ?",
+                [local.rol, local.activo ? 1 : 0, membershipId, membershipActual.version]
+              );
+              if (result.changes !== 1) {
+                throw new Error(`repararPasswordYAcceso: CAS de acceso no coincidio (membershipId=${membershipId}, version esperada=${membershipActual.version}, changes=${result.changes})`);
+              }
+            } else {
+              await actualizarAccesoMembership(controlDb, membershipId, { rol: local.rol, activo: local.activo });
+            }
+            escribioAcceso = true;
+          }
+        }
+      }
     }
+
     await runQuery(controlDb, "COMMIT");
     transactionStarted = false;
+    return { escribioPassword, escribioAcceso, accesoProtegido };
   } catch (error) {
     if (transactionStarted) {
       try { await runQuery(controlDb, "ROLLBACK"); } catch (rollbackError) { error.rollbackError = rollbackError; }
@@ -150,6 +247,27 @@ async function reconcileShadowUsers({ empresaSlug, mode: modeRaw, controlDbPath,
       : await abrirDbSoloLectura(resolvedControlDbPath);
   } catch (error) {
     return { ok: false, errorCode: "CONTROL_DB_INACCESIBLE", message: error.message };
+  }
+
+  // AUTH-SYNC-B2-S1A1: deteccion de esquema UNA sola vez por corrida, antes de tocar cualquier
+  // empresa/usuario -- puramente por introspeccion, nunca migra. CASO C (parcial/incompatible)
+  // aborta de inmediato, en CHECK o en APPLY: no hay forma segura de asumir que una reparacion
+  // legacy es correcta cuando el esquema esta a medio camino.
+  let soportaS0;
+  try {
+    const deteccion = await detectarSoporteEsquemaS0(controlDb);
+    if (deteccion.soportaS0 === null) {
+      await closeDb(controlDb);
+      return {
+        ok: false,
+        errorCode: "SCHEMA_S0_INCOMPATIBLE",
+        message: `Esquema de Control DB parcial o incompatible con S0 (${deteccion.motivo}) -- reconciliacion abortada sin escrituras`
+      };
+    }
+    soportaS0 = deteccion.soportaS0;
+  } catch (error) {
+    await closeDb(controlDb);
+    return { ok: false, errorCode: "SCHEMA_DETECTION_ERROR", message: error.message };
   }
 
   try {
@@ -198,7 +316,8 @@ async function reconcileShadowUsers({ empresaSlug, mode: modeRaw, controlDbPath,
       critical: 0,
       review_blockers: 0,
       info: 0,
-      errors: 0
+      errors: 0,
+      protected_central: 0
     };
     const usuarios = [];
 
@@ -255,18 +374,35 @@ async function reconcileShadowUsers({ empresaSlug, mode: modeRaw, controlDbPath,
       const globalActiveReview = Number(central.activo) === 0;
       const profileDiff = perfilDifiere(local, central);
 
-      if ((passwordMismatch || accessMismatch) && escrituraPermitida) {
+      // AUTH-SYNC-B2-S1A1: la lapida se consulta aca SOLO para decidir que reportar en el resumen
+      // (CHECK y APPLY informan igual, sin mutar nada por esta lectura) -- la autorizacion REAL
+      // para escribir se re-verifica de nuevo, dentro de su propia transaccion, en
+      // repararPasswordYAcceso. Cualquier estado de la lapida (pendiente o procesado) protege por
+      // igual: nunca se borra, es el marcador de autoridad permanente.
+      let accesoProtegidoPorCentral = false;
+      if (soportaS0 && accessMismatch) {
+        const lapida = await getQuery(
+          controlDb,
+          "SELECT 1 AS x FROM sync_pendiente WHERE membership_id = ? AND tipo_operacion = 'rol_activo'",
+          [membership.id]
+        );
+        accesoProtegidoPorCentral = Boolean(lapida);
+      }
+      const accessAccionable = accessMismatch && !accesoProtegidoPorCentral;
+
+      if ((passwordMismatch || accessAccionable) && escrituraPermitida) {
         try {
-          await repararPasswordYAcceso(controlDb, {
+          const resultado = await repararPasswordYAcceso(controlDb, {
             centralId: central.id,
             membershipId: membership.id,
             local,
             passwordMismatch,
-            accessMismatch
+            accessMismatch: accessAccionable,
+            soportaS0
           });
-          if (passwordMismatch) entry.acciones.push("PASSWORD");
-          if (accessMismatch) entry.acciones.push("ACCESS");
-          summary.repaired++;
+          if (resultado.escribioPassword) entry.acciones.push("PASSWORD");
+          if (resultado.escribioAcceso) entry.acciones.push("ACCESS");
+          if (resultado.escribioPassword || resultado.escribioAcceso) summary.repaired++;
         } catch (error) {
           entry.estados.push("ERROR");
           entry.error = error.message;
@@ -274,8 +410,13 @@ async function reconcileShadowUsers({ empresaSlug, mode: modeRaw, controlDbPath,
         }
       } else {
         if (passwordMismatch) entry.estados.push("PASSWORD_MISMATCH");
-        if (accessMismatch) entry.estados.push("MEMBERSHIP_ACCESS_MISMATCH");
-        if (passwordMismatch || accessMismatch) summary.critical++;
+        if (accessAccionable) entry.estados.push("MEMBERSHIP_ACCESS_MISMATCH");
+        if (passwordMismatch || accessAccionable) summary.critical++;
+      }
+
+      if (accesoProtegidoPorCentral) {
+        entry.estados.push("ACCESS_PROTECTED_CENTRAL_FIRST");
+        summary.protected_central++;
       }
 
       if (globalActiveReview) {
@@ -381,7 +522,7 @@ async function runCli(argv) {
   resultado.usuarios.forEach((usuario) => console.log(formatUsuarioLinea(usuario)));
   console.log("");
   const s = resultado.summary;
-  console.log(`Resumen: total_local=${s.total_local} aligned=${s.aligned} repaired=${s.repaired} critical=${s.critical} review_blockers=${s.review_blockers} info=${s.info} errors=${s.errors}`);
+  console.log(`Resumen: total_local=${s.total_local} aligned=${s.aligned} repaired=${s.repaired} critical=${s.critical} review_blockers=${s.review_blockers} info=${s.info} errors=${s.errors} protected_central=${s.protected_central}`);
 
   if (s.critical > 0 || s.review_blockers > 0 || s.errors > 0) {
     return 1;
