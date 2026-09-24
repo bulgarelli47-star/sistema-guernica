@@ -65,59 +65,188 @@ function resolveEmpresaDbPath(candidatePath) {
   return resolved;
 }
 
+// AUTH-SYNC-B2-S0: evolucion segura de una tabla YA EXISTENTE -- ALTER TABLE ADD COLUMN es la unica
+// forma de agregar `version` a una `usuarios`/`usuario_empresas` que ya tenia filas (CREATE TABLE IF
+// NOT EXISTS es un no-op ahi). Ademas de chequear si la columna ya existe (para que correr esto
+// repetidamente sea siempre seguro), rechaza explicitamente un esquema incompatible: si `version` ya
+// existe pero con un tipo declarado distinto de INTEGER (p.ej. una columna homonima de otro origen),
+// tira un error claro en vez de asumir en silencio que es la misma columna que este slice espera.
+async function asegurarColumnaVersion(db, tabla) {
+  const columnas = await allQuery(db, `PRAGMA table_info(${tabla})`);
+  const existente = columnas.find((columna) => columna.name === "version");
+  if (!existente) {
+    await runQuery(db, `ALTER TABLE ${tabla} ADD COLUMN version INTEGER NOT NULL DEFAULT 0`);
+    return;
+  }
+  if (String(existente.type || "").toUpperCase() !== "INTEGER") {
+    throw new Error(
+      `asegurarColumnaVersion: la tabla '${tabla}' ya tiene una columna 'version' con tipo incompatible ` +
+      `('${existente.type}', se esperaba INTEGER) -- esquema incompatible, no se altera automaticamente`
+    );
+  }
+}
+
+// AUTH-SYNC-B2-S0-TX-FIX1: toda la evolucion de esquema corre dentro de UNA transaccion real
+// (BEGIN IMMEDIATE/COMMIT/ROLLBACK), mismo patron ya establecido en este codebase para multiples
+// sentencias sobre atlas_control.db que deben tener exito o fallar juntas (ver
+// userControlBridge.js:syncUserCreate, reconcile-shadow-users.js:crearIdentidadYMembershipDesdeLocal/
+// repararPasswordYAcceso). Antes de este fix, cada CREATE TABLE/ALTER TABLE/CREATE INDEX corria en
+// autocommit individual: un fallo a mitad de la secuencia dejaba las sentencias previas persistidas
+// permanentemente, sin reversion -- la unica garantia existente era que un REINTENTO posterior
+// completaba lo faltante (idempotencia), nunca que el fallo en si dejara el archivo intacto. Ambas
+// garantias son distintas: esta funcion ahora provee la segunda (rollback real), no solo la primera.
+// transactionStarted arranca en false y solo pasa a true DESPUES de que BEGIN IMMEDIATE tuvo exito:
+// si BEGIN IMMEDIATE mismo fallara (DB bloqueada, etc.), el catch no debe intentar un ROLLBACK sin
+// transaccion abierta.
 async function initControlSchema(db) {
-  await runQuery(
-    db,
-    `CREATE TABLE IF NOT EXISTS empresas (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      slug TEXT NOT NULL UNIQUE,
-      nombre TEXT NOT NULL,
-      db_path TEXT NOT NULL,
-      activa INTEGER NOT NULL DEFAULT 1,
-      creado_en TEXT NOT NULL DEFAULT (datetime('now'))
-    )`
-  );
+  let transactionStarted = false;
+  try {
+    await runQuery(db, "BEGIN IMMEDIATE");
+    transactionStarted = true;
 
-  // MT-1B.1: identidad central en modo SHADOW. usuario_referencia/email NO son UNIQUE a
-  // proposito -- dos empresas distintas pueden tener hoy un usuario local "juan" sin evidencia
-  // de que sea la misma persona; nunca se fusiona por username/email en esta fase.
-  await runQuery(
-    db,
-    `CREATE TABLE IF NOT EXISTS usuarios (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      nombre TEXT NOT NULL,
-      usuario_referencia TEXT,
-      password_hash TEXT NOT NULL,
-      email TEXT,
-      telefono TEXT,
-      foto_url TEXT,
-      activo INTEGER NOT NULL DEFAULT 1,
-      ultimo_acceso TEXT,
-      intentos_fallidos INTEGER NOT NULL DEFAULT 0,
-      bloqueado_hasta TEXT,
-      creado_en TEXT NOT NULL DEFAULT (datetime('now')),
-      actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
-    )`
-  );
+    await runQuery(
+      db,
+      `CREATE TABLE IF NOT EXISTS empresas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL UNIQUE,
+        nombre TEXT NOT NULL,
+        db_path TEXT NOT NULL,
+        activa INTEGER NOT NULL DEFAULT 1,
+        creado_en TEXT NOT NULL DEFAULT (datetime('now'))
+      )`
+    );
 
-  // rol vive aca (por empresa), no en usuarios central. usuario_local_id no tiene FK real
-  // porque referencia una fila en OTRO archivo SQLite (la DB de esa empresa); usuario_id y
-  // empresa_id si son FK reales, porque ambas tablas conviven en este mismo archivo.
-  await runQuery(
-    db,
-    `CREATE TABLE IF NOT EXISTS usuario_empresas (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
-      empresa_id INTEGER NOT NULL REFERENCES empresas(id),
-      usuario_local_id INTEGER NOT NULL,
-      rol TEXT NOT NULL,
-      activo INTEGER NOT NULL DEFAULT 1,
-      creado_en TEXT NOT NULL DEFAULT (datetime('now')),
-      actualizado_en TEXT NOT NULL DEFAULT (datetime('now')),
-      UNIQUE (empresa_id, usuario_local_id),
-      UNIQUE (usuario_id, empresa_id)
-    )`
-  );
+    // MT-1B.1: identidad central en modo SHADOW. usuario_referencia/email NO son UNIQUE a
+    // proposito -- dos empresas distintas pueden tener hoy un usuario local "juan" sin evidencia
+    // de que sea la misma persona; nunca se fusiona por username/email en esta fase.
+    await runQuery(
+      db,
+      `CREATE TABLE IF NOT EXISTS usuarios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nombre TEXT NOT NULL,
+        usuario_referencia TEXT,
+        password_hash TEXT NOT NULL,
+        email TEXT,
+        telefono TEXT,
+        foto_url TEXT,
+        activo INTEGER NOT NULL DEFAULT 1,
+        ultimo_acceso TEXT,
+        intentos_fallidos INTEGER NOT NULL DEFAULT 0,
+        bloqueado_hasta TEXT,
+        creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+        actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+      )`
+    );
+
+    // rol vive aca (por empresa), no en usuarios central. usuario_local_id no tiene FK real
+    // porque referencia una fila en OTRO archivo SQLite (la DB de esa empresa); usuario_id y
+    // empresa_id si son FK reales, porque ambas tablas conviven en este mismo archivo.
+    await runQuery(
+      db,
+      `CREATE TABLE IF NOT EXISTS usuario_empresas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+        empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+        usuario_local_id INTEGER NOT NULL,
+        rol TEXT NOT NULL,
+        activo INTEGER NOT NULL DEFAULT 1,
+        creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+        actualizado_en TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (empresa_id, usuario_local_id),
+        UNIQUE (usuario_id, empresa_id)
+      )`
+    );
+
+    // AUTH-SYNC-B2-S0: version de identidad global y de membership, para CAS (compare-and-swap) en
+    // los slices que escriben central-first (no implementado aun -- este slice SOLO instala el
+    // esquema). ALTER TABLE ADD COLUMN es la unica forma segura de evolucionar una tabla que YA
+    // EXISTE: "CREATE TABLE IF NOT EXISTS" de arriba es un no-op sobre una tabla ya creada sin esta
+    // columna, tanto en la atlas_control.db real como en cualquier fixture de test ya bootstrapeada
+    // con el esquema viejo. PRAGMA table_info se consulta antes de alterar para que correr
+    // initControlSchema repetidamente (bootstrapControlDb ya lo hace en cada test) sea siempre
+    // seguro, sobre una DB nueva o sobre una que ya tiene usuarios/memberships reales. Los valores
+    // existentes quedan en 0 (estable, determinista) -- ningun UPDATE existente de autenticacion se
+    // modifica en este slice, asi que nada incrementa esta columna todavia.
+    await asegurarColumnaVersion(db, "usuarios");
+    await asegurarColumnaVersion(db, "usuario_empresas");
+
+    // AUTH-SYNC-B2-S0: outbox de sincronizacion pendiente hacia Business DB (AUTH-SYNC-B2-CONTRACT-
+    // FREEZE seccion 1). Vive exclusivamente en este archivo -- nunca en Business DB -- porque quien
+    // la genera es siempre la escritura central que ACABA de confirmarse: registrar el pendiente en
+    // el lado que puede estar fallando (Business DB) fue exactamente la contradiccion que invalido el
+    // diseno anterior (AUTH-SYNC-B2-DESIGN-HARDENING seccion 2, C/D). Nunca almacena el valor
+    // objetivo (password_hash/rol/activo) -- solo referencia el (membership, tipo) que el
+    // reconciliador debe releer al procesar, para que siempre sincronice el estado central VIGENTE en
+    // ese momento, nunca un valor capturado que pudo quedar viejo. UNIQUE(membership_id,
+    // tipo_operacion) es la regla anti-duplicados: una segunda operacion sobre el mismo (membership,
+    // tipo) actualiza la fila existente con una version_objetivo mas nueva, nunca inserta una segunda
+    // fila -- asi ninguna operacion se pierde por quedar tapada detras de otra ya encolada.
+    // version_objetivo funciona ademas como la "generacion" de esa fila: el futuro cierre
+    // (marcar estado='procesado') debe condicionar su UPDATE a "AND version_objetivo = <el valor
+    // leido al empezar a procesar esa fila>" -- si una operacion mas nueva ya la actualizo mientras
+    // tanto, ese UPDATE de cierre afecta 0 filas y la fila sigue pendiente con la generacion nueva,
+    // nunca se pierde ni una operacion vieja puede cerrar una generacion posterior.
+    await runQuery(
+      db,
+      `CREATE TABLE IF NOT EXISTS sync_pendiente (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+        empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+        membership_id INTEGER NOT NULL REFERENCES usuario_empresas(id),
+        usuario_local_id INTEGER NOT NULL,
+        tipo_operacion TEXT NOT NULL CHECK (tipo_operacion IN ('rol_activo','password')),
+        version_objetivo INTEGER NOT NULL,
+        estado TEXT NOT NULL DEFAULT 'pendiente' CHECK (estado IN ('pendiente','procesado')),
+        creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+        procesado_en TEXT,
+        UNIQUE (membership_id, tipo_operacion)
+      )`
+    );
+    await runQuery(db, "CREATE INDEX IF NOT EXISTS idx_sync_pendiente_estado ON sync_pendiente(estado)");
+    await runQuery(db, "CREATE INDEX IF NOT EXISTS idx_sync_pendiente_usuario ON sync_pendiente(usuario_id)");
+
+    // AUTH-SYNC-B2-S0: idempotencia de solicitudes administrativas (CONTRACT-FREEZE seccion 4).
+    // Garantia DISTINTA de version_objetivo/CAS: esto protege contra reintentos de la MISMA solicitud
+    // HTTP (respuesta perdida, timeout de red), no contra escrituras basadas en datos viejos.
+    // solicitud_huella es un hash de los campos NO sensibles de la solicitud (endpoint + destino +
+    // expected_version + valores no secretos del payload, p.ej. rol/activo) -- para password NUNCA
+    // incluye la contrasena ni su hash: el hash de bcrypt no es deterministico entre llamadas (salt
+    // aleatorio), compararlo no detectaria "mismo contenido" de forma confiable, y persistir
+    // cualquier derivado de la contrasena aca seria un dato sensible innecesario que el contrato
+    // prohibe explicitamente. estado distingue una solicitud todavia en vuelo (registrada ANTES de
+    // intentar la escritura central, para poder detectar un reintento concurrente mientras la primera
+    // sigue en curso) de una ya confirmada con resultado disponible para devolver sin reejecutar nada.
+    await runQuery(
+      db,
+      `CREATE TABLE IF NOT EXISTS operacion_idempotencia (
+        clave TEXT PRIMARY KEY,
+        endpoint TEXT NOT NULL,
+        usuario_id INTEGER REFERENCES usuarios(id),
+        membership_id INTEGER REFERENCES usuario_empresas(id),
+        solicitud_huella TEXT NOT NULL,
+        estado TEXT NOT NULL DEFAULT 'en_progreso' CHECK (estado IN ('en_progreso','confirmada')),
+        resultado_http INTEGER,
+        resultado_json TEXT,
+        creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+        confirmada_en TEXT
+      )`
+    );
+    await runQuery(db, "CREATE INDEX IF NOT EXISTS idx_operacion_idempotencia_usuario ON operacion_idempotencia(usuario_id)");
+
+    await runQuery(db, "COMMIT");
+    transactionStarted = false;
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await runQuery(db, "ROLLBACK");
+      } catch (rollbackError) {
+        // No reemplazar el error original: se adjunta como contexto adicional, nunca se relanza en
+        // su lugar. Mismo criterio ya establecido en userControlBridge.js/reconcile-shadow-users.js.
+        error.rollbackError = rollbackError;
+      }
+    }
+    throw error;
+  }
 }
 
 async function crearUsuarioCentral(db, {

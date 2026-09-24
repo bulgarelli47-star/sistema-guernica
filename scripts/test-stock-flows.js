@@ -38,6 +38,8 @@ const {
   activarEmpresaReservada,
   seedGuernica,
   bootstrapControlDb,
+  openDb: openControlDb,
+  initControlSchema,
   crearUsuarioCentral,
   crearMembership,
   getMembershipPorEmpresaYLocal,
@@ -20969,6 +20971,19 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testAuthConfigB1LegacyOffConservaComportamiento);
   await _run(testAuthConfigB1LegacyShadowConservaComportamiento);
   await _run(testAuthConfigB1BridgeInvalidoNoHabilitaCentralSilenciosamente);
+  await _run(testAuthSyncB2S0EsquemaFrescoIncluyeVersionYTablasNuevas);
+  await _run(testAuthSyncB2S0EvolucionaDbPreexistenteConUsuariosYMemberships);
+  await _run(testAuthSyncB2S0MigracionEsIdempotenteAlCorrerDosVeces);
+  await _run(testAuthSyncB2S0RecuperaEstadoParcialSinDuplicarNiFallar);
+  await _run(testAuthSyncB2S0RechazaColumnaVersionIncompatible);
+  await _run(testAuthSyncB2S0SyncPendienteUniqueEvitaDuplicados);
+  await _run(testAuthSyncB2S0SyncPendienteGeneracionCasImpideCierreConVersionVieja);
+  await _run(testAuthSyncB2S0SyncPendienteFanOutSinFusionarHomonimos);
+  await _run(testAuthSyncB2S0SyncPendienteAislamientoEntreEmpresas);
+  await _run(testAuthSyncB2S0OperacionIdempotenciaClaveUnicaYEstados);
+  await _run(testAuthSyncB2S0OperacionIdempotenciaNuncaAlmacenaPassword);
+  await _run(testAuthSyncB2S0ForeignKeysActivasEnTablasNuevas);
+  await _run(testAuthSyncB2S0RollbackAnteErrorSqlPreservaEstadoYPermiteReintento);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -21313,16 +21328,18 @@ async function testMT1BControlPlaneCreaUsuariosYMemberships() {
       const nombresUsuarios = colsUsuarios.map((c) => c.name).sort().join(",");
       const esperadosUsuarios = [
         "id", "nombre", "usuario_referencia", "password_hash", "email", "telefono", "foto_url",
-        "activo", "ultimo_acceso", "intentos_fallidos", "bloqueado_hasta", "creado_en", "actualizado_en"
+        "activo", "ultimo_acceso", "intentos_fallidos", "bloqueado_hasta", "creado_en", "actualizado_en",
+        "version"
       ].sort().join(",");
-      assertSame(nombresUsuarios, esperadosUsuarios, "usuarios central debe tener exactamente los campos previstos por MT-1B.1");
+      assertSame(nombresUsuarios, esperadosUsuarios, "usuarios central debe tener exactamente los campos previstos por MT-1B.1 + version (AUTH-SYNC-B2-S0)");
 
       const colsMembership = await allControlQuery(controlDb, "PRAGMA table_info(usuario_empresas)");
       const nombresMembership = colsMembership.map((c) => c.name).sort().join(",");
       const esperadosMembership = [
-        "id", "usuario_id", "empresa_id", "usuario_local_id", "rol", "activo", "creado_en", "actualizado_en"
+        "id", "usuario_id", "empresa_id", "usuario_local_id", "rol", "activo", "creado_en", "actualizado_en",
+        "version"
       ].sort().join(",");
-      assertSame(nombresMembership, esperadosMembership, "usuario_empresas debe tener exactamente los campos previstos por MT-1B.1");
+      assertSame(nombresMembership, esperadosMembership, "usuario_empresas debe tener exactamente los campos previstos por MT-1B.1 + version (AUTH-SYNC-B2-S0)");
     } finally {
       await closeControlDb(controlDb);
     }
@@ -24972,6 +24989,632 @@ async function testAuthConfigB1BridgeInvalidoNoHabilitaCentralSilenciosamente() 
     }, { ATLAS_USER_BRIDGE_MODE: "banana" });
   } finally {
     fs.rmSync(dbPathLegacy, { force: true });
+  }
+}
+
+// ====================================================================================================
+// AUTH-SYNC-B2-S0: esquema aditivo de atlas_control.db (version de identidad/membership, outbox
+// sync_pendiente, idempotencia operacion_idempotencia) segun AUTH-SYNC-B2-CONTRACT-FREEZE. Este
+// slice SOLO instala el esquema -- ningun UPDATE existente de autenticacion, ningun endpoint HTTP y
+// el reconciliador actual quedan sin tocar. Los tests aca abajo ejercitan database/init-control-db.js
+// directamente (bootstrapControlDb/initControlSchema via raw SQL sobre atlas_control.db temporales),
+// nunca las bases reales.
+// ====================================================================================================
+
+// Recrea EXACTAMENTE el esquema anterior a este slice (3 tablas, sin version ni tablas nuevas), para
+// poder probar la evolucion de una Control DB YA POBLADA -- el caso que "CREATE TABLE IF NOT EXISTS"
+// por si solo no cubre.
+async function authSyncB2S0CrearControlDbEsquemaViejo(dbPath) {
+  const db = new sqlite3.Database(dbPath);
+  await runControlQuery(db, "PRAGMA foreign_keys = ON");
+  await runControlQuery(db, `CREATE TABLE empresas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL UNIQUE,
+    nombre TEXT NOT NULL,
+    db_path TEXT NOT NULL,
+    activa INTEGER NOT NULL DEFAULT 1,
+    creado_en TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  await runControlQuery(db, `CREATE TABLE usuarios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT NOT NULL,
+    usuario_referencia TEXT,
+    password_hash TEXT NOT NULL,
+    email TEXT,
+    telefono TEXT,
+    foto_url TEXT,
+    activo INTEGER NOT NULL DEFAULT 1,
+    ultimo_acceso TEXT,
+    intentos_fallidos INTEGER NOT NULL DEFAULT 0,
+    bloqueado_hasta TEXT,
+    creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+    actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  await runControlQuery(db, `CREATE TABLE usuario_empresas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+    usuario_local_id INTEGER NOT NULL,
+    rol TEXT NOT NULL,
+    activo INTEGER NOT NULL DEFAULT 1,
+    creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+    actualizado_en TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (empresa_id, usuario_local_id),
+    UNIQUE (usuario_id, empresa_id)
+  )`);
+  return db;
+}
+
+async function testAuthSyncB2S0EsquemaFrescoIncluyeVersionYTablasNuevas() {
+  const dbPath = tempDbPath();
+  try {
+    const db = await bootstrapControlDb(dbPath, { seed: true });
+    try {
+      const colsUsuarios = await allControlQuery(db, "PRAGMA table_info(usuarios)");
+      const versionUsuarios = colsUsuarios.find((c) => c.name === "version");
+      assertSame(Boolean(versionUsuarios), true, "usuarios debe tener columna version en un esquema fresco");
+      assertSame(String(versionUsuarios.type).toUpperCase(), "INTEGER", "version de usuarios debe ser INTEGER");
+
+      const colsMembership = await allControlQuery(db, "PRAGMA table_info(usuario_empresas)");
+      const versionMembership = colsMembership.find((c) => c.name === "version");
+      assertSame(Boolean(versionMembership), true, "usuario_empresas debe tener columna version en un esquema fresco");
+      assertSame(String(versionMembership.type).toUpperCase(), "INTEGER", "version de usuario_empresas debe ser INTEGER");
+
+      const tablas = (await allControlQuery(db, "SELECT name FROM sqlite_master WHERE type='table'")).map((r) => r.name);
+      assertSame(tablas.includes("sync_pendiente"), true, "sync_pendiente debe existir en un esquema fresco");
+      assertSame(tablas.includes("operacion_idempotencia"), true, "operacion_idempotencia debe existir en un esquema fresco");
+
+      const guernica = await getControlQuery(db, "SELECT * FROM empresas WHERE slug = 'guernica'");
+      assertSame(Boolean(guernica), true, "el seed de Guernica sigue funcionando con el esquema nuevo");
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S0EvolucionaDbPreexistenteConUsuariosYMemberships() {
+  const dbPath = tempDbPath();
+  try {
+    const dbVieja = await authSyncB2S0CrearControlDbEsquemaViejo(dbPath);
+    const empresa = await registrarEmpresa(dbVieja, { slug: "s0-evolucion", nombre: "S0 Evolucion", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(dbVieja, { nombre: "Usuario Viejo", usuarioReferencia: "viejo", passwordHash: "hash-viejo", activo: 1 });
+    const membership = await crearMembership(dbVieja, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 42, rol: "admin", activo: 1 });
+    await closeControlDb(dbVieja);
+
+    // Reabrir y correr el esquema NUEVO sobre el mismo archivo -- exactamente el caso de una
+    // atlas_control.db real, ya poblada, evolucionando por primera vez.
+    const dbNueva = await bootstrapControlDb(dbPath, { seed: false });
+    try {
+      const centralDespues = await getControlQuery(dbNueva, "SELECT * FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(Boolean(centralDespues), true, "el usuario central preexistente debe seguir existiendo");
+      assertSame(centralDespues.usuario_referencia, "viejo", "los datos preexistentes no deben alterarse");
+      assertEqual(Number(centralDespues.version), 0, "version inicial de una fila preexistente debe ser 0");
+
+      const membershipDespues = await getControlQuery(dbNueva, "SELECT * FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(Boolean(membershipDespues), true, "la membership preexistente debe seguir existiendo");
+      assertEqual(Number(membershipDespues.usuario_local_id), 42, "usuario_local_id preexistente no debe alterarse");
+      assertEqual(Number(membershipDespues.version), 0, "version inicial de una membership preexistente debe ser 0");
+
+      const empresaDespues = await getControlQuery(dbNueva, "SELECT * FROM empresas WHERE id = ?", [empresa.id]);
+      assertSame(empresaDespues.slug, "s0-evolucion", "la empresa preexistente no debe alterarse");
+
+      const tablas = (await allControlQuery(dbNueva, "SELECT name FROM sqlite_master WHERE type='table'")).map((r) => r.name);
+      assertSame(tablas.includes("sync_pendiente"), true, "sync_pendiente debe crearse al evolucionar una DB preexistente");
+      assertSame(tablas.includes("operacion_idempotencia"), true, "operacion_idempotencia debe crearse al evolucionar una DB preexistente");
+      assertEqual((await allControlQuery(dbNueva, "SELECT * FROM sync_pendiente")).length, 0, "sync_pendiente debe nacer vacia");
+    } finally {
+      await closeControlDb(dbNueva);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S0MigracionEsIdempotenteAlCorrerDosVeces() {
+  const dbPath = tempDbPath();
+  try {
+    const db1 = await bootstrapControlDb(dbPath, { seed: true });
+    await closeControlDb(db1);
+    // Segunda pasada sobre el mismo archivo -- no debe fallar ni duplicar columnas/tablas.
+    const db2 = await bootstrapControlDb(dbPath, { seed: false });
+    try {
+      const colsUsuarios = await allControlQuery(db2, "PRAGMA table_info(usuarios)");
+      const ocurrenciasVersion = colsUsuarios.filter((c) => c.name === "version").length;
+      assertEqual(ocurrenciasVersion, 1, "version no debe duplicarse al correr initControlSchema dos veces");
+
+      const colsMembership = await allControlQuery(db2, "PRAGMA table_info(usuario_empresas)");
+      assertEqual(colsMembership.filter((c) => c.name === "version").length, 1, "version de usuario_empresas no debe duplicarse");
+
+      const tablas = (await allControlQuery(db2, "SELECT name, COUNT(*) as n FROM sqlite_master WHERE type='table' GROUP BY name HAVING n > 1"));
+      assertEqual(tablas.length, 0, "ninguna tabla debe quedar duplicada tras correr initControlSchema dos veces");
+
+      const indices = await allControlQuery(db2, "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_sync_pendiente_estado'");
+      assertEqual(indices.length, 1, "el indice de sync_pendiente no debe duplicarse");
+    } finally {
+      await closeControlDb(db2);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S0RecuperaEstadoParcialSinDuplicarNiFallar() {
+  // Simula una interrupcion a mitad de camino: el proceso alcanzo a agregar `version` pero murio
+  // antes de crear sync_pendiente/operacion_idempotencia. No hay transaccion explicita envolviendo
+  // initControlSchema -- la garantia de seguridad es que reintentarlo desde cero (idempotente paso a
+  // paso) siempre termina en el estado completo correcto, nunca duplica ni falla por lo ya aplicado.
+  const dbPath = tempDbPath();
+  try {
+    const dbParcial = await authSyncB2S0CrearControlDbEsquemaViejo(dbPath);
+    await runControlQuery(dbParcial, "ALTER TABLE usuarios ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
+    await runControlQuery(dbParcial, "ALTER TABLE usuario_empresas ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
+    await closeControlDb(dbParcial);
+
+    const dbCompletada = await bootstrapControlDb(dbPath, { seed: false });
+    try {
+      const colsUsuarios = await allControlQuery(dbCompletada, "PRAGMA table_info(usuarios)");
+      assertEqual(colsUsuarios.filter((c) => c.name === "version").length, 1, "no debe duplicar version ya presente");
+      const tablas = (await allControlQuery(dbCompletada, "SELECT name FROM sqlite_master WHERE type='table'")).map((r) => r.name);
+      assertSame(tablas.includes("sync_pendiente"), true, "debe completar la parte que faltaba (sync_pendiente)");
+      assertSame(tablas.includes("operacion_idempotencia"), true, "debe completar la parte que faltaba (operacion_idempotencia)");
+    } finally {
+      await closeControlDb(dbCompletada);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S0RechazaColumnaVersionIncompatible() {
+  const dbPath = tempDbPath();
+  try {
+    const db = await authSyncB2S0CrearControlDbEsquemaViejo(dbPath);
+    // Columna homonima preexistente de OTRO origen, con un tipo que este slice no espera.
+    await runControlQuery(db, "ALTER TABLE usuarios ADD COLUMN version TEXT");
+    await closeControlDb(db);
+
+    // Abierto por separado (no via bootstrapControlDb) para retener la referencia del handle y
+    // poder cerrarlo SIEMPRE, incluso cuando initControlSchema lanza a proposito -- en Windows un
+    // handle de sqlite3 sin cerrar bloquea el fs.rmSync posterior del archivo temporal (EPERM).
+    const dbReintento = openControlDb(dbPath);
+    let lanzo = false;
+    let mensaje = "";
+    try {
+      await initControlSchema(dbReintento);
+    } catch (error) {
+      lanzo = true;
+      mensaje = error.message;
+    } finally {
+      await closeControlDb(dbReintento);
+    }
+    assertSame(lanzo, true, "debe rechazar una columna version preexistente con tipo incompatible");
+    assertSame(/tipo incompatible/i.test(mensaje), true, "el mensaje debe identificar el motivo del rechazo");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S0SyncPendienteUniqueEvitaDuplicados() {
+  const dbPath = tempDbPath();
+  try {
+    const db = await bootstrapControlDb(dbPath, { seed: false });
+    try {
+      const empresa = await registrarEmpresa(db, { slug: "s0-dedup", nombre: "S0 Dedup", dbPath: "guernica.db" });
+      const central = await crearUsuarioCentral(db, { nombre: "Dedup", usuarioReferencia: "dedup", passwordHash: "hash", activo: 1 });
+      const membership = await crearMembership(db, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 7, rol: "admin", activo: 1 });
+
+      await runControlQuery(
+        db,
+        "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo) VALUES (?, ?, ?, ?, 'rol_activo', 1)",
+        [central.id, empresa.id, membership.id, 7]
+      );
+
+      let colisiono = false;
+      try {
+        await runControlQuery(
+          db,
+          "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo) VALUES (?, ?, ?, ?, 'rol_activo', 2)",
+          [central.id, empresa.id, membership.id, 7]
+        );
+      } catch (error) {
+        colisiono = /UNIQUE constraint failed/i.test(error.message);
+      }
+      assertSame(colisiono, true, "un segundo INSERT directo sobre el mismo (membership, tipo) debe violar UNIQUE");
+
+      // El patron correcto es upsert por UPDATE-primero: una segunda operacion legitima actualiza la
+      // fila existente con la version_objetivo mas nueva, nunca inserta una segunda fila.
+      const upd = await runControlQuery(
+        db,
+        "UPDATE sync_pendiente SET version_objetivo = ?, estado = 'pendiente', procesado_en = NULL WHERE membership_id = ? AND tipo_operacion = 'rol_activo'",
+        [2, membership.id]
+      );
+      assertEqual(upd.changes, 1, "el upsert por UPDATE debe afectar exactamente la fila existente");
+
+      const filas = await allControlQuery(db, "SELECT * FROM sync_pendiente WHERE membership_id = ? AND tipo_operacion = 'rol_activo'", [membership.id]);
+      assertEqual(filas.length, 1, "debe seguir existiendo una unica fila viva para ese (membership, tipo)");
+      assertEqual(Number(filas[0].version_objetivo), 2, "la fila unica debe reflejar la version_objetivo mas nueva");
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S0SyncPendienteGeneracionCasImpideCierreConVersionVieja() {
+  const dbPath = tempDbPath();
+  try {
+    const db = await bootstrapControlDb(dbPath, { seed: false });
+    try {
+      const empresa = await registrarEmpresa(db, { slug: "s0-cas", nombre: "S0 CAS", dbPath: "guernica.db" });
+      const central = await crearUsuarioCentral(db, { nombre: "CAS", usuarioReferencia: "cas", passwordHash: "hash", activo: 1 });
+      const membership = await crearMembership(db, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 9, rol: "admin", activo: 1 });
+
+      const ins = await runControlQuery(
+        db,
+        "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo) VALUES (?, ?, ?, ?, 'password', 5)",
+        [central.id, empresa.id, membership.id, 9]
+      );
+      const pendienteId = ins.lastID;
+
+      // Una segunda operacion real avanza la generacion mientras la primera "sigue en vuelo".
+      await runControlQuery(db, "UPDATE sync_pendiente SET version_objetivo = 7, estado = 'pendiente', procesado_en = NULL WHERE id = ?", [pendienteId]);
+
+      // El reconciliador que leyo version_objetivo=5 al empezar intenta cerrar con esa generacion vieja.
+      const cierreViejo = await runControlQuery(
+        db,
+        "UPDATE sync_pendiente SET estado = 'procesado', procesado_en = datetime('now') WHERE id = ? AND version_objetivo = 5",
+        [pendienteId]
+      );
+      assertEqual(cierreViejo.changes, 0, "un cierre con la generacion vieja (5) no debe afectar ninguna fila");
+
+      const trasCierreViejo = await getControlQuery(db, "SELECT estado, version_objetivo FROM sync_pendiente WHERE id = ?", [pendienteId]);
+      assertSame(trasCierreViejo.estado, "pendiente", "la fila debe seguir pendiente tras el intento de cierre con generacion vieja");
+      assertEqual(Number(trasCierreViejo.version_objetivo), 7, "la fila debe conservar la generacion nueva, nunca revertir a la vieja");
+
+      // El reconciliador que relee y procesa la generacion correcta si puede cerrarla.
+      const cierreCorrecto = await runControlQuery(
+        db,
+        "UPDATE sync_pendiente SET estado = 'procesado', procesado_en = datetime('now') WHERE id = ? AND version_objetivo = 7",
+        [pendienteId]
+      );
+      assertEqual(cierreCorrecto.changes, 1, "un cierre con la generacion correcta (7) debe afectar exactamente 1 fila");
+
+      const final = await getControlQuery(db, "SELECT estado FROM sync_pendiente WHERE id = ?", [pendienteId]);
+      assertSame(final.estado, "procesado", "la fila debe quedar procesada tras el cierre con la generacion correcta");
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S0SyncPendienteFanOutSinFusionarHomonimos() {
+  const dbPath = tempDbPath();
+  try {
+    const db = await bootstrapControlDb(dbPath, { seed: false });
+    try {
+      const empresaA = await registrarEmpresa(db, { slug: "s0-fanout-a", nombre: "S0 Fanout A", dbPath: "guernica.db" });
+      const empresaB = await registrarEmpresa(db, { slug: "s0-fanout-b", nombre: "S0 Fanout B", dbPath: "guernica.db" });
+
+      // Una identidad compartida con membership real en A y B (mismo caso que MT-1G G5).
+      const central = await crearUsuarioCentral(db, { nombre: "Compartido", usuarioReferencia: "compartido", passwordHash: "hash", activo: 1 });
+      const membershipA = await crearMembership(db, { usuarioId: central.id, empresaId: empresaA.id, usuarioLocalId: 11, rol: "admin", activo: 1 });
+      const membershipB = await crearMembership(db, { usuarioId: central.id, empresaId: empresaB.id, usuarioLocalId: 22, rol: "colaborador", activo: 1 });
+
+      // Fan-out de una sola rotacion de password central: dos filas, mismo usuario_id, tipo_operacion
+      // igual, membership_id distinto -- no viola UNIQUE(membership_id, tipo_operacion).
+      await runControlQuery(
+        db,
+        "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo) VALUES (?, ?, ?, ?, 'password', 3)",
+        [central.id, empresaA.id, membershipA.id, 11]
+      );
+      await runControlQuery(
+        db,
+        "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo) VALUES (?, ?, ?, ?, 'password', 3)",
+        [central.id, empresaB.id, membershipB.id, 22]
+      );
+
+      const pendientes = await allControlQuery(db, "SELECT * FROM sync_pendiente WHERE usuario_id = ? ORDER BY membership_id", [central.id]);
+      assertEqual(pendientes.length, 2, "el fan-out de una identidad compartida debe generar una fila por membership");
+      assertEqual(Number(pendientes[0].usuario_local_id), 11, "cada fila conserva el usuario_local_id exacto de su propia empresa");
+      assertEqual(Number(pendientes[1].usuario_local_id), 22, "cada fila conserva el usuario_local_id exacto de su propia empresa");
+
+      // Dos identidades DISTINTAS con el mismo usuario_referencia (homonimos) nunca se fusionan --
+      // el esquema no tiene ninguna restriccion UNIQUE sobre usuario_referencia (ya establecido), y
+      // el fan-out se ancla siempre por usuario_id real, nunca por nombre.
+      const empresaC = await registrarEmpresa(db, { slug: "s0-fanout-c", nombre: "S0 Fanout C", dbPath: "guernica.db" });
+      const otroCentral = await crearUsuarioCentral(db, { nombre: "Homonimo", usuarioReferencia: "compartido", passwordHash: "otro-hash", activo: 1 });
+      assertSame(otroCentral.id !== central.id, true, "una identidad homonima (mismo usuario_referencia) debe ser una fila central distinta, nunca fusionada");
+      const membershipC = await crearMembership(db, { usuarioId: otroCentral.id, empresaId: empresaC.id, usuarioLocalId: 33, rol: "admin", activo: 1 });
+      await runControlQuery(
+        db,
+        "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo) VALUES (?, ?, ?, ?, 'password', 1)",
+        [otroCentral.id, empresaC.id, membershipC.id, 33]
+      );
+      const pendientesPrimerCentral = await allControlQuery(db, "SELECT * FROM sync_pendiente WHERE usuario_id = ?", [central.id]);
+      assertEqual(pendientesPrimerCentral.length, 2, "el pendiente del homonimo no debe mezclarse con los de la identidad original");
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S0SyncPendienteAislamientoEntreEmpresas() {
+  const dbPath = tempDbPath();
+  try {
+    const db = await bootstrapControlDb(dbPath, { seed: false });
+    try {
+      const empresaA = await registrarEmpresa(db, { slug: "s0-aisla-a", nombre: "S0 Aisla A", dbPath: "guernica.db" });
+      const empresaB = await registrarEmpresa(db, { slug: "s0-aisla-b", nombre: "S0 Aisla B", dbPath: "guernica.db" });
+      const centralA = await crearUsuarioCentral(db, { nombre: "A", usuarioReferencia: "a", passwordHash: "hash", activo: 1 });
+      const centralB = await crearUsuarioCentral(db, { nombre: "B", usuarioReferencia: "b", passwordHash: "hash", activo: 1 });
+      const membershipA = await crearMembership(db, { usuarioId: centralA.id, empresaId: empresaA.id, usuarioLocalId: 1, rol: "admin", activo: 1 });
+      const membershipB = await crearMembership(db, { usuarioId: centralB.id, empresaId: empresaB.id, usuarioLocalId: 1, rol: "admin", activo: 1 });
+
+      await runControlQuery(
+        db,
+        "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo) VALUES (?, ?, ?, ?, 'rol_activo', 1)",
+        [centralA.id, empresaA.id, membershipA.id, 1]
+      );
+
+      // Marcar como procesado el pendiente de A no debe afectar ninguna fila de B (que ni siquiera
+      // tiene un pendiente todavia) ni crear nada para B.
+      await runControlQuery(db, "UPDATE sync_pendiente SET estado = 'procesado' WHERE membership_id = ?", [membershipA.id]);
+      const pendientesB = await allControlQuery(db, "SELECT * FROM sync_pendiente WHERE membership_id = ?", [membershipB.id]);
+      assertEqual(pendientesB.length, 0, "la empresa B no debe verse afectada por operaciones sobre la empresa A");
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S0OperacionIdempotenciaClaveUnicaYEstados() {
+  const dbPath = tempDbPath();
+  try {
+    const db = await bootstrapControlDb(dbPath, { seed: false });
+    try {
+      const empresa = await registrarEmpresa(db, { slug: "s0-idem", nombre: "S0 Idem", dbPath: "guernica.db" });
+      const central = await crearUsuarioCentral(db, { nombre: "Idem", usuarioReferencia: "idem", passwordHash: "hash", activo: 1 });
+      const membership = await crearMembership(db, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 5, rol: "admin", activo: 1 });
+      const clave = "idem-clave-" + Date.now();
+
+      await runControlQuery(
+        db,
+        "INSERT INTO operacion_idempotencia (clave, endpoint, usuario_id, membership_id, solicitud_huella) VALUES (?, ?, ?, ?, ?)",
+        [clave, "PATCH /usuarios/:id/estado", central.id, membership.id, "huella-1"]
+      );
+
+      let colisiono = false;
+      try {
+        await runControlQuery(
+          db,
+          "INSERT INTO operacion_idempotencia (clave, endpoint, usuario_id, membership_id, solicitud_huella) VALUES (?, ?, ?, ?, ?)",
+          [clave, "PATCH /usuarios/:id/estado", central.id, membership.id, "huella-2"]
+        );
+      } catch (error) {
+        colisiono = /UNIQUE constraint failed/i.test(error.message);
+      }
+      assertSame(colisiono, true, "la clave de idempotencia debe ser unica -- un segundo INSERT con la misma clave debe fallar");
+
+      const enProgreso = await getControlQuery(db, "SELECT estado FROM operacion_idempotencia WHERE clave = ?", [clave]);
+      assertSame(enProgreso.estado, "en_progreso", "una operacion recien registrada debe nacer en_progreso");
+
+      await runControlQuery(
+        db,
+        "UPDATE operacion_idempotencia SET estado = 'confirmada', resultado_http = 200, resultado_json = ?, confirmada_en = datetime('now') WHERE clave = ?",
+        [JSON.stringify({ ok: true, sync_pendiente: false }), clave]
+      );
+      const confirmada = await getControlQuery(db, "SELECT estado, resultado_http FROM operacion_idempotencia WHERE clave = ?", [clave]);
+      assertSame(confirmada.estado, "confirmada", "la operacion debe poder transicionar a confirmada con su resultado");
+      assertEqual(confirmada.resultado_http, 200, "el resultado_http debe persistirse");
+
+      let estadoInvalido = false;
+      try {
+        await runControlQuery(db, "UPDATE operacion_idempotencia SET estado = 'inventado' WHERE clave = ?", [clave]);
+      } catch (error) {
+        estadoInvalido = /CHECK constraint failed/i.test(error.message);
+      }
+      assertSame(estadoInvalido, true, "un estado fuera de ('en_progreso','confirmada') debe rechazarse por CHECK");
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S0OperacionIdempotenciaNuncaAlmacenaPassword() {
+  const dbPath = tempDbPath();
+  try {
+    const db = await bootstrapControlDb(dbPath, { seed: false });
+    try {
+      const empresa = await registrarEmpresa(db, { slug: "s0-idem-pwd", nombre: "S0 Idem Pwd", dbPath: "guernica.db" });
+      const central = await crearUsuarioCentral(db, { nombre: "IdemPwd", usuarioReferencia: "idempwd", passwordHash: await bcrypt.hash("NoDeberiaAparecer1", 10), activo: 1 });
+      const membership = await crearMembership(db, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 6, rol: "admin", activo: 1 });
+      const clave = "idem-pwd-clave-" + Date.now();
+
+      // Forma realista del resultado que un futuro endpoint de password guardaria: nunca incluye
+      // password/password_hash, solo el objeto usuario "publico" + metadatos de sincronizacion.
+      const resultadoRealista = JSON.stringify({
+        ok: true,
+        usuario: { id: 6, nombre: "IdemPwd", usuario: "idempwd", rol: "admin", activo: true },
+        version: 2,
+        sync_pendiente: false
+      });
+
+      await runControlQuery(
+        db,
+        "INSERT INTO operacion_idempotencia (clave, endpoint, usuario_id, membership_id, solicitud_huella, estado, resultado_http, resultado_json, confirmada_en) VALUES (?, ?, ?, ?, ?, 'confirmada', 200, ?, datetime('now'))",
+        [
+          clave, "PATCH /usuarios/:id/password", central.id, membership.id,
+          // Huella realista: hash de campos NO sensibles (endpoint + destino + version esperada),
+          // nunca de la contrasena ni de su hash bcrypt -- ver comentario del esquema.
+          crypto.createHash("sha256").update(`PATCH /usuarios/:id/password|${membership.id}|2`).digest("hex"),
+          resultadoRealista
+        ]
+      );
+
+      const fila = await getControlQuery(db, "SELECT resultado_json, solicitud_huella FROM operacion_idempotencia WHERE clave = ?", [clave]);
+      assertSame(/password|contrasena|NoDeberiaAparecer1/i.test(fila.resultado_json), false, "resultado_json nunca debe contener la contrasena ni su hash");
+      assertSame(/password|contrasena|NoDeberiaAparecer1/i.test(fila.solicitud_huella), false, "solicitud_huella nunca debe contener la contrasena ni su hash");
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S0ForeignKeysActivasEnTablasNuevas() {
+  const dbPath = tempDbPath();
+  try {
+    const db = await bootstrapControlDb(dbPath, { seed: false });
+    try {
+      let fallo = false;
+      try {
+        await runControlQuery(
+          db,
+          "INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo) VALUES (999999, 999999, 999999, 1, 'rol_activo', 1)"
+        );
+      } catch (error) {
+        fallo = /FOREIGN KEY constraint failed/i.test(error.message);
+      }
+      assertSame(fallo, true, "sync_pendiente debe rechazar referencias a usuario/empresa/membership inexistentes (FK real)");
+
+      let falloIdem = false;
+      try {
+        await runControlQuery(
+          db,
+          "INSERT INTO operacion_idempotencia (clave, endpoint, usuario_id, solicitud_huella) VALUES ('fk-test', 'X', 999999, 'h')"
+        );
+      } catch (error) {
+        falloIdem = /FOREIGN KEY constraint failed/i.test(error.message);
+      }
+      assertSame(falloIdem, true, "operacion_idempotencia debe rechazar usuario_id inexistente (FK real)");
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+// AUTH-SYNC-B2-S0-TX-FIX1: initControlSchema ahora corre dentro de BEGIN IMMEDIATE/COMMIT/ROLLBACK.
+// Este test provoca un fallo SQL DETERMINISTICO a mitad de la evolucion -- sin ningun hook de fallo
+// en el codigo de produccion -- sembrando de antemano, en la propia base temporal, un objeto
+// (una TABLA) con el mismo nombre que el primer indice que la migracion intenta crear
+// (idx_sync_pendiente_estado). SQLite rechaza "CREATE INDEX IF NOT EXISTS x" cuando ya existe un
+// objeto llamado x de OTRO tipo (una tabla, no un indice) -- "IF NOT EXISTS" solo suprime el error
+// si el objeto existente es del mismo tipo. Ese fallo ocurre DESPUES de que initControlSchema ya
+// ejecuto ambos ALTER TABLE (usuarios/usuario_empresas) y el CREATE TABLE de sync_pendiente dentro
+// de la MISMA transaccion todavia abierta -- exactamente el escenario que la garantia de rollback
+// debe cubrir: sentencias previas que "tuvieron exito" pero nunca deben persistir si algo posterior
+// en la misma transaccion falla.
+async function testAuthSyncB2S0RollbackAnteErrorSqlPreservaEstadoYPermiteReintento() {
+  const dbPath = tempDbPath();
+  try {
+    const dbVieja = await authSyncB2S0CrearControlDbEsquemaViejo(dbPath);
+    const empresa = await registrarEmpresa(dbVieja, { slug: "s0-rollback", nombre: "S0 Rollback", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(dbVieja, { nombre: "Rollback Historico", usuarioReferencia: "rollback-historico", passwordHash: "hash-historico", activo: 1 });
+    const membership = await crearMembership(dbVieja, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 77, rol: "admin", activo: 1 });
+
+    // El obstaculo: una TABLA (no un indice) con el nombre exacto del primer CREATE INDEX de la
+    // migracion. Se crea DESPUES del esquema historico, ANTES de invocar initControlSchema -- nunca
+    // dentro de un hook del codigo de produccion.
+    await runControlQuery(dbVieja, "CREATE TABLE idx_sync_pendiente_estado (marcador_obstaculo INTEGER)");
+    await runControlQuery(dbVieja, "INSERT INTO idx_sync_pendiente_estado (marcador_obstaculo) VALUES (1)");
+    await closeControlDb(dbVieja);
+
+    const db = openControlDb(dbPath);
+    try {
+      let lanzo = false;
+      let mensaje = "";
+      try {
+        await initControlSchema(db);
+      } catch (error) {
+        lanzo = true;
+        mensaje = error.message;
+      }
+      assertSame(lanzo, true, "el CREATE INDEX debe fallar de forma determinista por el objeto homonimo preexistente");
+      assertSame(/already an object named|idx_sync_pendiente_estado/i.test(mensaje), true, "el error propagado debe identificar el conflicto real de SQLite, no un error generico");
+
+      // El error debe haber ocurrido DESPUES de iniciar la transaccion (no antes de BEGIN): lo
+      // demuestra precisamente que las sentencias previas (los dos ALTER TABLE + el CREATE TABLE de
+      // sync_pendiente) hayan corrido "con exito" hasta llegar al CREATE INDEX -- si el fallo fuera
+      // anterior a BEGIN, ninguna de las verificaciones de rollback que siguen tendria sentido.
+
+      // === Verificacion de rollback: nada de la evolucion debe haber quedado persistido ===
+      const colsUsuariosTrasFallo = await allControlQuery(db, "PRAGMA table_info(usuarios)");
+      assertSame(colsUsuariosTrasFallo.some((c) => c.name === "version"), false, "tras el rollback, usuarios NO debe tener la columna version");
+
+      const colsMembershipTrasFallo = await allControlQuery(db, "PRAGMA table_info(usuario_empresas)");
+      assertSame(colsMembershipTrasFallo.some((c) => c.name === "version"), false, "tras el rollback, usuario_empresas NO debe tener la columna version");
+
+      const tablasTrasFallo = (await allControlQuery(db, "SELECT name FROM sqlite_master WHERE type='table'")).map((r) => r.name);
+      assertSame(tablasTrasFallo.includes("sync_pendiente"), false, "tras el rollback, sync_pendiente NO debe existir (aunque su CREATE TABLE corrio antes del fallo)");
+      assertSame(tablasTrasFallo.includes("operacion_idempotencia"), false, "tras el rollback, operacion_idempotencia NO debe existir");
+
+      // El obstaculo deliberado debe seguir exactamente como estaba -- el rollback no debe tocarlo.
+      assertSame(tablasTrasFallo.includes("idx_sync_pendiente_estado"), true, "la tabla-obstaculo debe conservarse intacta tras el rollback");
+      const obstaculoFilas = await allControlQuery(db, "SELECT * FROM idx_sync_pendiente_estado");
+      assertEqual(obstaculoFilas.length, 1, "la fila sembrada en la tabla-obstaculo debe conservarse tras el rollback");
+      assertEqual(Number(obstaculoFilas[0].marcador_obstaculo), 1, "el contenido de la tabla-obstaculo no debe alterarse");
+
+      // Los datos historicos (empresa/usuario/membership) deben conservar exactamente su estado.
+      const empresaTrasFallo = await getControlQuery(db, "SELECT * FROM empresas WHERE id = ?", [empresa.id]);
+      assertSame(empresaTrasFallo.slug, "s0-rollback", "la empresa historica debe conservarse tras el rollback");
+      const centralTrasFallo = await getControlQuery(db, "SELECT * FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralTrasFallo.usuario_referencia, "rollback-historico", "el usuario central historico debe conservarse tras el rollback");
+      assertSame(centralTrasFallo.password_hash, "hash-historico", "el password_hash historico no debe alterarse por el intento fallido");
+      const membershipTrasFallo = await getControlQuery(db, "SELECT * FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertEqual(Number(membershipTrasFallo.usuario_local_id), 77, "la membership historica debe conservarse tras el rollback");
+
+      // La conexion sigue utilizable tras el ROLLBACK (no quedo "envenenada").
+      const prueba = await getControlQuery(db, "SELECT 1 AS ok");
+      assertEqual(Number(prueba.ok), 1, "la conexion debe seguir siendo utilizable inmediatamente despues del rollback");
+
+      // === Quitar el obstaculo y reintentar: la migracion debe completarse limpiamente ===
+      await runControlQuery(db, "DROP TABLE idx_sync_pendiente_estado");
+      await initControlSchema(db);
+
+      const colsUsuariosTrasExito = await allControlQuery(db, "PRAGMA table_info(usuarios)");
+      assertSame(colsUsuariosTrasExito.some((c) => c.name === "version"), true, "tras quitar el obstaculo, usuarios debe tener version");
+      const colsMembershipTrasExito = await allControlQuery(db, "PRAGMA table_info(usuario_empresas)");
+      assertSame(colsMembershipTrasExito.some((c) => c.name === "version"), true, "tras quitar el obstaculo, usuario_empresas debe tener version");
+
+      const tablasTrasExito = (await allControlQuery(db, "SELECT name FROM sqlite_master WHERE type='table'")).map((r) => r.name);
+      assertSame(tablasTrasExito.includes("sync_pendiente"), true, "tras el reintento exitoso, sync_pendiente debe existir");
+      assertSame(tablasTrasExito.includes("operacion_idempotencia"), true, "tras el reintento exitoso, operacion_idempotencia debe existir");
+
+      const indicesTrasExito = (await allControlQuery(db, "SELECT name FROM sqlite_master WHERE type='index'")).map((r) => r.name);
+      assertSame(indicesTrasExito.includes("idx_sync_pendiente_estado"), true, "idx_sync_pendiente_estado debe existir como indice real tras el reintento");
+      assertSame(indicesTrasExito.includes("idx_sync_pendiente_usuario"), true, "idx_sync_pendiente_usuario debe existir tras el reintento");
+      assertSame(indicesTrasExito.includes("idx_operacion_idempotencia_usuario"), true, "idx_operacion_idempotencia_usuario debe existir tras el reintento");
+
+      const empresaTrasExito = await getControlQuery(db, "SELECT * FROM empresas WHERE id = ?", [empresa.id]);
+      assertSame(empresaTrasExito.slug, "s0-rollback", "los datos historicos deben conservarse tras la migracion exitosa");
+      const membershipTrasExito = await getControlQuery(db, "SELECT * FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertEqual(Number(membershipTrasExito.version), 0, "la membership historica debe nacer con version 0 tras la migracion exitosa");
+
+      // Tercera corrida: idempotencia real, ahora dentro de una transaccion.
+      await initControlSchema(db);
+      const colsFinal = await allControlQuery(db, "PRAGMA table_info(usuarios)");
+      assertEqual(colsFinal.filter((c) => c.name === "version").length, 1, "una tercera corrida no debe duplicar version");
+      const indicesFinal = await allControlQuery(db, "SELECT name, COUNT(*) as n FROM sqlite_master WHERE type='index' GROUP BY name HAVING n > 1");
+      assertEqual(indicesFinal.length, 0, "una tercera corrida no debe duplicar ningun indice");
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
   }
 }
 
