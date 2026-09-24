@@ -2473,19 +2473,24 @@ app.patch("/usuarios/:id/estado", async (req, res) => {
       return res.status(404).json({ message: "Usuario no encontrado" });
     }
 
+    // AUTH-SYNC-B2-S1A2C-STATE-GUARD: en shadow, esta ruta existe unicamente para cambiar activo --
+    // a diferencia de PUT, no hay una porcion "perfil" segura que aislar, asi que se bloquea la
+    // solicitud COMPLETA de forma incondicional. Orden exacto: primero se consulta la base local
+    // solo para verificar existencia (arriba); si no existe, 404. Si existe y bridge=shadow, se
+    // responde 409 aqui mismo, antes de cualquier ESCRITURA local y antes de tocar Control DB en
+    // absoluto -- igual que el guard ya publicado de DELETE (S1A2A). No importa si el valor enviado
+    // coincide con el activo local actual: no hay forma segura de distinguir esa coincidencia de
+    // una carrera con una decision central-first todavia no reflejada localmente.
+    if (userControlBridge.getBridgeMode() === "shadow") {
+      return res.status(409).json({
+        message: "La activación y desactivación de usuarios está temporalmente restringida mientras la sincronización central está habilitada."
+      });
+    }
+
     await runQuery(
       "UPDATE usuarios SET activo = ?, actualizado_en = ? WHERE id = ?",
       [activo, new Date().toISOString(), usuarioId]
     );
-
-    if (userControlBridge.getBridgeMode() === "shadow") {
-      try {
-        await userControlBridge.syncMembershipActivo({ empresaSlug: empresaAuthDelRequest().empresaSlug, usuarioLocalId: usuarioId, activo });
-      } catch (bridgeError) {
-        logError("bridge active divergence", bridgeError);
-        return res.status(503).json({ message: "El estado se actualizo pero no pudo sincronizarse completamente. Intenta nuevamente en unos minutos." });
-      }
-    }
 
     return res.json({ message: activo ? "Usuario activado" : "Usuario desactivado", usuario: await getUsuarioById(usuarioId) });
   } catch (error) {
