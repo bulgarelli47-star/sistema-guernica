@@ -2594,6 +2594,19 @@ app.delete("/usuarios/:id", async (req, res) => {
       return res.status(404).json({ message: "Usuario no encontrado" });
     }
 
+    // AUTH-SYNC-B2-S1A2A: bloqueo incondicional al modo del bridge, sin consultar la Control DB.
+    // No se comprueba si YA existe una membership central para este usuario_local_id porque esa
+    // comprobacion no protege la ventana entre el INSERT local de POST /usuarios y la creacion
+    // posterior (asincrona) de su membership central -- en esa ventana la membership todavia no
+    // existe, y una consulta la encontraria ausente, dejando pasar el DELETE igual. Bloquear por
+    // el mero modo del bridge (en vez de por el estado de una fila que puede no existir todavia)
+    // es lo unico que cierra tambien esa carrera.
+    if (userControlBridge.getBridgeMode() === "shadow") {
+      return res.status(409).json({
+        message: "No se puede eliminar un usuario mientras está habilitada la sincronización central. Podés desactivarlo."
+      });
+    }
+
     const actividad = await getQuery(
       `SELECT
          (SELECT COUNT(*) FROM ventas WHERE usuario = ?) AS ventas,

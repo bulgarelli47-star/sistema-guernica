@@ -20994,6 +20994,16 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testAuthSyncB2S1A1SnapshotLocalDesactualizadoNoRevierteCentralFirst);
   await _run(testAuthSyncB2S1A1CheckInformaSinMutarNingunaBase);
   await _run(testAuthSyncB2S1A1AislamientoEntreEmpresasEnReconciliacion);
+  await _run(testAuthSyncB2S1A2ADeleteShadowMembershipActivaRechaza409);
+  await _run(testAuthSyncB2S1A2ADeleteShadowMembershipInactivaRechaza409);
+  await _run(testAuthSyncB2S1A2ADeleteShadowSinMembershipRechaza409);
+  await _run(testAuthSyncB2S1A2ADeleteShadowControlDbInaccesibleRechaza409SinConsultarla);
+  await _run(testAuthSyncB2S1A2ADeleteShadowPreS0MismoBloqueo);
+  await _run(testAuthSyncB2S1A2ADeleteBridgeOffSinActividadPreservaLegacy);
+  await _run(testAuthSyncB2S1A2ADeleteBridgeOffConActividadConserva409Existente);
+  await _run(testAuthSyncB2S1A2ADeleteUsuarioInexistenteConserva404);
+  await _run(testAuthSyncB2S1A2ADeletePostIntermedioMembershipAusenteNoElimina);
+  await _run(testAuthSyncB2S1A2ADeleteMultiTenantBloqueaPorTenant);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -23903,6 +23913,421 @@ async function testAuthSyncB2S1A1AislamientoEntreEmpresasEnReconciliacion() {
     fs.rmSync(businessDbPathB, { force: true });
     fs.rmSync(controlDbPath, { force: true });
   }
+}
+
+// AUTH-SYNC-B2-S1A2A: DELETE /usuarios/:id nunca debe poder dejar una membership central
+// huerfana. El bloqueo es incondicional al modo del bridge (getBridgeMode()==="shadow"),
+// deliberadamente SIN consultar si la membership ya existe en la Control DB -- una consulta de
+// existencia no protegeria la ventana entre el INSERT local de POST /usuarios y la creacion
+// asincrona posterior de su membership central (ver AUTH-SYNC-B2-S1A2-HTTP-WRITERS-GATE seccion
+// 2): en esa ventana la membership todavia no existe, y una consulta la encontraria ausente,
+// dejando pasar el DELETE igual. Bloquear por el mero modo del bridge es lo unico que cierra
+// tambien esa carrera.
+async function testAuthSyncB2S1A2ADeleteShadowMembershipActivaRechaza409() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `s1a2a-del-activa-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A2A Delete Activa", dbPath: "guernica.db" });
+
+    let localId;
+    const usuarioLogin = `colaborador.delactiva.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Delete Activa TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorDel1",
+        confirmar_password: "ColaboradorDel1",
+        rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    const placeholderHash = await bcrypt.hash("PlaceholderDel1", 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Colaborador Delete Activa TEST", usuarioReferencia: usuarioLogin, passwordHash: placeholderHash, activo: 1
+    });
+    await crearMembership(controlDb, {
+      usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: localId, rol: "colaborador", activo: 1
+    });
+    await closeControlDb(controlDb);
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const del = await requestJson(baseUrl, "DELETE", `/usuarios/${localId}`, null, tokenAdmin);
+      assertEqual(del.response.status, 409, `DELETE con membership activa debe rechazar 409: ${JSON.stringify(del.data)}`);
+      assertSame(
+        del.data?.message,
+        "No se puede eliminar un usuario mientras está habilitada la sincronización central. Podés desactivarlo.",
+        "mensaje de bloqueo shadow debe ser el esperado"
+      );
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    const usuarioIntacto = await allSql(businessDbPath, "SELECT id FROM usuarios WHERE id = ?", [localId]);
+    assertEqual(usuarioIntacto.length, 1, "usuario local debe seguir existiendo tras el 409 (membership activa)");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2ADeleteShadowMembershipInactivaRechaza409() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `s1a2a-del-inactiva-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A2A Delete Inactiva", dbPath: "guernica.db" });
+
+    let localId;
+    const usuarioLogin = `colaborador.delinactiva.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Delete Inactiva TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorDel2",
+        confirmar_password: "ColaboradorDel2",
+        rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    const placeholderHash = await bcrypt.hash("PlaceholderDel2", 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Colaborador Delete Inactiva TEST", usuarioReferencia: usuarioLogin, passwordHash: placeholderHash, activo: 1
+    });
+    // activo:0 -- membership YA desactivada; el checkpoint exige que el bloqueo aplique igual
+    // ("aunque este inactiva"), porque el borrado local seguiria dejando huerfana la fila central.
+    await crearMembership(controlDb, {
+      usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: localId, rol: "colaborador", activo: 0
+    });
+    await closeControlDb(controlDb);
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const del = await requestJson(baseUrl, "DELETE", `/usuarios/${localId}`, null, tokenAdmin);
+      assertEqual(del.response.status, 409, `DELETE con membership inactiva debe rechazar 409 igual que si estuviera activa: ${JSON.stringify(del.data)}`);
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    const usuarioIntacto = await allSql(businessDbPath, "SELECT id FROM usuarios WHERE id = ?", [localId]);
+    assertEqual(usuarioIntacto.length, 1, "usuario local debe seguir existiendo tras el 409 (membership inactiva)");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2ADeleteShadowSinMembershipRechaza409() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `s1a2a-del-sinmembership-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    // Empresa registrada, pero SIN crear identidad central ni membership -- el bloqueo debe
+    // depender exclusivamente del modo del bridge, nunca de si ya existe una fila que proteger.
+    await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A2A Delete Sin Membership", dbPath: "guernica.db" });
+    await closeControlDb(controlDb);
+
+    let localId;
+    const usuarioLogin = `colaborador.delsinmembership.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Delete Sin Membership TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorDel3",
+        confirmar_password: "ColaboradorDel3",
+        rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const del = await requestJson(baseUrl, "DELETE", `/usuarios/${localId}`, null, tokenAdmin);
+      assertEqual(del.response.status, 409, `DELETE sin membership en Control DB debe rechazar 409 igual (bloqueo por modo, no por existencia): ${JSON.stringify(del.data)}`);
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    const usuarioIntacto = await allSql(businessDbPath, "SELECT id FROM usuarios WHERE id = ?", [localId]);
+    assertEqual(usuarioIntacto.length, 1, "usuario local debe seguir existiendo tras el 409 (sin membership)");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2ADeleteShadowControlDbInaccesibleRechaza409SinConsultarla() {
+  const businessDbPath = bootstrapFreshTestDb();
+  // Deliberadamente NUNCA creado: ni bootstrapControlDb ni ningun archivo en este path. Si el
+  // guard abriera la Control DB para decidir, fallaria (archivo inexistente); el contrato exige
+  // que el bloqueo NO dependa de esa apertura en absoluto.
+  const controlDbPathInexistente = tempDbPath();
+  try {
+    let localId;
+    const usuarioLogin = `colaborador.delcontroldbausente.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Delete Control DB Ausente TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorDel4",
+        confirmar_password: "ColaboradorDel4",
+        rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const del = await requestJson(baseUrl, "DELETE", `/usuarios/${localId}`, null, tokenAdmin);
+      assertEqual(del.response.status, 409, `DELETE con Control DB inaccesible debe seguir bloqueado con 409 (nunca 500/503 por abrirla): ${JSON.stringify(del.data)}`);
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPathInexistente,
+      ATLAS_EMPRESA_SLUG: `s1a2a-del-controldbausente-${Date.now()}`
+    });
+
+    const usuarioIntacto = await allSql(businessDbPath, "SELECT id FROM usuarios WHERE id = ?", [localId]);
+    assertEqual(usuarioIntacto.length, 1, "usuario local debe seguir existiendo tras el 409 (Control DB inaccesible)");
+    assertSame(fs.existsSync(controlDbPathInexistente), false, "el guard no debe haber creado el archivo de Control DB al intentar abrirlo");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPathInexistente, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2ADeleteShadowPreS0MismoBloqueo() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    // Esquema pre-S0 deliberado (sin version/sync_pendiente) -- el guard de DELETE no depende en
+    // absoluto de S0 (usuario_empresas existe desde antes de S0), asi que el bloqueo debe
+    // comportarse identico con o sin ese esquema.
+    const controlDbViejo = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
+    const empresaSlug = `s1a2a-del-pres0-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await registrarEmpresa(controlDbViejo, { slug: empresaSlug, nombre: "S1A2A Delete Pre-S0", dbPath: "guernica.db" });
+    await closeControlDb(controlDbViejo);
+
+    let localId;
+    const usuarioLogin = `colaborador.delpres0.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Delete Pre-S0 TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorDel5",
+        confirmar_password: "ColaboradorDel5",
+        rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const del = await requestJson(baseUrl, "DELETE", `/usuarios/${localId}`, null, tokenAdmin);
+      assertEqual(del.response.status, 409, `DELETE con Control DB pre-S0 debe bloquear igual: ${JSON.stringify(del.data)}`);
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    const usuarioIntacto = await allSql(businessDbPath, "SELECT id FROM usuarios WHERE id = ?", [localId]);
+    assertEqual(usuarioIntacto.length, 1, "usuario local debe seguir existiendo tras el 409 (pre-S0)");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2ADeleteBridgeOffSinActividadPreservaLegacy() {
+  const businessDbPath = bootstrapFreshTestDb();
+  try {
+    let localId;
+    const usuarioLogin = `colaborador.deloffsinactividad.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Delete Off Sin Actividad TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorDel6",
+        confirmar_password: "ColaboradorDel6",
+        rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+
+      const del = await requestJson(baseUrl, "DELETE", `/usuarios/${localId}`, null, tokenAdmin);
+      assertEqual(del.response.status, 200, `DELETE legacy (bridge off, sin actividad) debe seguir permitiendo el borrado: ${JSON.stringify(del.data)}`);
+      assertSame(del.data?.message, "Usuario eliminado correctamente", "mensaje de exito legacy sin cambios");
+    });
+
+    const usuarioBorrado = await allSql(businessDbPath, "SELECT id FROM usuarios WHERE id = ?", [localId]);
+    assertEqual(usuarioBorrado.length, 0, "usuario debe haberse borrado realmente (bridge off, sin actividad)");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2ADeleteBridgeOffConActividadConserva409Existente() {
+  const businessDbPath = bootstrapFreshTestDb();
+  try {
+    let localId;
+    const usuarioLogin = `colaborador.deloffconactividad.${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Colaborador Delete Off Con Actividad TEST",
+        usuario: usuarioLogin,
+        password: "ColaboradorDel7",
+        confirmar_password: "ColaboradorDel7",
+        rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    const ventaInsertada = await runSql(
+      businessDbPath,
+      "INSERT INTO ventas (fecha, hora, usuario, total, tipo, estado, tipo_cobro, monto_efectivo, monto_debito, es_cuenta_corriente, saldo_pendiente) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ["2024-01-01", "10:00:00", usuarioLogin, 100, "normal", "cobrada", "efectivo", 100, 0, 0, 0]
+    );
+    // AUTH-SYNC-B2-S1A2A-FIXTURE-RECOVERY: una venta 'cobrada' con tipo_cobro legacy exige su fila
+    // correspondiente en venta_cobros (backend/legacyBaselineVerifier.js: BASELINE_VENTA_COBROS_
+    // MIGRATION_PENDING) -- sin ella, el arranque del servidor de prueba de mas abajo es rechazado
+    // por esa validacion de baseline antes de poder ejercitar el DELETE. Se vincula por el ID real
+    // devuelto por el INSERT anterior (ventaInsertada.lastID), nunca por un ID asumido.
+    await runSql(
+      businessDbPath,
+      "INSERT INTO venta_cobros (venta_id, tipo_cobro, monto, estado) VALUES (?, ?, ?, ?)",
+      [ventaInsertada.lastID, "efectivo", 100, "confirmado"]
+    );
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const del = await requestJson(baseUrl, "DELETE", `/usuarios/${localId}`, null, tokenAdmin);
+      assertEqual(del.response.status, 409, `DELETE legacy con actividad debe conservar el 409 existente: ${JSON.stringify(del.data)}`);
+      assertSame(del.data?.message, "No se puede eliminar un usuario con actividad. Se puede desactivar.", "mensaje de actividad legacy sin cambios");
+    });
+
+    const usuarioIntacto = await allSql(businessDbPath, "SELECT id FROM usuarios WHERE id = ?", [localId]);
+    assertEqual(usuarioIntacto.length, 1, "usuario local debe seguir existiendo tras el 409 de actividad (bridge off)");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2ADeleteUsuarioInexistenteConserva404() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const del = await requestJson(baseUrl, "DELETE", "/usuarios/999999999", null, tokenAdmin);
+      assertEqual(del.response.status, 404, `DELETE de usuario inexistente (bridge off) debe conservar 404: ${JSON.stringify(del.data)}`);
+      assertSame(del.data?.message, "Usuario no encontrado", "mensaje 404 legacy sin cambios");
+    });
+
+    // La comprobacion de existencia debe seguir corriendo ANTES del bloqueo shadow -- un usuario
+    // inexistente nunca puede reportarse como "protegido", debe seguir siendo 404.
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const del = await requestJson(baseUrl, "DELETE", "/usuarios/999999999", null, tokenAdmin);
+      assertEqual(del.response.status, 404, `DELETE de usuario inexistente (bridge shadow) debe seguir siendo 404, no 409: ${JSON.stringify(del.data)}`);
+      assertSame(del.data?.message, "Usuario no encontrado", "mensaje 404 se mantiene aunque el bridge este en shadow");
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: `s1a2a-del-inexistente-${Date.now()}`
+    });
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2ADeletePostIntermedioMembershipAusenteNoElimina() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    // Simula el instante exacto de la ventana descripta en AUTH-SYNC-B2-S1A2-HTTP-WRITERS-GATE
+    // seccion 2: el INSERT local de POST /usuarios ya se compremetio (fila real en la business
+    // DB), pero la creacion asincrona de su membership central (syncUserCreate) todavia NO
+    // corrio -- se inserta directamente por SQL, replicando el INSERT real de POST, sin pasar
+    // por HTTP ni por el bridge, para dejar la Control DB sin ninguna fila de este usuario.
+    const passwordHash = await bcrypt.hash("PostIntermedio1", 10);
+    const usuarioLogin = `colaborador.postintermedio.${Date.now()}`;
+    const insercion = await runSql(
+      businessDbPath,
+      `INSERT INTO usuarios (nombre, usuario, password, rol, email, telefono, activo, creado_en, actualizado_en)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+      ["Post Intermedio TEST", usuarioLogin, passwordHash, "colaborador", "", "", 1]
+    );
+    const localId = insercion.lastID;
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `s1a2a-del-postintermedio-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A2A Delete Post Intermedio", dbPath: "guernica.db" });
+    await closeControlDb(controlDb);
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const del = await requestJson(baseUrl, "DELETE", `/usuarios/${localId}`, null, tokenAdmin);
+      assertEqual(del.response.status, 409, `DELETE en la ventana post-INSERT/pre-membership debe seguir bloqueado: ${JSON.stringify(del.data)}`);
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    const usuarioIntacto = await allSql(businessDbPath, "SELECT id FROM usuarios WHERE id = ?", [localId]);
+    assertEqual(usuarioIntacto.length, 1, "usuario creado en la ventana post-INSERT/pre-membership no debe poder eliminarse");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2ADeleteMultiTenantBloqueaPorTenant() {
+  await mt1f4ConEscenario(async ({ a, pedir, loginTenant }) => {
+    const tokenA = await loginTenant(a);
+    const usuarioLogin = `s1a2a-multi-${Date.now()}`;
+    const creado = await pedir(a, "POST", "/usuarios", {
+      nombre: "S1A2A Multi Delete TEST",
+      usuario: usuarioLogin,
+      password: "MultiDelete123",
+      confirmar_password: "MultiDelete123",
+      rol: "colaborador"
+    }, tokenA);
+    assertEqual(creado.status, 200, `crear usuario multi-tenant fallo: ${creado.texto}`);
+    const nuevoId = creado.json.usuario.id;
+
+    const del = await pedir(a, "DELETE", `/usuarios/${nuevoId}`, null, tokenA);
+    assertEqual(del.status, 409, `DELETE multi-tenant con bridge shadow debe rechazar 409: ${del.texto}`);
+
+    const usuarioIntacto = await allSql(a.dbPath, "SELECT id FROM usuarios WHERE id = ?", [nuevoId]);
+    assertEqual(usuarioIntacto.length, 1, "usuario local del tenant A debe seguir existiendo tras el 409 multi-tenant");
+  }, { bridge: true });
 }
 
 async function testMT1C2AResolverHappyPath() {
