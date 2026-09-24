@@ -20535,13 +20535,13 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1CBridgeAperturaActivaForeignKeys);
   await _run(testMT1CBridgeActualizarPasswordCentralHelper);
   await _run(testMT1CBridgeRoleActiveOffPreservaLegacy);
-  await _run(testMT1CBridgeShadowPutSincronizaRolYActivo);
+  await _run(testMT1CBridgePutShadowRolActivoDiferentesRechaza409);
   await _run(testMT1CBridgeShadowEstadoDesactivaYReactivaSinTocarRolNiCentral);
   await _run(testMT1CBridgeMultiempresaAislamiento);
   await _run(testMT1CBridgePutPerfilNoCopiaCentral);
-  await _run(testMT1CBridgeRoleMembershipInexistente503);
+  await _run(testMT1CBridgePutShadowRolDiferenteRechaza409SinAbrirControlDb);
   await _run(testMT1CBridgeRoleActiveControlPlaneCaido503);
-  await _run(testMT1CBridgeRoleActiveEmpresaInactiva503);
+  await _run(testMT1CBridgePutShadowRolDiferenteRechaza409ConEmpresaInactiva);
   await _run(testMT1CBridgeActualizarAccesoYActivoMembershipHelpers);
   await _run(testMT1CBridgeCreateOffPreservaLegacy);
   await _run(testMT1CBridgeCreateShadowHappyPath);
@@ -21004,6 +21004,15 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testAuthSyncB2S1A2ADeleteUsuarioInexistenteConserva404);
   await _run(testAuthSyncB2S1A2ADeletePostIntermedioMembershipAusenteNoElimina);
   await _run(testAuthSyncB2S1A2ADeleteMultiTenantBloqueaPorTenant);
+  await _run(testAuthSyncB2S1A2BProfileGuardPerfilOnlySinAbrirControlDb);
+  await _run(testAuthSyncB2S1A2BProfileGuardPayloadIdenticoPermitePerfil);
+  await _run(testAuthSyncB2S1A2BProfileGuardRolObsoletoRechaza409);
+  await _run(testAuthSyncB2S1A2BProfileGuardActivoObsoletoRechaza409);
+  await _run(testAuthSyncB2S1A2BProfileGuardRolCentralDiferenteNoResincroniza);
+  await _run(testAuthSyncB2S1A2BProfileGuardControlDbInaccesiblePerfilOnlyFunciona);
+  await _run(testAuthSyncB2S1A2BProfileGuardCambioLoginRechaza409);
+  await _run(testAuthSyncB2S1A2BProfileGuardSinEscrituraParcialTras409);
+  await _run(testAuthSyncB2S1A2BProfileGuardAislamientoEntreTenants);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -22257,7 +22266,12 @@ async function testMT1CBridgeRoleActiveOffPreservaLegacy() {
   }
 }
 
-async function testMT1CBridgeShadowPutSincronizaRolYActivo() {
+// AUTH-SYNC-B2-S1A2B-PROFILE-GUARD: reemplaza a la vieja testMT1CBridgeShadowPutSincronizaRolYActivo
+// -- el comportamiento que esa prueba verificaba (PUT sincronizando rol/activo a Control DB) es
+// exactamente el que este checkpoint elimina deliberadamente. Se conserva el mismo escenario para
+// dejar trazabilidad, invirtiendo la aserción: ahora debe rechazarse con 409 y NINGUNA base debe
+// cambiar.
+async function testMT1CBridgePutShadowRolActivoDiferentesRechaza409() {
   const businessDbPath = bootstrapFreshTestDb();
   const controlDbPath = tempDbPath();
   try {
@@ -22299,20 +22313,25 @@ async function testMT1CBridgeShadowPutSincronizaRolYActivo() {
         telefono: "",
         activo: false
       }, tokenAdmin);
-      if (!put.response.ok) throw new Error(`PUT rol/activo (bridge shadow) fallo: ${put.data?.message || put.response.status}`);
+      assertEqual(put.response.status, 409, `PUT con rol/activo distintos en shadow debe rechazar 409: ${JSON.stringify(put.data)}`);
+      assertSame(put.data?.acceso?.rol_rechazado, true, "debe reportar explicitamente el rechazo de rol");
+      assertSame(put.data?.acceso?.activo_rechazado, true, "debe reportar explicitamente el rechazo de activo");
     }, {
       ATLAS_USER_BRIDGE_MODE: "shadow",
       ATLAS_CONTROL_DB_PATH: controlDbPath,
       ATLAS_EMPRESA_SLUG: empresaSlug
     });
 
+    const localDespues = (await allSql(businessDbPath, "SELECT nombre, rol, activo FROM usuarios WHERE id = ?", [localId]))[0];
+    assertSame(localDespues.nombre, "Colaborador Rol Shadow TEST", "nombre local no debe cambiar tras un 409 (sin escritura parcial)");
+    assertSame(localDespues.rol, "colaborador", "rol local NO debe cambiar tras el rechazo");
+    assertEqual(Number(localDespues.activo), 1, "activo local NO debe cambiar tras el rechazo");
+
     controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
     try {
       const membershipDespues = await getControlQuery(controlDb, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
-      assertSame(membershipDespues.rol, "encargado", "membership.rol debe reflejar el nuevo rol tras PUT en shadow");
-      assertEqual(Number(membershipDespues.activo), 0, "membership.activo debe reflejar el nuevo activo tras PUT en shadow");
-      const centralDespues = await getControlQuery(controlDb, "SELECT activo FROM usuarios WHERE id = ?", [usuarioCentral.id]);
-      assertEqual(Number(centralDespues.activo), 1, "usuarios central.activo NUNCA debe tocarse por el bridge de rol/activo");
+      assertSame(membershipDespues.rol, "colaborador", "membership.rol NO debe tocarse -- PUT ya no sincroniza acceso");
+      assertEqual(Number(membershipDespues.activo), 1, "membership.activo NO debe tocarse -- PUT ya no sincroniza acceso");
     } finally {
       await closeControlDb(controlDb);
     }
@@ -22442,6 +22461,10 @@ async function testMT1CBridgeMultiempresaAislamiento() {
     });
     await closeControlDb(controlDb);
 
+    // AUTH-SYNC-B2-S1A2B-PROFILE-GUARD: el PUT ya no puede sincronizar rol/activo bajo ninguna
+    // circunstancia -- el payload intenta cambiarlos deliberadamente para confirmar que el 409
+    // resultante no deja NINGUNA huella cruzada entre empresas (ni siquiera toca la membership de
+    // la propia empresa A, mucho menos la de B).
     await withServer(businessDbPath, async (baseUrl) => {
       const tokenAdmin = await login(baseUrl, "admin", "admin123");
       const put = await requestJson(baseUrl, "PUT", `/usuarios/${localId}`, {
@@ -22452,7 +22475,7 @@ async function testMT1CBridgeMultiempresaAislamiento() {
         telefono: "",
         activo: false
       }, tokenAdmin);
-      if (!put.response.ok) throw new Error(`PUT rol/activo multiempresa (empresa A) fallo: ${put.data?.message || put.response.status}`);
+      assertEqual(put.response.status, 409, `PUT rol/activo multiempresa (empresa A) debe rechazar 409: ${JSON.stringify(put.data)}`);
     }, {
       ATLAS_USER_BRIDGE_MODE: "shadow",
       ATLAS_CONTROL_DB_PATH: controlDbPath,
@@ -22462,8 +22485,8 @@ async function testMT1CBridgeMultiempresaAislamiento() {
     controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
     try {
       const aDespues = await getControlQuery(controlDb, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membershipA.id]);
-      assertSame(aDespues.rol, "encargado", "membership A debe reflejar el nuevo rol");
-      assertEqual(Number(aDespues.activo), 0, "membership A debe reflejar el nuevo activo");
+      assertSame(aDespues.rol, "admin", "membership A NO debe cambiar -- PUT ya no sincroniza acceso");
+      assertEqual(Number(aDespues.activo), 1, "membership A NO debe desactivarse -- PUT ya no sincroniza acceso");
 
       const bDespues = await getControlQuery(controlDb, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membershipB.id]);
       assertSame(bDespues.rol, "colaborador", "membership B NO debe cambiar de rol por una operacion en empresa A");
@@ -22513,17 +22536,20 @@ async function testMT1CBridgePutPerfilNoCopiaCentral() {
     });
     await closeControlDb(controlDb);
 
+    // AUTH-SYNC-B2-S1A2B-PROFILE-GUARD: rol/usuario/activo se envian IGUALES a los locales actuales
+    // (colaborador/activo=true) -- es una edicion de perfil pura bajo el nuevo contrato, que debe
+    // aplicarse sin abrir la Control DB en absoluto.
     await withServer(businessDbPath, async (baseUrl) => {
       const tokenAdmin = await login(baseUrl, "admin", "admin123");
       const put = await requestJson(baseUrl, "PUT", `/usuarios/${localId}`, {
         nombre: "LOCAL NUEVO",
         usuario: usuarioLogin,
-        rol: "encargado",
+        rol: "colaborador",
         email: "local-nuevo@test.invalid",
         telefono: "",
         activo: true
       }, tokenAdmin);
-      if (!put.response.ok) throw new Error(`PUT perfil+rol fallo: ${put.data?.message || put.response.status}`);
+      if (!put.response.ok) throw new Error(`PUT perfil-only fallo: ${put.data?.message || put.response.status}`);
       assertSame(put.data.usuario.nombre, "LOCAL NUEVO", "el local debe reflejar el nuevo nombre");
       assertSame(put.data.usuario.email, "local-nuevo@test.invalid", "el local debe reflejar el nuevo email");
     }, {
@@ -22535,11 +22561,11 @@ async function testMT1CBridgePutPerfilNoCopiaCentral() {
     controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
     try {
       const membershipDespues = await getControlQuery(controlDb, "SELECT rol FROM usuario_empresas WHERE id = ?", [membership.id]);
-      assertSame(membershipDespues.rol, "encargado", "membership.rol si debe sincronizarse");
+      assertSame(membershipDespues.rol, "colaborador", "membership.rol NO debe tocarse -- PUT perfil-only no abre Control DB");
 
       const centralDespues = await getControlQuery(controlDb, "SELECT nombre, email FROM usuarios WHERE id = ?", [usuarioCentral.id]);
-      assertSame(centralDespues.nombre, "CENTRAL ORIGINAL", "el bridge de rol/activo NUNCA debe copiar nombre al central");
-      assertSame(centralDespues.email, "central@test.invalid", "el bridge de rol/activo NUNCA debe copiar email al central");
+      assertSame(centralDespues.nombre, "CENTRAL ORIGINAL", "PUT perfil-only NUNCA debe copiar nombre al central");
+      assertSame(centralDespues.email, "central@test.invalid", "PUT perfil-only NUNCA debe copiar email al central");
     } finally {
       await closeControlDb(controlDb);
     }
@@ -22549,7 +22575,13 @@ async function testMT1CBridgePutPerfilNoCopiaCentral() {
   }
 }
 
-async function testMT1CBridgeRoleMembershipInexistente503() {
+// AUTH-SYNC-B2-S1A2B-PROFILE-GUARD: reemplaza a la vieja testMT1CBridgeRoleMembershipInexistente503.
+// Bajo el contrato anterior, PUT escribia local PRIMERO (authority-first) y solo despues intentaba
+// sincronizar a Control DB -- sin membership, esa sincronizacion fallaba con 503 pero el rol local
+// ya habia cambiado. El nuevo contrato invierte esto por completo: un cambio de rol se rechaza de
+// inmediato por comparacion puramente local, sin abrir la Control DB en ningun momento -- la
+// existencia o no de una membership deja de ser relevante para esta decision.
+async function testMT1CBridgePutShadowRolDiferenteRechaza409SinAbrirControlDb() {
   const businessDbPath = bootstrapFreshTestDb();
   const controlDbPath = tempDbPath();
   try {
@@ -22571,23 +22603,21 @@ async function testMT1CBridgeRoleMembershipInexistente503() {
         telefono: "",
         activo: true
       }, token);
-      if (put.response.ok) throw new Error("sin membership el PUT deberia fallar con 503");
-      assertEqual(put.response.status, 503, "sin membership el bridge de rol debe responder 503");
+      assertEqual(put.response.status, 409, `sin membership, un cambio de rol debe rechazarse 409 igual (nunca 503, nunca se abre Control DB): ${JSON.stringify(put.data)}`);
     }, {
       ATLAS_USER_BRIDGE_MODE: "shadow",
       ATLAS_CONTROL_DB_PATH: controlDbPath,
       ATLAS_EMPRESA_SLUG: empresaSlug
     });
 
-    const localDespues = (await allSql(businessDbPath, "SELECT rol FROM usuarios WHERE id = ?", [localAdmin.id]))[0];
-    if (localDespues.rol === localAdmin.rol) {
-      throw new Error("por orden authority-first, el rol local deberia haber cambiado igual");
-    }
+    const localDespues = (await allSql(businessDbPath, "SELECT nombre, rol FROM usuarios WHERE id = ?", [localAdmin.id]))[0];
+    assertSame(localDespues.rol, localAdmin.rol, "el rol local NO debe cambiar tras el rechazo");
+    assertSame(localDespues.nombre !== "Admin Sin Membership", true, "tampoco el nombre debe cambiar -- sin escritura parcial tras un 409");
 
     controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
     try {
       const usuariosCentralDespues = await allControlQuery(controlDb, "SELECT id FROM usuarios");
-      assertEqual(usuariosCentralDespues.length, usuariosCentralAntes.length, "no debe crearse ninguna identidad central nueva (no auto-link, no auto-create)");
+      assertEqual(usuariosCentralDespues.length, usuariosCentralAntes.length, "no debe crearse ninguna identidad central nueva (PUT ya ni siquiera abre Control DB)");
     } finally {
       await closeControlDb(controlDb);
     }
@@ -22626,7 +22656,13 @@ async function testMT1CBridgeRoleActiveControlPlaneCaido503() {
   }
 }
 
-async function testMT1CBridgeRoleActiveEmpresaInactiva503() {
+// AUTH-SYNC-B2-S1A2B-PROFILE-GUARD: reemplaza a la vieja testMT1CBridgeRoleActiveEmpresaInactiva503.
+// El estado de la empresa en Control DB (activa/inactiva) ya no es relevante para esta decision --
+// PUT rechaza un cambio de rol/activo por comparacion puramente local, sin abrir la Control DB, asi
+// que ni siquiera llega a leer si la empresa esta activa. Se conserva el escenario (empresa
+// inactiva) para probar que ese estado historico tampoco cambia el resultado: sigue siendo 409, no
+// 503, y la membership sigue sin tocarse.
+async function testMT1CBridgePutShadowRolDiferenteRechaza409ConEmpresaInactiva() {
   const businessDbPath = bootstrapFreshTestDb();
   const controlDbPath = tempDbPath();
   try {
@@ -22654,8 +22690,7 @@ async function testMT1CBridgeRoleActiveEmpresaInactiva503() {
         telefono: "",
         activo: true
       }, token);
-      if (put.response.ok) throw new Error("empresa inactiva deberia fallar con 503");
-      assertEqual(put.response.status, 503, "empresa inactiva debe responder 503");
+      assertEqual(put.response.status, 409, `con empresa inactiva, un cambio de rol debe rechazarse 409 igual (no 503, no se abre Control DB): ${JSON.stringify(put.data)}`);
     }, {
       ATLAS_USER_BRIDGE_MODE: "shadow",
       ATLAS_CONTROL_DB_PATH: controlDbPath,
@@ -22665,7 +22700,7 @@ async function testMT1CBridgeRoleActiveEmpresaInactiva503() {
     controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
     try {
       const membershipDespues = await getControlQuery(controlDb, "SELECT rol FROM usuario_empresas WHERE id = ?", [membership.id]);
-      assertSame(membershipDespues.rol, "admin", "empresa inactiva no debe permitir ninguna sincronizacion de membership");
+      assertSame(membershipDespues.rol, "admin", "membership NO debe tocarse -- PUT ya no abre Control DB para esta decision");
     } finally {
       await closeControlDb(controlDb);
     }
@@ -24327,6 +24362,351 @@ async function testAuthSyncB2S1A2ADeleteMultiTenantBloqueaPorTenant() {
 
     const usuarioIntacto = await allSql(a.dbPath, "SELECT id FROM usuarios WHERE id = ?", [nuevoId]);
     assertEqual(usuarioIntacto.length, 1, "usuario local del tenant A debe seguir existiendo tras el 409 multi-tenant");
+  }, { bridge: true });
+}
+
+// AUTH-SYNC-B2-S1A2B-PROFILE-GUARD: PUT /usuarios/:id en modo shadow deja de poder escribir
+// usuario/rol/activo bajo cualquier circunstancia. Se compara siempre contra el valor LOCAL fresco
+// (nunca contra Control DB, que esta rama ya no abre en absoluto) y contra el payload CRUDO (nunca
+// los defaults de parseUsuarioPayload).
+async function testAuthSyncB2S1A2BProfileGuardPerfilOnlySinAbrirControlDb() {
+  const businessDbPath = bootstrapFreshTestDb();
+  // Deliberadamente inexistente: si el codigo intentara abrir Control DB para una edicion
+  // perfil-only, esta llamada fallaria en vez de devolver 200.
+  const controlDbPathInexistente = tempDbPath();
+  try {
+    let localId;
+    const usuarioLogin = `s1a2b-perfilonly-${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Perfil Only TEST", usuario: usuarioLogin, password: "PerfilOnly123", confirmar_password: "PerfilOnly123", rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const put = await requestJson(baseUrl, "PUT", `/usuarios/${localId}`, {
+        nombre: "Perfil Only NUEVO", usuario: usuarioLogin, email: "nuevo@test.invalid", telefono: "1234"
+      }, tokenAdmin);
+      if (!put.response.ok) throw new Error(`PUT perfil-only sin rol/activo en el payload fallo: ${put.data?.message || put.response.status}`);
+      assertSame(put.data.usuario.nombre, "Perfil Only NUEVO", "perfil debe actualizarse");
+      assertSame(put.data.usuario.email, "nuevo@test.invalid", "email debe actualizarse");
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPathInexistente,
+      ATLAS_EMPRESA_SLUG: `s1a2b-perfilonly-${Date.now()}`
+    });
+
+    assertSame(fs.existsSync(controlDbPathInexistente), false, "PUT perfil-only no debe haber intentado abrir/crear la Control DB");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPathInexistente, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2BProfileGuardPayloadIdenticoPermitePerfil() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPathInexistente = tempDbPath();
+  try {
+    let localId;
+    const usuarioLogin = `s1a2b-identico-${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Identico TEST", usuario: usuarioLogin, password: "Identico123", confirmar_password: "Identico123", rol: "colaborador", activo: true
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    // El formulario reenvia rol/activo -- coinciden con lo local actual, asi que debe tratarse como
+    // perfil-only, no como un intento de cambio de acceso.
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const put = await requestJson(baseUrl, "PUT", `/usuarios/${localId}`, {
+        nombre: "Identico NUEVO", usuario: usuarioLogin, rol: "colaborador", email: "", telefono: "", activo: true
+      }, tokenAdmin);
+      if (!put.response.ok) throw new Error(`PUT con rol/activo identicos fallo: ${put.data?.message || put.response.status}`);
+      assertSame(put.data.usuario.nombre, "Identico NUEVO", "perfil debe actualizarse cuando rol/activo coinciden");
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPathInexistente,
+      ATLAS_EMPRESA_SLUG: `s1a2b-identico-${Date.now()}`
+    });
+
+    assertSame(fs.existsSync(controlDbPathInexistente), false, "rol/activo identicos tampoco deben abrir Control DB");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPathInexistente, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2BProfileGuardRolObsoletoRechaza409() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPathInexistente = tempDbPath();
+  try {
+    let localId;
+    const usuarioLogin = `s1a2b-rolobsoleto-${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Rol Obsoleto TEST", usuario: usuarioLogin, password: "RolObsoleto123", confirmar_password: "RolObsoleto123", rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      // Simula un formulario cargado con un rol que ya no coincide con el actual -- el admin solo
+      // queria cambiar el telefono, pero el formulario reenvia el rol viejo igual.
+      const put = await requestJson(baseUrl, "PUT", `/usuarios/${localId}`, {
+        nombre: "Rol Obsoleto TEST", usuario: usuarioLogin, rol: "encargado", email: "", telefono: "999", activo: true
+      }, tokenAdmin);
+      assertEqual(put.response.status, 409, `rol obsoleto en el payload debe rechazar 409: ${JSON.stringify(put.data)}`);
+      assertSame(put.data?.acceso?.rol_rechazado, true, "debe reportar explicitamente el rechazo de rol");
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPathInexistente,
+      ATLAS_EMPRESA_SLUG: `s1a2b-rolobsoleto-${Date.now()}`
+    });
+
+    const localDespues = (await allSql(businessDbPath, "SELECT telefono, rol FROM usuarios WHERE id = ?", [localId]))[0];
+    assertSame(localDespues.telefono !== "999", true, "ni siquiera el telefono debe haberse escrito tras el 409");
+    assertSame(localDespues.rol, "colaborador", "rol debe permanecer intacto");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPathInexistente, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2BProfileGuardActivoObsoletoRechaza409() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPathInexistente = tempDbPath();
+  try {
+    let localId;
+    const usuarioLogin = `s1a2b-activoobsoleto-${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Activo Obsoleto TEST", usuario: usuarioLogin, password: "ActivoObsoleto1", confirmar_password: "ActivoObsoleto1", rol: "colaborador", activo: true
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const put = await requestJson(baseUrl, "PUT", `/usuarios/${localId}`, {
+        nombre: "Activo Obsoleto TEST", usuario: usuarioLogin, rol: "colaborador", email: "", telefono: "", activo: false
+      }, tokenAdmin);
+      assertEqual(put.response.status, 409, `activo obsoleto en el payload debe rechazar 409: ${JSON.stringify(put.data)}`);
+      assertSame(put.data?.acceso?.activo_rechazado, true, "debe reportar explicitamente el rechazo de activo");
+      assertSame(put.data?.acceso?.rol_rechazado, false, "rol no debe reportarse rechazado si coincidia");
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPathInexistente,
+      ATLAS_EMPRESA_SLUG: `s1a2b-activoobsoleto-${Date.now()}`
+    });
+
+    const localDespues = (await allSql(businessDbPath, "SELECT activo FROM usuarios WHERE id = ?", [localId]))[0];
+    assertEqual(Number(localDespues.activo), 1, "activo debe permanecer intacto tras el 409");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPathInexistente, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2BProfileGuardRolCentralDiferenteNoResincroniza() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `s1a2b-rolcentral-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "S1A2B Rol Central", dbPath: "guernica.db" });
+
+    let localId;
+    const usuarioLogin = `s1a2b-rolcentral-${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Rol Central TEST", usuario: usuarioLogin, password: "RolCentral123", confirmar_password: "RolCentral123", rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    // Central ya diverge de local (simulando una reparacion/edicion externa previa): local sigue en
+    // "colaborador", central ya quedo en "encargado". El payload de este PUT coincide con LOCAL, no
+    // con central -- debe tratarse como perfil-only, sin tocar Control DB para "corregir" nada.
+    const placeholderHash = await bcrypt.hash("PlaceholderRolCentral1", 10);
+    const usuarioCentral = await crearUsuarioCentral(controlDb, {
+      nombre: "Rol Central TEST", usuarioReferencia: usuarioLogin, passwordHash: placeholderHash, activo: 1
+    });
+    const membership = await crearMembership(controlDb, {
+      usuarioId: usuarioCentral.id, empresaId: empresa.id, usuarioLocalId: localId, rol: "encargado", activo: 1
+    });
+    await closeControlDb(controlDb);
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const put = await requestJson(baseUrl, "PUT", `/usuarios/${localId}`, {
+        nombre: "Rol Central NUEVO", usuario: usuarioLogin, rol: "colaborador", email: "", telefono: "", activo: true
+      }, tokenAdmin);
+      if (!put.response.ok) throw new Error(`PUT perfil-only con central divergente fallo: ${put.data?.message || put.response.status}`);
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPath,
+      ATLAS_EMPRESA_SLUG: empresaSlug
+    });
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const membershipDespues = await getControlQuery(controlDb, "SELECT rol FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespues.rol, "encargado", "central debe permanecer exactamente como estaba -- PUT no debe resincronizar el dato local viejo");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+    const localDespues = (await allSql(businessDbPath, "SELECT rol FROM usuarios WHERE id = ?", [localId]))[0];
+    assertSame(localDespues.rol, "colaborador", "local tampoco cambia -- coincidia con el payload");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2BProfileGuardControlDbInaccesiblePerfilOnlyFunciona() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPathInexistente = path.join(os.tmpdir(), `s1a2b-controldb-ausente-${Date.now()}-${Math.random().toString(16).slice(2)}`, "atlas_control.db");
+  try {
+    let localId;
+    const usuarioLogin = `s1a2b-controldbcaida-${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Control DB Caida TEST", usuario: usuarioLogin, password: "ControlDbCaida1", confirmar_password: "ControlDbCaida1", rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const put = await requestJson(baseUrl, "PUT", `/usuarios/${localId}`, {
+        nombre: "Control DB Caida NUEVO", usuario: usuarioLogin, rol: "colaborador", email: "", telefono: "", activo: true
+      }, tokenAdmin);
+      if (!put.response.ok) throw new Error(`PUT perfil-only con Control DB inaccesible deberia funcionar normalmente: ${put.data?.message || put.response.status}`);
+      assertSame(put.data.usuario.nombre, "Control DB Caida NUEVO", "perfil debe actualizarse aunque Control DB este inaccesible");
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPathInexistente,
+      ATLAS_EMPRESA_SLUG: `s1a2b-controldbcaida-${Date.now()}`
+    });
+
+    assertSame(fs.existsSync(controlDbPathInexistente), false, "no debe haberse creado la Control DB");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2BProfileGuardCambioLoginRechaza409() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPathInexistente = tempDbPath();
+  try {
+    let localId;
+    const usuarioLoginOriginal = `s1a2b-loginviejo-${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Cambio Login TEST", usuario: usuarioLoginOriginal, password: "CambioLogin123", confirmar_password: "CambioLogin123", rol: "colaborador"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    // La identidad central se creo (si bridge estuviera en shadow desde el alta) referenciando el
+    // login original -- cambiar el login localmente sin un mecanismo de sincronizacion dejaria a
+    // central apuntando a una referencia obsoleta. Se rechaza mientras no exista ese mecanismo.
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const put = await requestJson(baseUrl, "PUT", `/usuarios/${localId}`, {
+        nombre: "Cambio Login TEST", usuario: `${usuarioLoginOriginal}-nuevo`, rol: "colaborador", email: "", telefono: "", activo: true
+      }, tokenAdmin);
+      assertEqual(put.response.status, 409, `cambio de login en shadow debe rechazarse 409: ${JSON.stringify(put.data)}`);
+      assertSame(put.data?.acceso?.usuario_rechazado, true, "debe reportar explicitamente el rechazo de usuario/login");
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPathInexistente,
+      ATLAS_EMPRESA_SLUG: `s1a2b-loginviejo-${Date.now()}`
+    });
+
+    const localDespues = (await allSql(businessDbPath, "SELECT usuario FROM usuarios WHERE id = ?", [localId]))[0];
+    assertSame(localDespues.usuario, usuarioLoginOriginal, "el login local no debe haber cambiado");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPathInexistente, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2BProfileGuardSinEscrituraParcialTras409() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPathInexistente = tempDbPath();
+  try {
+    let localId;
+    const usuarioLogin = `s1a2b-sinparcial-${Date.now()}`;
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      const creado = await requestJson(baseUrl, "POST", "/usuarios", {
+        nombre: "Sin Parcial TEST", usuario: usuarioLogin, password: "SinParcial123", confirmar_password: "SinParcial123",
+        rol: "colaborador", email: "original@test.invalid", telefono: "1111"
+      }, tokenAdmin);
+      if (!creado.response.ok) throw new Error(`crear usuario fallo: ${creado.data?.message || creado.response.status}`);
+      localId = creado.data.usuario.id;
+    });
+
+    const antes = (await allSql(businessDbPath, "SELECT nombre, usuario, rol, email, telefono, activo, actualizado_en FROM usuarios WHERE id = ?", [localId]))[0];
+
+    await withServer(businessDbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", "admin123");
+      // Cambia perfil Y rol simultaneamente -- el rechazo por rol debe impedir TAMBIEN la escritura
+      // de perfil, no solo la de rol.
+      const put = await requestJson(baseUrl, "PUT", `/usuarios/${localId}`, {
+        nombre: "Sin Parcial NUEVO", usuario: usuarioLogin, rol: "encargado", email: "nuevo@test.invalid", telefono: "9999", activo: true
+      }, tokenAdmin);
+      assertEqual(put.response.status, 409, `debe rechazar 409: ${JSON.stringify(put.data)}`);
+    }, {
+      ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_CONTROL_DB_PATH: controlDbPathInexistente,
+      ATLAS_EMPRESA_SLUG: `s1a2b-sinparcial-${Date.now()}`
+    });
+
+    const despues = (await allSql(businessDbPath, "SELECT nombre, usuario, rol, email, telefono, activo, actualizado_en FROM usuarios WHERE id = ?", [localId]))[0];
+    assertSame(JSON.stringify(despues), JSON.stringify(antes), "ningun campo debe haber cambiado tras el 409, ni siquiera perfil");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPathInexistente, { force: true });
+  }
+}
+
+async function testAuthSyncB2S1A2BProfileGuardAislamientoEntreTenants() {
+  await mt1f4ConEscenario(async ({ a, b, pedir, loginTenant }) => {
+    const tokenA = await loginTenant(a);
+    const tokenB = await loginTenant(b);
+
+    // Intento de cambio de rol en A: debe rechazarse, y no debe dejar ningun rastro en B.
+    const putA = await pedir(a, "PUT", `/usuarios/${a.local.id}`, { nombre: "Aislamiento A", usuario: a.local.usuario, rol: "encargado", activo: true }, tokenA);
+    assertEqual(putA.status, 409, `PUT con rol distinto en tenant A debe rechazar 409: ${putA.texto}`);
+
+    // B sigue pudiendo editar su propio perfil con normalidad. b.local.rol quedo capturado ANTES de
+    // que mt1f4ConEscenario demote la fila a "colaborador" -- se relee el valor LOCAL real por SQL
+    // directo en vez de confiar en ese objeto desactualizado, para enviar en el payload exactamente
+    // lo que hoy tiene la base (perfil-only genuino, no un cambio de rol accidental).
+    const rolLocalRealB = (await allSql(b.dbPath, "SELECT rol FROM usuarios WHERE id = ?", [b.local.id]))[0].rol;
+    const putB = await pedir(b, "PUT", `/usuarios/${b.local.id}`, { nombre: "Aislamiento B", usuario: b.local.usuario, rol: rolLocalRealB, activo: true }, tokenB);
+    assertEqual(putB.status, 200, `PUT perfil-only en tenant B no debe verse afectado por el rechazo en A: ${putB.texto}`);
   }, { bridge: true });
 }
 
@@ -35947,8 +36327,11 @@ async function testMT1F4MultiBridgeUsaEmpresaExplicita() {
         const respuesta = await pedir(tenant, metodo, ruta, cuerpo, tokens.get(tenant));
         assertEqual(respuesta.status, 200, `${ruta}: ${respuesta.texto}`);
       };
-      await pedirCambio("PUT", `/usuarios/${local.id}`, { nombre: "Bridge edit", usuario: "bridge-f4", rol: "encargado", activo: true });
-      assertSame((await allSql(escenario.controlDbPath, "SELECT rol FROM usuario_empresas WHERE id = ?", [membership.id]))[0].rol, "encargado", "access sincroniza rol");
+      // AUTH-SYNC-B2-S1A2B-PROFILE-GUARD: rol/activo se envian IGUALES a los locales actuales
+      // (colaborador/true, creados asi en la linea 35933) -- PUT ya no sincroniza acceso bajo
+      // ningun payload, asi que esta llamada ahora es puramente perfil-only por diseno.
+      await pedirCambio("PUT", `/usuarios/${local.id}`, { nombre: "Bridge edit", usuario: "bridge-f4", rol: "colaborador", activo: true });
+      assertSame((await allSql(escenario.controlDbPath, "SELECT rol FROM usuario_empresas WHERE id = ?", [membership.id]))[0].rol, "colaborador", "PUT ya no sincroniza rol -- membership permanece intacta");
       await pedirCambio("PATCH", `/usuarios/${local.id}/estado`, { activo: false });
       assertEqual((await allSql(escenario.controlDbPath, "SELECT activo FROM usuario_empresas WHERE id = ?", [membership.id]))[0].activo, 0, "activo sincroniza membership");
       const password = `BridgeNuevo-${tenant.tag}-456`;

@@ -2405,7 +2405,7 @@ app.put("/usuarios/:id", async (req, res) => {
   }
 
   try {
-    const actual = await getQuery("SELECT id FROM usuarios WHERE id = ?", [usuarioId]);
+    const actual = await getQuery("SELECT id, usuario, rol, activo FROM usuarios WHERE id = ?", [usuarioId]);
     if (!actual) {
       return res.status(404).json({ message: "Usuario no encontrado" });
     }
@@ -2415,6 +2415,40 @@ app.put("/usuarios/:id", async (req, res) => {
       return res.status(409).json({ message: "Ya existe otro usuario con ese login" });
     }
 
+    // AUTH-SYNC-B2-S1A2B-PROFILE-GUARD: en shadow, PUT deja de poder escribir usuario/rol/activo.
+    // Se compara el payload CRUDO (req.body) -- nunca los defaults que parseUsuarioPayload aplica
+    // cuando un campo no se envio -- contra el valor LOCAL releido arriba, nunca contra Control DB
+    // (que esta rama ya no abre en absoluto). Si usuario, rol o activo difieren de lo local, se
+    // rechaza la operacion COMPLETA sin escribir nada, ni siquiera los campos de perfil.
+    if (userControlBridge.getBridgeMode() === "shadow") {
+      const bodyTieneRol = Object.prototype.hasOwnProperty.call(req.body || {}, "rol");
+      const bodyTieneActivo = Object.prototype.hasOwnProperty.call(req.body || {}, "activo");
+      const usuarioDifiere = String(data.usuario) !== String(actual.usuario);
+      const rolDifiere = bodyTieneRol && normalizarRol(req.body.rol) !== normalizarRol(actual.rol);
+      const activoPayloadNormalizado = req.body.activo === false || Number(req.body.activo) === 0 ? 0 : 1;
+      const activoDifiere = bodyTieneActivo && activoPayloadNormalizado !== Number(actual.activo);
+
+      if (usuarioDifiere || rolDifiere || activoDifiere) {
+        return res.status(409).json({
+          message: "No se puede modificar usuario, rol o estado desde esta edicion mientras la sincronizacion central esta habilitada.",
+          acceso: {
+            usuario_rechazado: usuarioDifiere,
+            rol_rechazado: rolDifiere,
+            activo_rechazado: activoDifiere
+          }
+        });
+      }
+
+      await runQuery(
+        `UPDATE usuarios
+         SET nombre = ?, email = ?, telefono = ?, actualizado_en = ?
+         WHERE id = ?`,
+        [data.nombre, data.email, data.telefono, new Date().toISOString(), usuarioId]
+      );
+
+      return res.json({ message: "Usuario actualizado correctamente", usuario: await getUsuarioById(usuarioId) });
+    }
+
     await runQuery(
       `UPDATE usuarios
        SET nombre = ?, usuario = ?, rol = ?, email = ?, telefono = ?, activo = ?, actualizado_en = ?
@@ -2422,23 +2456,7 @@ app.put("/usuarios/:id", async (req, res) => {
       [data.nombre, data.usuario, data.rol, data.email, data.telefono, data.activo, new Date().toISOString(), usuarioId]
     );
 
-    const usuarioActualizado = await getUsuarioById(usuarioId);
-
-    if (userControlBridge.getBridgeMode() === "shadow") {
-      try {
-        await userControlBridge.syncMembershipAccess({
-          empresaSlug: empresaAuthDelRequest().empresaSlug,
-          usuarioLocalId: usuarioId,
-          rol: usuarioActualizado.rol,
-          activo: usuarioActualizado.activo
-        });
-      } catch (bridgeError) {
-        logError("bridge role/active divergence", bridgeError);
-        return res.status(503).json({ message: "El usuario se actualizo pero no pudo sincronizarse completamente. Intenta nuevamente en unos minutos." });
-      }
-    }
-
-    return res.json({ message: "Usuario actualizado correctamente", usuario: usuarioActualizado });
+    return res.json({ message: "Usuario actualizado correctamente", usuario: await getUsuarioById(usuarioId) });
   } catch (error) {
     logError("Error al actualizar usuario:", error);
     return res.status(500).json({ message: "Error al actualizar usuario" });
