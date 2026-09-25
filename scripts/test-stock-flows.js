@@ -292,14 +292,21 @@ async function withFreshTestDb(fn) {
   }
 }
 
+// QA-RUNSQL-CLOSE: db.close() sin esperar su callback dejaba que la Promise resolviera/rechazara
+// antes de que el handle de SQLite se liberara realmente -- en Windows eso permitia que un
+// fs.rmSync inmediatamente posterior (p.ej. en el finally de un test) chocara contra el archivo
+// todavia bloqueado (EPERM). Ahora se espera el callback de cierre antes de resolver o rechazar.
+// El error de la operacion SQL, si existe, tiene prioridad sobre un eventual error de cierre.
 function runSql(dbPath, sql, params = []) {
   return new Promise((resolve, reject) => {
     const db = new sqlite3.Database(dbPath);
     db.run(sql, params, function (error) {
       const result = this;
-      db.close();
-      if (error) reject(error);
-      else resolve(result);
+      db.close((closeError) => {
+        if (error) reject(error);
+        else if (closeError) reject(closeError);
+        else resolve(result);
+      });
     });
   });
 }
@@ -20650,6 +20657,10 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1D1ARegistryControlDbInaccesible);
   await _run(testMT1D1ARegistryQueryError);
   await _run(testMT1D1ARegistryNoCreaBusinessDbInexistente);
+  await _run(testQaRunSqlCloseInsertLastIdYChangesCorrectos);
+  await _run(testQaRunSqlClosePropagaErrorSql);
+  await _run(testQaRunSqlCloseLiberaHandleAntesDeResolver);
+  await _run(testQaRunSqlCloseStressArchivosIndependientes);
   await _run(testMT1D1BFreshSchemaTieneTenantIdentity);
   await _run(testMT1D1BFreshSinIdentityFallaCerrado);
   await _run(testMT1D1BIdentityExacta);
@@ -28291,6 +28302,110 @@ async function testMT1D1ARegistryNoCreaBusinessDbInexistente() {
   } finally {
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
     fs.rmSync(businessPath, { force: true });
+  }
+}
+
+// QA-RUNSQL-CLOSE: cobertura dedicada minima para el fix de runSql (espera el callback de
+// db.close() antes de resolver/rechazar). No se instrumenta el callback de cierre directamente
+// (requeriria parchear sqlite3.Database.prototype.close, algo intrusivo fuera del alcance minimo
+// de este slice) -- en su lugar se verifica el efecto observable que motivo el fix: un fs.rmSync
+// inmediatamente posterior a que runSql resuelva debe completarse sin EPERM, tanto en un caso
+// puntual como en una prueba de estres sobre archivos temporales independientes. La propagacion de
+// un eventual error de CIERRE (SQL exitoso pero db.close falla) queda sin prueba dedicada: forzar
+// una falla deterministica y portable de sqlite3 en close() es en si mismo intrusivo/fragil; esa
+// rama sigue siendo codigo defensivo revisado por lectura, no verificado empiricamente.
+async function testQaRunSqlCloseInsertLastIdYChangesCorrectos() {
+  const dbPath = tempDbPath();
+  try {
+    await runSql(dbPath, "CREATE TABLE qa_runsql (id INTEGER PRIMARY KEY, valor TEXT)");
+    const resultado = await runSql(dbPath, "INSERT INTO qa_runsql (valor) VALUES (?)", ["a"]);
+    assertEqual(resultado.lastID, 1, "runSql debe devolver lastID correcto en el primer INSERT");
+    assertEqual(resultado.changes, 1, "runSql debe devolver changes=1 en un INSERT simple");
+
+    const resultado2 = await runSql(dbPath, "INSERT INTO qa_runsql (valor) VALUES (?)", ["b"]);
+    assertEqual(resultado2.lastID, 2, "runSql debe devolver lastID correcto en el segundo INSERT");
+    assertEqual(resultado2.changes, 1, "runSql debe devolver changes=1 en el segundo INSERT");
+
+    const filas = await allSql(dbPath, "SELECT id, valor FROM qa_runsql ORDER BY id ASC");
+    assertEqual(filas.length, 2, "deben existir exactamente 2 filas tras los dos INSERT");
+    assertSame(filas[0].valor, "a", "primera fila debe conservar su valor");
+    assertSame(filas[1].valor, "b", "segunda fila debe conservar su valor");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testQaRunSqlClosePropagaErrorSql() {
+  const dbPath = tempDbPath();
+  try {
+    await runSql(dbPath, "CREATE TABLE qa_runsql (id INTEGER PRIMARY KEY)");
+
+    let errorCapturado = null;
+    try {
+      await runSql(dbPath, "INSERT INTO qa_tabla_inexistente (id) VALUES (1)");
+    } catch (error) {
+      errorCapturado = error;
+    }
+    assertSame(Boolean(errorCapturado), true, "runSql debe rechazar cuando el SQL es invalido");
+    assertSame(
+      /no such table/i.test(errorCapturado.message),
+      true,
+      "el error propagado debe ser el error SQL original (no such table), no uno generico"
+    );
+
+    // El cierre tras un error SQL tambien debe completarse: el archivo debe poder eliminarse
+    // inmediatamente despues, igual que en el camino exitoso.
+    let rmError = null;
+    try {
+      fs.rmSync(dbPath);
+    } catch (error) {
+      rmError = error;
+    }
+    assertSame(rmError, null, "fs.rmSync inmediato debe completarse sin error tras un rechazo SQL de runSql");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testQaRunSqlCloseLiberaHandleAntesDeResolver() {
+  for (let intento = 0; intento < 10; intento++) {
+    const dbPath = tempDbPath();
+    await runSql(dbPath, "CREATE TABLE qa_runsql (id INTEGER PRIMARY KEY)");
+    await runSql(dbPath, "INSERT INTO qa_runsql (id) VALUES (1)");
+
+    let rmError = null;
+    try {
+      fs.rmSync(dbPath);
+    } catch (error) {
+      rmError = error;
+    }
+    if (rmError && String(rmError.code) === "EPERM") {
+      throw new Error(
+        `testQaRunSqlCloseLiberaHandleAntesDeResolver: EPERM en intento ${intento} -- el handle de SQLite seguia bloqueando el archivo inmediatamente despues de que runSql resolviera: ${rmError.message}`
+      );
+    }
+    assertSame(rmError, null, `fs.rmSync inmediato no debe fallar por ningun motivo en el intento ${intento}`);
+  }
+}
+
+async function testQaRunSqlCloseStressArchivosIndependientes() {
+  const TOTAL = 100;
+  for (let i = 0; i < TOTAL; i++) {
+    const dbPath = tempDbPath();
+    await runSql(dbPath, "CREATE TABLE qa_runsql (id INTEGER PRIMARY KEY, valor TEXT)");
+    await runSql(dbPath, "INSERT INTO qa_runsql (valor) VALUES (?)", [`v${i}`]);
+
+    let rmError = null;
+    try {
+      fs.rmSync(dbPath);
+    } catch (error) {
+      rmError = error;
+    }
+    if (rmError) {
+      throw new Error(
+        `testQaRunSqlCloseStressArchivosIndependientes: fallo en iteracion ${i}/${TOTAL} (${rmError.code || "?"}): ${rmError.message}`
+      );
+    }
   }
 }
 
