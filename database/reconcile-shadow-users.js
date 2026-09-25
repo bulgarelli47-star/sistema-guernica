@@ -48,19 +48,31 @@ function abrirControlDbEscritura(dbPath) {
   });
 }
 
-// AUTH-SYNC-B2-S1A1: deteccion de soporte del esquema S0 (usuario_empresas.version + tabla
-// sync_pendiente), puramente por introspeccion -- nunca migra, nunca altera. Tres resultados:
-//   CASO A (soportaS0=false): ninguna de las dos estructuras existe -- Control DB legacy pre-S0,
+// AUTH-SYNC-B2-S1A1-PARTIAL-SCHEMA-HARDENING: deteccion de soporte del esquema S0 por
+// introspeccion pura -- nunca migra, nunca altera. Verifica los TRES elementos de S0 por
+// separado -- usuarios.version, usuario_empresas.version y la tabla sync_pendiente -- porque
+// initControlSchema agrega version a AMBAS tablas (usuarios Y usuario_empresas), no solo a
+// usuario_empresas. Verificar solo esta ultima (version original de este checkpoint) dejaba
+// esquemas con unicamente usuarios.version mal clasificados como CASO A (pre-S0), y esquemas con
+// usuario_empresas.version + sync_pendiente pero SIN usuarios.version mal clasificados como CASO
+// B (S0 completo) -- ambos casos, hoy corregidos, caen en CASO C (parcial). Tres resultados:
+//   CASO A (soportaS0=false): NINGUNA de las tres estructuras existe -- Control DB legacy pre-S0,
 //     la reconciliacion se comporta EXACTAMENTE como antes de este checkpoint.
-//   CASO B (soportaS0=true): ambas existen con la forma minima esperada -- proteccion permanente
-//     de rol_activo y versionado CAS quedan activos.
-//   CASO C (soportaS0=null): estado parcial o incompatible (una existe sin la otra, o
-//     sync_pendiente existe pero le faltan columnas esperadas) -- FAIL CLOSED: el caller debe
-//     abortar sin escribir nada, en CHECK o en APPLY, porque no se puede determinar con certeza
-//     si una reparacion legacy seria segura.
+//   CASO B (soportaS0=true): las TRES existen, con sync_pendiente en su forma minima esperada --
+//     proteccion permanente de rol_activo y versionado CAS quedan activos.
+//   CASO C (soportaS0=null): cualquier otra combinacion (una o dos de las tres estructuras
+//     presentes, o sync_pendiente presente pero le faltan columnas esperadas) -- FAIL CLOSED: el
+//     caller debe abortar sin escribir nada, en CHECK o en APPLY, porque no se puede determinar
+//     con certeza si una reparacion legacy seria segura. Deliberadamente NO importada desde
+//     database/sync-shadow-users.js (que tiene su propia copia identica en criterio, por el mismo
+//     motivo ya documentado en ambos modulos: no acoplar el reconciliador S1A1 al importador
+//     legacy S1A2D, ni viceversa).
 async function detectarSoporteEsquemaS0(controlDb) {
+  const columnasUsuarios = await allQuery(controlDb, "PRAGMA table_info(usuarios)");
+  const tieneVersionUsuarios = columnasUsuarios.some((columna) => columna.name === "version");
+
   const columnasMembership = await allQuery(controlDb, "PRAGMA table_info(usuario_empresas)");
-  const tieneVersion = columnasMembership.some((columna) => columna.name === "version");
+  const tieneVersionMembership = columnasMembership.some((columna) => columna.name === "version");
 
   const tablasSyncPendiente = await allQuery(
     controlDb,
@@ -68,11 +80,11 @@ async function detectarSoporteEsquemaS0(controlDb) {
   );
   const tieneSyncPendiente = tablasSyncPendiente.length > 0;
 
-  if (!tieneVersion && !tieneSyncPendiente) {
+  if (!tieneVersionUsuarios && !tieneVersionMembership && !tieneSyncPendiente) {
     return { soportaS0: false };
   }
 
-  if (tieneVersion && tieneSyncPendiente) {
+  if (tieneVersionUsuarios && tieneVersionMembership && tieneSyncPendiente) {
     const columnasSyncPendiente = await allQuery(controlDb, "PRAGMA table_info(sync_pendiente)");
     const nombresSyncPendiente = new Set(columnasSyncPendiente.map((columna) => columna.name));
     const columnasEsperadas = ["membership_id", "tipo_operacion", "estado", "version_objetivo"];

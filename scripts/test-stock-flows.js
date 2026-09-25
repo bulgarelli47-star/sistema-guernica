@@ -21058,6 +21058,9 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testAuthSyncB2S1A1SnapshotLocalDesactualizadoNoRevierteCentralFirst);
   await _run(testAuthSyncB2S1A1CheckInformaSinMutarNingunaBase);
   await _run(testAuthSyncB2S1A1AislamientoEntreEmpresasEnReconciliacion);
+  await _run(testAuthSyncB2S1A1PartialSchemaHardeningSoloUsuariosVersionFallaCerrado);
+  await _run(testAuthSyncB2S1A1PartialSchemaHardeningMembershipVersionYSyncPendienteSinUsuariosVersionFallaCerrado);
+  await _run(testAuthSyncB2S1A1PartialSchemaHardeningSoloSyncPendienteFallaCerrado);
   await _run(testAuthSyncB2S1A2ADeleteShadowMembershipActivaRechaza409);
   await _run(testAuthSyncB2S1A2ADeleteShadowMembershipInactivaRechaza409);
   await _run(testAuthSyncB2S1A2ADeleteShadowSinMembershipRechaza409);
@@ -24040,6 +24043,325 @@ async function testAuthSyncB2S1A1AislamientoEntreEmpresasEnReconciliacion() {
   } finally {
     fs.rmSync(businessDbPathA, { force: true });
     fs.rmSync(businessDbPathB, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// AUTH-SYNC-B2-S1A1-PARTIAL-SCHEMA-HARDENING: detectarSoporteEsquemaS0 solo verificaba
+// usuario_empresas.version + sync_pendiente, ignorando usuarios.version -- pese a que
+// initControlSchema agrega version a AMBAS tablas. Esquema parcial deliberado: SOLO
+// usuarios.version presente, dejando usuario_empresas.version y sync_pendiente ausentes. Antes de
+// esta correccion, esto se clasificaba (incorrectamente) como CASO A pre-S0, dejando correr la
+// reconciliacion legacy sin proteccion sobre un esquema que ya no es limpio. Debe fallar cerrado
+// en CHECK y en APPLY, con el motivo explicito ESQUEMA_S0_PARCIAL, sin ninguna escritura.
+async function testAuthSyncB2S1A1PartialSchemaHardeningSoloUsuariosVersionFallaCerrado() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const dbParcial = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
+    // Unicamente usuarios.version -- ni usuario_empresas.version ni sync_pendiente existen.
+    await runControlQuery(dbParcial, "ALTER TABLE usuarios ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
+    const empresaSlug = `s1a1-soloversionusuarios-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(dbParcial, { slug: empresaSlug, nombre: "S1A1 Solo Usuarios Version", dbPath: "guernica.db" });
+
+    // Identidad y membership preexistentes, con datos DISTINTOS de los locales -- si la
+    // reconciliacion corriera sin proteccion, los pisaria (o los "repararia") con los valores
+    // locales. La divergencia (nombre, password_hash, rol, activo de membership) es deliberada y
+    // se preserva intacta a lo largo de toda la prueba -- es lo que la prueba existe para proteger.
+    const placeholderHash = await bcrypt.hash("PlaceholderS1A1SoloVersion1", 10);
+    const central = await crearUsuarioCentral(dbParcial, { nombre: "Nombre Central Distinto", usuarioReferencia: admin.usuario, passwordHash: placeholderHash, activo: 1 });
+    const membership = await crearMembership(dbParcial, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "encargado", activo: 0 });
+    await closeControlDb(dbParcial);
+
+    const antesLocal = await allSql(businessDbPath, "SELECT * FROM usuarios ORDER BY id ASC");
+
+    // Snapshot crudo ANTES de reconciliar (conexion temporal, sin bootstrapControlDb -- eso
+    // completaria el esquema parcial por su cuenta e invalidaria la comprobacion).
+    const dbAntes = openControlDb(controlDbPath);
+    let antesCentral, antesMembership, antesUsuariosTotal, antesMembershipsTotal;
+    try {
+      antesCentral = await getControlQuery(dbAntes, "SELECT nombre, activo, password_hash FROM usuarios WHERE id = ?", [central.id]);
+      antesMembership = await getControlQuery(dbAntes, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      antesUsuariosTotal = await allControlQuery(dbAntes, "SELECT id FROM usuarios");
+      antesMembershipsTotal = await allControlQuery(dbAntes, "SELECT id FROM usuario_empresas");
+    } finally {
+      await closeControlDb(dbAntes);
+    }
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    assertSame(check.ok, false, "CHECK debe rechazar cuando solo existe usuarios.version");
+    assertSame(check.errorCode, "SCHEMA_S0_INCOMPATIBLE", "el errorCode debe identificar el esquema incompatible");
+    assertSame(check.message.includes("ESQUEMA_S0_PARCIAL"), true, "el mensaje debe incluir el motivo exacto ESQUEMA_S0_PARCIAL");
+
+    const dbDespuesCheck = openControlDb(controlDbPath);
+    try {
+      const centralDespuesCheck = await getControlQuery(dbDespuesCheck, "SELECT nombre, activo, password_hash FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespuesCheck.nombre, antesCentral.nombre, "CHECK: el nombre de la identidad central NO debe sobreescribirse ni repararse");
+      assertEqual(Number(centralDespuesCheck.activo), Number(antesCentral.activo), "CHECK: el activo global de la identidad central NO debe sobreescribirse ni repararse");
+      assertSame(centralDespuesCheck.password_hash, antesCentral.password_hash, "CHECK: el password_hash de la identidad central NO debe sobreescribirse ni repararse");
+      const membershipDespuesCheck = await getControlQuery(dbDespuesCheck, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespuesCheck.rol, antesMembership.rol, "CHECK: el rol de la membership NO debe sobreescribirse ni repararse");
+      assertEqual(Number(membershipDespuesCheck.activo), Number(antesMembership.activo), "CHECK: el activo de la membership NO debe sobreescribirse ni repararse");
+      const usuariosTotalDespuesCheck = await allControlQuery(dbDespuesCheck, "SELECT id FROM usuarios");
+      assertEqual(usuariosTotalDespuesCheck.length, antesUsuariosTotal.length, "CHECK: no debe crearse ninguna identidad central adicional");
+      const membershipsTotalDespuesCheck = await allControlQuery(dbDespuesCheck, "SELECT id FROM usuario_empresas");
+      assertEqual(membershipsTotalDespuesCheck.length, antesMembershipsTotal.length, "CHECK: no debe crearse ninguna membership adicional");
+      const tablasDespuesCheck = await allControlQuery(dbDespuesCheck, "SELECT name FROM sqlite_master WHERE type='table' AND name='sync_pendiente'");
+      assertEqual(tablasDespuesCheck.length, 0, "CHECK: reconcileShadowUsers nunca debe crear sync_pendiente por su cuenta, ni siquiera al fallar cerrado");
+    } finally {
+      await closeControlDb(dbDespuesCheck);
+    }
+
+    const despuesCheckLocal = await allSql(businessDbPath, "SELECT * FROM usuarios ORDER BY id ASC");
+    assertSame(JSON.stringify(despuesCheckLocal), JSON.stringify(antesLocal), "CHECK: la Business DB no debe modificarse");
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    assertSame(apply.ok, false, "APPLY debe rechazar igual que CHECK");
+    assertSame(apply.errorCode, "SCHEMA_S0_INCOMPATIBLE", "el errorCode debe identificar el esquema incompatible en APPLY tambien");
+    assertSame(apply.message.includes("ESQUEMA_S0_PARCIAL"), true, "el mensaje de APPLY tambien debe incluir el motivo exacto");
+
+    const dbDespuesApply = openControlDb(controlDbPath);
+    try {
+      const centralDespuesApply = await getControlQuery(dbDespuesApply, "SELECT nombre, activo, password_hash FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespuesApply.nombre, antesCentral.nombre, "APPLY: el nombre de la identidad central NO debe sobreescribirse ni repararse");
+      assertEqual(Number(centralDespuesApply.activo), Number(antesCentral.activo), "APPLY: el activo global de la identidad central NO debe sobreescribirse ni repararse");
+      assertSame(centralDespuesApply.password_hash, antesCentral.password_hash, "APPLY: el password_hash de la identidad central NO debe sobreescribirse ni repararse");
+      const membershipDespuesApply = await getControlQuery(dbDespuesApply, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespuesApply.rol, antesMembership.rol, "APPLY: el rol de la membership NO debe sobreescribirse ni repararse");
+      assertEqual(Number(membershipDespuesApply.activo), Number(antesMembership.activo), "APPLY: el activo de la membership NO debe sobreescribirse ni repararse");
+      const usuariosTotalDespuesApply = await allControlQuery(dbDespuesApply, "SELECT id FROM usuarios");
+      assertEqual(usuariosTotalDespuesApply.length, antesUsuariosTotal.length, "APPLY: no debe crearse ninguna identidad central adicional");
+      const membershipsTotalDespuesApply = await allControlQuery(dbDespuesApply, "SELECT id FROM usuario_empresas");
+      assertEqual(membershipsTotalDespuesApply.length, antesMembershipsTotal.length, "APPLY: no debe crearse ninguna membership adicional");
+      const tablasDespuesApply = await allControlQuery(dbDespuesApply, "SELECT name FROM sqlite_master WHERE type='table' AND name='sync_pendiente'");
+      assertEqual(tablasDespuesApply.length, 0, "APPLY: reconcileShadowUsers nunca debe crear sync_pendiente por su cuenta, ni siquiera al fallar cerrado");
+    } finally {
+      await closeControlDb(dbDespuesApply);
+    }
+
+    const despuesApplyLocal = await allSql(businessDbPath, "SELECT * FROM usuarios ORDER BY id ASC");
+    assertSame(JSON.stringify(despuesApplyLocal), JSON.stringify(antesLocal), "APPLY: la Business DB no debe modificarse");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// Segundo defecto encontrado durante el diseno de este hardening, no nombrado originalmente pero
+// de la misma causa raiz: usuario_empresas.version + sync_pendiente presentes, SIN
+// usuarios.version, se clasificaban (incorrectamente) como CASO B (S0 completo), permitiendo que
+// las protecciones de lapida/CAS corrieran como si el esquema estuviera realmente completo. Debe
+// fallar cerrado igual que cualquier otra combinacion parcial.
+async function testAuthSyncB2S1A1PartialSchemaHardeningMembershipVersionYSyncPendienteSinUsuariosVersionFallaCerrado() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const dbParcial = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
+    // usuario_empresas.version + sync_pendiente presentes, usuarios.version ausente.
+    await runControlQuery(dbParcial, "ALTER TABLE usuario_empresas ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
+    await runControlQuery(
+      dbParcial,
+      `CREATE TABLE sync_pendiente (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+        empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+        membership_id INTEGER NOT NULL REFERENCES usuario_empresas(id),
+        usuario_local_id INTEGER NOT NULL,
+        tipo_operacion TEXT NOT NULL CHECK (tipo_operacion IN ('rol_activo','password')),
+        version_objetivo INTEGER NOT NULL,
+        estado TEXT NOT NULL DEFAULT 'pendiente' CHECK (estado IN ('pendiente','procesado')),
+        creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+        procesado_en TEXT,
+        UNIQUE (membership_id, tipo_operacion)
+      )`
+    );
+    const empresaSlug = `s1a1-membershipversionsyncpendiente-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(dbParcial, { slug: empresaSlug, nombre: "S1A1 Membership Version Sync Pendiente", dbPath: "guernica.db" });
+
+    // Divergencia deliberada (nombre, password_hash, rol, activo de membership) respecto de los
+    // valores locales -- se preserva intacta a lo largo de toda la prueba.
+    const placeholderHash = await bcrypt.hash("PlaceholderS1A1Combo1", 10);
+    const central = await crearUsuarioCentral(dbParcial, { nombre: "Nombre Central Distinto Combo", usuarioReferencia: admin.usuario, passwordHash: placeholderHash, activo: 1 });
+    const membership = await crearMembership(dbParcial, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "encargado", activo: 0 });
+    await closeControlDb(dbParcial);
+
+    const antesLocal = await allSql(businessDbPath, "SELECT * FROM usuarios ORDER BY id ASC");
+
+    const dbAntes = openControlDb(controlDbPath);
+    let antesCentral, antesMembership, antesUsuariosTotal, antesMembershipsTotal;
+    try {
+      antesCentral = await getControlQuery(dbAntes, "SELECT nombre, activo, password_hash FROM usuarios WHERE id = ?", [central.id]);
+      antesMembership = await getControlQuery(dbAntes, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      antesUsuariosTotal = await allControlQuery(dbAntes, "SELECT id FROM usuarios");
+      antesMembershipsTotal = await allControlQuery(dbAntes, "SELECT id FROM usuario_empresas");
+    } finally {
+      await closeControlDb(dbAntes);
+    }
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    assertSame(check.ok, false, "CHECK debe rechazar cuando falta usuarios.version aunque las otras dos estructuras existan");
+    assertSame(check.errorCode, "SCHEMA_S0_INCOMPATIBLE", "el errorCode debe identificar el esquema incompatible");
+    assertSame(check.message.includes("ESQUEMA_S0_PARCIAL"), true, "el mensaje debe incluir el motivo exacto ESQUEMA_S0_PARCIAL");
+
+    const dbDespuesCheck = openControlDb(controlDbPath);
+    try {
+      const centralDespuesCheck = await getControlQuery(dbDespuesCheck, "SELECT nombre, activo, password_hash FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespuesCheck.nombre, antesCentral.nombre, "CHECK: el nombre de la identidad central NO debe sobreescribirse ni repararse");
+      assertEqual(Number(centralDespuesCheck.activo), Number(antesCentral.activo), "CHECK: el activo global de la identidad central NO debe sobreescribirse ni repararse");
+      assertSame(centralDespuesCheck.password_hash, antesCentral.password_hash, "CHECK: el password_hash de la identidad central NO debe sobreescribirse ni repararse");
+      const membershipDespuesCheck = await getControlQuery(dbDespuesCheck, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespuesCheck.rol, antesMembership.rol, "CHECK: el rol de la membership NO debe sobreescribirse ni repararse");
+      assertEqual(Number(membershipDespuesCheck.activo), Number(antesMembership.activo), "CHECK: el activo de la membership NO debe sobreescribirse ni repararse");
+      const usuariosTotalDespuesCheck = await allControlQuery(dbDespuesCheck, "SELECT id FROM usuarios");
+      assertEqual(usuariosTotalDespuesCheck.length, antesUsuariosTotal.length, "CHECK: no debe crearse ninguna identidad central adicional");
+      const membershipsTotalDespuesCheck = await allControlQuery(dbDespuesCheck, "SELECT id FROM usuario_empresas");
+      assertEqual(membershipsTotalDespuesCheck.length, antesMembershipsTotal.length, "CHECK: no debe crearse ninguna membership adicional");
+      const syncPendienteFilasDespuesCheck = await allControlQuery(dbDespuesCheck, "SELECT id FROM sync_pendiente");
+      assertEqual(syncPendienteFilasDespuesCheck.length, 0, "CHECK: no debe crearse ninguna fila en sync_pendiente -- la reconciliacion nunca escribe en esquema parcial");
+    } finally {
+      await closeControlDb(dbDespuesCheck);
+    }
+
+    const despuesCheckLocal = await allSql(businessDbPath, "SELECT * FROM usuarios ORDER BY id ASC");
+    assertSame(JSON.stringify(despuesCheckLocal), JSON.stringify(antesLocal), "CHECK: la Business DB no debe modificarse");
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    assertSame(apply.ok, false, "APPLY debe rechazar igual que CHECK");
+    assertSame(apply.errorCode, "SCHEMA_S0_INCOMPATIBLE", "el errorCode debe identificar el esquema incompatible en APPLY tambien");
+    assertSame(apply.message.includes("ESQUEMA_S0_PARCIAL"), true, "el mensaje de APPLY tambien debe incluir el motivo exacto");
+
+    const dbDespuesApply = openControlDb(controlDbPath);
+    try {
+      const centralDespuesApply = await getControlQuery(dbDespuesApply, "SELECT nombre, activo, password_hash FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespuesApply.nombre, antesCentral.nombre, "APPLY: el nombre de la identidad central NO debe sobreescribirse ni repararse");
+      assertEqual(Number(centralDespuesApply.activo), Number(antesCentral.activo), "APPLY: el activo global de la identidad central NO debe sobreescribirse ni repararse");
+      assertSame(centralDespuesApply.password_hash, antesCentral.password_hash, "APPLY: el password_hash de la identidad central NO debe sobreescribirse ni repararse");
+      const membershipDespuesApply = await getControlQuery(dbDespuesApply, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespuesApply.rol, antesMembership.rol, "APPLY: el rol de la membership NO debe sobreescribirse ni repararse");
+      assertEqual(Number(membershipDespuesApply.activo), Number(antesMembership.activo), "APPLY: el activo de la membership NO debe sobreescribirse ni repararse");
+      const usuariosTotalDespuesApply = await allControlQuery(dbDespuesApply, "SELECT id FROM usuarios");
+      assertEqual(usuariosTotalDespuesApply.length, antesUsuariosTotal.length, "APPLY: no debe crearse ninguna identidad central adicional");
+      const membershipsTotalDespuesApply = await allControlQuery(dbDespuesApply, "SELECT id FROM usuario_empresas");
+      assertEqual(membershipsTotalDespuesApply.length, antesMembershipsTotal.length, "APPLY: no debe crearse ninguna membership adicional");
+      const syncPendienteFilasDespuesApply = await allControlQuery(dbDespuesApply, "SELECT id FROM sync_pendiente");
+      assertEqual(syncPendienteFilasDespuesApply.length, 0, "APPLY: no debe crearse ninguna fila en sync_pendiente -- la reconciliacion nunca escribe en esquema parcial");
+    } finally {
+      await closeControlDb(dbDespuesApply);
+    }
+
+    const despuesApplyLocal = await allSql(businessDbPath, "SELECT * FROM usuarios ORDER BY id ASC");
+    assertSame(JSON.stringify(despuesApplyLocal), JSON.stringify(antesLocal), "APPLY: la Business DB no debe modificarse");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// Tercera combinacion de la matriz: solo sync_pendiente presente, sin ninguna de las dos columnas
+// version. Bajo la logica anterior YA caia correctamente en parcial (no cambia de resultado) --
+// se agrega para completar la cobertura explicita de las 8 combinaciones posibles.
+async function testAuthSyncB2S1A1PartialSchemaHardeningSoloSyncPendienteFallaCerrado() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const dbParcial = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
+    // Solo la tabla sync_pendiente -- ninguna columna version en ninguna tabla.
+    await runControlQuery(
+      dbParcial,
+      `CREATE TABLE sync_pendiente (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+        empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+        membership_id INTEGER NOT NULL REFERENCES usuario_empresas(id),
+        usuario_local_id INTEGER NOT NULL,
+        tipo_operacion TEXT NOT NULL CHECK (tipo_operacion IN ('rol_activo','password')),
+        version_objetivo INTEGER NOT NULL,
+        estado TEXT NOT NULL DEFAULT 'pendiente' CHECK (estado IN ('pendiente','procesado')),
+        creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+        procesado_en TEXT,
+        UNIQUE (membership_id, tipo_operacion)
+      )`
+    );
+    const empresaSlug = `s1a1-solosyncpendiente-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(dbParcial, { slug: empresaSlug, nombre: "S1A1 Solo Sync Pendiente", dbPath: "guernica.db" });
+    // Nombre y password_hash identicos a los locales (no divergentes) -- la divergencia
+    // deliberada de esta prueba esta unicamente en rol/activo de la membership; se preserva tal
+    // cual a lo largo de toda la prueba.
+    const central = await crearUsuarioCentral(dbParcial, { nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: admin.password, activo: 1 });
+    const membership = await crearMembership(dbParcial, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "colaborador", activo: 0 });
+    await closeControlDb(dbParcial);
+
+    const antesLocal = await allSql(businessDbPath, "SELECT * FROM usuarios ORDER BY id ASC");
+
+    const dbAntes = openControlDb(controlDbPath);
+    let antesCentral, antesMembership, antesUsuariosTotal, antesMembershipsTotal;
+    try {
+      antesCentral = await getControlQuery(dbAntes, "SELECT nombre, activo, password_hash FROM usuarios WHERE id = ?", [central.id]);
+      antesMembership = await getControlQuery(dbAntes, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      antesUsuariosTotal = await allControlQuery(dbAntes, "SELECT id FROM usuarios");
+      antesMembershipsTotal = await allControlQuery(dbAntes, "SELECT id FROM usuario_empresas");
+    } finally {
+      await closeControlDb(dbAntes);
+    }
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    assertSame(check.ok, false, "CHECK debe rechazar cuando solo existe sync_pendiente");
+    assertSame(check.errorCode, "SCHEMA_S0_INCOMPATIBLE", "el errorCode debe identificar el esquema incompatible");
+    assertSame(check.message.includes("ESQUEMA_S0_PARCIAL"), true, "el mensaje debe incluir el motivo exacto ESQUEMA_S0_PARCIAL");
+
+    const dbDespuesCheck = openControlDb(controlDbPath);
+    try {
+      const centralDespuesCheck = await getControlQuery(dbDespuesCheck, "SELECT nombre, activo, password_hash FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespuesCheck.nombre, antesCentral.nombre, "CHECK: el nombre de la identidad central NO debe sobreescribirse ni repararse");
+      assertEqual(Number(centralDespuesCheck.activo), Number(antesCentral.activo), "CHECK: el activo global de la identidad central NO debe sobreescribirse ni repararse");
+      assertSame(centralDespuesCheck.password_hash, antesCentral.password_hash, "CHECK: el password_hash de la identidad central NO debe sobreescribirse ni repararse");
+      const membershipDespuesCheck = await getControlQuery(dbDespuesCheck, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespuesCheck.rol, antesMembership.rol, "CHECK: ninguna escritura debe haber ocurrido con esquema parcial (rol)");
+      assertEqual(Number(membershipDespuesCheck.activo), Number(antesMembership.activo), "CHECK: ninguna escritura debe haber ocurrido con esquema parcial (activo)");
+      const usuariosTotalDespuesCheck = await allControlQuery(dbDespuesCheck, "SELECT id FROM usuarios");
+      assertEqual(usuariosTotalDespuesCheck.length, antesUsuariosTotal.length, "CHECK: no debe crearse ninguna identidad central adicional");
+      const membershipsTotalDespuesCheck = await allControlQuery(dbDespuesCheck, "SELECT id FROM usuario_empresas");
+      assertEqual(membershipsTotalDespuesCheck.length, antesMembershipsTotal.length, "CHECK: no debe crearse ninguna membership adicional");
+      const syncPendienteFilasDespuesCheck = await allControlQuery(dbDespuesCheck, "SELECT id FROM sync_pendiente");
+      assertEqual(syncPendienteFilasDespuesCheck.length, 0, "CHECK: no debe crearse ninguna fila en sync_pendiente");
+    } finally {
+      await closeControlDb(dbDespuesCheck);
+    }
+
+    const despuesCheckLocal = await allSql(businessDbPath, "SELECT * FROM usuarios ORDER BY id ASC");
+    assertSame(JSON.stringify(despuesCheckLocal), JSON.stringify(antesLocal), "CHECK: la Business DB no debe modificarse");
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    assertSame(apply.ok, false, "APPLY debe rechazar igual que CHECK");
+    assertSame(apply.errorCode, "SCHEMA_S0_INCOMPATIBLE", "el errorCode debe identificar el esquema incompatible en APPLY tambien");
+    assertSame(apply.message.includes("ESQUEMA_S0_PARCIAL"), true, "el mensaje de APPLY tambien debe incluir el motivo exacto");
+
+    const dbDespuesApply = openControlDb(controlDbPath);
+    try {
+      const centralDespuesApply = await getControlQuery(dbDespuesApply, "SELECT nombre, activo, password_hash FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespuesApply.nombre, antesCentral.nombre, "APPLY: el nombre de la identidad central NO debe sobreescribirse ni repararse");
+      assertEqual(Number(centralDespuesApply.activo), Number(antesCentral.activo), "APPLY: el activo global de la identidad central NO debe sobreescribirse ni repararse");
+      assertSame(centralDespuesApply.password_hash, antesCentral.password_hash, "APPLY: el password_hash de la identidad central NO debe sobreescribirse ni repararse");
+      const membershipDespuesApply = await getControlQuery(dbDespuesApply, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespuesApply.rol, antesMembership.rol, "APPLY: ninguna escritura debe haber ocurrido con esquema parcial (rol)");
+      assertEqual(Number(membershipDespuesApply.activo), Number(antesMembership.activo), "APPLY: ninguna escritura debe haber ocurrido con esquema parcial (activo)");
+      const usuariosTotalDespuesApply = await allControlQuery(dbDespuesApply, "SELECT id FROM usuarios");
+      assertEqual(usuariosTotalDespuesApply.length, antesUsuariosTotal.length, "APPLY: no debe crearse ninguna identidad central adicional");
+      const membershipsTotalDespuesApply = await allControlQuery(dbDespuesApply, "SELECT id FROM usuario_empresas");
+      assertEqual(membershipsTotalDespuesApply.length, antesMembershipsTotal.length, "APPLY: no debe crearse ninguna membership adicional");
+      const syncPendienteFilasDespuesApply = await allControlQuery(dbDespuesApply, "SELECT id FROM sync_pendiente");
+      assertEqual(syncPendienteFilasDespuesApply.length, 0, "APPLY: no debe crearse ninguna fila en sync_pendiente");
+    } finally {
+      await closeControlDb(dbDespuesApply);
+    }
+
+    const despuesApplyLocal = await allSql(businessDbPath, "SELECT * FROM usuarios ORDER BY id ASC");
+    assertSame(JSON.stringify(despuesApplyLocal), JSON.stringify(antesLocal), "APPLY: la Business DB no debe modificarse");
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
     fs.rmSync(controlDbPath, { force: true });
   }
 }
