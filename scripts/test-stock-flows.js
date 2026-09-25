@@ -418,15 +418,52 @@ function getFreePort() {
   });
 }
 
-async function waitForServer(baseUrl) {
+// QA-SERVER-START-DIAGNOSTICS: onIntentoFallido es opcional y aditivo -- si se omite (como en
+// todos los llamadores preexistentes salvo withServer), el comportamiento, timeout total (80x150ms)
+// e intervalo de polling quedan identicos a antes. Cuando se provee, se notifica el resultado de
+// cada intento fallido (status HTTP no-ok, o el error de conexion) para poder diagnosticar un
+// timeout de arranque sin cambiar el mensaje de error final ni la logica de espera.
+async function waitForServer(baseUrl, onIntentoFallido) {
   for (let i = 0; i < 80; i++) {
     try {
       const response = await fetch(`${baseUrl}/login`);
       if (response.ok) return;
-    } catch {}
+      if (onIntentoFallido) onIntentoFallido({ intento: i + 1, status: response.status, error: null });
+    } catch (error) {
+      if (onIntentoFallido) onIntentoFallido({ intento: i + 1, status: null, error });
+    }
     await delay(150);
   }
   throw new Error("El servidor de prueba no arranco a tiempo");
+}
+
+// QA-SERVER-START-DIAGNOSTICS: acota el volumen de salida del proceso hijo incluido en un
+// diagnostico de fallo -- nunca vuelca variables de entorno ni credenciales, solo lo que el hijo
+// ya escribe en su propio stdout/stderr (la misma fuente que el catch-all preexistente ya usaba).
+function truncarLogsDiagnostico(texto, maxChars = 4000) {
+  if (texto.length <= maxChars) return texto;
+  return `... [truncado, ${texto.length - maxChars} caracteres omitidos] ...\n${texto.slice(-maxChars)}`;
+}
+
+// QA-SERVER-START-DIAGNOSTICS: arma el bloque de diagnostico SOLO para el caso de fallo de
+// arranque (el servidor nunca respondio ok a /login dentro del timeout vigente). No se usa
+// child.killed como evidencia de que el proceso ya termino -- se reportan exitCode/signalCode tal
+// cual estan en el momento del fallo (null = aun en ejecucion o el evento 'exit' no disparo todavia).
+function construirDiagnosticoArranque({ child, port, startedAt, ultimoIntento, spawnError, logs }) {
+  const elapsedMs = Date.now() - startedAt;
+  const intentos = ultimoIntento ? ultimoIntento.intento : 0;
+  const ultimoEstado = ultimoIntento
+    ? (ultimoIntento.error ? `error de conexion: ${ultimoIntento.error.message}` : `HTTP ${ultimoIntento.status}`)
+    : "sin intentos de readiness registrados";
+  return [
+    "--- Diagnostico de arranque del servidor de prueba (QA-SERVER-START-DIAGNOSTICS) ---",
+    `pid=${child.pid ?? "desconocido"} port=${port}`,
+    `tiempo transcurrido antes del timeout=${elapsedMs}ms intentos de readiness=${intentos}`,
+    `ultimo intento de readiness: ${ultimoEstado}`,
+    `exitCode=${child.exitCode} signalCode=${child.signalCode} (null = aun en ejecucion o evento exit no disponible todavia; no se usa child.killed como evidencia de terminacion)`,
+    `evento error de spawn: ${spawnError ? spawnError.message : "ninguno"}`,
+    `salida del proceso (acotada):\n${truncarLogsDiagnostico(logs)}`
+  ].join("\n");
 }
 
 async function withServer(dbPath, fn, extraEnv = {}) {
@@ -453,11 +490,23 @@ async function withServer(dbPath, fn, extraEnv = {}) {
   child.stdout.on("data", (chunk) => { logs += chunk.toString(); });
   child.stderr.on("data", (chunk) => { logs += chunk.toString(); });
 
+  // QA-SERVER-START-DIAGNOSTICS: solo recoleccion, no cambia el flujo normal.
+  let spawnError = null;
+  child.on("error", (error) => { spawnError = error; });
+  const startedAt = Date.now();
+  let ultimoIntento = null;
+  let servidorListo = false;
+
   try {
-    await waitForServer(baseUrl);
+    await waitForServer(baseUrl, (info) => { ultimoIntento = info; });
+    servidorListo = true;
     await fn(baseUrl);
   } catch (error) {
-    error.message = `${error.message}\nServidor test pid=${child.pid} port=${port}\n${logs}`;
+    if (!servidorListo) {
+      error.message = `${error.message}\n${construirDiagnosticoArranque({ child, port, startedAt, ultimoIntento, spawnError, logs })}`;
+    } else {
+      error.message = `${error.message}\nServidor test pid=${child.pid} port=${port}\n${logs}`;
+    }
     throw error;
   } finally {
     if (!child.killed) child.kill("SIGTERM");
@@ -20661,6 +20710,9 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testQaRunSqlClosePropagaErrorSql);
   await _run(testQaRunSqlCloseLiberaHandleAntesDeResolver);
   await _run(testQaRunSqlCloseStressArchivosIndependientes);
+  await _run(testQaServerStartDiagnosticsArranqueExitosoComportamientoIdentico);
+  await _run(testQaServerStartDiagnosticsWaitForServerRegistraIntentosYTimeout);
+  await _run(testQaServerStartDiagnosticsMensajeIdentificable);
   await _run(testMT1D1BFreshSchemaTieneTenantIdentity);
   await _run(testMT1D1BFreshSinIdentityFallaCerrado);
   await _run(testMT1D1BIdentityExacta);
@@ -28407,6 +28459,102 @@ async function testQaRunSqlCloseStressArchivosIndependientes() {
       );
     }
   }
+}
+
+// QA-SERVER-START-DIAGNOSTICS: cobertura focalizada para la instrumentacion de waitForServer/
+// withServer. C (terminacion temprana del hijo observada end-to-end a traves de withServer) queda
+// documentada como NO probada de forma end-to-end: withServer tiene fijo su objetivo de spawn
+// (["backend/server.js"]) y no puede redirigirse a un fixture minimo sin alterar su comportamiento
+// para los 196 llamadores existentes; forzar a backend/server.js real a fallar temprano (vía una
+// business DB invalida) seguiria esperando el timeout completo de waitForServer (que no observa el
+// evento exit del hijo) y usaria el servidor real, justo lo que se pidio evitar para estas pruebas
+// nuevas. La parte SI cubierta de C -- que construirDiagnosticoArranque lee y reporta exitCode/
+// signalCode correctamente quando estan disponibles, sin usar child.killed como evidencia -- se
+// verifica en testQaServerStartDiagnosticsMensajeIdentificable con un objeto child simulado.
+async function testQaServerStartDiagnosticsArranqueExitosoComportamientoIdentico() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    let recibioBaseUrl = null;
+    await withServer(dbPath, async (baseUrl) => {
+      recibioBaseUrl = baseUrl;
+      const token = await login(baseUrl, "admin", "admin123");
+      assertSame(typeof token, "string", "login exitoso debe devolver token string");
+    });
+    assertSame(typeof recibioBaseUrl, "string", "withServer debe invocar fn con baseUrl en el camino exitoso, sin cambios");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testQaServerStartDiagnosticsWaitForServerRegistraIntentosYTimeout() {
+  const portLibre = await getFreePort();
+  const baseUrlSinServidor = `http://localhost:${portLibre}`;
+  const intentos = [];
+  const inicio = Date.now();
+
+  let errorCapturado = null;
+  try {
+    await waitForServer(baseUrlSinServidor, (info) => { intentos.push(info); });
+  } catch (error) {
+    errorCapturado = error;
+  }
+  const elapsedMs = Date.now() - inicio;
+
+  assertSame(Boolean(errorCapturado), true, "waitForServer debe rechazar tras agotar el timeout si nadie escucha en el puerto");
+  assertSame(errorCapturado.message, "El servidor de prueba no arranco a tiempo", "el mensaje de timeout no debe cambiar");
+  assertEqual(intentos.length, 80, "deben registrarse exactamente 80 intentos fallidos (timeout vigente sin cambios)");
+  for (const intento of intentos) {
+    assertSame(intento.error !== null, true, "cada intento sin servidor escuchando debe reportar un error de conexion, no un status HTTP");
+  }
+  if (elapsedMs < 10000) {
+    throw new Error(`testQaServerStartDiagnosticsWaitForServerRegistraIntentosYTimeout: timeout parece haberse acelerado (elapsed=${elapsedMs}ms, esperado >=10000ms para 80x150ms)`);
+  }
+}
+
+async function testQaServerStartDiagnosticsMensajeIdentificable() {
+  const childSimulado = { pid: 424242, exitCode: 1, signalCode: null };
+  const diagnostico = construirDiagnosticoArranque({
+    child: childSimulado,
+    port: 55428,
+    startedAt: Date.now() - 15146,
+    ultimoIntento: { intento: 80, status: null, error: new Error("connect ECONNREFUSED 127.0.0.1:55428") },
+    spawnError: null,
+    logs: ""
+  });
+
+  assertSame(diagnostico.includes("pid=424242"), true, "diagnostico debe incluir el pid del hijo");
+  assertSame(diagnostico.includes("port=55428"), true, "diagnostico debe incluir el puerto usado");
+  assertSame(diagnostico.includes("intentos de readiness=80"), true, "diagnostico debe incluir la cantidad de intentos");
+  assertSame(diagnostico.includes("exitCode=1"), true, "diagnostico debe incluir el exitCode del hijo cuando esta disponible");
+  assertSame(diagnostico.includes("signalCode=null"), true, "diagnostico debe incluir signalCode explicitamente, no inferirlo de child.killed");
+  assertSame(diagnostico.includes("no se usa child.killed"), true, "diagnostico debe dejar explicita la advertencia sobre child.killed");
+  assertSame(diagnostico.includes("ECONNREFUSED"), true, "diagnostico debe incluir el ultimo error de conexion registrado");
+  assertSame(diagnostico.includes("evento error de spawn: ninguno"), true, "sin error de spawn debe reportarse explicitamente como ninguno");
+
+  const spawnErrorSimulado = new Error("spawn backend/server.js ENOENT");
+  const diagnosticoConSpawnError = construirDiagnosticoArranque({
+    child: { pid: undefined, exitCode: null, signalCode: null },
+    port: 55429,
+    startedAt: Date.now() - 100,
+    ultimoIntento: null,
+    spawnError: spawnErrorSimulado,
+    logs: ""
+  });
+  assertSame(diagnosticoConSpawnError.includes("pid=desconocido"), true, "sin pid disponible debe reportarse explicitamente como desconocido, no undefined crudo");
+  assertSame(diagnosticoConSpawnError.includes("ENOENT"), true, "diagnostico debe incluir el error de evento spawn cuando ocurrio");
+  assertSame(diagnosticoConSpawnError.includes("sin intentos de readiness registrados"), true, "sin intentos registrados debe quedar explicito, no mostrar un numero enganioso");
+
+  const logLargo = "x".repeat(5000);
+  const diagnosticoTruncado = construirDiagnosticoArranque({
+    child: childSimulado,
+    port: 1,
+    startedAt: Date.now(),
+    ultimoIntento: null,
+    spawnError: null,
+    logs: logLargo
+  });
+  assertSame(diagnosticoTruncado.includes("truncado"), true, "logs de mas de 4000 caracteres deben truncarse explicitamente");
+  assertSame(diagnosticoTruncado.length < logLargo.length + 2000, true, "el diagnostico no debe volcar el log completo sin acotar");
 }
 
 async function testMT1D1BFreshSchemaTieneTenantIdentity() {
