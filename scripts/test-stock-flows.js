@@ -21025,6 +21025,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testAuthSyncB2S1A2DLegacyImportS0LapidaProcesadaRechazaIgual);
   await _run(testAuthSyncB2S1A2DLegacyImportEsquemaParcialRechaza);
   await _run(testAuthSyncB2S1A2DLegacyImportSyncUsuariosShadowEmpresaTambienRechaza);
+  await _run(testAuthSyncB2S1A2DLegacyImportSoloUsuariosVersionEsquemaParcialRechaza);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -25095,6 +25096,70 @@ async function testAuthSyncB2S1A2DLegacyImportSyncUsuariosShadowEmpresaTambienRe
     } finally {
       await closeControlDb(controlDb);
     }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// AUTH-SYNC-B2-S1A2D-PARTIAL-SCHEMA-FIX: esquema parcial deliberado -- SOLO usuarios.version,
+// dejando usuario_empresas.version y sync_pendiente ausentes. Antes de esta correccion,
+// detectarSoporteEsquemaS0 solo miraba usuario_empresas.version + sync_pendiente, asi que este
+// caso exacto se clasificaba (incorrectamente) como CASO A pre-S0, dejando correr el importador
+// sin proteccion. Debe fallar cerrado igual que cualquier otra combinacion parcial.
+async function testAuthSyncB2S1A2DLegacyImportSoloUsuariosVersionEsquemaParcialRechaza() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const dbParcial = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
+    // Unicamente usuarios.version -- ni usuario_empresas.version ni sync_pendiente existen.
+    await runControlQuery(dbParcial, "ALTER TABLE usuarios ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
+    const empresaSlug = `s1a2d-soloversionusuarios-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(dbParcial, { slug: empresaSlug, nombre: "S1A2D Solo Usuarios Version", dbPath: "guernica.db" });
+
+    // Identidad y membership preexistentes, con datos DISTINTOS de los locales -- si el importador
+    // corriera sin proteccion, los pisaria con los valores locales.
+    const placeholderHash = await bcrypt.hash("PlaceholderSoloVersion1", 10);
+    const central = await crearUsuarioCentral(dbParcial, { nombre: "Nombre Central Distinto", usuarioReferencia: admin.usuario, passwordHash: placeholderHash, activo: 1 });
+    const membership = await crearMembership(dbParcial, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: "encargado", activo: 0 });
+    await closeControlDb(dbParcial);
+
+    const antesLocal = await allSql(businessDbPath, "SELECT * FROM usuarios ORDER BY id ASC");
+
+    // Reapertura CRUDA (no bootstrapControlDb): bootstrapControlDb completaria el esquema parcial
+    // por su cuenta, invalidando la comprobacion de que este modulo nunca migra ni asume nada.
+    const dbReabierta = openControlDb(controlDbPath);
+    try {
+      let errorCapturado = null;
+      try {
+        await syncUsuariosShadowDesdeDbPath(dbReabierta, { empresaId: empresa.id, businessDbPath });
+      } catch (error) {
+        errorCapturado = error;
+      }
+      assertSame(Boolean(errorCapturado), true, "debe rechazar explicitamente cuando solo existe usuarios.version (esquema parcial)");
+      assertSame(
+        errorCapturado?.message?.includes("ESQUEMA_S0_PARCIAL"),
+        true,
+        "el rechazo debe provenir del guard de esquema S0 parcial"
+      );
+
+      const centralDespues = await getControlQuery(dbReabierta, "SELECT nombre, activo FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespues.nombre, "Nombre Central Distinto", "la identidad central NO debe sobreescribirse");
+      const membershipDespues = await getControlQuery(dbReabierta, "SELECT rol, activo FROM usuario_empresas WHERE id = ?", [membership.id]);
+      assertSame(membershipDespues.rol, "encargado", "la membership NO debe sobreescribirse");
+      assertEqual(Number(membershipDespues.activo), 0, "el activo de la membership NO debe sobreescribirse");
+
+      const usuariosCentralTotal = await allControlQuery(dbReabierta, "SELECT id FROM usuarios");
+      assertEqual(usuariosCentralTotal.length, 1, "no debe crearse ninguna identidad central adicional (sin escritura parcial)");
+      const membershipsTotal = await allControlQuery(dbReabierta, "SELECT id FROM usuario_empresas");
+      assertEqual(membershipsTotal.length, 1, "no debe crearse ninguna membership adicional (sin escritura parcial)");
+    } finally {
+      await closeControlDb(dbReabierta);
+    }
+
+    const despuesLocal = await allSql(businessDbPath, "SELECT * FROM usuarios ORDER BY id ASC");
+    assertSame(JSON.stringify(despuesLocal), JSON.stringify(antesLocal), "la Business DB no debe modificarse (el importador solo la abre de solo lectura, pero se verifica igual)");
   } finally {
     fs.rmSync(businessDbPath, { force: true });
     fs.rmSync(controlDbPath, { force: true });

@@ -54,17 +54,33 @@ function cerrarDbEmpresa(db) {
   });
 }
 
-// AUTH-SYNC-B2-S1A2D-LEGACY-SHADOW-IMPORT-SAFETY-GATE: deteccion de esquema por introspeccion pura
-// (PRAGMA/sqlite_master), identica en criterio a detectarSoporteEsquemaS0 de
-// database/reconcile-shadow-users.js -- deliberadamente DUPLICADA aca, no importada desde alli, por
-// el mismo motivo ya documentado en ese modulo: este importador legacy no debe acoplarse al
-// reconciliador S1A1. soportaS0=false (CASO A, pre-S0): ni version ni sync_pendiente existen --
-// unico caso en que este modulo conserva su comportamiento legacy. soportaS0=true (CASO B, S0
-// completo) o soportaS0=null (CASO C, parcial/incompatible): ambos bloquean la importacion, sin
-// distincion de comportamiento entre si -- ver guardarComportamientoLegacyOFallarCerrado.
+// AUTH-SYNC-B2-S1A2D-PARTIAL-SCHEMA-FIX: deteccion de esquema por introspeccion pura
+// (PRAGMA/sqlite_master). A diferencia de detectarSoporteEsquemaS0 en
+// database/reconcile-shadow-users.js (que solo verifica usuario_empresas.version +
+// sync_pendiente), esta version verifica los TRES elementos de S0 por separado --
+// usuarios.version, usuario_empresas.version y la tabla sync_pendiente -- porque
+// initControlSchema agrega version a AMBAS tablas (usuarios Y usuario_empresas). Verificar
+// solo una de las dos dejaba un esquema con unicamente usuarios.version mal clasificado como
+// CASO A (pre-S0), permitiendo que el importador corriera sin proteccion sobre un esquema que
+// ya no es limpio. Esto NO se atribuye a que la migracion transaccional actual (initControlSchema,
+// envuelta en un unico BEGIN IMMEDIATE/COMMIT desde S0-TX-FIX1) pueda interrumpirse a mitad de
+// camino -- esa migracion especifica es atomica y no deja este tipo de estado intermedio por si
+// sola. El detector protege de forma generica contra CUALQUIER origen de un esquema parcial o
+// incompatible -- una edicion manual de la Control DB, una migracion distinta no transaccional,
+// o cualquier estado que no se corresponda ni con pre-S0 limpio ni con S0 completo -- sin asumir
+// una causa especifica. Pre-S0 valido exige que LOS TRES esten ausentes; S0 completo exige que
+// LOS TRES esten presentes (mas la forma correcta de sync_pendiente); cualquier otra combinacion
+// (incluida version en una sola de las dos tablas) es esquema parcial -- FAIL CLOSED. Sigue
+// deliberadamente DUPLICADA, no importada desde reconcile-shadow-users.js, por el mismo motivo
+// ya documentado en ese modulo: este importador legacy no debe acoplarse al reconciliador
+// S1A1. soportaS0=true (CASO B) o soportaS0=null (CASO C) bloquean igual la importacion --
+// ver guardarComportamientoLegacyOFallarCerrado.
 async function detectarSoporteEsquemaS0(controlDb) {
+  const columnasUsuarios = await allQuery(controlDb, "PRAGMA table_info(usuarios)");
+  const tieneVersionUsuarios = columnasUsuarios.some((columna) => columna.name === "version");
+
   const columnasMembership = await allQuery(controlDb, "PRAGMA table_info(usuario_empresas)");
-  const tieneVersion = columnasMembership.some((columna) => columna.name === "version");
+  const tieneVersionMembership = columnasMembership.some((columna) => columna.name === "version");
 
   const tablasSyncPendiente = await allQuery(
     controlDb,
@@ -72,11 +88,11 @@ async function detectarSoporteEsquemaS0(controlDb) {
   );
   const tieneSyncPendiente = tablasSyncPendiente.length > 0;
 
-  if (!tieneVersion && !tieneSyncPendiente) {
+  if (!tieneVersionUsuarios && !tieneVersionMembership && !tieneSyncPendiente) {
     return { soportaS0: false };
   }
 
-  if (tieneVersion && tieneSyncPendiente) {
+  if (tieneVersionUsuarios && tieneVersionMembership && tieneSyncPendiente) {
     const columnasSyncPendiente = await allQuery(controlDb, "PRAGMA table_info(sync_pendiente)");
     const nombresSyncPendiente = new Set(columnasSyncPendiente.map((columna) => columna.name));
     const columnasEsperadas = ["membership_id", "tipo_operacion", "estado", "version_objetivo"];
