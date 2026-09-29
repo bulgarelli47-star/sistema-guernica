@@ -21116,6 +21116,25 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testP1AFilaFallidaNoBloqueaElRestoDelLote);
   await _run(testP1AAislamientoCrossTenantCambioDePasswordNoAfectaOtraIdentidad);
   await _run(testP1AConcurrenciaDosCambiosSimultaneosUnoGanaOtroConflictoExplicito);
+  await _run(testP1ASRTokenPrevioQuedaInvalidoYCicloCompletoDeRelogin);
+  await _run(testP1ASRIdentidadConDosMembershipsAmbosTokensQuedanInvalidos);
+  await _run(testP1ASRIdentidadDistintaNoSeAfecta);
+  await _run(testP1ASRUsuarioLocalIdColisionadoNoCruzaAutoridad);
+  await _run(testP1ASRSesionPasswordVersionNullEsInvalidaYSeElimina);
+  await _run(testP1ASRSesionLegacyIgnoraPasswordVersionPorCompleto);
+  await _run(testP1ASREmpresaInactivaMantieneSuErrorExistente);
+  await _run(testP1ASRMembershipInactivaMantieneSuErrorExistente);
+  await _run(testP1ASRCentralInactivaMantieneSuErrorExistente);
+  await _run(testP1ASRControlDbCaidaResponde503NuncaAutoriza);
+  await _run(testP1ASRRestartNoAlteraLaRevocacion);
+  await _run(testP1ASRDosCambiosConcurrentesInvalidanSesionesDeGeneracionAnterior);
+  await _run(testP1ASRIncrementoDeVersionGeneralNoAfectaPasswordVersionNiRevocaSesion);
+  await _run(testP1ASRVersionYPasswordVersionSonSemanticasIndependientes);
+  await _run(testP1ASRFreshBusinessDbViaProvisionContieneLaColumna);
+  await _run(testP1ASRBusinessDbMigrada002a003ContieneLaColumna);
+  await _run(testP1ASRMigracion003EsIdempotente);
+  await _run(testP1ASRControlSchemaNuevoContienePasswordVersionDefault0);
+  await _run(testP1ASRSchemaViejoDeControlDbNoSeMutaPorServerStartup);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -21461,9 +21480,9 @@ async function testMT1BControlPlaneCreaUsuariosYMemberships() {
       const esperadosUsuarios = [
         "id", "nombre", "usuario_referencia", "password_hash", "email", "telefono", "foto_url",
         "activo", "ultimo_acceso", "intentos_fallidos", "bloqueado_hasta", "creado_en", "actualizado_en",
-        "version"
+        "version", "password_version"
       ].sort().join(",");
-      assertSame(nombresUsuarios, esperadosUsuarios, "usuarios central debe tener exactamente los campos previstos por MT-1B.1 + version (AUTH-SYNC-B2-S0)");
+      assertSame(nombresUsuarios, esperadosUsuarios, "usuarios central debe tener exactamente los campos previstos por MT-1B.1 + version (AUTH-SYNC-B2-S0) + password_version (AUTH-SYNC-B2-P1A-SR)");
 
       const colsMembership = await allControlQuery(controlDb, "PRAGMA table_info(usuario_empresas)");
       const nombresMembership = colsMembership.map((c) => c.name).sort().join(",");
@@ -28042,6 +28061,10 @@ async function testMT1C2B3RevalidadorSuccessBindingExacto() {
       membershipId: fixture.membership.id,
       centralId: fixture.central.id,
       usuarioLocalId: fixture.localUserId,
+      // AUTH-SYNC-B2-P1A-SR: una identidad central recien creada nace con password_version=0
+      // (default de schema) -- se pasa explicitamente para seguir probando el binding en si,
+      // independiente del chequeo nuevo de generacion de credencial.
+      sessionPasswordVersion: 0,
       controlDbPath
     });
     assertSame(result.ok, true, "revalidador debe aceptar binding exacto vigente");
@@ -32822,7 +32845,9 @@ async function testMT1E2C3MigratorCatalogValidation() {
   // catalogo tiene exactamente 1 entrada ni que 002_ esta prohibido; se actualiza para certificar la
   // FORMA exacta del catalogo real actual en su lugar (contrato equivalente al que
   // testMT1F5C1Catalogo002Real certifica de forma dedicada).
-  assertEqual(BUSINESS_MIGRATIONS.length, 2, "catalogo de produccion debe tener exactamente 2 entradas");
+  // AUTH-SYNC-B2-P1A-SR: "003_sesiones_password_version" es ahora la segunda migration REAL del
+  // catalogo -- mismo patron de actualizacion que cuando se agrego 002 (comentario de arriba).
+  assertEqual(BUSINESS_MIGRATIONS.length, 3, "catalogo de produccion debe tener exactamente 3 entradas");
   assertEqual(BUSINESS_MIGRATIONS[0].sequence, 1, "catalogo de produccion: sequence de la primera entrada debe ser 1");
   assertSame(
     BUSINESS_MIGRATIONS[0].migrationId, "001_legacy_runtime_baseline",
@@ -32837,8 +32862,15 @@ async function testMT1E2C3MigratorCatalogValidation() {
   );
   assertSame(BUSINESS_MIGRATIONS[1].kind, "MIGRATION", "catalogo de produccion: kind de la segunda entrada debe ser MIGRATION");
   assertSame(typeof BUSINESS_MIGRATIONS[1].up, "function", "catalogo de produccion: la entrada 002 debe tener up(db) callable");
-  const tieneAlgun003 = BUSINESS_MIGRATIONS.some((m) => typeof m.migrationId === "string" && m.migrationId.startsWith("003_"));
-  assertSame(tieneAlgun003, false, "catalogo de produccion NO debe contener ningun migrationId que empiece con 003_ (PROHIBIDO todavia)");
+  assertEqual(BUSINESS_MIGRATIONS[2].sequence, 3, "catalogo de produccion: sequence de la tercera entrada debe ser 3");
+  assertSame(
+    BUSINESS_MIGRATIONS[2].migrationId, "003_sesiones_password_version",
+    "catalogo de produccion: migrationId de la tercera entrada debe ser 003_sesiones_password_version"
+  );
+  assertSame(BUSINESS_MIGRATIONS[2].kind, "MIGRATION", "catalogo de produccion: kind de la tercera entrada debe ser MIGRATION");
+  assertSame(typeof BUSINESS_MIGRATIONS[2].up, "function", "catalogo de produccion: la entrada 003 debe tener up(db) callable");
+  const tieneAlgun004 = BUSINESS_MIGRATIONS.some((m) => typeof m.migrationId === "string" && m.migrationId.startsWith("004_"));
+  assertSame(tieneAlgun004, false, "catalogo de produccion NO debe contener ningun migrationId que empiece con 004_ (PROHIBIDO todavia)");
 }
 
 // MT-1E3B: helpers para tests del puente pre-baseline legacy. dropSesionesColumns simula el
@@ -36144,19 +36176,21 @@ async function testMT1F1SchemaNoCurrentFailsClosed() {
   try {
     const [tenant] = escenario.tenants;
 
-    // MT-1F5C1: stamparHistorialBaselineActual ya deja este tenant con el catalogo real COMPLETO
-    // aplicado (hoy [001,002]), asi que una fila AHEAD debe ir mas alla del catalogo conocido
-    // (sequence=3), no en sequence=2 (ya ocupado por la migration 002 real). BEHIND es alcanzable en
-    // principio ahora que el catalogo tiene mas de una entrada, pero no es el foco de este test.
-    await runSql(tenant.dbPath, "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (3, '999_migracion_futura', datetime('now'))");
+    // MT-1F5C1 / AUTH-SYNC-B2-P1A-SR: stamparHistorialBaselineActual ya deja este tenant con el
+    // catalogo real COMPLETO aplicado (hoy [001,002,003]), asi que una fila AHEAD debe ir mas alla
+    // del catalogo conocido (sequence=4), no en sequence=3 (ya ocupado por la migration 003 real).
+    // BEHIND es alcanzable en principio ahora que el catalogo tiene mas de una entrada, pero no es
+    // el foco de este test.
+    await runSql(tenant.dbPath, "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (4, '999_migracion_futura', datetime('now'))");
     let antes = snapshotSQLitePersistente(tenant.dbPath);
     let resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
     mt1f1AssertFallo(resultado, TENANT_RUNTIME_ERROR_CODES.TENANT_SCHEMA_NOT_CURRENT, "schema AHEAD");
     assertSame(resultado.details.state, "AHEAD", "estado AHEAD");
     assertSame(JSON.stringify(snapshotSQLitePersistente(tenant.dbPath)), JSON.stringify(antes), "AHEAD: sin mutacion persistente");
 
-    // INVALID_HISTORY: la migracion 1 dice otra cosa (se quita antes la fila AHEAD agregada arriba).
-    await runSql(tenant.dbPath, "DELETE FROM atlas_schema_migrations WHERE sequence = 3");
+    // INVALID_HISTORY: la migracion 1 dice otra cosa (se quita antes la fila AHEAD agregada arriba,
+    // que ahora vive en sequence=4 -- sequence=3 es la migration real 003, nunca se toca).
+    await runSql(tenant.dbPath, "DELETE FROM atlas_schema_migrations WHERE sequence = 4");
     await runSql(tenant.dbPath, "UPDATE atlas_schema_migrations SET migration_id = '001_otra_cosa' WHERE sequence = 1");
     antes = snapshotSQLitePersistente(tenant.dbPath);
     resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
@@ -38024,6 +38058,10 @@ async function mt1f5c1DbSoloBaseline001() {
   const dbPath = bootstrapFreshTestDb();
   await runSql(dbPath, "DROP TABLE integraciones_tenant_secretos");
   await runSql(dbPath, "DROP TABLE integraciones_tenant");
+  // AUTH-SYNC-B2-P1A-SR: bootstrapFreshTestDb() (via stamparHistorialBaselineActual) tambien deja
+  // aplicada 003_sesiones_password_version -- se revierte igual que las tablas de 002 de arriba,
+  // para que esta DB quede genuinamente en el estado "solo baseline 001".
+  await runSql(dbPath, "ALTER TABLE sesiones DROP COLUMN password_version");
   await runSql(dbPath, "DELETE FROM atlas_schema_migrations WHERE sequence <> 1");
   return dbPath;
 }
@@ -38085,7 +38123,9 @@ function mt1f5c1MasterKeyDisponible(envExtra = {}) {
 }
 
 async function testMT1F5C1Catalogo002Real() {
-  assertEqual(BUSINESS_MIGRATIONS.length, 2, "catalogo debe tener exactamente 2 entradas");
+  // AUTH-SYNC-B2-P1A-SR: catalogo real ahora tiene 3 entradas (001 baseline + 002 + 003) -- mismo
+  // patron de actualizacion que testMT1E2C3MigratorCatalogValidation.
+  assertEqual(BUSINESS_MIGRATIONS.length, 3, "catalogo debe tener exactamente 3 entradas");
   assertEqual(BUSINESS_MIGRATIONS[0].sequence, 1, "primera entrada sequence=1");
   assertSame(BUSINESS_MIGRATIONS[0].migrationId, "001_legacy_runtime_baseline", "primera entrada es el baseline");
   assertSame(BUSINESS_MIGRATIONS[0].kind, "BASELINE", "primera entrada kind BASELINE");
@@ -38094,7 +38134,11 @@ async function testMT1F5C1Catalogo002Real() {
   assertSame(BUSINESS_MIGRATIONS[1].migrationId, "002_tenant_integration_credentials", "segunda entrada es la migration real");
   assertSame(BUSINESS_MIGRATIONS[1].kind, "MIGRATION", "segunda entrada kind MIGRATION");
   assertSame(typeof BUSINESS_MIGRATIONS[1].up, "function", "segunda entrada tiene up(db) callable");
-  assertSame(BUSINESS_MIGRATIONS[2], undefined, "no existe una tercera entrada (003)");
+  assertEqual(BUSINESS_MIGRATIONS[2].sequence, 3, "tercera entrada sequence=3");
+  assertSame(BUSINESS_MIGRATIONS[2].migrationId, "003_sesiones_password_version", "tercera entrada es la migration nueva de este slice");
+  assertSame(BUSINESS_MIGRATIONS[2].kind, "MIGRATION", "tercera entrada kind MIGRATION");
+  assertSame(typeof BUSINESS_MIGRATIONS[2].up, "function", "tercera entrada tiene up(db) callable");
+  assertSame(BUSINESS_MIGRATIONS[3], undefined, "no existe una cuarta entrada (004)");
 }
 
 async function testMT1F5C1Migracion002Desde001QuedaCurrent() {
@@ -38102,16 +38146,19 @@ async function testMT1F5C1Migracion002Desde001QuedaCurrent() {
   const backupPath = `${dbPath}.f5c1backup`;
   try {
     const antes = await verificarBusinessSchemaVersion(dbPath);
-    assertSame(antes.state, "BEHIND", "un 001-only debe clasificar BEHIND contra el catalogo real de 2 entradas");
+    assertSame(antes.state, "BEHIND", "un 001-only debe clasificar BEHIND contra el catalogo real de 3 entradas");
 
     const resultado = await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
     assertSame(resultado.status, "MIGRATED", "status debe ser MIGRATED");
-    assertSame(JSON.stringify(resultado.applied), JSON.stringify(["002_tenant_integration_credentials"]), "applied debe ser exactamente [002]");
+    // AUTH-SYNC-B2-P1A-SR: desde 001-only, una sola corrida aplica TODO lo pendiente -- ahora 002 y
+    // 003 en el mismo batch (mismo comportamiento del motor, catalogo mas largo).
+    assertSame(JSON.stringify(resultado.applied), JSON.stringify(["002_tenant_integration_credentials", "003_sesiones_password_version"]), "applied debe ser exactamente [002, 003]");
 
     const historia = await allSql(dbPath, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence ASC");
-    assertEqual(historia.length, 2, "historial final debe tener 2 filas");
+    assertEqual(historia.length, 3, "historial final debe tener 3 filas");
     assertSame(historia[0].migration_id, "001_legacy_runtime_baseline", "fila 1 exacta");
     assertSame(historia[1].migration_id, "002_tenant_integration_credentials", "fila 2 exacta");
+    assertSame(historia[2].migration_id, "003_sesiones_password_version", "fila 3 exacta");
 
     const despues = await verificarBusinessSchemaVersion(dbPath);
     assertSame(despues.state, "CURRENT", "despues de migrar debe ser CURRENT");
@@ -38171,9 +38218,12 @@ async function testMT1F5C1ProvisionFreshQuedaCurrent002() {
     assertEqual(identidad.length, 1, "debe existir exactamente una fila de identity");
 
     const historia = await allSql(businessPath, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence ASC");
-    assertEqual(historia.length, 2, "historial debe tener 2 filas (001, 002)");
+    // AUTH-SYNC-B2-P1A-SR: un tenant fresco ahora nace CURRENT contra el catalogo completo de 3
+    // entradas (001, 002, 003).
+    assertEqual(historia.length, 3, "historial debe tener 3 filas (001, 002, 003)");
     assertSame(historia[0].migration_id, "001_legacy_runtime_baseline", "fila 1 exacta");
     assertSame(historia[1].migration_id, "002_tenant_integration_credentials", "fila 2 exacta");
+    assertSame(historia[2].migration_id, "003_sesiones_password_version", "fila 3 exacta");
 
     const schema = await verificarBusinessSchemaVersion(businessPath);
     assertSame(schema.state, "CURRENT", "verificacion independiente debe confirmar CURRENT");
@@ -39128,7 +39178,10 @@ async function testMT1F3FallosTenantNoEnumerables() {
         centralPositiva = await crearUsuarioCentral(controlPositivo, { nombre: "F3 positivo", passwordHash: await bcrypt.hash("F3Positivo123", 10) });
         membershipPositiva = await crearMembership(controlPositivo, { usuarioId: centralPositiva.id, empresaId: tenantSano.empresa.id, usuarioLocalId: usuarioPositivo.id, rol: "admin" });
       } finally { await closeControlDb(controlPositivo); }
-      await runSql(tenantSano.dbPath, "INSERT INTO sesiones (token, usuario_id, nombre, rol, expira, auth_mode, central_id, membership_id, empresa_id) VALUES ('mt1f3-c1-valido', ?, 'Usuario OK', 'admin', datetime('now', '+1 hour'), 'central', ?, ?, ?)", [usuarioPositivo.id, centralPositiva.id, membershipPositiva.id, tenantSano.empresa.id]);
+      // AUTH-SYNC-B2-P1A-SR: identidad recien creada -> password_version=0 (default de schema);
+      // sin esto, requireAuth clasificaria esta fila como CENTRAL_PASSWORD_ROTATED (401), no como
+      // el control positivo de autoridad real que este bloque necesita.
+      await runSql(tenantSano.dbPath, "INSERT INTO sesiones (token, usuario_id, nombre, rol, expira, auth_mode, central_id, membership_id, empresa_id, password_version) VALUES ('mt1f3-c1-valido', ?, 'Usuario OK', 'admin', datetime('now', '+1 hour'), 'central', ?, ?, ?, 0)", [usuarioPositivo.id, centralPositiva.id, membershipPositiva.id, tenantSano.empresa.id]);
       const conSesion = await mt1f3Pedir(servidor.port, { host: mt1f3Host(tenantSano), ruta: "/productos", autorizacion: "Bearer mt1f3-c1-valido" });
       assertEqual(conSesion.status, 200, "la sesion del tenant sano se encuentra y revalida con su autoridad real");
       for (const ajeno of [fallos[0].host, `127.0.0.1:${servidor.port}`]) {
@@ -41673,5 +41726,584 @@ async function testP1AConcurrenciaDosCambiosSimultaneosUnoGanaOtroConflictoExpli
   } finally {
     limpiarTenantTestDb(dbPath);
     if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// AUTH-SYNC-B2-P1A-SR: Session Revocation. Cobertura de los 22 escenarios exigidos por el checkpoint
+// -- token previo invalido tras rotar password (incluida la sesion propia), fan-out de invalidacion
+// a TODAS las memberships de la identidad, aislamiento entre identidades/tenants (incluida colision
+// deliberada de usuario_local_id), sesiones NULL/legacy, prioridad de los chequeos de autoridad ya
+// existentes, fail-closed de Control DB, persistencia a traves de un restart, concurrencia,
+// independencia semantica version/password_version, y el mecanismo FORMAL de migraciones (fresh via
+// provisionarTenantDb, incremental via migrarTenantDb, idempotencia, schema de Control DB). Ningun
+// test preexistente se modifica.
+
+async function testP1ASRTokenPrevioQuedaInvalidoYCicloCompletoDeRelogin() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+      const pre = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(pre.response.status, 200, "el token debe autorizar antes del cambio de password");
+
+      const cambio = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "SRCicloNueva1", confirmar_password: "SRCicloNueva1"
+      }, token);
+      assertEqual(cambio.response.status, 200, "el cambio de password (ejecutado con ESTE MISMO token) debe confirmar");
+
+      // #1 y #14: el MISMO token que ejecuto el PATCH -- la sesion propia -- tambien queda invalida,
+      // sin reemision automatica de token (decision de producto congelada del checkpoint).
+      const post = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(post.response.status, 401, "el token, incluida la sesion propia que ejecuto el cambio, debe quedar invalido en el siguiente request");
+      assertSame(post.data.message, "Sesión inválida. Iniciá sesión nuevamente.", "debe usar el mensaje generico de sesion invalida, sin revelar el motivo exacto");
+      const serializado = JSON.stringify(post.data).toLowerCase();
+      if (serializado.includes("password_version") || serializado.includes("rotated") || serializado.includes("hash")) {
+        throw new Error("la respuesta 401 no debe filtrar password_version/motivo exacto/hash");
+      }
+
+      // #2: revocacion lazy pero fisica -- la fila debe haberse eliminado de sesiones.
+      const filaSesion = (await allSql(dbPath, "SELECT token FROM sesiones WHERE token = ?", [token]))[0];
+      assertSame(filaSesion, undefined, "el token invalido debe haberse eliminado de sesiones tras detectarse");
+
+      // #3: un token NUEVO, emitido despues del cambio, debe autorizar con normalidad.
+      const tokenNuevo = await login(baseUrl, "admin", "SRCicloNueva1");
+      const postNuevo = await requestJson(baseUrl, "GET", "/configuracion", null, tokenNuevo);
+      assertEqual(postNuevo.response.status, 200, "un token emitido DESPUES del cambio debe autorizar normalmente");
+    }, extraEnvCentral(fixture));
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRIdentidadConDosMembershipsAmbosTokensQuedanInvalidos() {
+  const dbPathA = bootstrapFreshRegisteredTenantDb();
+  const dbPathB = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    controlDbPath = tempDbPath();
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slugA = `p1asr-multi-a-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const slugB = `p1asr-multi-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaA = await registrarEmpresa(controlDb, { slug: slugA, nombre: "SR Multi A", dbPath: path.basename(dbPathA), activa: 1 });
+    const empresaB = await registrarEmpresa(controlDb, { slug: slugB, nombre: "SR Multi B", dbPath: path.basename(dbPathB), activa: 1 });
+    const centralPassword = "SRMultiCentral1";
+    const central = await crearUsuarioCentral(controlDb, { nombre: "SR Multi Central", usuarioReferencia: "sr-multi-central", passwordHash: await bcrypt.hash(centralPassword, 10), activo: 1 });
+    const localAdminA = (await allSql(dbPathA, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const localAdminB = (await allSql(dbPathB, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaA.id, usuarioLocalId: localAdminA.id, rol: "admin", activo: 1 });
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaB.id, usuarioLocalId: localAdminB.id, rol: "admin", activo: 1 });
+    await closeControlDb(controlDb);
+    await insertarTenantIdentityTest(dbPathA, empresaA.id, slugA);
+    await insertarTenantIdentityTest(dbPathB, empresaB.id, slugB);
+
+    const envA = { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slugA, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" };
+    const envB = { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slugB, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" };
+
+    let tokenA;
+    await withServer(dbPathA, async (baseUrl) => {
+      tokenA = await login(baseUrl, "admin", centralPassword);
+      const check = await requestJson(baseUrl, "GET", "/configuracion", null, tokenA);
+      assertEqual(check.response.status, 200, "tokenA debe autorizar antes del cambio");
+    }, envA);
+
+    await withServer(dbPathB, async (baseUrl) => {
+      const tokenB = await login(baseUrl, "admin", centralPassword);
+      const check = await requestJson(baseUrl, "GET", "/configuracion", null, tokenB);
+      assertEqual(check.response.status, 200, "tokenB debe autorizar antes del cambio");
+
+      const cambio = await requestJson(baseUrl, "PATCH", `/usuarios/${localAdminB.id}/password`, {
+        password: "SRMultiNueva1", confirmar_password: "SRMultiNueva1"
+      }, tokenB);
+      assertEqual(cambio.response.status, 200, "el cambio (ejecutado desde el tenant B) debe confirmar");
+
+      const postB = await requestJson(baseUrl, "GET", "/configuracion", null, tokenB);
+      assertEqual(postB.response.status, 401, "tokenB (el que ejecuto el cambio) debe quedar invalido en el tenant B");
+    }, envB);
+
+    await withServer(dbPathA, async (baseUrl) => {
+      const postA = await requestJson(baseUrl, "GET", "/configuracion", null, tokenA);
+      assertEqual(postA.response.status, 401, "tokenA (OTRO tenant, MISMA identidad) tambien debe quedar invalido -- password es global");
+    }, envA);
+  } finally {
+    limpiarTenantTestDb(dbPathA);
+    limpiarTenantTestDb(dbPathB);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRIdentidadDistintaNoSeAfecta() {
+  const dbPath1 = bootstrapFreshRegisteredTenantDb();
+  const dbPath2 = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    controlDbPath = tempDbPath();
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slug1 = `p1asr-otra-1-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const slug2 = `p1asr-otra-2-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa1 = await registrarEmpresa(controlDb, { slug: slug1, nombre: "SR Otra 1", dbPath: path.basename(dbPath1), activa: 1 });
+    const empresa2 = await registrarEmpresa(controlDb, { slug: slug2, nombre: "SR Otra 2", dbPath: path.basename(dbPath2), activa: 1 });
+    const local1 = (await allSql(dbPath1, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const local2 = (await allSql(dbPath2, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const central1Password = "SROtraUno1";
+    const central2Password = "SROtraDos1";
+    const central1 = await crearUsuarioCentral(controlDb, { nombre: "SR Otra Uno", usuarioReferencia: "sr-otra-1", passwordHash: await bcrypt.hash(central1Password, 10), activo: 1 });
+    const central2 = await crearUsuarioCentral(controlDb, { nombre: "SR Otra Dos", usuarioReferencia: "sr-otra-2", passwordHash: await bcrypt.hash(central2Password, 10), activo: 1 });
+    await crearMembership(controlDb, { usuarioId: central1.id, empresaId: empresa1.id, usuarioLocalId: local1.id, rol: "admin", activo: 1 });
+    await crearMembership(controlDb, { usuarioId: central2.id, empresaId: empresa2.id, usuarioLocalId: local2.id, rol: "admin", activo: 1 });
+    await closeControlDb(controlDb);
+    await insertarTenantIdentityTest(dbPath1, empresa1.id, slug1);
+    await insertarTenantIdentityTest(dbPath2, empresa2.id, slug2);
+
+    const env1 = { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug1, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" };
+    const env2 = { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug2, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" };
+
+    let token2;
+    await withServer(dbPath2, async (baseUrl) => {
+      token2 = await login(baseUrl, "admin", central2Password);
+    }, env2);
+
+    await withServer(dbPath1, async (baseUrl) => {
+      const token1 = await login(baseUrl, "admin", central1Password);
+      const cambio = await requestJson(baseUrl, "PATCH", `/usuarios/${local1.id}/password`, {
+        password: "SROtraUnoNueva1", confirmar_password: "SROtraUnoNueva1"
+      }, token1);
+      assertEqual(cambio.response.status, 200, "cambio de identidad 1 debe confirmar");
+    }, env1);
+
+    await withServer(dbPath2, async (baseUrl) => {
+      const check2 = await requestJson(baseUrl, "GET", "/configuracion", null, token2);
+      assertEqual(check2.response.status, 200, "el token de la identidad 2 (no tocada) debe seguir autorizando");
+    }, env2);
+  } finally {
+    limpiarTenantTestDb(dbPath1);
+    limpiarTenantTestDb(dbPath2);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRUsuarioLocalIdColisionadoNoCruzaAutoridad() {
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slug1 = `p1asr-colision-1-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const slug2 = `p1asr-colision-2-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa1 = await registrarEmpresa(controlDb, { slug: slug1, nombre: "SR Colision 1", dbPath: "guernica.db", activa: 1 });
+    const empresa2 = await registrarEmpresa(controlDb, { slug: slug2, nombre: "SR Colision 2", dbPath: "guernica.db", activa: 1 });
+    const central1 = await crearUsuarioCentral(controlDb, { nombre: "Colision 1", usuarioReferencia: "col-1", passwordHash: await bcrypt.hash("Col1Pass1", 10), activo: 1 });
+    const central2 = await crearUsuarioCentral(controlDb, { nombre: "Colision 2", usuarioReferencia: "col-2", passwordHash: await bcrypt.hash("Col2Pass1", 10), activo: 1 });
+    // Colision DELIBERADA: el mismo usuario_local_id=777 en dos empresas distintas, ligado a DOS
+    // identidades centrales distintas -- la autoridad debe seguir siendo exclusivamente central_id.
+    const membership1 = await crearMembership(controlDb, { usuarioId: central1.id, empresaId: empresa1.id, usuarioLocalId: 777, rol: "admin", activo: 1 });
+    const membership2 = await crearMembership(controlDb, { usuarioId: central2.id, empresaId: empresa2.id, usuarioLocalId: 777, rol: "admin", activo: 1 });
+    await closeControlDb(controlDb);
+
+    const commit = await userControlBridge.actualizarPasswordCentralFirst({
+      usuarioCentralId: central1.id, expectedVersion: 0, passwordHash: await bcrypt.hash("Col1Nueva1", 10), controlDbPath
+    });
+    assertSame(commit.ok, true, "commit de central1 debe confirmar");
+
+    const revalidacion1 = await revalidarSesionCentral({
+      empresaSlug: slug1, empresaId: empresa1.id, membershipId: membership1.id, centralId: central1.id, usuarioLocalId: 777,
+      sessionPasswordVersion: 0, controlDbPath
+    });
+    assertSame(revalidacion1.ok, false, "la sesion vieja de central1 (generacion 0) debe invalidarse");
+    assertSame(revalidacion1.errorCode, "CENTRAL_PASSWORD_ROTATED", "debe ser CENTRAL_PASSWORD_ROTATED");
+
+    const revalidacion2 = await revalidarSesionCentral({
+      empresaSlug: slug2, empresaId: empresa2.id, membershipId: membership2.id, centralId: central2.id, usuarioLocalId: 777,
+      sessionPasswordVersion: 0, controlDbPath
+    });
+    assertSame(revalidacion2.ok, true, "central2, con el MISMO usuario_local_id por colision deliberada, NO debe verse afectada por el cambio de central1");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRSesionPasswordVersionNullEsInvalidaYSeElimina() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const tokenViejo = `sr-preSR-token-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const expiraISO = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
+    // Simula una sesion central emitida por un build ANTERIOR a este slice, dentro de una Business
+    // DB que YA fue migrada (la columna existe, pero esta fila nunca la capturo).
+    await runSql(
+      dbPath,
+      `INSERT INTO sesiones (token, usuario_id, nombre, rol, expira, auth_mode, central_id, membership_id, empresa_id, password_version)
+       VALUES (?, ?, ?, ?, ?, 'central', ?, ?, ?, NULL)`,
+      [tokenViejo, fixture.localUserId, "Admin Pre SR", "admin", expiraISO, fixture.central.id, fixture.membership.id, fixture.empresa.id]
+    );
+    await withServer(dbPath, async (baseUrl) => {
+      const resp = await requestJson(baseUrl, "GET", "/configuracion", null, tokenViejo);
+      assertEqual(resp.response.status, 401, "una sesion central con password_version NULL (en una DB ya migrada) debe rechazarse");
+    }, extraEnvCentral(fixture));
+    const filaDespues = (await allSql(dbPath, "SELECT token FROM sesiones WHERE token = ?", [tokenViejo]))[0];
+    assertSame(filaDespues, undefined, "la sesion con password_version NULL debe eliminarse tras detectarse invalida");
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRSesionLegacyIgnoraPasswordVersionPorCompleto() {
+  // bootstrapFreshTestDb() ya deja la business DB CURRENT contra el catalogo real (via
+  // stamparHistorialBaselineActual), asi que sesiones.password_version ya existe aca -- el punto de
+  // este test es demostrar que, aun asi, auth_mode='legacy' nunca la consulta.
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const resp = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(resp.response.status, 200, "login legacy debe funcionar exactamente igual en una DB con la columna migrada -- auth_mode=legacy nunca la consulta");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testP1ASREmpresaInactivaMantieneSuErrorExistente() {
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slug = `p1asr-empresa-inactiva-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug, nombre: "SR Empresa Inactiva", dbPath: "guernica.db", activa: 0 });
+    const central = await crearUsuarioCentral(controlDb, { nombre: "SR Empresa Inactiva", usuarioReferencia: "sr-empresa-inactiva", passwordHash: await bcrypt.hash("Pass1", 10), activo: 1 });
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 1, rol: "admin", activo: 1 });
+    await closeControlDb(controlDb);
+    // sessionPasswordVersion=0 es CORRECTO (coincide con la generacion vigente) -- demuestra que
+    // EMPRESA_INACTIVA sigue teniendo prioridad, el chequeo de password_version ni siquiera se
+    // evalua para causar el rechazo.
+    const revalidacion = await revalidarSesionCentral({
+      empresaSlug: slug, empresaId: empresa.id, membershipId: membership.id, centralId: central.id, usuarioLocalId: 1,
+      sessionPasswordVersion: 0, controlDbPath
+    });
+    assertSame(revalidacion.ok, false, "debe fallar");
+    assertSame(revalidacion.errorCode, "EMPRESA_INACTIVA", "EMPRESA_INACTIVA debe mantener su prioridad sobre el chequeo de password_version");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRMembershipInactivaMantieneSuErrorExistente() {
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slug = `p1asr-membership-inactiva-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug, nombre: "SR Membership Inactiva", dbPath: "guernica.db", activa: 1 });
+    const central = await crearUsuarioCentral(controlDb, { nombre: "SR Membership Inactiva", usuarioReferencia: "sr-membership-inactiva", passwordHash: await bcrypt.hash("Pass1", 10), activo: 1 });
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 1, rol: "admin", activo: 0 });
+    await closeControlDb(controlDb);
+    const revalidacion = await revalidarSesionCentral({
+      empresaSlug: slug, empresaId: empresa.id, membershipId: membership.id, centralId: central.id, usuarioLocalId: 1,
+      sessionPasswordVersion: 0, controlDbPath
+    });
+    assertSame(revalidacion.ok, false, "debe fallar");
+    assertSame(revalidacion.errorCode, "MEMBERSHIP_INACTIVA", "MEMBERSHIP_INACTIVA debe mantener su prioridad sobre el chequeo de password_version");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRCentralInactivaMantieneSuErrorExistente() {
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slug = `p1asr-central-inactiva-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug, nombre: "SR Central Inactiva", dbPath: "guernica.db", activa: 1 });
+    const central = await crearUsuarioCentral(controlDb, { nombre: "SR Central Inactiva", usuarioReferencia: "sr-central-inactiva", passwordHash: await bcrypt.hash("Pass1", 10), activo: 0 });
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 1, rol: "admin", activo: 1 });
+    await closeControlDb(controlDb);
+    const revalidacion = await revalidarSesionCentral({
+      empresaSlug: slug, empresaId: empresa.id, membershipId: membership.id, centralId: central.id, usuarioLocalId: 1,
+      sessionPasswordVersion: 0, controlDbPath
+    });
+    assertSame(revalidacion.ok, false, "debe fallar");
+    assertSame(revalidacion.errorCode, "CENTRAL_INACTIVA", "CENTRAL_INACTIVA debe mantener su prioridad sobre el chequeo de password_version");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRControlDbCaidaResponde503NuncaAutoriza() {
+  const controlDbPathInexistente = tempDbPath();
+  try {
+    assertSame(fs.existsSync(controlDbPathInexistente), false, "precondicion: el control db no debe existir");
+    const revalidacion = await revalidarSesionCentral({
+      empresaSlug: "sr-controldb-caida", empresaId: 1, membershipId: 1, centralId: 1, usuarioLocalId: 1,
+      sessionPasswordVersion: 0, controlDbPath: controlDbPathInexistente
+    });
+    assertSame(revalidacion.ok, false, "debe fallar");
+    assertSame(revalidacion.errorCode, "CONTROL_DB_AUSENTE", "control plane ausente debe fallar cerrado, NUNCA autorizar usando un password_version cacheado local");
+  } finally {
+    fs.rmSync(controlDbPathInexistente, { force: true });
+  }
+}
+
+async function testP1ASRRestartNoAlteraLaRevocacion() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    let token;
+    await withServer(dbPath, async (baseUrl) => {
+      token = await login(baseUrl, "admin", fixture.centralPassword);
+      const cambio = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "SRRestart1", confirmar_password: "SRRestart1"
+      }, token);
+      assertEqual(cambio.response.status, 200, "cambio debe confirmar");
+    }, extraEnvCentral(fixture));
+
+    // withServer ya detuvo el proceso servidor por completo (kill + espera de exit) -- este segundo
+    // withServer es un proceso NUEVO, sin ningun estado en memoria heredado del anterior.
+    await withServer(dbPath, async (baseUrl) => {
+      const resp = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(resp.response.status, 401, "tras un restart completo del proceso, el token viejo debe seguir invalido -- el estado vive en disco (sesiones + usuarios.password_version), no en memoria");
+    }, extraEnvCentral(fixture));
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRDosCambiosConcurrentesInvalidanSesionesDeGeneracionAnterior() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const tokenPre = await login(baseUrl, "admin", fixture.centralPassword);
+      const preCheck = await requestJson(baseUrl, "GET", "/configuracion", null, tokenPre);
+      assertEqual(preCheck.response.status, 200, "token pre-cambio debe autorizar antes de la carrera");
+
+      const [r1, r2] = await Promise.all([
+        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "SRConcurrenteA1", confirmar_password: "SRConcurrenteA1" }, tokenPre),
+        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "SRConcurrenteB1", confirmar_password: "SRConcurrenteB1" }, tokenPre)
+      ]);
+      const statuses = [r1.response.status, r2.response.status].sort();
+      assertSame(JSON.stringify(statuses), JSON.stringify([200, 409]), `exactamente uno de los dos cambios concurrentes debe confirmar (statuses=${JSON.stringify(statuses)})`);
+
+      const postCheck = await requestJson(baseUrl, "GET", "/configuracion", null, tokenPre);
+      assertEqual(postCheck.response.status, 401, "el token de la generacion anterior a AMBOS intentos debe quedar invalido, gane cual gane");
+    }, extraEnvCentral(fixture));
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRIncrementoDeVersionGeneralNoAfectaPasswordVersionNiRevocaSesion() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    let token;
+    await withServer(dbPath, async (baseUrl) => {
+      token = await login(baseUrl, "admin", fixture.centralPassword);
+      const pre = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(pre.response.status, 200, "token debe autorizar antes de la simulacion");
+    }, extraEnvCentral(fixture));
+
+    // Simulacion directa: algo DISTINTO de un cambio de password incrementa usuarios.version (hoy no
+    // existe un endpoint real que lo haga -- se simula para demostrar la independencia semantica que
+    // exige el contrato congelado del slice).
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      await runControlQuery(controlDb, "UPDATE usuarios SET version = version + 1 WHERE id = ?", [fixture.central.id]);
+      const fila = await getControlQuery(controlDb, "SELECT version, password_version FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertEqual(Number(fila.version), 1, "version general debe haberse incrementado por la simulacion");
+      assertEqual(Number(fila.password_version), 0, "password_version NO debe cambiar por un incremento de version general no relacionado con password");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+
+    await withServer(dbPath, async (baseUrl) => {
+      const post = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(post.response.status, 200, "el MISMO token previo debe seguir autorizando -- un incremento de usuarios.version no relacionado con password nunca debe revocar sesiones");
+    }, extraEnvCentral(fixture));
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRVersionYPasswordVersionSonSemanticasIndependientes() {
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slug = `p1asr-independientes-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug, nombre: "SR Independientes", dbPath: "guernica.db", activa: 1 });
+    const central = await crearUsuarioCentral(controlDb, { nombre: "SR Independientes", usuarioReferencia: "sr-independientes", passwordHash: await bcrypt.hash("Pass1", 10), activo: 1 });
+    await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 1, rol: "admin", activo: 1 });
+    await closeControlDb(controlDb);
+
+    // Un cambio de password real incrementa AMBAS columnas, en la MISMA transaccion, exactamente 1.
+    const commit = await userControlBridge.actualizarPasswordCentralFirst({
+      usuarioCentralId: central.id, expectedVersion: 0, passwordHash: await bcrypt.hash("Pass2", 10), controlDbPath
+    });
+    assertSame(commit.ok, true, "commit debe confirmar");
+    assertEqual(commit.newVersion, 1, "version debe ser 1 tras el primer cambio de password");
+    assertEqual(commit.newPasswordVersion, 1, "password_version debe ser 1 tras el primer cambio de password");
+
+    // Un incremento de version NO relacionado con password deja password_version intacta -- prueba
+    // definitiva de que son contadores fisicamente separados, ninguno se deriva del otro.
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      await runControlQuery(controlDb, "UPDATE usuarios SET version = version + 1 WHERE id = ?", [central.id]);
+      const fila = await getControlQuery(controlDb, "SELECT version, password_version FROM usuarios WHERE id = ?", [central.id]);
+      assertEqual(Number(fila.version), 2, "version debe seguir avanzando por su cuenta");
+      assertEqual(Number(fila.password_version), 1, "password_version debe permanecer en 1 -- son contadores independientes");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRFreshBusinessDbViaProvisionContieneLaColumna() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `p1asr-fresh-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    const resultado = await provisionarTenantDb({
+      controlDbPath, empresaSlug: "p1asr-fresh", empresaNombre: "SR Fresh Provision", businessDbPath: businessName
+    });
+    assertSame(resultado.status, "PROVISIONED", "el provisioning debe completarse");
+    const columnas = await allSql(businessPath, "PRAGMA table_info(sesiones)");
+    assertSame(columnas.some((c) => c.name === "password_version"), true, "una business DB fresca via el mecanismo formal debe incluir sesiones.password_version");
+    const historial = await allSql(businessPath, "SELECT migration_id FROM atlas_schema_migrations ORDER BY sequence ASC");
+    assertSame(historial.map((h) => h.migration_id).includes("003_sesiones_password_version"), true, "el historial de migraciones debe incluir 003_sesiones_password_version");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    for (const s of ["", "-wal", "-shm", "-journal"]) fs.rmSync(businessPath + s, { force: true });
+  }
+}
+
+// AUTH-SYNC-B2-P1A-SR: a diferencia de bootstrapReadyLegacyFixture()/bootstrapFreshTestDb() (que
+// via stamparHistorialBaselineActual dejan la DB CURRENT contra el catalogo REAL -- incluida
+// 003_sesiones_password_version -- desde el vamos), estos dos tests necesitan un punto de partida
+// genuinamente "todavia no migrado" para poder demostrar la migracion en si. Se construye la
+// business DB DESDE CERO con el mismo builder de bajo nivel que usan los tests del baseline
+// (crearBaseline001EnConexion, ver testMT1E4C*), sin pasar nunca por el auto-stamping.
+async function testP1ASRBusinessDbMigrada002a003ContieneLaColumna() {
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  const migBackup = `${dbPath}.migbackup`;
+  try {
+    await new Promise((resolve, reject) => db.run("BEGIN IMMEDIATE", (e) => (e ? reject(e) : resolve())));
+    await crearBaseline001EnConexion(db);
+    // Construye manualmente el estado "ya migrada a 002" (BEHIND respecto de 003) usando la funcion
+    // up() REAL del catalogo (no una copia), dentro de la MISMA transaccion (contrato de up(db):
+    // recibe una conexion ya abierta y ya dentro de una transaccion controlada por el caller).
+    const migracion002 = BUSINESS_MIGRATIONS.find((m) => m.migrationId === "002_tenant_integration_credentials");
+    await migracion002.up(db);
+    await new Promise((resolve, reject) => db.run("COMMIT", (e) => (e ? reject(e) : resolve())));
+    await cerrarConexionTest(db);
+
+    await runSql(dbPath, "CREATE TABLE atlas_schema_migrations (sequence INTEGER NOT NULL UNIQUE CHECK(sequence >= 1), migration_id TEXT PRIMARY KEY NOT NULL, applied_at TEXT NOT NULL)");
+    await runSql(dbPath, "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (1, '001_legacy_runtime_baseline', datetime('now'))");
+    await runSql(dbPath, "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (2, '002_tenant_integration_credentials', datetime('now'))");
+
+    const historyAntes = await allSql(dbPath, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence ASC");
+    assertEqual(historyAntes.length, 2, "precondicion: debe estar en history=[001,002]");
+    const columnasAntes = await allSql(dbPath, "PRAGMA table_info(sesiones)");
+    assertSame(columnasAntes.some((c) => c.name === "password_version"), false, "precondicion: la columna NO debe existir todavia en 002");
+
+    const resultado = await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath: migBackup });
+    assertSame(resultado.status, "MIGRATED", "la migracion 002->003 debe completarse");
+    assertSame(JSON.stringify(resultado.applied), JSON.stringify(["003_sesiones_password_version"]), "debe aplicarse EXACTAMENTE la migracion 003, ninguna otra");
+
+    const columnasDespues = await allSql(dbPath, "PRAGMA table_info(sesiones)");
+    assertSame(columnasDespues.some((c) => c.name === "password_version"), true, "tras migrar de 002 a 003, sesiones.password_version debe existir");
+
+    const historyDespues = await allSql(dbPath, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence ASC");
+    assertEqual(historyDespues.length, 3, "el historial debe quedar en 3 filas (001,002,003)");
+    assertSame(historyDespues[2].migration_id, "003_sesiones_password_version", "la fila 3 del historial debe ser la migracion nueva");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(migBackup, { force: true });
+  }
+}
+
+async function testP1ASRMigracion003EsIdempotente() {
+  const { db, dbPath } = await abrirDbEfimeraVacia();
+  const migBackup1 = `${dbPath}.migbackup1`;
+  const migBackup2 = `${dbPath}.migbackup2`;
+  try {
+    await new Promise((resolve, reject) => db.run("BEGIN IMMEDIATE", (e) => (e ? reject(e) : resolve())));
+    await crearBaseline001EnConexion(db);
+    await new Promise((resolve, reject) => db.run("COMMIT", (e) => (e ? reject(e) : resolve())));
+    await cerrarConexionTest(db);
+    await runSql(dbPath, "CREATE TABLE atlas_schema_migrations (sequence INTEGER NOT NULL UNIQUE CHECK(sequence >= 1), migration_id TEXT PRIMARY KEY NOT NULL, applied_at TEXT NOT NULL)");
+    await runSql(dbPath, "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (1, '001_legacy_runtime_baseline', datetime('now'))");
+
+    const primera = await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath: migBackup1 });
+    assertSame(primera.status, "MIGRATED", "primera corrida debe migrar hasta CURRENT (incluye 002 y 003)");
+
+    const segunda = await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath: migBackup2 });
+    assertSame(segunda.status, "ALREADY_CURRENT", "una segunda corrida sobre una DB ya CURRENT (con 003 aplicada) debe ser un no-op idempotente");
+    assertSame(fs.existsSync(migBackup2), false, "ALREADY_CURRENT no debe crear backup");
+
+    const columnas = await allSql(dbPath, "PRAGMA table_info(sesiones)");
+    const ocurrencias = columnas.filter((c) => c.name === "password_version").length;
+    assertEqual(ocurrencias, 1, "la columna no debe duplicarse por correr la migracion dos veces");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(migBackup1, { force: true });
+  }
+}
+
+async function testP1ASRControlSchemaNuevoContienePasswordVersionDefault0() {
+  const dbPath = tempDbPath();
+  try {
+    const db = await bootstrapControlDb(dbPath, { seed: false });
+    try {
+      const columnas = await allControlQuery(db, "PRAGMA table_info(usuarios)");
+      const col = columnas.find((c) => c.name === "password_version");
+      assertSame(Boolean(col), true, "usuarios.password_version debe existir en un esquema fresco de Control DB");
+      assertSame(String(col.type).toUpperCase(), "INTEGER", "password_version debe ser INTEGER");
+      const central = await crearUsuarioCentral(db, { nombre: "SR Default Test", usuarioReferencia: "sr-default", passwordHash: "hash", activo: 1 });
+      assertEqual(Number(central.password_version), 0, "password_version debe nacer en 0 por default");
+    } finally {
+      await closeControlDb(db);
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testP1ASRSchemaViejoDeControlDbNoSeMutaPorServerStartup() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const dbVieja = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
+    const empresaSlug = `p1asr-schemaviejo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(dbVieja, { slug: empresaSlug, nombre: "SR Schema Viejo", dbPath: path.basename(dbPath) });
+    const central = await crearUsuarioCentral(dbVieja, { nombre: "SR Schema Viejo", usuarioReferencia: "admin", passwordHash: await bcrypt.hash("SchemaViejoPass1", 10), activo: 1 });
+    await crearMembership(dbVieja, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 1, rol: "admin", activo: 1 });
+    await closeControlDb(dbVieja);
+    await insertarTenantIdentityTest(dbPath, empresa.id, empresaSlug);
+
+    const columnasAntes = (await allSql(controlDbPath, "PRAGMA table_info(usuarios)")).map((c) => c.name).sort();
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "SchemaViejoPass1");
+      if (typeof token !== "string" || !token.length) throw new Error("login debe funcionar con esquema pre-S0 (comportamiento historico intacto)");
+    }, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: empresaSlug, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" });
+
+    const columnasDespues = (await allSql(controlDbPath, "PRAGMA table_info(usuarios)")).map((c) => c.name).sort();
+    assertSame(JSON.stringify(columnasDespues), JSON.stringify(columnasAntes), "el esquema de Control DB no debe mutar en absoluto por arrancar/usar el servidor -- ni version, ni password_version, ni ninguna columna nueva");
+    assertSame(columnasDespues.includes("password_version"), false, "password_version NUNCA debe aparecer por si sola en un Control DB pre-S0 solo por arrancar el servidor");
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    fs.rmSync(controlDbPath, { force: true });
   }
 }

@@ -135,6 +135,13 @@ async function revalidarSesionCentral({
   membershipId,
   centralId,
   usuarioLocalId,
+  sessionPasswordVersion,
+  // AUTH-SYNC-B2-P1A-SR: default true -- cualquier caller que no diga explicitamente lo contrario
+  // asume que la Business DB soporta password_version y exige el chequeo. Solo requireAuth (server.js)
+  // lo pone en false, y solo cuando detecto en runtime que la columna todavia no existe en ESA
+  // Business DB puntual (migration "003_sesiones_password_version" pendiente para ese tenant) --
+  // nunca una decision de seguridad tomada aca silenciosamente, es puramente reflejar el schema real.
+  passwordVersionColumnPresente = true,
   controlDbPath
 } = {}) {
   const slug = String(empresaSlug || "").trim();
@@ -145,6 +152,14 @@ async function revalidarSesionCentral({
   if (!slug || !empresaIdNormalizado || !membershipIdNormalizado || !centralIdNormalizado || !usuarioLocalIdNormalizado) {
     return resultadoError("CENTRAL_SESSION_BINDING_INVALID", "revalidarSesionCentral: anclas de sesion invalidas");
   }
+  // AUTH-SYNC-B2-P1A-SR: entero valido requerido -- NULL/undefined (sesion legacy pre-SR, nunca
+  // capturo esta generacion) o cualquier valor no entero se trata como "no coincide", nunca como
+  // "no aplica". Nunca se compara password_hash aca -- solo el contador de generacion. Number(null)
+  // seria 0 (un entero valido segun Number.isInteger) por eso null/undefined se excluyen primero,
+  // explicitamente, antes de intentar la conversion numerica.
+  const sessionPasswordVersionNormalizado = (sessionPasswordVersion === null || sessionPasswordVersion === undefined)
+    ? null
+    : (Number.isInteger(Number(sessionPasswordVersion)) ? Number(sessionPasswordVersion) : null);
 
   const resolvedControlDbPath = controlDbPath || DEFAULT_DB_PATH;
   if (!fs.existsSync(resolvedControlDbPath)) {
@@ -172,7 +187,8 @@ async function revalidarSesionCentral({
          ue.rol AS membership_rol,
          ue.activo AS membership_activo,
          u.id AS central_id,
-         u.activo AS central_activo
+         u.activo AS central_activo,
+         u.password_version AS central_password_version
        FROM empresas e
        JOIN usuario_empresas ue ON ue.empresa_id = e.id
        JOIN usuarios u ON u.id = ue.usuario_id
@@ -212,7 +228,8 @@ async function revalidarSesionCentral({
     };
     const central = {
       id: row.central_id,
-      activo: Number(row.central_activo) === 1
+      activo: Number(row.central_activo) === 1,
+      password_version: Number(row.central_password_version)
     };
 
     if (!empresa.activa) {
@@ -223,6 +240,18 @@ async function revalidarSesionCentral({
     }
     if (!central.activo) {
       return resultadoError("CENTRAL_INACTIVA", "La identidad central de la sesion esta inactiva", { empresa, membership, central });
+    }
+    // AUTH-SYNC-B2-P1A-SR: ultimo chequeo, despues de los tres de autoridad/actividad ya
+    // existentes (orden congelado por el contrato del slice). Se omite POR COMPLETO cuando la
+    // Business DB de este tenant todavia no tiene la columna sesiones.password_version (migracion
+    // "003_sesiones_password_version" pendiente para ese tenant puntual) -- eso nunca es "invalida",
+    // es "esta proteccion todavia no aplica aqui". Cuando la columna SI existe: NULL/no-entero en la
+    // sesion (sesion legacy pre-SR dentro de una DB ya migrada) o cualquier desalineacion con la
+    // generacion vigente en Control DB invalida la sesion -- nunca se compara password_hash, solo el
+    // contador.
+    if (passwordVersionColumnPresente
+      && (sessionPasswordVersionNormalizado === null || sessionPasswordVersionNormalizado !== central.password_version)) {
+      return resultadoError("CENTRAL_PASSWORD_ROTATED", "La contrasena de la identidad central fue rotada despues de emitida esta sesion", { empresa, membership, central });
     }
 
     return { ok: true, empresa, membership, central };

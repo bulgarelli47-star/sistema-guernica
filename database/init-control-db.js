@@ -86,6 +86,31 @@ async function asegurarColumnaVersion(db, tabla) {
   }
 }
 
+// AUTH-SYNC-B2-P1A-SR: generacion de credencial, DISTINTA y desacoplada de `version` (que sigue
+// siendo exclusivamente CAS general de identidad + generacion del outbox P1A -- ver contrato
+// congelado del slice). password_version cambia EXCLUSIVAMENTE cuando cambia password_hash, en la
+// MISMA transaccion que ese cambio (ver userControlBridge.js:actualizarPasswordCentralFirst).
+// Mismo patron idempotente que asegurarColumnaVersion (chequea existencia + tipo antes de alterar),
+// pero deliberadamente una funcion separada y con su propio nombre de columna -- nunca reutiliza
+// `version` como generacion semantica de password, precisamente el error que este contrato prohibe.
+// NO se invoca desde ningun path de arranque de backend/server.js -- initControlSchema solo corre
+// via bootstrapControlDb, invocado explicitamente (tests / CLI de init), nunca en runtime del
+// servidor. La evolucion de un atlas_control.db real queda fuera de alcance de este slice.
+async function asegurarColumnaPasswordVersion(db, tabla) {
+  const columnas = await allQuery(db, `PRAGMA table_info(${tabla})`);
+  const existente = columnas.find((columna) => columna.name === "password_version");
+  if (!existente) {
+    await runQuery(db, `ALTER TABLE ${tabla} ADD COLUMN password_version INTEGER NOT NULL DEFAULT 0`);
+    return;
+  }
+  if (String(existente.type || "").toUpperCase() !== "INTEGER") {
+    throw new Error(
+      `asegurarColumnaPasswordVersion: la tabla '${tabla}' ya tiene una columna 'password_version' con tipo ` +
+      `incompatible ('${existente.type}', se esperaba INTEGER) -- esquema incompatible, no se altera automaticamente`
+    );
+  }
+}
+
 // AUTH-SYNC-B2-S0-TX-FIX1: toda la evolucion de esquema corre dentro de UNA transaccion real
 // (BEGIN IMMEDIATE/COMMIT/ROLLBACK), mismo patron ya establecido en este codebase para multiples
 // sentencias sobre atlas_control.db que deben tener exito o fallar juntas (ver
@@ -169,6 +194,9 @@ async function initControlSchema(db) {
     // modifica en este slice, asi que nada incrementa esta columna todavia.
     await asegurarColumnaVersion(db, "usuarios");
     await asegurarColumnaVersion(db, "usuario_empresas");
+    // AUTH-SYNC-B2-P1A-SR: solo en `usuarios` -- password es GLOBAL USER, nunca una propiedad de
+    // membership, asi que `usuario_empresas` no recibe esta columna.
+    await asegurarColumnaPasswordVersion(db, "usuarios");
 
     // AUTH-SYNC-B2-S0: outbox de sincronizacion pendiente hacia Business DB (AUTH-SYNC-B2-CONTRACT-
     // FREEZE seccion 1). Vive exclusivamente en este archivo -- nunca en Business DB -- porque quien

@@ -156,9 +156,14 @@ async function actualizarPasswordCentralFirst({ usuarioCentralId, expectedVersio
     await runQuery(db, "BEGIN IMMEDIATE");
     transactionStarted = true;
 
+    // AUTH-SYNC-B2-P1A-SR: password_version se incrementa en la MISMA transaccion y el MISMO UPDATE
+    // que `version` -- ambas son la unica fuente de verdad de que "este password_hash es nuevo",
+    // nunca se separan en dos escrituras. `version` sigue siendo el unico campo del CAS (WHERE
+    // version = ?): password_version nunca participa de la condicion de concurrencia, solo se lleva
+    // adelante junto con la escritura que ya gano el CAS.
     const casResult = await runQuery(
       db,
-      "UPDATE usuarios SET password_hash = ?, version = version + 1, actualizado_en = datetime('now') WHERE id = ? AND version = ?",
+      "UPDATE usuarios SET password_hash = ?, version = version + 1, password_version = password_version + 1, actualizado_en = datetime('now') WHERE id = ? AND version = ?",
       [passwordHash, usuarioCentralId, expectedVersion]
     );
 
@@ -174,6 +179,11 @@ async function actualizarPasswordCentralFirst({ usuarioCentralId, expectedVersio
     }
 
     const newVersion = expectedVersion + 1;
+    // password_version no participa del CAS (solo `version` lo hace) -- se relee tal cual quedo
+    // tras el UPDATE que ya gano el CAS, en vez de asumir un delta, para no duplicar la aritmetica
+    // en dos lugares distintos.
+    const passwordVersionRow = await getQuery(db, "SELECT password_version FROM usuarios WHERE id = ?", [usuarioCentralId]);
+    const newPasswordVersion = Number(passwordVersionRow.password_version);
 
     // Sin filtro alguno -- TODAS las memberships, activas o no, de empresas activas o no.
     const memberships = await allQuery(
@@ -208,6 +218,7 @@ async function actualizarPasswordCentralFirst({ usuarioCentralId, expectedVersio
       ok: true,
       usuarioCentralId,
       newVersion,
+      newPasswordVersion,
       memberships: memberships.map((m) => ({
         membershipId: m.id,
         empresaId: m.empresa_id,

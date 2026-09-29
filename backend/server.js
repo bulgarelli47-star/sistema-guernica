@@ -578,7 +578,10 @@ const CENTRAL_SESSION_AUTHORITY_ERRORS = new Set([
   "EMPRESA_INACTIVA",
   "MEMBERSHIP_INACTIVA",
   "CENTRAL_INACTIVA",
-  "CENTRAL_SESSION_BINDING_INVALID"
+  "CENTRAL_SESSION_BINDING_INVALID",
+  // AUTH-SYNC-B2-P1A-SR: mismo tratamiento lazy que las demas causales de autoridad -- se detecta
+  // en el proximo request de esa sesion, se borra el token, se responde el mismo mensaje generico.
+  "CENTRAL_PASSWORD_ROTATED"
 ]);
 const CENTRAL_SESSION_OPERATIONAL_ERRORS = new Set([
   "CONTROL_DB_AUSENTE",
@@ -607,10 +610,33 @@ async function requireAuth(req, res, next) {
   try {
     const empresaRequest = empresaAuthDelRequest();
     if (PREAUTH_UNIFORME && !empresaRequest) return responderNoAutenticado(res);
-    const sesion = await getQuery(
-      "SELECT usuario_id, nombre, rol, auth_mode, central_id, membership_id, empresa_id FROM sesiones WHERE token = ? AND expira > datetime('now')",
-      [token]
-    );
+    // AUTH-SYNC-B2-P1A-SR: sesiones.password_version llega via migration
+    // "003_sesiones_password_version" (database/business-migrations.js), aplicada de forma gradual
+    // y por-tenant a traves del mecanismo FORMAL de migraciones (provisionarTenantDb/migrarTenantDb)
+    // -- nunca via ALTER TABLE de startup aqui. Mientras la Business DB de un tenant todavia no fue
+    // migrada, la columna simplemente no existe: se detecta el error especifico de sqlite3 y se cae
+    // a la consulta sin esa columna, dejando sesion.password_version en undefined. requireAuth trata
+    // eso como "esta Business DB todavia no adopto Session Revocation" (el chequeo de
+    // CENTRAL_PASSWORD_ROTATED se omite mas abajo, ver revalidarSesionCentral/
+    // passwordVersionColumnPresente) -- DISTINTO de una fila cuyo password_version es NULL dentro de
+    // una tabla que SI tiene la columna (esa si se rechaza, contrato del slice).
+    let sesion;
+    let passwordVersionColumnPresente = true;
+    try {
+      sesion = await getQuery(
+        "SELECT usuario_id, nombre, rol, auth_mode, central_id, membership_id, empresa_id, password_version FROM sesiones WHERE token = ? AND expira > datetime('now')",
+        [token]
+      );
+    } catch (error) {
+      if (!/no such column:\s*password_version/i.test(error.message || "")) {
+        throw error;
+      }
+      passwordVersionColumnPresente = false;
+      sesion = await getQuery(
+        "SELECT usuario_id, nombre, rol, auth_mode, central_id, membership_id, empresa_id FROM sesiones WHERE token = ? AND expira > datetime('now')",
+        [token]
+      );
+    }
     if (!sesion) {
       return rechazarNoAutenticado(res, "Sesión expirada. Iniciá sesión nuevamente.");
     }
@@ -641,6 +667,8 @@ async function requireAuth(req, res, next) {
       membershipId: sesion.membership_id,
       centralId: sesion.central_id,
       usuarioLocalId: sesion.usuario_id,
+      sessionPasswordVersion: sesion.password_version,
+      passwordVersionColumnPresente,
       controlDbPath: process.env.ATLAS_CONTROL_DB_PATH || undefined
     });
 
@@ -2173,13 +2201,29 @@ async function loginCentral(req, res, { usuario, password, remember }) {
     // usuario_id/nombre = perfil LOCAL (las rutas de negocio siguen operando con IDs locales).
     // rol = MEMBERSHIP (autoridad de acceso por empresa), no el rol local -- ver 2B.2A test de
     // "local role ignorado". central_id/membership_id/empresa_id provienen unicamente del
-    // resultado ya validado por autenticarCredencialCentral, nunca del cliente.
-    await runQuery(
-      `INSERT OR REPLACE INTO sesiones
-       (token, usuario_id, nombre, rol, expira, auth_mode, central_id, membership_id, empresa_id)
-       VALUES (?, ?, ?, ?, ?, 'central', ?, ?, ?)`,
-      [token, user.id, user.nombre, rolSesion, expiraISO, resultado.central.id, resultado.membership.id, resultado.empresa.id]
-    );
+    // resultado ya validado por autenticarCredencialCentral, nunca del cliente. password_version
+    // ancla la sesion a la generacion de credencial vigente en el momento de autenticarse (ver
+    // AUTH-SYNC-B2-P1A-SR) -- si la Business DB de este tenant todavia no tiene la columna (migracion
+    // "003_sesiones_password_version" pendiente), se cae a la variante sin esa columna: la sesion se
+    // crea igual, simplemente sin esa proteccion todavia (misma logica de deteccion que requireAuth).
+    try {
+      await runQuery(
+        `INSERT OR REPLACE INTO sesiones
+         (token, usuario_id, nombre, rol, expira, auth_mode, central_id, membership_id, empresa_id, password_version)
+         VALUES (?, ?, ?, ?, ?, 'central', ?, ?, ?, ?)`,
+        [token, user.id, user.nombre, rolSesion, expiraISO, resultado.central.id, resultado.membership.id, resultado.empresa.id, resultado.central.password_version]
+      );
+    } catch (error) {
+      if (!/no column named password_version/i.test(error.message || "")) {
+        throw error;
+      }
+      await runQuery(
+        `INSERT OR REPLACE INTO sesiones
+         (token, usuario_id, nombre, rol, expira, auth_mode, central_id, membership_id, empresa_id)
+         VALUES (?, ?, ?, ?, ?, 'central', ?, ?, ?)`,
+        [token, user.id, user.nombre, rolSesion, expiraISO, resultado.central.id, resultado.membership.id, resultado.empresa.id]
+      );
+    }
     await runQuery("DELETE FROM sesiones WHERE expira < datetime('now')");
 
     return res.json({

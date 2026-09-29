@@ -48,6 +48,18 @@ async function up002TenantIntegrationCredentials(db) {
   );
 }
 
+// AUTH-SYNC-B2-P1A-SR: agrega la columna de generacion de credencial que requireAuth compara en
+// cada request central para invalidar sesiones tras una rotacion de password (ver
+// backend/centralAuthResolver.js). NULL permitido deliberadamente -- sesiones legacy y sesiones
+// centrales emitidas ANTES de este slice deben aterrizar en NULL, nunca en 0 ni en ningun otro
+// valor inferido: NULL es justamente la senal que hace que requireAuth las trate como
+// CENTRAL_PASSWORD_ROTATED (invalidas) la primera vez que se revalidan, forzando un re-login unico
+// sin necesidad de ningun backfill. Ninguna fila existente se toca aqui -- ALTER TABLE ADD COLUMN
+// sin DEFAULT deja las filas preexistentes en NULL automaticamente.
+async function up003SesionesPasswordVersion(db) {
+  await runQuery(db, "ALTER TABLE sesiones ADD COLUMN password_version INTEGER");
+}
+
 const BUSINESS_MIGRATIONS = Object.freeze([
   Object.freeze({
     sequence: 1,
@@ -59,6 +71,12 @@ const BUSINESS_MIGRATIONS = Object.freeze([
     migrationId: "002_tenant_integration_credentials",
     kind: "MIGRATION",
     up: up002TenantIntegrationCredentials
+  }),
+  Object.freeze({
+    sequence: 3,
+    migrationId: "003_sesiones_password_version",
+    kind: "MIGRATION",
+    up: up003SesionesPasswordVersion
   })
 ]);
 
