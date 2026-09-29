@@ -695,6 +695,14 @@ async function requireAuth(req, res, next) {
     }
 
     req.usuario = { id: sesion.usuario_id, nombre: sesion.nombre, rol: normalizarRol(revalidacion.membership.rol) };
+    // AUTH-SYNC-B2-P1B: identidad central del ACTOR autenticado, ya validada por revalidarSesionCentral
+    // -- expuesta para que handlers downstream (huella de idempotencia) puedan ligar una operacion a
+    // "quien la ejecuto" sin volver a resolverla ni confiar en nada enviado por el cliente.
+    req.centralSession = {
+      centralId: revalidacion.central.id,
+      membershipId: revalidacion.membership.id,
+      empresaId: sesion.empresa_id
+    };
     return next();
   } catch (error) {
     console.error("Error validando sesión:", error.message);
@@ -2550,6 +2558,44 @@ app.patch("/usuarios/:id/estado", async (req, res) => {
   }
 });
 
+// AUTH-SYNC-B2-P1B: identificador LOGICO del endpoint para el fingerprint de idempotencia -- una
+// constante fija (nunca la URL literal con el :id interpolado, que ya viaja por separado como
+// "target usuario local" dentro del propio fingerprint).
+const ENDPOINT_LOGICO_PASSWORD = "/usuarios/:id/password";
+
+// Formato aceptado: no vacia, <=128 caracteres, sin CR/LF, normalizada con trim. Devuelve null si
+// el header esta ausente o es invalido -- el caller decide el 400, esta funcion no conoce HTTP.
+function validarIdempotencyKeyHeader(headerValue) {
+  const crudo = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  const raw = String(crudo || "");
+  if (/[\r\n]/.test(raw)) return null;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 128) return null;
+  return trimmed;
+}
+
+// AUTH-SYNC-B2-P1B: representacion CANONICA (orden de claves fijo en el literal fuente, siempre
+// identico entre llamadas) de los datos NO sensibles que identifican la OPERACION -- nunca incluye
+// password/confirmar_password/hash/version/expectedVersion (ver contrato congelado: un retry
+// legitimo despues de un commit exitoso encuentra naturalmente una version central mas nueva; si
+// version formara parte del fingerprint, ese retry parecería una operacion distinta).
+function calcularSolicitudHuellaPassword({
+  empresaId, targetUsuarioLocalId, targetUsuarioCentralId, targetMembershipId,
+  actorCentralId, actorMembershipId
+}) {
+  const payload = JSON.stringify({
+    metodo: "PATCH",
+    endpoint: ENDPOINT_LOGICO_PASSWORD,
+    empresaId: Number(empresaId),
+    targetUsuarioLocalId: Number(targetUsuarioLocalId),
+    targetUsuarioCentralId: Number(targetUsuarioCentralId),
+    targetMembershipId: Number(targetMembershipId),
+    actorCentralId: Number(actorCentralId),
+    actorMembershipId: Number(actorMembershipId)
+  });
+  return crypto.createHash("sha256").update(payload).digest("hex");
+}
+
 app.patch("/usuarios/:id/password", async (req, res) => {
   const usuarioId = Number(req.params.id);
   const password = String(req.body?.password || "");
@@ -2570,6 +2616,21 @@ app.patch("/usuarios/:id/password", async (req, res) => {
     return res.status(400).json({ message: "Las contrasenas no coinciden" });
   }
 
+  // AUTH-SYNC-B2-P1B: Idempotency-Key es obligatoria EXCLUSIVAMENTE para central+shadow -- se
+  // valida el FORMATO antes de tocar cualquier DB (ni siquiera el lookup local de "usuario
+  // existe"). Legacy/off conservan su contrato exactamente igual, sin exigir el header.
+  const esCentralShadow = ATLAS_AUTH_MODE === "central" && userControlBridge.getBridgeMode() === "shadow";
+  let idempotencyKey = null;
+  if (esCentralShadow) {
+    idempotencyKey = validarIdempotencyKeyHeader(req.headers["idempotency-key"]);
+    if (!idempotencyKey) {
+      return res.status(400).json({
+        code: "IDEMPOTENCY_KEY_REQUIRED",
+        message: "Falta una clave de idempotencia válida para esta operación."
+      });
+    }
+  }
+
   try {
     const usuario = await getQuery("SELECT id FROM usuarios WHERE id = ?", [usuarioId]);
     if (!usuario) {
@@ -2579,14 +2640,15 @@ app.patch("/usuarios/:id/password", async (req, res) => {
     // AUTH-SYNC-B2-P1A: en central+shadow, password pasa a ser CENTRAL-FIRST -- la Business DB
     // local NUNCA se escribe antes de que el commit central (CAS + fan-out) haya confirmado. En
     // cualquier otro modo (legacy/off), comportamiento LOCAL-FIRST sin cambios (rama de abajo).
-    if (ATLAS_AUTH_MODE === "central" && userControlBridge.getBridgeMode() === "shadow") {
+    if (esCentralShadow) {
       const empresaSlug = empresaAuthDelRequest().empresaSlug;
+      const controlDbPath = userControlBridge.resolveControlDbPath();
 
       // Fail-closed sobre S0 incompleto: antes de tocar cualquier cosa -- ni siquiera bcrypt --
       // se verifica que el esquema soporte el contrato necesario. No migra, no crea Control DB.
       let soporte;
       try {
-        soporte = await verificarSoporteS0ParaPassword({ controlDbPath: userControlBridge.resolveControlDbPath() });
+        soporte = await verificarSoporteS0ParaPassword({ controlDbPath });
       } catch (error) {
         logError("Error verificando soporte S0 para password central-first:", error);
         return res.status(503).json({ message: "No se pudo verificar el esquema del control plane. Intenta nuevamente en unos minutos." });
@@ -2603,14 +2665,80 @@ app.patch("/usuarios/:id/password", async (req, res) => {
         return res.status(503).json({ message: "No se pudo resolver la identidad central para esta cuenta. Intenta nuevamente en unos minutos." });
       }
 
+      // AUTH-SYNC-B2-P1B: actor SIEMPRE desde la autoridad ya establecida por requireAuth
+      // (req.centralSession) -- nunca desde datos enviados por el cliente, nunca re-resuelto por
+      // usuario_local_id del actor (una Idempotency-Key nunca debe poder ser reutilizada por otro
+      // actor para obtener/repetir un resultado ajeno).
+      const actorCentralId = req.centralSession.centralId;
+      const actorMembershipId = req.centralSession.membershipId;
+
+      // Fail-closed sobre operacion_idempotencia incompleta -- ANTES de bcrypt, mismo criterio que
+      // el chequeo S0 de arriba. No migra, no crea la tabla.
+      let soporteIdempotencia;
+      try {
+        soporteIdempotencia = await userControlBridge.verificarSoporteOperacionIdempotenciaStandalone({ controlDbPath });
+      } catch (error) {
+        logError("Error verificando soporte de idempotencia para password central-first:", error);
+        return res.status(503).json({ message: "No se pudo verificar el esquema del control plane. Intenta nuevamente en unos minutos." });
+      }
+      if (!soporteIdempotencia.soportado) {
+        return res.status(503).json({ message: "El control plane no soporta todavia idempotencia de contrasena. Intenta nuevamente mas tarde." });
+      }
+
+      const solicitudHuella = calcularSolicitudHuellaPassword({
+        empresaId: identidad.empresaId,
+        targetUsuarioLocalId: usuarioId,
+        targetUsuarioCentralId: identidad.usuarioCentralId,
+        targetMembershipId: identidad.membershipId,
+        actorCentralId,
+        actorMembershipId
+      });
+
+      // FAST REPLAY: antes de bcrypt, un vistazo rapido (fuera de la transaccion) para evitar el
+      // costo de bcrypt en un replay obvio. Nunca es la autoridad -- la decision real, segura ante
+      // carreras, se re-hace DENTRO de la transaccion atomica de
+      // actualizarPasswordCentralFirstIdempotente. Esto es solo una optimizacion de latencia.
+      let filaPrevia;
+      try {
+        filaPrevia = await userControlBridge.consultarOperacionIdempotenciaStandalone({ idempotencyKey, controlDbPath });
+      } catch (error) {
+        logError("Error en fast-replay de idempotencia de password:", error);
+        return res.status(503).json({ message: "No se pudo verificar el estado de la operacion. Intenta nuevamente en unos minutos." });
+      }
+      if (filaPrevia) {
+        if (filaPrevia.estado === "confirmada") {
+          const coincide = filaPrevia.endpoint === ENDPOINT_LOGICO_PASSWORD
+            && Number(filaPrevia.usuario_id) === Number(actorCentralId)
+            && Number(filaPrevia.membership_id) === Number(actorMembershipId)
+            && filaPrevia.solicitud_huella === solicitudHuella;
+          if (coincide) {
+            const resultadoJson = filaPrevia.resultado_json ? JSON.parse(filaPrevia.resultado_json) : {};
+            return res.status(filaPrevia.resultado_http).json(resultadoJson);
+          }
+          return res.status(409).json({
+            code: "IDEMPOTENCY_KEY_REUSED",
+            message: "Esta clave de idempotencia ya fue usada para una operacion distinta."
+          });
+        }
+        return res.status(409).json({
+          code: "IDEMPOTENCY_OPERATION_IN_PROGRESS",
+          message: "Ya existe una operacion en curso con esta clave. Reintenta con la MISMA clave en unos instantes."
+        });
+      }
+
       const passwordHash = await bcrypt.hash(password, 10);
 
       let commitCentral;
       try {
-        commitCentral = await userControlBridge.actualizarPasswordCentralFirst({
+        commitCentral = await userControlBridge.actualizarPasswordCentralFirstIdempotente({
           usuarioCentralId: identidad.usuarioCentralId,
           expectedVersion: identidad.expectedVersion,
-          passwordHash
+          passwordHash,
+          idempotencyKey,
+          endpointLogico: ENDPOINT_LOGICO_PASSWORD,
+          solicitudHuella,
+          actorCentralId,
+          actorMembershipId
         });
       } catch (error) {
         logError("Error en commit central de password:", error);
@@ -2618,10 +2746,31 @@ app.patch("/usuarios/:id/password", async (req, res) => {
       }
 
       if (!commitCentral.ok) {
-        return res.status(409).json({
+        if (commitCentral.errorCode === "IDEMPOTENCY_KEY_REUSED") {
+          return res.status(409).json({
+            code: "IDEMPOTENCY_KEY_REUSED",
+            message: "Esta clave de idempotencia ya fue usada para una operacion distinta."
+          });
+        }
+        if (commitCentral.errorCode === "IDEMPOTENCY_OPERATION_IN_PROGRESS") {
+          return res.status(409).json({
+            code: "IDEMPOTENCY_OPERATION_IN_PROGRESS",
+            message: "Ya existe una operacion en curso con esta clave. Reintenta con la MISMA clave en unos instantes."
+          });
+        }
+        // VERSION_CONFLICT: resultadoJson/resultadoHttp ya vienen armados y confirmados
+        // durablemente dentro de la transaccion -- se reflejan tal cual, sin reconstruirlos aca.
+        return res.status(commitCentral.resultadoHttp || 409).json(commitCentral.resultadoJson || {
           message: "La contraseña fue modificada por otra operación. Volvé a intentar.",
           version_actual: commitCentral.versionActual
         });
+      }
+
+      if (commitCentral.replay) {
+        // Replay confirmado: NINGUN efecto secundario nuevo (sin bcrypt ya evitado arriba, sin
+        // CAS, sin fan-out, sin revalidacion de sesiones) -- se devuelve tal cual el resultado
+        // durable de la operacion original.
+        return res.status(commitCentral.resultadoHttp).json(commitCentral.resultadoJson);
       }
 
       // Intento inmediato SOLO del tenant/request actual -- el resto de las memberships queda
@@ -2641,10 +2790,18 @@ app.patch("/usuarios/:id/password", async (req, res) => {
               usuarioLocalId: membershipActual.usuarioLocalId,
               versionObjetivo: commitCentral.newVersion
             },
-            { controlDbPath: userControlBridge.resolveControlDbPath() }
+            { controlDbPath }
           );
           if (resultadoInline && resultadoInline.resultado === "PROCESADO") {
             sincronizacionShadow = "procesada";
+            // Best-effort, DESPUES del COMMIT: avanza el resultado durable de pendiente a
+            // procesada. Nunca puede fallar la respuesta ni revertir el password -- ver contrato
+            // en marcarIdempotenciaProyeccionProcesada.
+            try {
+              await userControlBridge.marcarIdempotenciaProyeccionProcesada({ idempotencyKey, controlDbPath });
+            } catch (error) {
+              logError("No se pudo marcar la proyeccion de password como procesada en la key de idempotencia (no afecta la respuesta):", error);
+            }
           }
         } catch (error) {
           // El commit central YA esta confirmado -- un fallo aca nunca lo revierte, la fila
@@ -2653,7 +2810,7 @@ app.patch("/usuarios/:id/password", async (req, res) => {
         }
       }
 
-      return res.json({
+      return res.status(200).json({
         message: "Contraseña actualizada correctamente",
         sincronizacion_shadow: sincronizacionShadow
       });

@@ -530,18 +530,27 @@ async function withServer(dbPath, fn, extraEnv = {}) {
   }
 }
 
-async function requestJson(baseUrl, method, url, body, token) {
+async function requestJson(baseUrl, method, url, body, token, extraHeaders) {
   const response = await fetch(`${baseUrl}${url}`, {
     method,
     headers: {
       ...(body ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {})
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(extraHeaders || {})
     },
     body: body ? JSON.stringify(body) : undefined
   });
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
   return { response, data };
+}
+
+// AUTH-SYNC-B2-P1B: una Idempotency-Key nueva representa una accion nueva -- cada llamador que
+// necesite una operacion REAL distinta debe pedir la suya propia (nunca reutilizar el valor
+// devuelto por una llamada anterior a esta funcion salvo que deliberadamente quiera simular un
+// retry/replay de la MISMA accion).
+function nuevaIdempotencyKeyHeader() {
+  return { "Idempotency-Key": crypto.randomUUID() };
 }
 
 async function login(baseUrl, usuario, password) {
@@ -21140,6 +21149,29 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testP1ASRFixBusinessDbSinPasswordVersionLoginCentralFallaCerrado);
   await _run(testP1ASRFixBusinessDbSinPasswordVersionSesionExistenteFallaCerradoSinBorrarToken);
   await _run(testP1ASRFixLegacyAuthSobrePasswordVersionAusenteComportamientoHistoricoIntacto);
+  await _run(testP1BSinIdempotencyKeyRechaza400SinSideEffects);
+  await _run(testP1BKeyInvalidaRechaza400);
+  await _run(testP1BLegacySinKeyComportamientoHistoricoIntacto);
+  await _run(testP1BPrimeraOperacionCreaFilaConfirmadaSinSecretos);
+  await _run(testP1BRetryMismaKeyEsReplayAntesDeCASYSinNuevaEscritura);
+  await _run(testP1BMismaKeyTargetDistintoRechaza409Reused);
+  await _run(testP1BMismaKeyActorDistintoRechaza409ReusedYNuncaAutorizaOtroActor);
+  await _run(testP1BMismaKeyTenantDistintoRechaza409ReusedSinCruzarColisionDeIdLocal);
+  await _run(testP1BMismaKeyPasswordDistintoEsReplayDeOperacionOriginal);
+  await _run(testP1BFilaEnProgresoPersistenteRechaza409SinPasswordWrite);
+  await _run(testP1BCrashAntesDelCommitNoDejaFilaNiPasswordCentralIntacto);
+  await _run(testP1BCasConflictQuedaConfirmadoDurablementeYRetryNuncaConvierteEnSuccess);
+  await _run(testP1BDosRequestsConcurrentesMismaKeyUnaSolaEscrituraCentral);
+  await _run(testP1BDosRequestsConcurrentesKeysDistintasPreservaContratoCAS);
+  await _run(testP1BSuccessCentralProyeccionFallaRespuestaPendienteKeyConfirmadaRetryNoReejecuta);
+  await _run(testP1BSuccessCentralProyeccionFuncionaResultadoAvanzaAProcesadaRetryNoReejecuta);
+  await _run(testP1BResponsePerdidoSimuladoRetryDevuelveResultadoDurable);
+  await _run(testP1BRestartKeyConfirmadaSigueDeduplicando);
+  await _run(testP1BOperacionIdempotenciaAusenteFallaCerradoAntesDeBcrypt);
+  await _run(testP1BUsuariosHtmlGeneraUuidYEnviaHeader);
+  await _run(testP1BUsuariosHtmlConservaKeyAnteFalloDeRedYLaInvalidaAlEditar);
+  await _run(testP1BPerfilHtmlGeneraUuidYEnviaHeader);
+  await _run(testP1BPerfilHtmlConservaKeyAnteFalloDeRedYLaInvalidaAlEditar);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -37290,7 +37322,7 @@ async function mt1f4ConEscenario(fn, { membershipB = true, bridge = true } = {})
     assertEqual(a.local.id, b.local.id, "colision local deliberada: mismo ID");
     assertSame(a.local.usuario, b.local.usuario, "colision local deliberada: mismo login");
     await mt1f3ConServidor({ ...mt1f3EntornoMulti(escenario, decoyPath), ATLAS_USER_BRIDGE_MODE: bridge ? "shadow" : "off" }, async (servidor) => {
-      const pedir = (tenant, metodo, ruta, cuerpo = null, token = null) => mt1f3Pedir(servidor.port, { host: mt1f3Host(tenant), metodo, ruta, cuerpo, autorizacion: token ? `Bearer ${token}` : null });
+      const pedir = (tenant, metodo, ruta, cuerpo = null, token = null, cabecerasExtra = null) => mt1f3Pedir(servidor.port, { host: mt1f3Host(tenant), metodo, ruta, cuerpo, autorizacion: token ? `Bearer ${token}` : null, cabecerasExtra });
       const loginTenant = async (tenant) => {
         const respuesta = await pedir(tenant, "POST", "/login", { usuario: "admin", password: tenant.password });
         assertEqual(respuesta.status, 200, `login ${tenant.tag}: ${respuesta.texto}`);
@@ -37427,8 +37459,8 @@ async function testMT1F4MultiBridgeUsaEmpresaExplicita() {
     for (const [tenant, otro] of [[a, b], [b, a]]) {
       const { local, membership } = creados.get(tenant);
       const fotoOtro = JSON.stringify(await allSql(escenario.controlDbPath, "SELECT m.*, u.password_hash FROM usuario_empresas m JOIN usuarios u ON u.id = m.usuario_id WHERE m.empresa_id = ?", [otro.empresa.id]));
-      const pedirCambio = async (metodo, ruta, cuerpo) => {
-        const respuesta = await pedir(tenant, metodo, ruta, cuerpo, tokens.get(tenant));
+      const pedirCambio = async (metodo, ruta, cuerpo, cabecerasExtra = null) => {
+        const respuesta = await pedir(tenant, metodo, ruta, cuerpo, tokens.get(tenant), cabecerasExtra);
         assertEqual(respuesta.status, 200, `${ruta}: ${respuesta.texto}`);
       };
       // AUTH-SYNC-B2-S1A2B-PROFILE-GUARD: rol/activo se envian IGUALES a los locales actuales
@@ -37444,7 +37476,7 @@ async function testMT1F4MultiBridgeUsaEmpresaExplicita() {
       assertEqual(patchEstado.status, 409, `PATCH estado bajo shadow debe rechazar 409: ${patchEstado.texto}`);
       assertEqual((await allSql(escenario.controlDbPath, "SELECT activo FROM usuario_empresas WHERE id = ?", [membership.id]))[0].activo, 1, "PATCH estado ya no sincroniza activo -- membership permanece intacta");
       const password = `BridgeNuevo-${tenant.tag}-456`;
-      await pedirCambio("PATCH", `/usuarios/${local.id}/password`, { password, confirmar_password: password });
+      await pedirCambio("PATCH", `/usuarios/${local.id}/password`, { password, confirmar_password: password }, nuevaIdempotencyKeyHeader());
       const central = (await allSql(escenario.controlDbPath, "SELECT password_hash FROM usuarios WHERE id = ?", [membership.usuario_id]))[0];
       assertSame(await bcrypt.compare(password, central.password_hash), true, "password sincroniza identidad correcta");
       assertSame(JSON.stringify(await allSql(escenario.controlDbPath, "SELECT m.*, u.password_hash FROM usuario_empresas m JOIN usuarios u ON u.id = m.usuario_id WHERE m.empresa_id = ?", [otro.empresa.id])), fotoOtro, "los cuatro bridges no mutan otra empresa");
@@ -38594,12 +38626,13 @@ async function testMT1F5C1RemoveNoRestauraEnv() {
 const MT1F3_DOMINIO = "atlasos.com.ar";
 const MT1F3_MENSAJE_NO_AUTENTICADO = "No autenticado. Iniciá sesión.";
 
-function mt1f3Pedir(port, { host, metodo = "GET", ruta, cuerpo = null, autorizacion = null }) {
+function mt1f3Pedir(port, { host, metodo = "GET", ruta, cuerpo = null, autorizacion = null, cabecerasExtra = null }) {
   return new Promise((resolve, reject) => {
     const payload = cuerpo === null ? null : JSON.stringify(cuerpo);
     const headers = {};
     if (host !== undefined) headers.Host = host;
     if (autorizacion !== null) headers.Authorization = autorizacion;
+    if (cabecerasExtra) Object.assign(headers, cabecerasExtra);
     if (payload !== null) {
       headers["Content-Type"] = "application/json";
       headers["Content-Length"] = Buffer.byteLength(payload);
@@ -40947,7 +40980,7 @@ async function testP1ACentralFirstHappyPathConvergeYLoginAceptaNueva() {
       const token = await login(baseUrl, "admin", fixture.centralPassword);
       const { response, data } = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
         password: "NuevaCentralFirst1", confirmar_password: "NuevaCentralFirst1"
-      }, token);
+      }, token, nuevaIdempotencyKeyHeader());
       assertEqual(response.status, 200, `PATCH password central-first happy path debe dar 200 (status=${response.status} ${JSON.stringify(data)})`);
       assertSame(data.message, "Contraseña actualizada correctamente", "mensaje de exito central-first debe ser el nuevo texto conceptual");
       assertSame(data.sincronizacion_shadow, "procesada", "la proyeccion inline del tenant actual debe completarse en el happy path");
@@ -41084,7 +41117,7 @@ async function testP1AProyeccionInlineNoDisponibleRespondePendienteSinMensajeEng
 
       const { response, data } = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
         password: "NuevaSinProyeccion1", confirmar_password: "NuevaSinProyeccion1"
-      }, token);
+      }, token, nuevaIdempotencyKeyHeader());
       assertEqual(response.status, 200, "aunque la proyeccion inline no pueda completarse, la respuesta debe seguir siendo 200 (central ya cambio)");
       assertSame(data.message, "Contraseña actualizada correctamente", "el mensaje de exito no debe cambiar aunque la proyeccion quede pendiente");
       assertSame(data.sincronizacion_shadow, "pendiente", "sin proyeccion inline exitosa, sincronizacion_shadow debe ser 'pendiente'");
@@ -41675,7 +41708,7 @@ async function testP1AAislamientoCrossTenantCambioDePasswordNoAfectaOtraIdentida
       const token = await login(baseUrl, "admin", fixture1.centralPassword);
       const { response } = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture1.localUserId}/password`, {
         password: "TenantUnoNueva1", confirmar_password: "TenantUnoNueva1"
-      }, token);
+      }, token, nuevaIdempotencyKeyHeader());
       assertEqual(response.status, 200, "el cambio de password del tenant 1 debe completarse ok");
     }, extraEnvCentral(fixture1));
 
@@ -41708,9 +41741,10 @@ async function testP1AConcurrenciaDosCambiosSimultaneosUnoGanaOtroConflictoExpli
     controlDbPath = fixture.controlDbPath;
     await withServer(dbPath, async (baseUrl) => {
       const token = await login(baseUrl, "admin", fixture.centralPassword);
+      // Dos ACCIONES distintas (passwords distintos) -- cada una necesita su propia Idempotency-Key.
       const [r1, r2] = await Promise.all([
-        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "ConcurrenteA111", confirmar_password: "ConcurrenteA111" }, token),
-        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "ConcurrenteB222", confirmar_password: "ConcurrenteB222" }, token)
+        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "ConcurrenteA111", confirmar_password: "ConcurrenteA111" }, token, nuevaIdempotencyKeyHeader()),
+        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "ConcurrenteB222", confirmar_password: "ConcurrenteB222" }, token, nuevaIdempotencyKeyHeader())
       ]);
 
       const statuses = [r1.response.status, r2.response.status].sort();
@@ -41760,7 +41794,7 @@ async function testP1ASRTokenPrevioQuedaInvalidoYCicloCompletoDeRelogin() {
 
       const cambio = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
         password: "SRCicloNueva1", confirmar_password: "SRCicloNueva1"
-      }, token);
+      }, token, nuevaIdempotencyKeyHeader());
       assertEqual(cambio.response.status, 200, "el cambio de password (ejecutado con ESTE MISMO token) debe confirmar");
 
       // #1 y #14: el MISMO token que ejecuto el PATCH -- la sesion propia -- tambien queda invalida,
@@ -41826,7 +41860,7 @@ async function testP1ASRIdentidadConDosMembershipsAmbosTokensQuedanInvalidos() {
 
       const cambio = await requestJson(baseUrl, "PATCH", `/usuarios/${localAdminB.id}/password`, {
         password: "SRMultiNueva1", confirmar_password: "SRMultiNueva1"
-      }, tokenB);
+      }, tokenB, nuevaIdempotencyKeyHeader());
       assertEqual(cambio.response.status, 200, "el cambio (ejecutado desde el tenant B) debe confirmar");
 
       const postB = await requestJson(baseUrl, "GET", "/configuracion", null, tokenB);
@@ -41879,7 +41913,7 @@ async function testP1ASRIdentidadDistintaNoSeAfecta() {
       const token1 = await login(baseUrl, "admin", central1Password);
       const cambio = await requestJson(baseUrl, "PATCH", `/usuarios/${local1.id}/password`, {
         password: "SROtraUnoNueva1", confirmar_password: "SROtraUnoNueva1"
-      }, token1);
+      }, token1, nuevaIdempotencyKeyHeader());
       assertEqual(cambio.response.status, 200, "cambio de identidad 1 debe confirmar");
     }, env1);
 
@@ -42065,7 +42099,7 @@ async function testP1ASRRestartNoAlteraLaRevocacion() {
       token = await login(baseUrl, "admin", fixture.centralPassword);
       const cambio = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
         password: "SRRestart1", confirmar_password: "SRRestart1"
-      }, token);
+      }, token, nuevaIdempotencyKeyHeader());
       assertEqual(cambio.response.status, 200, "cambio debe confirmar");
     }, extraEnvCentral(fixture));
 
@@ -42092,9 +42126,10 @@ async function testP1ASRDosCambiosConcurrentesInvalidanSesionesDeGeneracionAnter
       const preCheck = await requestJson(baseUrl, "GET", "/configuracion", null, tokenPre);
       assertEqual(preCheck.response.status, 200, "token pre-cambio debe autorizar antes de la carrera");
 
+      // Dos ACCIONES distintas (passwords distintos) -- cada una necesita su propia Idempotency-Key.
       const [r1, r2] = await Promise.all([
-        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "SRConcurrenteA1", confirmar_password: "SRConcurrenteA1" }, tokenPre),
-        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "SRConcurrenteB1", confirmar_password: "SRConcurrenteB1" }, tokenPre)
+        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "SRConcurrenteA1", confirmar_password: "SRConcurrenteA1" }, tokenPre, nuevaIdempotencyKeyHeader()),
+        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "SRConcurrenteB1", confirmar_password: "SRConcurrenteB1" }, tokenPre, nuevaIdempotencyKeyHeader())
       ]);
       const statuses = [r1.response.status, r2.response.status].sort();
       assertSame(JSON.stringify(statuses), JSON.stringify([200, 409]), `exactamente uno de los dos cambios concurrentes debe confirmar (statuses=${JSON.stringify(statuses)})`);
@@ -42461,4 +42496,814 @@ async function testP1ASRFixLegacyAuthSobrePasswordVersionAusenteComportamientoHi
   } finally {
     fs.rmSync(dbPath, { force: true });
   }
+}
+
+// AUTH-SYNC-B2-P1B: PASSWORD HTTP IDEMPOTENCY. Cobertura de los 33 escenarios exigidos por el
+// checkpoint -- Idempotency-Key obligatoria en central+shadow (nunca en legacy/off), formato,
+// fingerprint atado a actor+target+tenant (nunca a password), fast-replay antes de bcrypt, la
+// transaccion atomica unica (idempotencia + CAS + fan-out + resultado definitivo), CAS conflict
+// como resultado DURABLE, concurrencia misma-key y keys-distintas, en_progreso persistente
+// fail-closed, crash antes del commit sin dejar rastro, proyeccion inline + avance best-effort del
+// resultado durable, restart, fail-closed de schema, y verificacion de contrato en ambos frontends.
+// #31 (session revocation no se dispara dos veces en un retry) queda demostrado por las mismas
+// aserciones de version/password_version de testP1BRetryMismaKeyEsReplayAntesDeCASYSinNuevaEscritura
+// (#10-11). #33 (familia P1A/P1ASR sigue verde) se demuestra en la corrida formal completa, no con
+// un test dedicado. Ningun test preexistente se modifica en su LOGICA -- las ~12 llamadas HTTP
+// preexistentes a PATCH /usuarios/:id/password en modo central+shadow se actualizaron unicamente
+// para incluir el header ahora obligatorio (ver nuevaIdempotencyKeyHeader), consecuencia directa y
+// esperada de este contrato.
+
+async function testP1BSinIdempotencyKeyRechaza400SinSideEffects() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+      const { response, data } = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "SinKey123456", confirmar_password: "SinKey123456"
+      }, token);
+      assertEqual(response.status, 400, "sin Idempotency-Key, central+shadow debe rechazar 400");
+      assertSame(data.code, "IDEMPOTENCY_KEY_REQUIRED", "codigo explicito");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT password_hash, version FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertSame(await bcrypt.compare(fixture.centralPassword, central.password_hash), true, "password central no debe haber cambiado");
+      assertEqual(Number(central.version), 0, "version no debe incrementar");
+      const filas = await allControlQuery(controlDb, "SELECT * FROM operacion_idempotencia");
+      assertEqual(filas.length, 0, "no debe crearse ninguna fila de idempotencia");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BKeyInvalidaRechaza400() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+      // CR/LF no se prueba aca deliberadamente: ningun cliente HTTP conforme (fetch/undici, ni el
+      // http.request nativo de Node) permite transmitir un caracter de control en un valor de
+      // header -- ambos lanzan una excepcion ANTES de enviar la request. La proteccion contra esa
+      // clase de inyeccion ya existe, estructuralmente, por debajo de este codigo; el chequeo de
+      // formato en el servidor es defensa en profundidad, no la unica barrera.
+      const casos = [
+        { nombre: "vacia", key: "" },
+        { nombre: "solo espacios", key: "   " },
+        { nombre: "demasiado larga (129 caracteres)", key: "x".repeat(129) }
+      ];
+      for (const caso of casos) {
+        const { response, data } = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+          password: "KeyInvalida123", confirmar_password: "KeyInvalida123"
+        }, token, { "Idempotency-Key": caso.key });
+        assertEqual(response.status, 400, `caso "${caso.nombre}" debe rechazar 400`);
+        assertSame(data.code, "IDEMPOTENCY_KEY_REQUIRED", `caso "${caso.nombre}" codigo explicito`);
+      }
+    }, extraEnvCentral(fixture));
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BLegacySinKeyComportamientoHistoricoIntacto() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const { response, data } = await requestJson(baseUrl, "PATCH", `/usuarios/1/password`, {
+        password: "LegacySinKey1", confirmar_password: "LegacySinKey1"
+      }, token);
+      assertEqual(response.status, 200, "legacy sin Idempotency-Key debe seguir funcionando exactamente igual");
+      assertSame(data.message, "Contrasena actualizada correctamente", "mensaje historico intacto");
+      assertSame(Object.prototype.hasOwnProperty.call(data, "code"), false, "legacy no debe exponer ningun campo 'code' nuevo");
+    });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+async function testP1BPrimeraOperacionCreaFilaConfirmadaSinSecretos() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const key = crypto.randomUUID();
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+      const { response, data } = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "PrimeraOp12345", confirmar_password: "PrimeraOp12345"
+      }, token, { "Idempotency-Key": key });
+      assertEqual(response.status, 200, "primera operacion nueva debe dar 200");
+      assertSame(data.message, "Contraseña actualizada correctamente", "mensaje esperado");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const filas = await allControlQuery(controlDb, "SELECT * FROM operacion_idempotencia WHERE clave = ?", [key]);
+      assertEqual(filas.length, 1, "debe existir exactamente una fila confirmada");
+      const fila = filas[0];
+      assertSame(fila.estado, "confirmada", "estado debe ser confirmada");
+      assertEqual(Number(fila.resultado_http), 200, "resultado_http debe ser 200");
+      assertSame(typeof fila.resultado_json, "string", "resultado_json debe ser un string JSON");
+      const resultadoJson = JSON.parse(fila.resultado_json);
+      assertSame(resultadoJson.message, "Contraseña actualizada correctamente", "resultado_json.message debe coincidir");
+
+      const serializadoResultado = JSON.stringify(resultadoJson).toLowerCase();
+      for (const secreto of ["primeraop12345", "$2b$", "$2a$", "hash", "password"]) {
+        assertSame(serializadoResultado.includes(secreto), false, `resultado_json no debe contener "${secreto}"`);
+      }
+
+      assertSame(/^[0-9a-f]{64}$/i.test(fila.solicitud_huella), true, "solicitud_huella debe ser un SHA-256 hex de 64 caracteres");
+      // Por construccion, un digest SHA-256 no puede "contener" de forma legible ninguna substring
+      // reconocible de su input -- esta asercion documenta el contrato explicitamente, no depende
+      // de la suerte de este caso puntual.
+      assertSame(fila.solicitud_huella.toLowerCase().includes("primeraop12345"), false, "solicitud_huella no debe contener el password en texto plano");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BRetryMismaKeyEsReplayAntesDeCASYSinNuevaEscritura() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const key = crypto.randomUUID();
+    let primeraRespuesta, segundaRespuesta;
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+      primeraRespuesta = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "RetryMismaKey1", confirmar_password: "RetryMismaKey1"
+      }, token, { "Idempotency-Key": key });
+      assertEqual(primeraRespuesta.response.status, 200, "primer intento debe confirmar");
+
+      const tokenPostCambio = await login(baseUrl, "admin", "RetryMismaKey1");
+      segundaRespuesta = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "RetryMismaKey1", confirmar_password: "RetryMismaKey1"
+      }, tokenPostCambio, { "Idempotency-Key": key });
+      assertEqual(segundaRespuesta.response.status, 200, "retry con la MISMA key debe devolver el mismo resultado (replay)");
+      assertSame(JSON.stringify(segundaRespuesta.data), JSON.stringify(primeraRespuesta.data), "el retry debe devolver EXACTAMENTE el mismo resultado logico");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT password_hash, version, password_version FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertEqual(Number(central.version), 1, "version debe haber incrementado EXACTAMENTE una vez, no dos -- #31: la revocacion generacional no se dispara dos veces");
+      assertEqual(Number(central.password_version), 1, "password_version debe haber incrementado EXACTAMENTE una vez, no dos");
+      // #11: evidencia de que el retry nunca recalculo bcrypt -- dos llamadas independientes a
+      // bcrypt.hash() sobre el MISMO password producen salts (y por lo tanto hashes) distintos casi
+      // con certeza. Que el hash final siga siendo exactamente el de la operacion original es
+      // evidencia fuerte de que el retry jamas volvio a ejecutar bcrypt ni el CAS.
+      assertSame(await bcrypt.compare("RetryMismaKey1", central.password_hash), true, "el hash final debe seguir siendo el de la unica operacion real");
+
+      const filas = await allControlQuery(controlDb, "SELECT * FROM operacion_idempotencia WHERE clave = ?", [key]);
+      assertEqual(filas.length, 1, "debe seguir existiendo UNA sola fila para esta key -- el retry no crea una segunda");
+
+      const outboxFilas = await allControlQuery(controlDb, "SELECT version_objetivo FROM sync_pendiente WHERE membership_id = ? AND tipo_operacion = 'password'", [fixture.membership.id]);
+      assertEqual(outboxFilas.length, 1, "debe seguir existiendo UNA sola fila de outbox para esta membership");
+      assertEqual(Number(outboxFilas[0].version_objetivo), 1, "version_objetivo del outbox no debe haber avanzado a una segunda generacion");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BMismaKeyTargetDistintoRechaza409Reused() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    await runSql(dbPath, "INSERT INTO usuarios (nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, ?)",
+      ["Colaborador P1B", "colaborador.p1b", await bcrypt.hash("ColaboradorViejo1", 10), "colaborador", 1]);
+    const localColaborador = (await allSql(dbPath, "SELECT id FROM usuarios WHERE usuario = ?", ["colaborador.p1b"]))[0];
+
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const centralColaborador = await crearUsuarioCentral(controlDb, { nombre: "Colaborador Central P1B", usuarioReferencia: "colaborador.p1b", passwordHash: await bcrypt.hash("ColabCentral1", 10), activo: 1 });
+    await crearMembership(controlDb, { usuarioId: centralColaborador.id, empresaId: fixture.empresa.id, usuarioLocalId: localColaborador.id, rol: "colaborador", activo: 1 });
+    await closeControlDb(controlDb);
+
+    const key = crypto.randomUUID();
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+      const r1 = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "TargetUno12345", confirmar_password: "TargetUno12345"
+      }, token, { "Idempotency-Key": key });
+      assertEqual(r1.response.status, 200, "primer target debe confirmar");
+
+      const tokenPostCambio = await login(baseUrl, "admin", "TargetUno12345");
+      const r2 = await requestJson(baseUrl, "PATCH", `/usuarios/${localColaborador.id}/password`, {
+        password: "TargetDos12345", confirmar_password: "TargetDos12345"
+      }, tokenPostCambio, { "Idempotency-Key": key });
+      assertEqual(r2.response.status, 409, "misma key contra un target DISTINTO debe rechazar 409");
+      assertSame(r2.data.code, "IDEMPOTENCY_KEY_REUSED", "codigo explicito");
+    }, extraEnvCentral(fixture));
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BMismaKeyActorDistintoRechaza409ReusedYNuncaAutorizaOtroActor() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    await runSql(dbPath, "INSERT INTO usuarios (nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, ?)",
+      ["Actor B P1B", "actorb.p1b", await bcrypt.hash("ActorBLocal1", 10), "admin", 1]);
+    const localActorB = (await allSql(dbPath, "SELECT id FROM usuarios WHERE usuario = ?", ["actorb.p1b"]))[0];
+
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const actorBPassword = "ActorBCentral1";
+    await crearMembership(controlDb, {
+      usuarioId: (await crearUsuarioCentral(controlDb, { nombre: "Actor B Central", usuarioReferencia: "actorb.p1b", passwordHash: await bcrypt.hash(actorBPassword, 10), activo: 1 })).id,
+      empresaId: fixture.empresa.id, usuarioLocalId: localActorB.id, rol: "admin", activo: 1
+    });
+    await closeControlDb(controlDb);
+
+    const key = crypto.randomUUID();
+    await withServer(dbPath, async (baseUrl) => {
+      const tokenA = await login(baseUrl, "admin", fixture.centralPassword);
+      const r1 = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "PorActorA12345", confirmar_password: "PorActorA12345"
+      }, tokenA, { "Idempotency-Key": key });
+      assertEqual(r1.response.status, 200, "actor A debe confirmar");
+
+      const tokenB = await login(baseUrl, "actorb.p1b", actorBPassword);
+      const r2 = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "PorActorB12345", confirmar_password: "PorActorB12345"
+      }, tokenB, { "Idempotency-Key": key });
+      assertEqual(r2.response.status, 409, "el MISMO target, con la MISMA key, pero un actor DISTINTO debe rechazar 409 -- una key nunca puede ser reutilizada por otro actor");
+      assertSame(r2.data.code, "IDEMPOTENCY_KEY_REUSED", "codigo explicito");
+    }, extraEnvCentral(fixture));
+
+    const controlDbFinal = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDbFinal, "SELECT password_hash FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertSame(await bcrypt.compare("PorActorA12345", central.password_hash), true, "el password final debe seguir siendo el de actor A (la unica operacion real)");
+      assertSame(await bcrypt.compare("PorActorB12345", central.password_hash), false, "actor B nunca debio poder escribir nada -- #26: una key ajena nunca autoriza a otro actor");
+    } finally {
+      await closeControlDb(controlDbFinal);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BMismaKeyTenantDistintoRechaza409ReusedSinCruzarColisionDeIdLocal() {
+  const dbPath1 = bootstrapFreshRegisteredTenantDb();
+  const dbPath2 = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    controlDbPath = tempDbPath();
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slug1 = `p1b-tenant1-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const slug2 = `p1b-tenant2-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa1 = await registrarEmpresa(controlDb, { slug: slug1, nombre: "P1B Tenant 1", dbPath: path.basename(dbPath1), activa: 1 });
+    const empresa2 = await registrarEmpresa(controlDb, { slug: slug2, nombre: "P1B Tenant 2", dbPath: path.basename(dbPath2), activa: 1 });
+    const local1 = (await allSql(dbPath1, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const local2 = (await allSql(dbPath2, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    // #32: colision deliberada -- ambas DBs frescas asignan el mismo id al admin semilla.
+    assertEqual(local1.id, local2.id, "precondicion: colision deliberada de usuario_local_id entre tenants");
+    const pass1 = "TenantUnoPass1", pass2 = "TenantDosPass1";
+    const central1 = await crearUsuarioCentral(controlDb, { nombre: "Tenant1 Central", usuarioReferencia: "admin", passwordHash: await bcrypt.hash(pass1, 10), activo: 1 });
+    const central2 = await crearUsuarioCentral(controlDb, { nombre: "Tenant2 Central", usuarioReferencia: "admin", passwordHash: await bcrypt.hash(pass2, 10), activo: 1 });
+    await crearMembership(controlDb, { usuarioId: central1.id, empresaId: empresa1.id, usuarioLocalId: local1.id, rol: "admin", activo: 1 });
+    await crearMembership(controlDb, { usuarioId: central2.id, empresaId: empresa2.id, usuarioLocalId: local2.id, rol: "admin", activo: 1 });
+    await closeControlDb(controlDb);
+    await insertarTenantIdentityTest(dbPath1, empresa1.id, slug1);
+    await insertarTenantIdentityTest(dbPath2, empresa2.id, slug2);
+
+    const env1 = { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug1, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" };
+    const env2 = { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: slug2, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" };
+    const key = crypto.randomUUID();
+
+    await withServer(dbPath1, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", pass1);
+      const r1 = await requestJson(baseUrl, "PATCH", `/usuarios/${local1.id}/password`, {
+        password: "Tenant1Nueva12345", confirmar_password: "Tenant1Nueva12345"
+      }, token, { "Idempotency-Key": key });
+      assertEqual(r1.response.status, 200, "tenant 1 debe confirmar");
+    }, env1);
+
+    await withServer(dbPath2, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", pass2);
+      const r2 = await requestJson(baseUrl, "PATCH", `/usuarios/${local2.id}/password`, {
+        password: "Tenant2Nueva12345", confirmar_password: "Tenant2Nueva12345"
+      }, token, { "Idempotency-Key": key });
+      assertEqual(r2.response.status, 409, "la MISMA key reutilizada en un tenant DISTINTO (pese al usuario_local_id colisionado) debe rechazar 409");
+      assertSame(r2.data.code, "IDEMPOTENCY_KEY_REUSED", "codigo explicito");
+    }, env2);
+
+    const controlDbFinal = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const c2 = await getControlQuery(controlDbFinal, "SELECT password_hash FROM usuarios WHERE id = ?", [central2.id]);
+      assertSame(await bcrypt.compare(pass2, c2.password_hash), true, "tenant 2 nunca debio cambiar -- el replay cruzado no debe filtrar autoridad entre tenants");
+    } finally {
+      await closeControlDb(controlDbFinal);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath1);
+    limpiarTenantTestDb(dbPath2);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BMismaKeyPasswordDistintoEsReplayDeOperacionOriginal() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const key = crypto.randomUUID();
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+      const r1 = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "PasswordOriginal1", confirmar_password: "PasswordOriginal1"
+      }, token, { "Idempotency-Key": key });
+      assertEqual(r1.response.status, 200, "primer intento debe confirmar");
+
+      // CONTRATO EXPLICITO (no un bug): password/confirmar_password NUNCA forman parte del
+      // fingerprint -- un reintento con la MISMA key pero OTRO password se trata como retry de la
+      // MISMA accion original, nunca como una operacion nueva ni como key-reuse.
+      const tokenPostCambio = await login(baseUrl, "admin", "PasswordOriginal1");
+      const r2 = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "PasswordDistinto2", confirmar_password: "PasswordDistinto2"
+      }, tokenPostCambio, { "Idempotency-Key": key });
+      assertEqual(r2.response.status, 200, "misma key con OTRO password debe ser tratado como replay, no como key-reuse ni operacion nueva");
+      assertSame(JSON.stringify(r2.data), JSON.stringify(r1.data), "debe devolver EXACTAMENTE el mismo resultado logico que la operacion original");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT password_hash, version FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertEqual(Number(central.version), 1, "version debe haber incrementado UNA sola vez");
+      assertSame(await bcrypt.compare("PasswordOriginal1", central.password_hash), true, "el password final debe ser el de la operacion ORIGINAL -- no hay segunda escritura");
+      assertSame(await bcrypt.compare("PasswordDistinto2", central.password_hash), false, "el password del intento replay NUNCA debe haberse aplicado");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BFilaEnProgresoPersistenteRechaza409SinPasswordWrite() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const key = crypto.randomUUID();
+    const controlDbPre = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      await runControlQuery(
+        controlDbPre,
+        `INSERT INTO operacion_idempotencia (clave, endpoint, usuario_id, membership_id, solicitud_huella, estado)
+         VALUES (?, '/usuarios/:id/password', ?, ?, 'huella-anomala-preexistente', 'en_progreso')`,
+        [key, fixture.central.id, fixture.membership.id]
+      );
+    } finally {
+      await closeControlDb(controlDbPre);
+    }
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+      const { response, data } = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "NoDebeAplicarse123", confirmar_password: "NoDebeAplicarse123"
+      }, token, { "Idempotency-Key": key });
+      assertEqual(response.status, 409, "una fila en_progreso persistente debe rechazar 409 fail-closed");
+      assertSame(data.code, "IDEMPOTENCY_OPERATION_IN_PROGRESS", "codigo explicito");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT password_hash, version FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertSame(await bcrypt.compare(fixture.centralPassword, central.password_hash), true, "password central no debe haber cambiado");
+      assertEqual(Number(central.version), 0, "version no debe incrementar");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BCrashAntesDelCommitNoDejaFilaNiPasswordCentralIntacto() {
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slug = `p1b-crash-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug, nombre: "P1B Crash Test", dbPath: "guernica.db", activa: 1 });
+    const hashOriginal = await bcrypt.hash("OriginalPass1", 10);
+    const central = await crearUsuarioCentral(controlDb, { nombre: "P1B Crash", usuarioReferencia: "p1b-crash", passwordHash: hashOriginal, activo: 1 });
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 1, rol: "admin", activo: 1 });
+    await closeControlDb(controlDb);
+
+    const key = crypto.randomUUID();
+    // passwordHash=null fuerza una violacion NOT NULL DESPUES del INSERT en_progreso (ya dentro de
+    // la transaccion) -- simula una excepcion mid-transaccion (equivalente a un crash) sin depender
+    // de temporizacion real.
+    let lanzo = null;
+    try {
+      await userControlBridge.actualizarPasswordCentralFirstIdempotente({
+        usuarioCentralId: central.id, expectedVersion: 0, passwordHash: null,
+        idempotencyKey: key, endpointLogico: "/usuarios/:id/password", solicitudHuella: "huella-crash",
+        actorCentralId: central.id, actorMembershipId: membership.id, controlDbPath
+      });
+    } catch (error) {
+      lanzo = error;
+    }
+    assertSame(lanzo !== null, true, "un fallo mid-transaccion debe propagar la excepcion, nunca tragarsela");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const filas = await allControlQuery(controlDb, "SELECT * FROM operacion_idempotencia WHERE clave = ?", [key]);
+      assertEqual(filas.length, 0, "no debe quedar NINGUNA fila (ni en_progreso ni confirmada) tras el rollback");
+      const centralDespues = await getControlQuery(controlDb, "SELECT password_hash, version FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespues.password_hash, hashOriginal, "password central debe permanecer intacto");
+      assertEqual(Number(centralDespues.version), 0, "version no debe haber incrementado");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+
+    const retry = await userControlBridge.actualizarPasswordCentralFirstIdempotente({
+      usuarioCentralId: central.id, expectedVersion: 0, passwordHash: await bcrypt.hash("RetryTrasCrash1", 10),
+      idempotencyKey: key, endpointLogico: "/usuarios/:id/password", solicitudHuella: "huella-crash",
+      actorCentralId: central.id, actorMembershipId: membership.id, controlDbPath
+    });
+    assertSame(retry.ok, true, "un retry de la MISMA key tras el crash debe poder ejecutarse limpiamente");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BCasConflictQuedaConfirmadoDurablementeYRetryNuncaConvierteEnSuccess() {
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slug = `p1b-casconflict-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug, nombre: "P1B CAS Conflict", dbPath: "guernica.db", activa: 1 });
+    const central = await crearUsuarioCentral(controlDb, { nombre: "P1B CAS", usuarioReferencia: "p1b-cas", passwordHash: await bcrypt.hash("Inicial1", 10), activo: 1 });
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 1, rol: "admin", activo: 1 });
+    await closeControlDb(controlDb);
+
+    // Version real ya avanzo a 1 (otra operacion cualquiera) -- expectedVersion=0 quedo obsoleto.
+    await userControlBridge.actualizarPasswordCentralFirstIdempotente({
+      usuarioCentralId: central.id, expectedVersion: 0, passwordHash: await bcrypt.hash("OtraOperacion1", 10),
+      idempotencyKey: crypto.randomUUID(), endpointLogico: "/usuarios/:id/password", solicitudHuella: "huella-otra",
+      actorCentralId: central.id, actorMembershipId: membership.id, controlDbPath
+    });
+
+    const key = crypto.randomUUID();
+    const intento = {
+      usuarioCentralId: central.id, expectedVersion: 0, passwordHash: await bcrypt.hash("Perdedora1", 10),
+      idempotencyKey: key, endpointLogico: "/usuarios/:id/password", solicitudHuella: "huella-perdedora",
+      actorCentralId: central.id, actorMembershipId: membership.id, controlDbPath
+    };
+    const primerIntento = await userControlBridge.actualizarPasswordCentralFirstIdempotente(intento);
+    assertSame(primerIntento.ok, false, "debe fallar por CAS");
+    assertSame(primerIntento.errorCode, "VERSION_CONFLICT", "codigo esperado");
+    assertEqual(primerIntento.resultadoHttp, 409, "409 durable");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const fila = await getControlQuery(controlDb, "SELECT estado, resultado_http FROM operacion_idempotencia WHERE clave = ?", [key]);
+      assertSame(fila.estado, "confirmada", "el CAS conflict debe quedar CONFIRMADO durablemente, no en rollback");
+      assertEqual(Number(fila.resultado_http), 409, "resultado_http durable debe ser 409");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+
+    const retry = await userControlBridge.actualizarPasswordCentralFirstIdempotente(intento);
+    assertSame(retry.ok, true, "un replay siempre resuelve ok:true (es la lectura de un resultado durable), aunque ese resultado ORIGINAL haya sido un fallo de CAS");
+    assertSame(retry.replay, true, "debe ser un replay");
+    assertEqual(retry.resultadoHttp, 409, "el replay debe devolver el mismo 409 original, nunca un 200 nuevo -- una accion vieja jamas se convierte en exito despues");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BDosRequestsConcurrentesMismaKeyUnaSolaEscrituraCentral() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const key = crypto.randomUUID();
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+      const [r1, r2] = await Promise.all([
+        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "ConcurrenteMismaKey1", confirmar_password: "ConcurrenteMismaKey1" }, token, { "Idempotency-Key": key }),
+        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "ConcurrenteMismaKey1", confirmar_password: "ConcurrenteMismaKey1" }, token, { "Idempotency-Key": key })
+      ]);
+      assertEqual(r1.response.status, 200, "primera debe confirmar");
+      assertEqual(r2.response.status, 200, "segunda (misma key) tambien debe resolver 200 -- via replay, nunca un error");
+      assertSame(r1.data.message, "Contraseña actualizada correctamente", "mensaje de la primera respuesta");
+      assertSame(r2.data.message, "Contraseña actualizada correctamente", "mensaje de la segunda respuesta");
+      // NOTA (no es un bug): sincronizacion_shadow puede diferir entre las dos respuestas -- la
+      // proyeccion inline post-commit es una actualizacion best-effort separada de la transaccion
+      // central, y el ganador/perdedor de la carrera por la key pueden leer el estado durable en
+      // distintos momentos relativos a esa actualizacion (pendiente->procesada, nunca al reves).
+      assertSame(["pendiente", "procesada"].includes(r1.data.sincronizacion_shadow), true, "valor valido en la primera respuesta");
+      assertSame(["pendiente", "procesada"].includes(r2.data.sincronizacion_shadow), true, "valor valido en la segunda respuesta");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT version, password_version FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertEqual(Number(central.version), 1, "version debe haber subido EXACTAMENTE una vez, pese a dos requests concurrentes con la misma key");
+      assertEqual(Number(central.password_version), 1, "password_version debe haber subido EXACTAMENTE una vez");
+      const filas = await allControlQuery(controlDb, "SELECT * FROM operacion_idempotencia WHERE clave = ?", [key]);
+      assertEqual(filas.length, 1, "debe existir UNA sola fila para esta key -- sin corrupcion por la carrera");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BDosRequestsConcurrentesKeysDistintasPreservaContratoCAS() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const keyA = crypto.randomUUID();
+    const keyB = crypto.randomUUID();
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+      const [r1, r2] = await Promise.all([
+        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "KeyDistintaA1", confirmar_password: "KeyDistintaA1" }, token, { "Idempotency-Key": keyA }),
+        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "KeyDistintaB1", confirmar_password: "KeyDistintaB1" }, token, { "Idempotency-Key": keyB })
+      ]);
+      const statuses = [r1.response.status, r2.response.status].sort();
+      assertSame(JSON.stringify(statuses), JSON.stringify([200, 409]), "exactamente una de las dos keys distintas debe confirmar, la otra 409 por CAS");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const filaA = await getControlQuery(controlDb, "SELECT estado, resultado_http FROM operacion_idempotencia WHERE clave = ?", [keyA]);
+      const filaB = await getControlQuery(controlDb, "SELECT estado, resultado_http FROM operacion_idempotencia WHERE clave = ?", [keyB]);
+      assertSame(filaA.estado, "confirmada", "keyA debe quedar confirmada");
+      assertSame(filaB.estado, "confirmada", "keyB debe quedar confirmada");
+      const httpCodes = [Number(filaA.resultado_http), Number(filaB.resultado_http)].sort();
+      assertSame(JSON.stringify(httpCodes), JSON.stringify([200, 409]), "cada key debe tener su propio resultado durable, exactamente uno 200 y el otro 409");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BSuccessCentralProyeccionFallaRespuestaPendienteKeyConfirmadaRetryNoReejecuta() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const key = crypto.randomUUID();
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+
+      const controlDbPre = await bootstrapControlDb(controlDbPath, { seed: false });
+      try {
+        await runControlQuery(controlDbPre, "UPDATE empresas SET db_path = ? WHERE id = ?", ["p1b-inexistente-projection.db", fixture.empresa.id]);
+      } finally {
+        await closeControlDb(controlDbPre);
+      }
+
+      const r1 = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "ProyeccionFalla12345", confirmar_password: "ProyeccionFalla12345"
+      }, token, { "Idempotency-Key": key });
+      assertEqual(r1.response.status, 200, "aunque la proyeccion falle, la respuesta sigue siendo 200 (central ya cambio)");
+      assertSame(r1.data.sincronizacion_shadow, "pendiente", "sin proyeccion exitosa, debe quedar pendiente");
+
+      const tokenPostCambio = await login(baseUrl, "admin", "ProyeccionFalla12345");
+      const r2 = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "ProyeccionFalla12345", confirmar_password: "ProyeccionFalla12345"
+      }, tokenPostCambio, { "Idempotency-Key": key });
+      assertEqual(r2.response.status, 200, "retry debe seguir siendo replay");
+      assertSame(r2.data.sincronizacion_shadow, "pendiente", "el retry NO debe reejecutar password ni la proyeccion -- devuelve el estado durable tal cual");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT version FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertEqual(Number(central.version), 1, "version debe haber incrementado UNA sola vez pese al retry");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BSuccessCentralProyeccionFuncionaResultadoAvanzaAProcesadaRetryNoReejecuta() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const key = crypto.randomUUID();
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+      const r1 = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "ProyeccionOk12345", confirmar_password: "ProyeccionOk12345"
+      }, token, { "Idempotency-Key": key });
+      assertEqual(r1.response.status, 200, "debe confirmar");
+      assertSame(r1.data.sincronizacion_shadow, "procesada", "proyeccion inline exitosa en el happy path");
+
+      const tokenPostCambio = await login(baseUrl, "admin", "ProyeccionOk12345");
+      const r2 = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "ProyeccionOk12345", confirmar_password: "ProyeccionOk12345"
+      }, tokenPostCambio, { "Idempotency-Key": key });
+      assertEqual(r2.response.status, 200, "retry debe seguir siendo replay");
+      assertSame(r2.data.sincronizacion_shadow, "procesada", "el resultado durable debe reflejar 'procesada' (avanzo desde 'pendiente'), nunca retroceder");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const fila = await getControlQuery(controlDb, "SELECT resultado_json FROM operacion_idempotencia WHERE clave = ?", [key]);
+      const json = JSON.parse(fila.resultado_json);
+      assertSame(json.sincronizacion_shadow, "procesada", "el resultado_json durable debe reflejar la actualizacion best-effort a procesada");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BResponsePerdidoSimuladoRetryDevuelveResultadoDurable() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const key = crypto.randomUUID();
+
+    // Simula "el commit ya sucedio en el servidor, pero el cliente nunca vio la respuesta" -- se
+    // ejecuta la operacion real DIRECTAMENTE (sin pasar por HTTP), como si hubiera sido la request
+    // original cuya respuesta se perdio en la red. La huella debe ser la MISMA que calcularia el
+    // handler HTTP para este actor/target (admin cambiando su propia password), para que el retry
+    // via HTTP coincida por fingerprint y no choque con 409 IDEMPOTENCY_KEY_REUSED.
+    const solicitudHuellaReal = crypto.createHash("sha256").update(JSON.stringify({
+      metodo: "PATCH", endpoint: "/usuarios/:id/password",
+      empresaId: Number(fixture.empresa.id), targetUsuarioLocalId: Number(fixture.localUserId),
+      targetUsuarioCentralId: Number(fixture.central.id), targetMembershipId: Number(fixture.membership.id),
+      actorCentralId: Number(fixture.central.id), actorMembershipId: Number(fixture.membership.id)
+    })).digest("hex");
+    const directo = await userControlBridge.actualizarPasswordCentralFirstIdempotente({
+      usuarioCentralId: fixture.central.id, expectedVersion: 0, passwordHash: await bcrypt.hash("ResponsePerdido1", 10),
+      idempotencyKey: key, endpointLogico: "/usuarios/:id/password", solicitudHuella: solicitudHuellaReal,
+      actorCentralId: fixture.central.id, actorMembershipId: fixture.membership.id, controlDbPath
+    });
+    assertSame(directo.ok, true, "la operacion 'perdida' debe haberse confirmado igual del lado del servidor");
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "ResponsePerdido1");
+      const retry = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "ResponsePerdido1", confirmar_password: "ResponsePerdido1"
+      }, token, { "Idempotency-Key": key });
+      assertEqual(retry.response.status, 200, "el retry debe recibir el resultado durable de la operacion que ya habia sucedido");
+      assertSame(retry.data.message, "Contraseña actualizada correctamente", "mensaje coincide con el resultado durable");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT version FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertEqual(Number(central.version), 1, "el retry via HTTP no debe haber ejecutado una segunda operacion");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BRestartKeyConfirmadaSigueDeduplicando() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const key = crypto.randomUUID();
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+      const r1 = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "RestartDedup12345", confirmar_password: "RestartDedup12345"
+      }, token, { "Idempotency-Key": key });
+      assertEqual(r1.response.status, 200, "primer intento antes del restart debe confirmar");
+    }, extraEnvCentral(fixture));
+
+    await withServer(dbPath, async (baseUrl) => {
+      const tokenPostCambio = await login(baseUrl, "admin", "RestartDedup12345");
+      const retry = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "RestartDedup12345", confirmar_password: "RestartDedup12345"
+      }, tokenPostCambio, { "Idempotency-Key": key });
+      assertEqual(retry.response.status, 200, "tras el restart, la MISMA key debe seguir deduplicando (estado en disco, no en memoria)");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT version FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertEqual(Number(central.version), 1, "version debe seguir en 1 tras el restart y el retry");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BOperacionIdempotenciaAusenteFallaCerradoAntesDeBcrypt() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await runSql(controlDbPath, "DROP TABLE operacion_idempotencia");
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+      const { response } = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "SinIdempotenciaTabla1", confirmar_password: "SinIdempotenciaTabla1"
+      }, token, { "Idempotency-Key": crypto.randomUUID() });
+      assertEqual(response.status, 503, "sin operacion_idempotencia, central+shadow debe fallar cerrado (503) antes de bcrypt/local");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT password_hash, version FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertSame(await bcrypt.compare(fixture.centralPassword, central.password_hash), true, "password central no debe haber cambiado");
+      assertEqual(Number(central.version), 0, "version no debe incrementar");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BUsuariosHtmlGeneraUuidYEnviaHeader() {
+  const contenido = fs.readFileSync(path.join(ROOT, "frontend", "usuarios.html"), "utf8");
+  assertSame(contenido.includes("passwordIdempotencyKey = crypto.randomUUID()"), true, "usuarios.html debe generar la key con crypto.randomUUID()");
+  assertSame(/"Idempotency-Key"\s*:\s*passwordIdempotencyKey/.test(contenido), true, "usuarios.html debe enviar el header Idempotency-Key en el PATCH de password");
+}
+
+async function testP1BUsuariosHtmlConservaKeyAnteFalloDeRedYLaInvalidaAlEditar() {
+  const contenido = fs.readFileSync(path.join(ROOT, "frontend", "usuarios.html"), "utf8");
+  assertSame(contenido.includes('$("nuevaPassword").addEventListener("input", invalidarPasswordIdempotencyKey)'), true, "editar el password debe invalidar la key");
+  assertSame(contenido.includes('$("confirmarNuevaPassword").addEventListener("input", invalidarPasswordIdempotencyKey)'), true, "editar la confirmacion debe invalidar la key");
+  assertSame(contenido.includes("CONSERVAR la key para"), true, "debe conservar la key ante error de red");
+  assertSame(contenido.includes("Conservar la key: el propio contrato pide reintentar con la MISMA clave."), true, "IDEMPOTENCY_OPERATION_IN_PROGRESS debe conservar la key");
+}
+
+async function testP1BPerfilHtmlGeneraUuidYEnviaHeader() {
+  const contenido = fs.readFileSync(path.join(ROOT, "frontend", "perfil.html"), "utf8");
+  assertSame(contenido.includes("passwordIdempotencyKey=crypto.randomUUID()"), true, "perfil.html debe generar la key con crypto.randomUUID()");
+  assertSame(/"Idempotency-Key"\s*:\s*passwordIdempotencyKey/.test(contenido), true, "perfil.html debe enviar el header Idempotency-Key en el PATCH de password");
+}
+
+async function testP1BPerfilHtmlConservaKeyAnteFalloDeRedYLaInvalidaAlEditar() {
+  const contenido = fs.readFileSync(path.join(ROOT, "frontend", "perfil.html"), "utf8");
+  assertSame(contenido.includes('password.addEventListener("input",invalidarPasswordIdempotencyKey)'), true, "editar el password debe invalidar la key");
+  assertSame(contenido.includes('confirmarPassword.addEventListener("input",invalidarPasswordIdempotencyKey)'), true, "editar la confirmacion debe invalidar la key");
+  assertSame(contenido.includes("Error de red: la accion sigue incierta -- CONSERVAR la key."), true, "debe conservar la key ante error de red");
+  assertSame(contenido.includes("Respuesta desconocida (no JSON): la accion sigue incierta -- CONSERVAR la key."), true, "debe conservar la key ante respuesta desconocida");
+  assertSame(contenido.includes("Conservar la key: el propio contrato pide reintentar con la MISMA clave."), true, "IDEMPOTENCY_OPERATION_IN_PROGRESS debe conservar la key");
 }

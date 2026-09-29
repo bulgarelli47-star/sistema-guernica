@@ -172,6 +172,13 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const state = { usuarios: [], filtrados: [], config: {} };
+    // AUTH-SYNC-B2-P1B: una Idempotency-Key representa UNA accion del usuario (memoria de pagina
+    // solamente -- nunca localStorage). Se genera en el primer submit real, se conserva mientras la
+    // accion siga incierta (error de red, respuesta desconocida, IN_PROGRESS), y se invalida en
+    // cuanto el usuario edita password/confirmacion (eso siempre es una accion NUEVA) o al recibir
+    // una respuesta definitiva (success, VERSION_CONFLICT, IDEMPOTENCY_KEY_REUSED).
+    let passwordIdempotencyKey = null;
+    function invalidarPasswordIdempotencyKey() { passwordIdempotencyKey = null; }
     let usuarioEliminarPendiente = null;
     let modalTriggerActivo = null;
     const roles = { admin: "Dueño", encargado: "Encargado", colaborador: "Colaborador", operador: "Colaborador", caja: "Colaborador" };
@@ -298,6 +305,7 @@
       $("passwordForm").reset();
       $("passwordUsuarioId").value = id;
       msg($("passwordMensaje"), "");
+      invalidarPasswordIdempotencyKey();
       abrirModalSeguro($("passwordModal"), $("nuevaPassword"));
     }
     function cerrarPassword() { cerrarModalSeguro($("passwordModal")); }
@@ -356,9 +364,33 @@
       event.preventDefault();
       const id = $("passwordUsuarioId").value;
       $("guardarPassword").disabled = true;
+      // AUTH-SYNC-B2-P1B: primera submit de esta accion -> genera key; un retry de la MISMA accion
+      // incierta (el usuario no edito los campos) reutiliza la MISMA key.
+      if (!passwordIdempotencyKey) passwordIdempotencyKey = crypto.randomUUID();
+      let res;
       try {
-        const res = await fetch(`/usuarios/${id}/password`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: $("nuevaPassword").value, confirmar_password: $("confirmarNuevaPassword").value }) });
+        res = await fetch(`/usuarios/${id}/password`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": passwordIdempotencyKey },
+          body: JSON.stringify({ password: $("nuevaPassword").value, confirmar_password: $("confirmarNuevaPassword").value })
+        });
+      } catch (error) {
+        // Error de red / respuesta desconocida: la accion sigue incierta -- CONSERVAR la key para
+        // que un retry posterior sea, para el backend, la MISMA operacion.
+        msg($("passwordMensaje"), "No se pudo conectar. Reintenta con el mismo formulario.", "error");
+        $("guardarPassword").disabled = false;
+        return;
+      }
+      try {
         const data = await res.json();
+        if (res.status === 409 && (data.code === "IDEMPOTENCY_OPERATION_IN_PROGRESS")) {
+          // Conservar la key: el propio contrato pide reintentar con la MISMA clave.
+          msg($("passwordMensaje"), data.message || "Ya hay una operacion en curso. Reintenta en unos instantes.", "error");
+          return;
+        }
+        // Cualquier otra respuesta (success, VERSION_CONFLICT, IDEMPOTENCY_KEY_REUSED, 400, etc.)
+        // es DEFINITIVA -- la accion deja de estar incierta, la siguiente submit es una accion nueva.
+        invalidarPasswordIdempotencyKey();
         if (!res.ok) throw new Error(data.message || "Error al cambiar contrasena");
         cerrarPassword();
         msg($("mensaje"), data.message || "Contrasena actualizada", "ok");
@@ -410,6 +442,10 @@
     $("recargar").onclick = cargarUsuarios;
     $("usuarioForm").addEventListener("submit", guardarUsuario);
     $("passwordForm").addEventListener("submit", cambiarPassword);
+    // AUTH-SYNC-B2-P1B: editar password/confirmacion siempre invalida la key -- el proximo submit
+    // es, por definicion, una accion nueva (contrato: "MISMA key = MISMA operacion logica").
+    $("nuevaPassword").addEventListener("input", invalidarPasswordIdempotencyKey);
+    $("confirmarNuevaPassword").addEventListener("input", invalidarPasswordIdempotencyKey);
     $("cerrarModal").onclick = cerrarUsuario; $("cancelarUsuario").onclick = cerrarUsuario;
     $("cerrarPasswordModal").onclick = cerrarPassword; $("cancelarPassword").onclick = cerrarPassword;
     $("cerrarEliminarUsuario").onclick = cerrarEliminarUsuario; $("cancelarEliminarUsuario").onclick = cerrarEliminarUsuario; $("confirmarEliminarUsuario").onclick = confirmarEliminarUsuario;

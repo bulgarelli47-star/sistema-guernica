@@ -235,6 +235,255 @@ async function actualizarPasswordCentralFirst({ usuarioCentralId, expectedVersio
   }
 }
 
+// AUTH-SYNC-B2-P1B: deteccion de shape de operacion_idempotencia, especifica del path de escritura
+// idempotente de password. Deliberadamente NO se agrega a detectarSoporteEsquemaS0
+// (database/process-central-outbox.js): esa funcion tambien la consume el drenaje por lote
+// (drenarOutboxPassword), que nunca lee ni escribe operacion_idempotencia -- acoplar ambos
+// requisitos le exigiria al consumer un schema que no necesita para su propio trabajo. Misma
+// politica de copia independiente por modulo ya establecida tres veces en este codebase
+// (reconcile-shadow-users.js/sync-shadow-users.js/process-central-outbox.js): cada herramienta
+// mantiene su propia copia de lo que necesita, nunca importa la de otra.
+async function detectarSoporteOperacionIdempotencia(db) {
+  const tablas = await allQuery(db, "SELECT name FROM sqlite_master WHERE type='table' AND name='operacion_idempotencia'");
+  if (tablas.length === 0) {
+    return { soportado: false, motivo: "OPERACION_IDEMPOTENCIA_AUSENTE" };
+  }
+  const columnas = await allQuery(db, "PRAGMA table_info(operacion_idempotencia)");
+  const nombres = new Set(columnas.map((columna) => columna.name));
+  const esperadas = [
+    "clave", "endpoint", "usuario_id", "membership_id", "solicitud_huella",
+    "estado", "resultado_http", "resultado_json", "creado_en", "confirmada_en"
+  ];
+  const formaCorrecta = esperadas.every((columna) => nombres.has(columna));
+  if (!formaCorrecta) {
+    return { soportado: false, motivo: "OPERACION_IDEMPOTENCIA_FORMA_INCOMPATIBLE" };
+  }
+  return { soportado: true };
+}
+
+// Envoltorio de conveniencia para el handler HTTP: verificacion fail-closed ANTES de bcrypt, misma
+// filosofia que verificarSoporteS0Standalone (database/process-central-outbox.js) -- nunca migra,
+// nunca crea la tabla, solo introspeccion de solo lectura sobre una conexion de corta vida.
+async function verificarSoporteOperacionIdempotenciaStandalone({ controlDbPath } = {}) {
+  const dbPath = controlDbPath || resolveControlDbPath();
+  const db = await abrirControlDbBridge(dbPath);
+  try {
+    return await detectarSoporteOperacionIdempotencia(db);
+  } finally {
+    await closeDb(db);
+  }
+}
+
+// AUTH-SYNC-B2-P1B: lectura standalone de UNA fila de operacion_idempotencia por clave -- usada
+// por el handler HTTP como "fast replay" ANTES de calcular bcrypt (evita el costo de bcrypt en un
+// replay obvio). Esta lectura NUNCA es la autoridad: la decision real, segura ante carreras, se
+// re-hace DENTRO de la transaccion atomica de actualizarPasswordCentralFirstIdempotente. Conexion
+// de corta vida, solo lectura logica (sin transaccion explicita: un SELECT suelto ya es atomico en
+// SQLite).
+async function consultarOperacionIdempotenciaStandalone({ idempotencyKey, controlDbPath } = {}) {
+  const dbPath = controlDbPath || resolveControlDbPath();
+  const db = await abrirControlDbBridge(dbPath);
+  try {
+    return await getQuery(db, "SELECT * FROM operacion_idempotencia WHERE clave = ?", [idempotencyKey]);
+  } finally {
+    await closeDb(db);
+  }
+}
+
+// AUTH-SYNC-B2-P1B: variante idempotente de actualizarPasswordCentralFirst -- NO reemplaza ni
+// modifica la funcion original (que sigue siendo la autoridad para callers que no pasan por HTTP,
+// p.ej. tests directos y cualquier caller futuro que no necesite idempotencia). El handler HTTP de
+// PATCH /usuarios/:id/password usa EXCLUSIVAMENTE esta variante en central+shadow.
+//
+// Contrato de atomicidad congelado (checkpoint P1B): bcrypt SIEMPRE se calcula ANTES de llamar a
+// esta funcion (el caller ya trae `passwordHash`). Dentro de UNA sola transaccion BEGIN IMMEDIATE:
+// 1) re-leer la Idempotency-Key; 2) si ya existe, resolver replay/conflicto/en-progreso SIN tocar
+// password; 3) si no existe, reservarla (estado='en_progreso'); 4) CAS central; 5) fan-out;
+// 6) escribir el resultado DEFINITIVO en la misma fila (estado='confirmada'); 7) COMMIT. Un CAS
+// perdido (VERSION_CONFLICT) tambien es un resultado DEFINITIVO -- se confirma (COMMIT, no
+// ROLLBACK) con resultado_http=409, para que un retry de esa MISMA key siempre vea el mismo 409,
+// nunca una segunda oportunidad de exito. Cualquier excepcion antes del COMMIT (Control DB
+// inaccesible, SQLITE_BUSY, etc.) SI hace ROLLBACK completo -- ninguna fila de idempotencia queda
+// reservada, la misma key puede reintentarse limpiamente.
+async function actualizarPasswordCentralFirstIdempotente({
+  usuarioCentralId, expectedVersion, passwordHash,
+  idempotencyKey, endpointLogico, solicitudHuella,
+  actorCentralId, actorMembershipId,
+  controlDbPath
+} = {}) {
+  const dbPath = controlDbPath || resolveControlDbPath();
+  const db = await abrirControlDbBridge(dbPath);
+  let transactionStarted = false;
+  try {
+    await runQuery(db, "BEGIN IMMEDIATE");
+    transactionStarted = true;
+
+    // 1) re-leer la key DENTRO de la transaccion -- nunca confiar en una lectura previa (fast
+    // replay del handler HTTP), que pudo quedar stale entre esa lectura y este lock.
+    const existente = await getQuery(db, "SELECT * FROM operacion_idempotencia WHERE clave = ?", [idempotencyKey]);
+    if (existente) {
+      if (existente.estado === "confirmada") {
+        const coincide = existente.endpoint === endpointLogico
+          && Number(existente.usuario_id) === Number(actorCentralId)
+          && Number(existente.membership_id) === Number(actorMembershipId)
+          && existente.solicitud_huella === solicitudHuella;
+        await runQuery(db, "ROLLBACK");
+        transactionStarted = false;
+        if (coincide) {
+          return {
+            ok: true,
+            replay: true,
+            resultadoHttp: existente.resultado_http,
+            resultadoJson: existente.resultado_json ? JSON.parse(existente.resultado_json) : null
+          };
+        }
+        return { ok: false, errorCode: "IDEMPOTENCY_KEY_REUSED" };
+      }
+      // estado === 'en_progreso': bajo este contrato nunca deberia quedar persistente -- si se
+      // observa, es estado anomalo/viejo/manual. Fail-closed: nunca se re-ejecuta la operacion.
+      await runQuery(db, "ROLLBACK");
+      transactionStarted = false;
+      return { ok: false, errorCode: "IDEMPOTENCY_OPERATION_IN_PROGRESS" };
+    }
+
+    // 3) no existe: reservar la key ANTES de tocar password (dentro de la MISMA transaccion --
+    // nunca en una TX separada, para que un crash entre el INSERT y el CAS jamas deje una fila
+    // en_progreso durable: todo o nada, atomico con el password write).
+    await runQuery(
+      db,
+      `INSERT INTO operacion_idempotencia (clave, endpoint, usuario_id, membership_id, solicitud_huella, estado)
+       VALUES (?, ?, ?, ?, ?, 'en_progreso')`,
+      [idempotencyKey, endpointLogico, actorCentralId, actorMembershipId, solicitudHuella]
+    );
+
+    // 4) CAS central -- identico al de actualizarPasswordCentralFirst.
+    const casResult = await runQuery(
+      db,
+      "UPDATE usuarios SET password_hash = ?, version = version + 1, password_version = password_version + 1, actualizado_en = datetime('now') WHERE id = ? AND version = ?",
+      [passwordHash, usuarioCentralId, expectedVersion]
+    );
+
+    if (casResult.changes !== 1) {
+      const actual = await getQuery(db, "SELECT version FROM usuarios WHERE id = ?", [usuarioCentralId]);
+      const versionActual = actual ? Number(actual.version) : null;
+      const resultadoJson = {
+        message: "La contraseña fue modificada por otra operación. Volvé a intentar.",
+        version_actual: versionActual
+      };
+      // CAS perdido es un resultado DEFINITIVO (no un fallo operacional) -- se CONFIRMA, no se
+      // revierte: un retry de esta MISMA key debe ver siempre este mismo 409, nunca una nueva
+      // oportunidad de exito.
+      await runQuery(
+        db,
+        "UPDATE operacion_idempotencia SET estado = 'confirmada', resultado_http = 409, resultado_json = ?, confirmada_en = datetime('now') WHERE clave = ?",
+        [JSON.stringify(resultadoJson), idempotencyKey]
+      );
+      await runQuery(db, "COMMIT");
+      transactionStarted = false;
+      return { ok: false, errorCode: "VERSION_CONFLICT", versionActual, resultadoHttp: 409, resultadoJson };
+    }
+
+    const newVersion = expectedVersion + 1;
+    const passwordVersionRow = await getQuery(db, "SELECT password_version FROM usuarios WHERE id = ?", [usuarioCentralId]);
+    const newPasswordVersion = Number(passwordVersionRow.password_version);
+
+    // 5) fan-out -- identico al de actualizarPasswordCentralFirst, sin filtro alguno.
+    const memberships = await allQuery(
+      db,
+      "SELECT id, empresa_id, usuario_local_id FROM usuario_empresas WHERE usuario_id = ?",
+      [usuarioCentralId]
+    );
+    for (const membership of memberships) {
+      const upsert = await runQuery(
+        db,
+        `UPDATE sync_pendiente
+         SET version_objetivo = ?, estado = 'pendiente', procesado_en = NULL
+         WHERE membership_id = ? AND tipo_operacion = 'password'`,
+        [newVersion, membership.id]
+      );
+      if (upsert.changes === 0) {
+        await runQuery(
+          db,
+          `INSERT INTO sync_pendiente
+             (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+           VALUES (?, ?, ?, ?, 'password', ?, 'pendiente')`,
+          [usuarioCentralId, membership.empresa_id, membership.id, membership.usuario_local_id, newVersion]
+        );
+      }
+    }
+
+    // 6) resultado definitivo canonico -- sincronizacion_shadow SIEMPRE nace 'pendiente' aca
+    // (la proyeccion inline del tenant actual, si corresponde, es responsabilidad del caller HTTP
+    // DESPUES del COMMIT -- ver marcarIdempotenciaProyeccionProcesada). Nunca incluye password,
+    // hash, ni ningun derivado.
+    const resultadoJson = { message: "Contraseña actualizada correctamente", sincronizacion_shadow: "pendiente" };
+    await runQuery(
+      db,
+      "UPDATE operacion_idempotencia SET estado = 'confirmada', resultado_http = 200, resultado_json = ?, confirmada_en = datetime('now') WHERE clave = ?",
+      [JSON.stringify(resultadoJson), idempotencyKey]
+    );
+
+    await runQuery(db, "COMMIT");
+    transactionStarted = false;
+
+    return {
+      ok: true,
+      usuarioCentralId,
+      newVersion,
+      newPasswordVersion,
+      resultadoHttp: 200,
+      resultadoJson,
+      memberships: memberships.map((m) => ({
+        membershipId: m.id,
+        empresaId: m.empresa_id,
+        usuarioLocalId: m.usuario_local_id
+      }))
+    };
+  } catch (error) {
+    if (transactionStarted) {
+      try { await runQuery(db, "ROLLBACK"); } catch (rollbackError) { error.rollbackError = rollbackError; }
+    }
+    throw error;
+  } finally {
+    await closeDb(db);
+  }
+}
+
+// AUTH-SYNC-B2-P1B: actualizacion best-effort, DESPUES del COMMIT central, del resultado durable de
+// una key ya confirmada -- exclusivamente para reflejar que la proyeccion inline del tenant actual
+// (database/process-central-outbox.js) SI logro terminar. UPDATE angosto: solo toca una fila que ya
+// esta 'confirmada' (nunca crea, nunca reabre en_progreso), y solo avanza pendiente->procesada,
+// nunca al reves (si ya estaba 'procesada' -- p.ej. por una corrida anterior del consumer -- no hace
+// nada). Si esta actualizacion falla, NUNCA se revierte el password ni se devuelve 503: el estado
+// simplemente queda en 'pendiente' hasta que el consumer normal lo resuelva.
+async function marcarIdempotenciaProyeccionProcesada({ idempotencyKey, controlDbPath } = {}) {
+  const dbPath = controlDbPath || resolveControlDbPath();
+  const db = await abrirControlDbBridge(dbPath);
+  try {
+    const fila = await getQuery(
+      db,
+      "SELECT resultado_json FROM operacion_idempotencia WHERE clave = ? AND estado = 'confirmada'",
+      [idempotencyKey]
+    );
+    if (!fila || !fila.resultado_json) return;
+    let resultadoJson;
+    try {
+      resultadoJson = JSON.parse(fila.resultado_json);
+    } catch (parseError) {
+      return;
+    }
+    if (resultadoJson.sincronizacion_shadow === "procesada") return;
+    resultadoJson.sincronizacion_shadow = "procesada";
+    await runQuery(
+      db,
+      "UPDATE operacion_idempotencia SET resultado_json = ? WHERE clave = ? AND estado = 'confirmada'",
+      [JSON.stringify(resultadoJson), idempotencyKey]
+    );
+  } finally {
+    await closeDb(db);
+  }
+}
+
 // MT-1C.1B: rol y activo por empresa. Autoridad sigue siendo LOCAL en esta fase -- estas
 // funciones solo escriben el espejo en usuario_empresas, nunca en usuarios (central), y nunca
 // en ningun otro campo de la membership (por eso usan los updates angostos de un solo campo).
@@ -345,5 +594,9 @@ module.exports = {
   syncUserCreate,
   abrirControlDbBridge,
   resolverIdentidadCentralParaPassword,
-  actualizarPasswordCentralFirst
+  actualizarPasswordCentralFirst,
+  verificarSoporteOperacionIdempotenciaStandalone,
+  consultarOperacionIdempotenciaStandalone,
+  actualizarPasswordCentralFirstIdempotente,
+  marcarIdempotenciaProyeccionProcesada
 };
