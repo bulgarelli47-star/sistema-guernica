@@ -586,7 +586,11 @@ const CENTRAL_SESSION_AUTHORITY_ERRORS = new Set([
 const CENTRAL_SESSION_OPERATIONAL_ERRORS = new Set([
   "CONTROL_DB_AUSENTE",
   "CONTROL_DB_INACCESIBLE",
-  "CONTROL_DB_QUERY_ERROR"
+  "CONTROL_DB_QUERY_ERROR",
+  // AUTH-SYNC-B2-P1A-SR-FIX: capacidad de schema faltante (Control DB pre-S0/pre-SR) -- fallo
+  // operacional conocido, nunca "error desconocido"; nunca borra el token (no es una revocacion de
+  // autoridad), siempre responde 503 generico.
+  "CONTROL_PASSWORD_VERSION_SCHEMA_REQUIRED"
 ]);
 const CENTRAL_SESSION_INVALID_MESSAGE = "Sesión inválida. Iniciá sesión nuevamente.";
 const CENTRAL_AUTH_UNAVAILABLE_MESSAGE = "Servicio de autenticacion no disponible";
@@ -610,28 +614,31 @@ async function requireAuth(req, res, next) {
   try {
     const empresaRequest = empresaAuthDelRequest();
     if (PREAUTH_UNIFORME && !empresaRequest) return responderNoAutenticado(res);
-    // AUTH-SYNC-B2-P1A-SR: sesiones.password_version llega via migration
+    // AUTH-SYNC-B2-P1A-SR-FIX: sesiones.password_version llega via migration
     // "003_sesiones_password_version" (database/business-migrations.js), aplicada de forma gradual
     // y por-tenant a traves del mecanismo FORMAL de migraciones (provisionarTenantDb/migrarTenantDb)
-    // -- nunca via ALTER TABLE de startup aqui. Mientras la Business DB de un tenant todavia no fue
-    // migrada, la columna simplemente no existe: se detecta el error especifico de sqlite3 y se cae
-    // a la consulta sin esa columna, dejando sesion.password_version en undefined. requireAuth trata
-    // eso como "esta Business DB todavia no adopto Session Revocation" (el chequeo de
-    // CENTRAL_PASSWORD_ROTATED se omite mas abajo, ver revalidarSesionCentral/
-    // passwordVersionColumnPresente) -- DISTINTO de una fila cuyo password_version es NULL dentro de
-    // una tabla que SI tiene la columna (esa si se rechaza, contrato del slice).
+    // -- nunca via ALTER TABLE de startup aqui. Session Revocation es OBLIGATORIA en runtime central:
+    // si la columna todavia no existe en la Business DB de este tenant, NO se degrada consultando
+    // sin ella -- eso permitiria autenticacion central sin proteccion. Se falla cerrado (503) antes
+    // de aceptar cualquier sesion, SIN borrar el token (ausencia de schema es un fallo operacional,
+    // nunca una revocacion de autoridad). En runtime no-central, password_version es irrelevante y
+    // nunca se consulta -- preserva el contrato historico exacto para Business DB legacy no
+    // migradas a 003.
     let sesion;
-    let passwordVersionColumnPresente = true;
-    try {
-      sesion = await getQuery(
-        "SELECT usuario_id, nombre, rol, auth_mode, central_id, membership_id, empresa_id, password_version FROM sesiones WHERE token = ? AND expira > datetime('now')",
-        [token]
-      );
-    } catch (error) {
-      if (!/no such column:\s*password_version/i.test(error.message || "")) {
-        throw error;
+    if (ATLAS_AUTH_MODE === "central") {
+      try {
+        sesion = await getQuery(
+          "SELECT usuario_id, nombre, rol, auth_mode, central_id, membership_id, empresa_id, password_version FROM sesiones WHERE token = ? AND expira > datetime('now')",
+          [token]
+        );
+      } catch (error) {
+        if (!/no such column:\s*password_version/i.test(error.message || "")) {
+          throw error;
+        }
+        logError("Business DB sin sesiones.password_version -- Session Revocation no disponible", error);
+        return res.status(503).json({ message: CENTRAL_AUTH_UNAVAILABLE_MESSAGE });
       }
-      passwordVersionColumnPresente = false;
+    } else {
       sesion = await getQuery(
         "SELECT usuario_id, nombre, rol, auth_mode, central_id, membership_id, empresa_id FROM sesiones WHERE token = ? AND expira > datetime('now')",
         [token]
@@ -668,7 +675,6 @@ async function requireAuth(req, res, next) {
       centralId: sesion.central_id,
       usuarioLocalId: sesion.usuario_id,
       sessionPasswordVersion: sesion.password_version,
-      passwordVersionColumnPresente,
       controlDbPath: process.env.ATLAS_CONTROL_DB_PATH || undefined
     });
 
@@ -2203,9 +2209,10 @@ async function loginCentral(req, res, { usuario, password, remember }) {
     // "local role ignorado". central_id/membership_id/empresa_id provienen unicamente del
     // resultado ya validado por autenticarCredencialCentral, nunca del cliente. password_version
     // ancla la sesion a la generacion de credencial vigente en el momento de autenticarse (ver
-    // AUTH-SYNC-B2-P1A-SR) -- si la Business DB de este tenant todavia no tiene la columna (migracion
-    // "003_sesiones_password_version" pendiente), se cae a la variante sin esa columna: la sesion se
-    // crea igual, simplemente sin esa proteccion todavia (misma logica de deteccion que requireAuth).
+    // AUTH-SYNC-B2-P1A-SR). Session Revocation es OBLIGATORIA en runtime central: si la Business DB
+    // de este tenant todavia no tiene la columna (migracion "003_sesiones_password_version"
+    // pendiente), NO se emite una sesion sin esa proteccion -- se falla cerrado (503) ANTES de
+    // crear cualquier fila en sesiones.
     try {
       await runQuery(
         `INSERT OR REPLACE INTO sesiones
@@ -2217,12 +2224,8 @@ async function loginCentral(req, res, { usuario, password, remember }) {
       if (!/no column named password_version/i.test(error.message || "")) {
         throw error;
       }
-      await runQuery(
-        `INSERT OR REPLACE INTO sesiones
-         (token, usuario_id, nombre, rol, expira, auth_mode, central_id, membership_id, empresa_id)
-         VALUES (?, ?, ?, ?, ?, 'central', ?, ?, ?)`,
-        [token, user.id, user.nombre, rolSesion, expiraISO, resultado.central.id, resultado.membership.id, resultado.empresa.id]
-      );
+      logError("Business DB sin sesiones.password_version -- Session Revocation no disponible, login central rechazado", error);
+      return res.status(503).json({ message: CENTRAL_AUTH_UNAVAILABLE_MESSAGE });
     }
     await runQuery("DELETE FROM sesiones WHERE expira < datetime('now')");
 

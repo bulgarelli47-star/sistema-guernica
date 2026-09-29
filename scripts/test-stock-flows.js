@@ -21135,6 +21135,11 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testP1ASRMigracion003EsIdempotente);
   await _run(testP1ASRControlSchemaNuevoContienePasswordVersionDefault0);
   await _run(testP1ASRSchemaViejoDeControlDbNoSeMutaPorServerStartup);
+  await _run(testP1ASRFixControlDbSinPasswordVersionLoginCentralFallaCerrado);
+  await _run(testP1ASRFixControlDbSinPasswordVersionTokenExistenteFallaCerrado);
+  await _run(testP1ASRFixBusinessDbSinPasswordVersionLoginCentralFallaCerrado);
+  await _run(testP1ASRFixBusinessDbSinPasswordVersionSesionExistenteFallaCerradoSinBorrarToken);
+  await _run(testP1ASRFixLegacyAuthSobrePasswordVersionAusenteComportamientoHistoricoIntacto);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -41024,19 +41029,23 @@ async function testP1AHttpPreS0FalloClosedBusinessDbIntacta() {
     await closeControlDb(dbVieja);
     await insertarTenantIdentityTest(dbPath, empresa.id, empresaSlug);
 
+    // AUTH-SYNC-B2-P1A-SR-FIX: Session Revocation es OBLIGATORIA en runtime central -- un Control DB
+    // pre-S0 (sin usuarios.password_version) ya no permite login central en absoluto (fail closed
+    // ANTES de autenticar, ver autenticarCredencialCentral). Por lo tanto ya no es posible obtener
+    // un token real para ejercer el endpoint PATCH password especificamente: el fail-closed ahora
+    // cubre TODA la superficie de auth central, no solo esa ruta. Este test demuestra exactamente
+    // eso -- ni el login ni ninguna escritura posterior son alcanzables.
     await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "CentralPreS0Http1");
-      const { response } = await requestJson(baseUrl, "PATCH", `/usuarios/${localAdmin.id}/password`, {
-        password: "NoDebeAplicarsePreS0Http1", confirmar_password: "NoDebeAplicarsePreS0Http1"
-      }, token);
-      assertEqual(response.status, 503, "sin esquema S0, el endpoint central-first debe fallar cerrado con 503 antes de tocar nada");
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "CentralPreS0Http1" }, null);
+      assertEqual(response.status, 503, "sin usuarios.password_version, el login central completo debe fallar cerrado, no solo el endpoint de password");
+      assertSame(Object.prototype.hasOwnProperty.call(data || {}, "token"), false, "una respuesta 503 nunca debe incluir un token");
     }, {
       ATLAS_AUTH_MODE: "central", ATLAS_USER_BRIDGE_MODE: "shadow",
       ATLAS_EMPRESA_SLUG: empresaSlug, ATLAS_CONTROL_DB_PATH: controlDbPath
     });
 
     const localDespues = (await allSql(dbPath, "SELECT password FROM usuarios WHERE id = ?", [localAdmin.id]))[0];
-    assertSame(localDespues.password, localAdmin.password, "Business DB debe quedar intacta cuando el esquema no soporta central-first");
+    assertSame(localDespues.password, localAdmin.password, "Business DB debe quedar intacta cuando el esquema no soporta auth central");
     const controlDbFinal = await bootstrapControlDb(controlDbPath, { seed: false });
     try {
       const centralDespues = await getControlQuery(controlDbFinal, "SELECT password_hash FROM usuarios WHERE id = ?", [central.id]);
@@ -42294,16 +42303,162 @@ async function testP1ASRSchemaViejoDeControlDbNoSeMutaPorServerStartup() {
 
     const columnasAntes = (await allSql(controlDbPath, "PRAGMA table_info(usuarios)")).map((c) => c.name).sort();
 
+    // AUTH-SYNC-B2-P1A-SR-FIX: Session Revocation es OBLIGATORIA -- un Control DB pre-S0 ya no
+    // permite login central en absoluto (fail closed, ver autenticarCredencialCentral). El intento
+    // debe fallar con 503, pero el punto de ESTE test sigue intacto: ni el intento fallido ni el
+    // arranque del servidor deben agregar columnas nuevas al Control DB.
     await withServer(dbPath, async (baseUrl) => {
-      const token = await login(baseUrl, "admin", "SchemaViejoPass1");
-      if (typeof token !== "string" || !token.length) throw new Error("login debe funcionar con esquema pre-S0 (comportamiento historico intacto)");
+      const { response } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "SchemaViejoPass1" }, null);
+      assertEqual(response.status, 503, "login central contra un Control DB pre-S0 debe fallar cerrado (503), nunca autenticar");
     }, { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: empresaSlug, ATLAS_CONTROL_DB_PATH: controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" });
 
     const columnasDespues = (await allSql(controlDbPath, "PRAGMA table_info(usuarios)")).map((c) => c.name).sort();
     assertSame(JSON.stringify(columnasDespues), JSON.stringify(columnasAntes), "el esquema de Control DB no debe mutar en absoluto por arrancar/usar el servidor -- ni version, ni password_version, ni ninguna columna nueva");
-    assertSame(columnasDespues.includes("password_version"), false, "password_version NUNCA debe aparecer por si sola en un Control DB pre-S0 solo por arrancar el servidor");
+    assertSame(columnasDespues.includes("password_version"), false, "password_version NUNCA debe aparecer por si sola en un Control DB pre-S0 solo por arrancar el servidor ni por un intento de login fallido");
   } finally {
     limpiarTenantTestDb(dbPath);
     fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+// AUTH-SYNC-B2-P1A-SR-FIX: cobertura directa del gap cerrado en este checkpoint -- Session
+// Revocation es OBLIGATORIA en auth central, sin fallback permisivo cuando falta capacidad de
+// schema (Control DB o Business DB). Nota de diseno verificada durante la auditoria: una Business
+// DB genuinamente BEHIND (sin migration 003 aplicada en atlas_schema_migrations) nunca llega a
+// requireAuth/loginCentral -- el gate de schema-currency PRE-EXISTENTE (verificarBusinessSchemaVersion,
+// consultado tanto en el boot de single-tenancy como en la resolucion per-request de multi-tenancy)
+// ya la rechaza antes, en single-tenancy incluso impidiendo que el servidor de pruebas arranque. Los
+// tests de "Business DB sin sesiones.password_version" de mas abajo reproducen en cambio el
+// escenario real por el que este codigo SI es alcanzable: el historial dice CURRENT (incluida la fila
+// de 003) pero la columna fisica fue removida despues -- corrupcion/desalineacion entre historial y
+// schema real, que el gate de schema-currency (que solo lee atlas_schema_migrations, nunca inspecciona
+// columnas) no detecta. Es exactamente el escenario para el que este fail-closed es la ultima linea
+// de defensa real.
+
+async function testP1ASRFixControlDbSinPasswordVersionLoginCentralFallaCerrado() {
+  const dbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const localAdmin = (await allSql(dbPath, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const dbVieja = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
+    const empresaSlug = `p1asrfix-controlsin-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(dbVieja, { slug: empresaSlug, nombre: "Fix Control Sin PV", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(dbVieja, { nombre: "Fix Control Sin PV", usuarioReferencia: "admin", passwordHash: await bcrypt.hash("FixControlSinPV1", 10), activo: 1 });
+    await crearMembership(dbVieja, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: localAdmin.id, rol: "admin", activo: 1 });
+    await closeControlDb(dbVieja);
+
+    const resultado = await autenticarCredencialCentral({ empresaSlug, usuarioLocalId: localAdmin.id, password: "FixControlSinPV1", controlDbPath });
+    assertSame(resultado.ok, false, "login central sin usuarios.password_version debe fallar");
+    assertSame(resultado.errorCode, "CONTROL_PASSWORD_VERSION_SCHEMA_REQUIRED", "codigo explicito de capacidad de schema faltante, nunca un fallback silencioso");
+    if (JSON.stringify(resultado).toLowerCase().includes("hash")) throw new Error("el resultado de error no debe filtrar ningun hash");
+
+    const sesionesCount = (await allSql(dbPath, "SELECT COUNT(*) AS n FROM sesiones"))[0].n;
+    assertEqual(sesionesCount, 0, "ninguna sesion debe haberse creado");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRFixControlDbSinPasswordVersionTokenExistenteFallaCerrado() {
+  const controlDbPath = tempDbPath();
+  try {
+    const dbVieja = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
+    const empresaSlug = `p1asrfix-controlsin-token-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(dbVieja, { slug: empresaSlug, nombre: "Fix Control Sin PV Token", dbPath: "guernica.db" });
+    const central = await crearUsuarioCentral(dbVieja, { nombre: "Fix Token", usuarioReferencia: "admin", passwordHash: await bcrypt.hash("Pass1", 10), activo: 1 });
+    const membership = await crearMembership(dbVieja, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 1, rol: "admin", activo: 1 });
+    await closeControlDb(dbVieja);
+
+    // Simula un token central "existente" (anclas de sesion validas) revalidandose contra un
+    // Control DB que no soporta Session Revocation -- nunca debe resultar en 200/ok.
+    const revalidacion = await revalidarSesionCentral({
+      empresaSlug, empresaId: empresa.id, membershipId: membership.id, centralId: central.id, usuarioLocalId: 1,
+      sessionPasswordVersion: 0, controlDbPath
+    });
+    assertSame(revalidacion.ok, false, "revalidacion de una sesion 'existente' contra Control DB sin password_version debe fallar cerrado, nunca autorizar");
+    assertSame(revalidacion.errorCode, "CONTROL_PASSWORD_VERSION_SCHEMA_REQUIRED", "codigo explicito");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRFixBusinessDbSinPasswordVersionLoginCentralFallaCerrado() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    // La columna se elimina DESPUES de que atlas_schema_migrations ya registro 003 como aplicada --
+    // el historial sigue diciendo CURRENT (el gate de schema-currency no inspecciona columnas
+    // fisicas), asi que el servidor arranca normalmente y la request SI llega a loginCentral.
+    await runSql(dbPath, "ALTER TABLE sesiones DROP COLUMN password_version");
+
+    await withServer(dbPath, async (baseUrl) => {
+      const { response, data } = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword }, null);
+      assertEqual(response.status, 503, "login central sin sesiones.password_version (columna ausente) debe fallar cerrado");
+      assertSame(Object.prototype.hasOwnProperty.call(data || {}, "token"), false, "no debe emitirse ningun token");
+    }, extraEnvCentral(fixture));
+
+    const sesionesCount = (await allSql(dbPath, "SELECT COUNT(*) AS n FROM sesiones"))[0].n;
+    assertEqual(sesionesCount, 0, "ninguna sesion debe haberse creado en la Business DB");
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRFixBusinessDbSinPasswordVersionSesionExistenteFallaCerradoSinBorrarToken() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    let token;
+    await withServer(dbPath, async (baseUrl) => {
+      token = await login(baseUrl, "admin", fixture.centralPassword);
+      const pre = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(pre.response.status, 200, "el token debe autorizar antes de la desalineacion de schema");
+    }, extraEnvCentral(fixture));
+
+    // La sesion YA EXISTE (creada con password_version real) -- la columna se elimina DESPUES,
+    // simulando una desalineacion entre historial (dice CURRENT) y schema fisico real.
+    await runSql(dbPath, "ALTER TABLE sesiones DROP COLUMN password_version");
+
+    await withServer(dbPath, async (baseUrl) => {
+      const resp = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(resp.response.status, 503, "sin sesiones.password_version, una sesion existente NUNCA debe autorizar (nunca 200)");
+    }, extraEnvCentral(fixture));
+
+    // El token NO debe haberse eliminado solo por ausencia de schema -- eso seria confundir un
+    // fallo operacional con una revocacion de autoridad.
+    const filaSesion = (await allSql(dbPath, "SELECT token FROM sesiones WHERE token = ?", [token]))[0];
+    assertSame(Boolean(filaSesion), true, "el token debe seguir existiendo en sesiones -- ausencia de schema no es una revocacion de autoridad, es un fallo operacional");
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ASRFixLegacyAuthSobrePasswordVersionAusenteComportamientoHistoricoIntacto() {
+  const dbPath = bootstrapFreshTestDb();
+  try {
+    // La Business DB nace CURRENT (stamparHistorialBaselineActual ya aplico 003), pero se le
+    // retira fisicamente sesiones.password_version despues -- reproduce el estado real que un
+    // runtime legacy (nunca central) podria encontrar, sin chocar con el gate de schema-currency.
+    await runSql(dbPath, "ALTER TABLE sesiones DROP COLUMN password_version");
+    const columnasAntes = (await allSql(dbPath, "PRAGMA table_info(sesiones)")).map((c) => c.name).sort();
+    assertSame(columnasAntes.includes("password_version"), false, "precondicion: password_version ausente");
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const resp = await requestJson(baseUrl, "GET", "/configuracion", null, token);
+      assertEqual(resp.response.status, 200, "auth legacy debe funcionar exactamente igual sin sesiones.password_version -- auth_mode=legacy nunca la consulta");
+    }); // legacy puro, sin ATLAS_AUTH_MODE=central
+
+    const columnasDespues = (await allSql(dbPath, "PRAGMA table_info(sesiones)")).map((c) => c.name).sort();
+    assertSame(JSON.stringify(columnasDespues), JSON.stringify(columnasAntes), "auth legacy nunca debe agregar sesiones.password_version -- no existe auto-migracion en ningun runtime");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
   }
 }

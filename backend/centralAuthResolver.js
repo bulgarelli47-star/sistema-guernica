@@ -136,12 +136,6 @@ async function revalidarSesionCentral({
   centralId,
   usuarioLocalId,
   sessionPasswordVersion,
-  // AUTH-SYNC-B2-P1A-SR: default true -- cualquier caller que no diga explicitamente lo contrario
-  // asume que la Business DB soporta password_version y exige el chequeo. Solo requireAuth (server.js)
-  // lo pone en false, y solo cuando detecto en runtime que la columna todavia no existe en ESA
-  // Business DB puntual (migration "003_sesiones_password_version" pendiente para ese tenant) --
-  // nunca una decision de seguridad tomada aca silenciosamente, es puramente reflejar el schema real.
-  passwordVersionColumnPresente = true,
   controlDbPath
 } = {}) {
   const slug = String(empresaSlug || "").trim();
@@ -174,40 +168,56 @@ async function revalidarSesionCentral({
   }
 
   try {
-    const row = await getQuery(
-      controlDb,
-      `SELECT
-         e.id AS empresa_id,
-         e.slug AS empresa_slug,
-         e.activa AS empresa_activa,
-         ue.id AS membership_id,
-         ue.empresa_id AS membership_empresa_id,
-         ue.usuario_id AS membership_usuario_id,
-         ue.usuario_local_id AS membership_usuario_local_id,
-         ue.rol AS membership_rol,
-         ue.activo AS membership_activo,
-         u.id AS central_id,
-         u.activo AS central_activo,
-         u.password_version AS central_password_version
-       FROM empresas e
-       JOIN usuario_empresas ue ON ue.empresa_id = e.id
-       JOIN usuarios u ON u.id = ue.usuario_id
-       WHERE e.id = ?
-         AND e.slug = ?
-         AND ue.id = ?
-         AND ue.empresa_id = e.id
-         AND ue.usuario_local_id = ?
-         AND ue.usuario_id = ?
-         AND u.id = ?`,
-      [
-        empresaIdNormalizado,
-        slug,
-        membershipIdNormalizado,
-        usuarioLocalIdNormalizado,
-        centralIdNormalizado,
-        centralIdNormalizado
-      ]
-    );
+    // AUTH-SYNC-B2-P1A-SR-FIX: Session Revocation es OBLIGATORIA en auth central -- si Control DB
+    // no tiene usuarios.password_version (pre-S0/pre-SR), NO se degrada a una lectura sin esa
+    // columna. Codigo explicito y distinguible (nunca el generico CONTROL_DB_QUERY_ERROR) para que
+    // el fallo de capacidad de schema sea auditable; ambos igualmente terminan en 503 generico via
+    // CENTRAL_SESSION_OPERATIONAL_ERRORS en requireAuth (server.js).
+    let row;
+    try {
+      row = await getQuery(
+        controlDb,
+        `SELECT
+           e.id AS empresa_id,
+           e.slug AS empresa_slug,
+           e.activa AS empresa_activa,
+           ue.id AS membership_id,
+           ue.empresa_id AS membership_empresa_id,
+           ue.usuario_id AS membership_usuario_id,
+           ue.usuario_local_id AS membership_usuario_local_id,
+           ue.rol AS membership_rol,
+           ue.activo AS membership_activo,
+           u.id AS central_id,
+           u.activo AS central_activo,
+           u.password_version AS central_password_version
+         FROM empresas e
+         JOIN usuario_empresas ue ON ue.empresa_id = e.id
+         JOIN usuarios u ON u.id = ue.usuario_id
+         WHERE e.id = ?
+           AND e.slug = ?
+           AND ue.id = ?
+           AND ue.empresa_id = e.id
+           AND ue.usuario_local_id = ?
+           AND ue.usuario_id = ?
+           AND u.id = ?`,
+        [
+          empresaIdNormalizado,
+          slug,
+          membershipIdNormalizado,
+          usuarioLocalIdNormalizado,
+          centralIdNormalizado,
+          centralIdNormalizado
+        ]
+      );
+    } catch (error) {
+      if (!/no such column.*password_version/i.test(error.message || "")) {
+        throw error;
+      }
+      return resultadoError(
+        "CONTROL_PASSWORD_VERSION_SCHEMA_REQUIRED",
+        "Control DB no soporta Session Revocation (falta usuarios.password_version)"
+      );
+    }
 
     if (!row) {
       return resultadoError("CENTRAL_SESSION_BINDING_INVALID", "La sesion central ya no coincide con la autoridad vigente");
@@ -241,16 +251,15 @@ async function revalidarSesionCentral({
     if (!central.activo) {
       return resultadoError("CENTRAL_INACTIVA", "La identidad central de la sesion esta inactiva", { empresa, membership, central });
     }
-    // AUTH-SYNC-B2-P1A-SR: ultimo chequeo, despues de los tres de autoridad/actividad ya
-    // existentes (orden congelado por el contrato del slice). Se omite POR COMPLETO cuando la
-    // Business DB de este tenant todavia no tiene la columna sesiones.password_version (migracion
-    // "003_sesiones_password_version" pendiente para ese tenant puntual) -- eso nunca es "invalida",
-    // es "esta proteccion todavia no aplica aqui". Cuando la columna SI existe: NULL/no-entero en la
-    // sesion (sesion legacy pre-SR dentro de una DB ya migrada) o cualquier desalineacion con la
-    // generacion vigente en Control DB invalida la sesion -- nunca se compara password_hash, solo el
-    // contador.
-    if (passwordVersionColumnPresente
-      && (sessionPasswordVersionNormalizado === null || sessionPasswordVersionNormalizado !== central.password_version)) {
+    // AUTH-SYNC-B2-P1A-SR-FIX: ultimo chequeo, despues de los tres de autoridad/actividad ya
+    // existentes (orden congelado por el contrato del slice). Session Revocation es OBLIGATORIA en
+    // auth central -- este chequeo se aplica SIEMPRE, sin excepcion condicionada por schema (la
+    // ausencia de sesiones.password_version en la Business DB ya se resolvio fail-closed, con 503,
+    // ANTES de llegar aca -- ver requireAuth en server.js; este resolver nunca recibe esa
+    // ambiguedad). NULL/no-entero en la sesion (sesion legacy pre-SR dentro de una DB ya migrada) o
+    // cualquier desalineacion con la generacion vigente en Control DB invalida la sesion -- nunca se
+    // compara password_hash, solo el contador.
+    if (sessionPasswordVersionNormalizado === null || sessionPasswordVersionNormalizado !== central.password_version) {
       return resultadoError("CENTRAL_PASSWORD_ROTATED", "La contrasena de la identidad central fue rotada despues de emitida esta sesion", { empresa, membership, central });
     }
 

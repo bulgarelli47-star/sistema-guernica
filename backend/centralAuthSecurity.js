@@ -120,14 +120,14 @@ async function autenticarCredencialCentral({ empresaSlug, usuarioLocalId, passwo
       });
     }
 
-    // AUTH-SYNC-B2-P1A-SR: password_version se lee aca para poder devolverla al caller (que la
+    // AUTH-SYNC-B2-P1A-SR-FIX: password_version se lee aca para poder devolverla al caller (que la
     // guarda en la sesion recien emitida) -- NUNCA se expone password_hash mas alla de esta
     // funcion, y password_version tampoco viaja al cliente HTTP (ver loginCentral en server.js).
-    // Un Control DB pre-S0 (sin siquiera `usuarios.version`, ver AUTH-SYNC-B2-S0) tampoco tiene esta
-    // columna -- el login central debe seguir funcionando igual que siempre contra ese esquema
-    // viejo (mismo contrato de preservacion legacy ya establecido), asi que se detecta el error
-    // especifico de sqlite3 y se cae a la variante sin esa columna, dejando password_version
-    // undefined (loginCentral, con el mismo criterio, cae a un INSERT de sesion sin esa columna).
+    // Session Revocation es OBLIGATORIA en auth central: si esta columna no existe (Control DB
+    // pre-S0/pre-SR), NO se degrada a una lectura sin esa columna -- eso permitiria autenticar sin
+    // proteccion de Session Revocation. Falla cerrado con un codigo explicito, que
+    // responderFalloAuthCentral (server.js) mapea a 503 generico via su default case (nunca revela
+    // detalles de schema).
     let centralActual;
     try {
       centralActual = await getQuery(
@@ -139,10 +139,11 @@ async function autenticarCredencialCentral({ empresaSlug, usuarioLocalId, passwo
       if (!/no such column:\s*password_version/i.test(error.message || "")) {
         throw error;
       }
-      centralActual = await getQuery(
-        controlDb,
-        "SELECT id, activo, password_hash, intentos_fallidos, bloqueado_hasta, ultimo_acceso FROM usuarios WHERE id = ?",
-        [membership.usuario_id]
+      await runQuery(controlDb, "ROLLBACK");
+      transactionStarted = false;
+      return resultadoError(
+        "CONTROL_PASSWORD_VERSION_SCHEMA_REQUIRED",
+        "Control DB no soporta Session Revocation (falta usuarios.password_version)"
       );
     }
     if (!centralActual) {
@@ -219,13 +220,14 @@ async function autenticarCredencialCentral({ empresaSlug, usuarioLocalId, passwo
       ok: true,
       empresa: { id: empresa.id, slug: empresa.slug, activa: true },
       membership: { id: membershipActual.id, usuario_local_id: Number(membershipActual.usuario_local_id), rol: membershipActual.rol, activo: true },
-      // undefined cuando el Control DB es pre-S0 (columna ausente) -- nunca NaN, para que
-      // loginCentral/el INSERT de sesion con fallback lo trate de forma predecible.
+      // Siempre un numero real: el bloque de arriba ya fallo cerrado (return anticipado) si la
+      // columna no existia, asi que llegar aca garantiza que centralActual.password_version es un
+      // valor de schema real (nunca undefined).
       central: {
         id: centralActual.id,
         activo: true,
         ultimo_acceso: ultimoAccesoNuevo,
-        password_version: centralActual.password_version === undefined ? undefined : Number(centralActual.password_version)
+        password_version: Number(centralActual.password_version)
       }
     };
   } catch (error) {
