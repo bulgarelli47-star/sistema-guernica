@@ -7,6 +7,7 @@ const {
   closeDb,
   runQuery,
   getQuery,
+  allQuery,
   getMembershipPorEmpresaYLocal,
   crearUsuarioCentral,
   crearMembership,
@@ -88,6 +89,10 @@ async function resolverMembershipActiva(db, slug, usuarioLocalId) {
   return membership;
 }
 
+// Usada EXCLUSIVAMENTE en modos no-central (legacy/off) -- LOCAL-FIRST, sin cambios respecto de su
+// contrato historico. En central+shadow, PATCH /usuarios/:id/password ya no llama a esta funcion:
+// usa resolverIdentidadCentralParaPassword + actualizarPasswordCentralFirst (AUTH-SYNC-B2-P1A,
+// mas abajo).
 async function syncPasswordHash({ empresaSlug, usuarioLocalId, passwordHash, controlDbPath } = {}) {
   const slug = empresaSlug || resolveEmpresaSlug();
   if (!slug) {
@@ -99,6 +104,121 @@ async function syncPasswordHash({ empresaSlug, usuarioLocalId, passwordHash, con
   try {
     const membership = await resolverMembershipActiva(db, slug, usuarioLocalId);
     await actualizarPasswordUsuarioCentral(db, membership.usuario_id, passwordHash);
+  } finally {
+    await closeDb(db);
+  }
+}
+
+// AUTH-SYNC-B2-P1A: resolucion de SOLO LECTURA, ANTES de calcular bcrypt y ANTES de cualquier
+// transaccion de escritura -- captura la identidad central vigente y su `version` actual
+// (expectedVersion) para que el caller pueda hacer CAS en actualizarPasswordCentralFirst. No
+// decide nada por si sola: entre esta lectura y la transaccion real puede pasar cualquier cosa
+// (otro request concurrente), por eso la escritura vuelve a verificar todo dentro de su propio
+// BEGIN IMMEDIATE -- esta funcion solo resuelve QUIEN es el target, nunca autoriza la escritura.
+async function resolverIdentidadCentralParaPassword({ empresaSlug, usuarioLocalId, controlDbPath } = {}) {
+  const slug = empresaSlug || resolveEmpresaSlug();
+  if (!slug) {
+    throw new Error("resolverIdentidadCentralParaPassword: falta configurar ATLAS_EMPRESA_SLUG (o pasar empresaSlug explicito)");
+  }
+
+  const dbPath = controlDbPath || resolveControlDbPath();
+  const db = await abrirControlDbBridge(dbPath);
+  try {
+    const membership = await resolverMembershipActiva(db, slug, usuarioLocalId);
+    const central = await getQuery(db, "SELECT id, version FROM usuarios WHERE id = ?", [membership.usuario_id]);
+    if (!central) {
+      throw new Error("resolverIdentidadCentralParaPassword: la identidad central de esta membership ya no existe");
+    }
+    return {
+      usuarioCentralId: central.id,
+      expectedVersion: Number(central.version),
+      membershipId: membership.id,
+      empresaId: membership.empresa_id
+    };
+  } finally {
+    await closeDb(db);
+  }
+}
+
+// AUTH-SYNC-B2-P1A: transaccion central-first real -- CAS por `usuarios.version` + fan-out
+// INCONDICIONAL (sin filtrar por membership.activo ni empresa.activa: password pertenece a GLOBAL
+// USER, no a una membership puntual -- contrato P1A) hacia TODAS las memberships existentes de la
+// identidad. Nunca escribe en ninguna Business DB -- esa responsabilidad es exclusiva de
+// database/process-central-outbox.js (intento inmediato del handler HTTP, o drenaje diferido). Una
+// password nueva REABRE a 'pendiente' cualquier fila previa (incluida una ya 'procesado') -- el
+// UPDATE de upsert no filtra por estado a proposito. sync_pendiente nunca recibe el hash: solo la
+// referencia (membership, tipo, version_objetivo) que el consumer debe releer al procesar.
+async function actualizarPasswordCentralFirst({ usuarioCentralId, expectedVersion, passwordHash, controlDbPath } = {}) {
+  const dbPath = controlDbPath || resolveControlDbPath();
+  const db = await abrirControlDbBridge(dbPath);
+  let transactionStarted = false;
+  try {
+    await runQuery(db, "BEGIN IMMEDIATE");
+    transactionStarted = true;
+
+    const casResult = await runQuery(
+      db,
+      "UPDATE usuarios SET password_hash = ?, version = version + 1, actualizado_en = datetime('now') WHERE id = ? AND version = ?",
+      [passwordHash, usuarioCentralId, expectedVersion]
+    );
+
+    if (casResult.changes !== 1) {
+      const actual = await getQuery(db, "SELECT version FROM usuarios WHERE id = ?", [usuarioCentralId]);
+      await runQuery(db, "ROLLBACK");
+      transactionStarted = false;
+      return {
+        ok: false,
+        errorCode: "VERSION_CONFLICT",
+        versionActual: actual ? Number(actual.version) : null
+      };
+    }
+
+    const newVersion = expectedVersion + 1;
+
+    // Sin filtro alguno -- TODAS las memberships, activas o no, de empresas activas o no.
+    const memberships = await allQuery(
+      db,
+      "SELECT id, empresa_id, usuario_local_id FROM usuario_empresas WHERE usuario_id = ?",
+      [usuarioCentralId]
+    );
+
+    for (const membership of memberships) {
+      const upsert = await runQuery(
+        db,
+        `UPDATE sync_pendiente
+         SET version_objetivo = ?, estado = 'pendiente', procesado_en = NULL
+         WHERE membership_id = ? AND tipo_operacion = 'password'`,
+        [newVersion, membership.id]
+      );
+      if (upsert.changes === 0) {
+        await runQuery(
+          db,
+          `INSERT INTO sync_pendiente
+             (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+           VALUES (?, ?, ?, ?, 'password', ?, 'pendiente')`,
+          [usuarioCentralId, membership.empresa_id, membership.id, membership.usuario_local_id, newVersion]
+        );
+      }
+    }
+
+    await runQuery(db, "COMMIT");
+    transactionStarted = false;
+
+    return {
+      ok: true,
+      usuarioCentralId,
+      newVersion,
+      memberships: memberships.map((m) => ({
+        membershipId: m.id,
+        empresaId: m.empresa_id,
+        usuarioLocalId: m.usuario_local_id
+      }))
+    };
+  } catch (error) {
+    if (transactionStarted) {
+      try { await runQuery(db, "ROLLBACK"); } catch (rollbackError) { error.rollbackError = rollbackError; }
+    }
+    throw error;
   } finally {
     await closeDb(db);
   }
@@ -212,5 +332,7 @@ module.exports = {
   syncMembershipActivo,
   syncMembershipAccess,
   syncUserCreate,
-  abrirControlDbBridge
+  abrirControlDbBridge,
+  resolverIdentidadCentralParaPassword,
+  actualizarPasswordCentralFirst
 };

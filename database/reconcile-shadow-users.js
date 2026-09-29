@@ -140,17 +140,20 @@ async function crearIdentidadYMembershipDesdeLocal(controlDb, empresaId, local) 
   }
 }
 
-// AUTH-SYNC-B2-S1A1: password y acceso (rol+activo de membership) ya NO comparten
-// incondicionalmente la misma autoridad -- acceso puede pasar a ser central-first (lapida en
-// sync_pendiente), password sigue con autoridad LOCAL mientras no exista un marcador propio para
-// la identidad (fuera de alcance de este checkpoint). Se reparan en la MISMA transaccion (una
-// unidad atomica por usuario, MT-1C.1D-AUDIT seccion 17), pero cada rama se decide y se re-verifica
-// por separado, DENTRO de la transaccion -- nunca confiando en el mismatch calculado antes de
-// BEGIN, para cerrar la carrera entre leer la lapida/version y escribir (ver
-// AUTH-SYNC-B2-S1-CONTRACT-RECTIFICATION seccion 2 y AUTH-SYNC-B2-S1A-SAFETY-GATE seccion 5).
+// AUTH-SYNC-B2-P1A: password ya NO comparte incondicionalmente autoridad con acceso. El marcador
+// de proteccion de password es GLOBAL por identidad central -- EXISTS(SELECT 1 FROM sync_pendiente
+// WHERE usuario_id = ? AND tipo_operacion = 'password'), en CUALQUIER estado (pendiente o
+// procesado) -- nunca por membership_id. Esto es deliberado: password pertenece a GLOBAL USER, no
+// a una membership puntual, y una membership creada DESPUES del primer cambio central-first debe
+// quedar protegida igual que las que ya existian (backfill de filas faltantes es responsabilidad
+// del consumer dedicado, database/process-central-outbox.js -- este reconciliador NUNCA escribe en
+// sync_pendiente, ni en CHECK ni en APPLY). Acceso (rol+activo) sigue con su propio marcador por
+// membership_id, sin cambios respecto de antes. Se reparan en la MISMA transaccion (una unidad
+// atomica por usuario, MT-1C.1D-AUDIT seccion 17), pero cada rama se decide y se re-verifica por
+// separado, DENTRO de la transaccion -- nunca confiando en el mismatch calculado antes de BEGIN.
 // `soportaS0` llega ya resuelto por detectarSoporteEsquemaS0 (una sola vez por corrida, no por
 // fila) -- en CASO A (legacy) nunca se consulta version/sync_pendiente, se preserva exactamente
-// la sentencia actualizarAccesoMembership de siempre.
+// la sentencia actualizarAccesoMembership/actualizarPasswordUsuarioCentral de siempre.
 async function repararPasswordYAcceso(controlDb, { centralId, membershipId, local, passwordMismatch, accessMismatch, soportaS0 }) {
   await runQuery(controlDb, "BEGIN IMMEDIATE");
   let transactionStarted = true;
@@ -158,12 +161,29 @@ async function repararPasswordYAcceso(controlDb, { centralId, membershipId, loca
     let escribioPassword = false;
     let escribioAcceso = false;
     let accesoProtegido = false;
+    let passwordProtegido = false;
 
     if (passwordMismatch) {
-      const centralActual = await getQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [centralId]);
-      if (centralActual && String(centralActual.password_hash) !== String(local.password)) {
-        await actualizarPasswordUsuarioCentral(controlDb, centralId, local.password);
-        escribioPassword = true;
+      let passwordMarkerExiste = false;
+      if (soportaS0) {
+        // Releido DENTRO de la transaccion, igual que la lapida de acceso -- nunca se confia en
+        // una comprobacion hecha antes de BEGIN.
+        const marker = await getQuery(
+          controlDb,
+          "SELECT 1 AS x FROM sync_pendiente WHERE usuario_id = ? AND tipo_operacion = 'password'",
+          [centralId]
+        );
+        passwordMarkerExiste = Boolean(marker);
+      }
+
+      if (passwordMarkerExiste) {
+        passwordProtegido = true;
+      } else {
+        const centralActual = await getQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [centralId]);
+        if (centralActual && String(centralActual.password_hash) !== String(local.password)) {
+          await actualizarPasswordUsuarioCentral(controlDb, centralId, local.password);
+          escribioPassword = true;
+        }
       }
     }
 
@@ -213,7 +233,7 @@ async function repararPasswordYAcceso(controlDb, { centralId, membershipId, loca
 
     await runQuery(controlDb, "COMMIT");
     transactionStarted = false;
-    return { escribioPassword, escribioAcceso, accesoProtegido };
+    return { escribioPassword, escribioAcceso, accesoProtegido, passwordProtegido };
   } catch (error) {
     if (transactionStarted) {
       try { await runQuery(controlDb, "ROLLBACK"); } catch (rollbackError) { error.rollbackError = rollbackError; }
@@ -386,11 +406,11 @@ async function reconcileShadowUsers({ empresaSlug, mode: modeRaw, controlDbPath,
       const globalActiveReview = Number(central.activo) === 0;
       const profileDiff = perfilDifiere(local, central);
 
-      // AUTH-SYNC-B2-S1A1: la lapida se consulta aca SOLO para decidir que reportar en el resumen
-      // (CHECK y APPLY informan igual, sin mutar nada por esta lectura) -- la autorizacion REAL
-      // para escribir se re-verifica de nuevo, dentro de su propia transaccion, en
-      // repararPasswordYAcceso. Cualquier estado de la lapida (pendiente o procesado) protege por
-      // igual: nunca se borra, es el marcador de autoridad permanente.
+      // AUTH-SYNC-B2-S1A1: la lapida de acceso se consulta aca SOLO para decidir que reportar en
+      // el resumen (CHECK y APPLY informan igual, sin mutar nada por esta lectura) -- la
+      // autorizacion REAL para escribir se re-verifica de nuevo, dentro de su propia transaccion,
+      // en repararPasswordYAcceso. Cualquier estado de la lapida (pendiente o procesado) protege
+      // por igual: nunca se borra, es el marcador de autoridad permanente.
       let accesoProtegidoPorCentral = false;
       if (soportaS0 && accessMismatch) {
         const lapida = await getQuery(
@@ -402,13 +422,27 @@ async function reconcileShadowUsers({ empresaSlug, mode: modeRaw, controlDbPath,
       }
       const accessAccionable = accessMismatch && !accesoProtegidoPorCentral;
 
-      if ((passwordMismatch || accessAccionable) && escrituraPermitida) {
+      // AUTH-SYNC-B2-P1A: marcador de password GLOBAL por usuario_id (central.id), nunca por
+      // membership_id -- ver comentario completo en repararPasswordYAcceso. Misma logica de
+      // "solo para reportar aca, la autorizacion real se reverifica dentro de la transaccion".
+      let passwordProtegidoPorCentral = false;
+      if (soportaS0 && passwordMismatch) {
+        const marker = await getQuery(
+          controlDb,
+          "SELECT 1 AS x FROM sync_pendiente WHERE usuario_id = ? AND tipo_operacion = 'password'",
+          [central.id]
+        );
+        passwordProtegidoPorCentral = Boolean(marker);
+      }
+      const passwordAccionable = passwordMismatch && !passwordProtegidoPorCentral;
+
+      if ((passwordAccionable || accessAccionable) && escrituraPermitida) {
         try {
           const resultado = await repararPasswordYAcceso(controlDb, {
             centralId: central.id,
             membershipId: membership.id,
             local,
-            passwordMismatch,
+            passwordMismatch: passwordAccionable,
             accessMismatch: accessAccionable,
             soportaS0
           });
@@ -421,13 +455,17 @@ async function reconcileShadowUsers({ empresaSlug, mode: modeRaw, controlDbPath,
           summary.errors++;
         }
       } else {
-        if (passwordMismatch) entry.estados.push("PASSWORD_MISMATCH");
+        if (passwordAccionable) entry.estados.push("PASSWORD_MISMATCH");
         if (accessAccionable) entry.estados.push("MEMBERSHIP_ACCESS_MISMATCH");
-        if (passwordMismatch || accessAccionable) summary.critical++;
+        if (passwordAccionable || accessAccionable) summary.critical++;
       }
 
       if (accesoProtegidoPorCentral) {
         entry.estados.push("ACCESS_PROTECTED_CENTRAL_FIRST");
+        summary.protected_central++;
+      }
+      if (passwordProtegidoPorCentral) {
+        entry.estados.push("PASSWORD_PROTECTED_CENTRAL_FIRST");
         summary.protected_central++;
       }
 

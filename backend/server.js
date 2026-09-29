@@ -7,6 +7,10 @@ const bcrypt = require("bcrypt");
 const crypto = require("crypto");
 const { runQuery, getQuery, allQuery } = require("./db");
 const userControlBridge = require("./userControlBridge");
+const {
+  verificarSoporteS0Standalone: verificarSoporteS0ParaPassword,
+  procesarPendientePasswordStandalone
+} = require("../database/process-central-outbox");
 const { autenticarCredencialCentral } = require("./centralAuthSecurity");
 const { revalidarSesionCentral } = require("./centralAuthResolver");
 const { getTenantContext } = require("./tenantRequestContext");
@@ -2523,6 +2527,89 @@ app.patch("/usuarios/:id/password", async (req, res) => {
     const usuario = await getQuery("SELECT id FROM usuarios WHERE id = ?", [usuarioId]);
     if (!usuario) {
       return res.status(404).json({ message: "Usuario no encontrado" });
+    }
+
+    // AUTH-SYNC-B2-P1A: en central+shadow, password pasa a ser CENTRAL-FIRST -- la Business DB
+    // local NUNCA se escribe antes de que el commit central (CAS + fan-out) haya confirmado. En
+    // cualquier otro modo (legacy/off), comportamiento LOCAL-FIRST sin cambios (rama de abajo).
+    if (ATLAS_AUTH_MODE === "central" && userControlBridge.getBridgeMode() === "shadow") {
+      const empresaSlug = empresaAuthDelRequest().empresaSlug;
+
+      // Fail-closed sobre S0 incompleto: antes de tocar cualquier cosa -- ni siquiera bcrypt --
+      // se verifica que el esquema soporte el contrato necesario. No migra, no crea Control DB.
+      let soporte;
+      try {
+        soporte = await verificarSoporteS0ParaPassword({ controlDbPath: userControlBridge.resolveControlDbPath() });
+      } catch (error) {
+        logError("Error verificando soporte S0 para password central-first:", error);
+        return res.status(503).json({ message: "No se pudo verificar el esquema del control plane. Intenta nuevamente en unos minutos." });
+      }
+      if (soporte.soportaS0 !== true) {
+        return res.status(503).json({ message: "El control plane no soporta todavia sincronizacion central-first de contrasena. Intenta nuevamente mas tarde." });
+      }
+
+      let identidad;
+      try {
+        identidad = await userControlBridge.resolverIdentidadCentralParaPassword({ empresaSlug, usuarioLocalId: usuarioId });
+      } catch (error) {
+        logError("Error resolviendo identidad central para password:", error);
+        return res.status(503).json({ message: "No se pudo resolver la identidad central para esta cuenta. Intenta nuevamente en unos minutos." });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+
+      let commitCentral;
+      try {
+        commitCentral = await userControlBridge.actualizarPasswordCentralFirst({
+          usuarioCentralId: identidad.usuarioCentralId,
+          expectedVersion: identidad.expectedVersion,
+          passwordHash
+        });
+      } catch (error) {
+        logError("Error en commit central de password:", error);
+        return res.status(503).json({ message: "No se pudo confirmar el cambio de contrasena en el control plane. Intenta nuevamente en unos minutos. La contrasena local NO fue modificada." });
+      }
+
+      if (!commitCentral.ok) {
+        return res.status(409).json({
+          message: "La contraseña fue modificada por otra operación. Volvé a intentar.",
+          version_actual: commitCentral.versionActual
+        });
+      }
+
+      // Intento inmediato SOLO del tenant/request actual -- el resto de las memberships queda
+      // para el consumer dedicado (database/process-central-outbox.js), nunca se intentan inline
+      // aca (evita acoplar la latencia/disponibilidad de N tenants a esta unica request).
+      let sincronizacionShadow = "pendiente";
+      const membershipActual = commitCentral.memberships.find(
+        (m) => Number(m.membershipId) === Number(identidad.membershipId)
+      );
+      if (membershipActual) {
+        try {
+          const resultadoInline = await procesarPendientePasswordStandalone(
+            {
+              usuarioId: identidad.usuarioCentralId,
+              empresaId: membershipActual.empresaId,
+              membershipId: membershipActual.membershipId,
+              usuarioLocalId: membershipActual.usuarioLocalId,
+              versionObjetivo: commitCentral.newVersion
+            },
+            { controlDbPath: userControlBridge.resolveControlDbPath() }
+          );
+          if (resultadoInline && resultadoInline.resultado === "PROCESADO") {
+            sincronizacionShadow = "procesada";
+          }
+        } catch (error) {
+          // El commit central YA esta confirmado -- un fallo aca nunca lo revierte, la fila
+          // simplemente queda pendiente para el consumer.
+          logError("Proyeccion inmediata de password fallo (queda pendiente para el consumer):", error);
+        }
+      }
+
+      return res.json({
+        message: "Contraseña actualizada correctamente",
+        sincronizacion_shadow: sincronizacionShadow
+      });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);

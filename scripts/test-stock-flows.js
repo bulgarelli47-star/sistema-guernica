@@ -53,6 +53,11 @@ const {
 } = require("../database/sync-shadow-users");
 const userControlBridge = require("../backend/userControlBridge");
 const { reconcileShadowUsers } = require("../database/reconcile-shadow-users");
+const {
+  procesarPendientePasswordStandalone: p1aProcesarPendientePasswordStandalone,
+  verificarSoporteS0Standalone: p1aVerificarSoporteS0Standalone,
+  drenarOutboxPassword: p1aDrenarOutboxPassword
+} = require("../database/process-central-outbox");
 const { resolverIdentidadCentralPorLocal, abrirControlDbSoloLectura, revalidarSesionCentral } = require("../backend/centralAuthResolver");
 const { resolverTenantDbRegistrado } = require("../backend/tenantDbRegistry");
 const { verificarTenantDbIdentity, verificarTenantDbIdentityEnConexion } = require("../backend/tenantDbIdentity");
@@ -21092,6 +21097,25 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testAuthSyncB2S1A2DLegacyImportEsquemaParcialRechaza);
   await _run(testAuthSyncB2S1A2DLegacyImportSyncUsuariosShadowEmpresaTambienRechaza);
   await _run(testAuthSyncB2S1A2DLegacyImportSoloUsuariosVersionEsquemaParcialRechaza);
+  await _run(testP1ACentralFirstHappyPathConvergeYLoginAceptaNueva);
+  await _run(testP1AConflictoCasDejaLocalIntactoYNoRevierteCentral);
+  await _run(testP1AHttpPreS0FalloClosedBusinessDbIntacta);
+  await _run(testP1AProyeccionInlineNoDisponibleRespondePendienteSinMensajeEnganosoYCentralYaCambio);
+  await _run(testP1AControlDbAusenteNuncaSeCreaPorVerificacionNiPorDrenaje);
+  await _run(testP1AReconcileMarkerGlobalProtegePasswordYNuncaEscribeSyncPendiente);
+  await _run(testP1AMarkerGlobalProtegeMembershipSinFilaPropia);
+  await _run(testP1AMarkerEsEspecificoDeTipoPasswordNoDeRolActivo);
+  await _run(testP1APreS0PreservaPasswordLegacyExactamente);
+  await _run(testP1AFanOutCreaFilaParaTodasLasMembershipsIncluidasInactivas);
+  await _run(testP1AConsumerNoProcesaEmpresaInactivaYSincronizaMembershipInactiva);
+  await _run(testP1AConsumerNoAbreBusinessDbInexistenteConCreate);
+  await _run(testP1AConsumerUsuarioLocalInexistenteDejaFilaPendienteSinRevertirCentral);
+  await _run(testP1ABackfillAgregaMembershipCreadaDespuesSinAlterarFilasExistentes);
+  await _run(testP1ACierreUsaVersionObjetivoYGeneracionViejaNoCierraGeneracionNueva);
+  await _run(testP1ARetryTrasEscrituraLocalOkEsSeguroIdempotente);
+  await _run(testP1AFilaFallidaNoBloqueaElRestoDelLote);
+  await _run(testP1AAislamientoCrossTenantCambioDePasswordNoAfectaOtraIdentidad);
+  await _run(testP1AConcurrenciaDosCambiosSimultaneosUnoGanaOtroConflictoExplicito);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -40846,5 +40870,808 @@ async function testProductoCodigoAutomaticoReintentoDeterminista() {
   } finally {
     fs.rmSync(dbPath, { force: true });
     fs.rmSync(diagPath, { force: true });
+  }
+}
+
+// AUTH-SYNC-B2-P1A: password central-first. Cobertura de los 36 escenarios exigidos por el
+// checkpoint de implementacion -- commit central antes que local, CAS/conflicto, fan-out a TODAS
+// las memberships, backfill del consumer dedicado, semantica per-fila del consumer, proteccion del
+// reconciliador via el marker global (nunca escribe sync_pendiente), preservacion legacy/pre-S0, y
+// aislamiento cross-tenant. Ningun test preexistente se modifica.
+
+async function testP1ACentralFirstHappyPathConvergeYLoginAceptaNueva() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+      const { response, data } = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "NuevaCentralFirst1", confirmar_password: "NuevaCentralFirst1"
+      }, token);
+      assertEqual(response.status, 200, `PATCH password central-first happy path debe dar 200 (status=${response.status} ${JSON.stringify(data)})`);
+      assertSame(data.message, "Contraseña actualizada correctamente", "mensaje de exito central-first debe ser el nuevo texto conceptual");
+      assertSame(data.sincronizacion_shadow, "procesada", "la proyeccion inline del tenant actual debe completarse en el happy path");
+      if (JSON.stringify(data).toLowerCase().includes("hash")) {
+        throw new Error("la respuesta no debe exponer ningun hash");
+      }
+
+      const loginNuevo = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "NuevaCentralFirst1" }, null);
+      assertEqual(loginNuevo.response.status, 200, "login central debe aceptar la nueva password inmediatamente");
+      const loginViejo = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: fixture.centralPassword }, null);
+      assertEqual(loginViejo.response.status, 401, "login central debe rechazar la password vieja tras el cambio");
+    }, extraEnvCentral(fixture));
+
+    const localDespues = (await allSql(dbPath, "SELECT password FROM usuarios WHERE id = ?", [fixture.localUserId]))[0];
+    assertSame(await bcrypt.compare("NuevaCentralFirst1", localDespues.password), true, "la Business DB local debe terminar reflejando la nueva password (proyectada inline)");
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT password_hash, version FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertSame(await bcrypt.compare("NuevaCentralFirst1", central.password_hash), true, "central.password_hash debe ser la nueva password");
+      assertEqual(Number(central.version), 1, "version central debe haberse incrementado exactamente en 1");
+      const fila = await getControlQuery(controlDb, "SELECT estado, version_objetivo FROM sync_pendiente WHERE membership_id = ? AND tipo_operacion = 'password'", [fixture.membership.id]);
+      assertSame(fila.estado, "procesado", "la fila de outbox del tenant actual debe quedar procesada tras la proyeccion inline");
+      assertEqual(Number(fila.version_objetivo), 1, "version_objetivo de la fila cerrada debe ser la nueva version central");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1AConflictoCasDejaLocalIntactoYNoRevierteCentral() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+
+    const primero = await userControlBridge.actualizarPasswordCentralFirst({
+      usuarioCentralId: fixture.central.id, expectedVersion: 0,
+      passwordHash: await bcrypt.hash("PrimeraGanadora1", 10), controlDbPath
+    });
+    assertSame(primero.ok, true, "el primer commit con expectedVersion correcto debe confirmar");
+
+    const segundo = await userControlBridge.actualizarPasswordCentralFirst({
+      usuarioCentralId: fixture.central.id, expectedVersion: 0,
+      passwordHash: await bcrypt.hash("SegundaPerdedora1", 10), controlDbPath
+    });
+    assertSame(segundo.ok, false, "un segundo commit con el mismo expectedVersion ya obsoleto debe fallar CAS");
+    assertSame(segundo.errorCode, "VERSION_CONFLICT", "el error de CAS debe ser VERSION_CONFLICT");
+    assertEqual(segundo.versionActual, 1, "versionActual reportada debe ser la version real vigente");
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertSame(await bcrypt.compare("PrimeraGanadora1", central.password_hash), true, "central debe conservar el password del commit ganador, nunca el perdedor");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1AHttpPreS0FalloClosedBusinessDbIntacta() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const localAdmin = (await allSql(dbPath, "SELECT id, password FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const dbVieja = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
+    const empresaSlug = `p1a-http-preS0-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(dbVieja, { slug: empresaSlug, nombre: "P1A HTTP Pre-S0", dbPath: path.basename(dbPath) });
+    const centralHashViejo = await bcrypt.hash("CentralPreS0Http1", 10);
+    const central = await crearUsuarioCentral(dbVieja, { nombre: "P1A HTTP PreS0", usuarioReferencia: "admin", passwordHash: centralHashViejo, activo: 1 });
+    await crearMembership(dbVieja, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: localAdmin.id, rol: "admin", activo: 1 });
+    await closeControlDb(dbVieja);
+    await insertarTenantIdentityTest(dbPath, empresa.id, empresaSlug);
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "CentralPreS0Http1");
+      const { response } = await requestJson(baseUrl, "PATCH", `/usuarios/${localAdmin.id}/password`, {
+        password: "NoDebeAplicarsePreS0Http1", confirmar_password: "NoDebeAplicarsePreS0Http1"
+      }, token);
+      assertEqual(response.status, 503, "sin esquema S0, el endpoint central-first debe fallar cerrado con 503 antes de tocar nada");
+    }, {
+      ATLAS_AUTH_MODE: "central", ATLAS_USER_BRIDGE_MODE: "shadow",
+      ATLAS_EMPRESA_SLUG: empresaSlug, ATLAS_CONTROL_DB_PATH: controlDbPath
+    });
+
+    const localDespues = (await allSql(dbPath, "SELECT password FROM usuarios WHERE id = ?", [localAdmin.id]))[0];
+    assertSame(localDespues.password, localAdmin.password, "Business DB debe quedar intacta cuando el esquema no soporta central-first");
+    const controlDbFinal = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralDespues = await getControlQuery(controlDbFinal, "SELECT password_hash FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespues.password_hash, centralHashViejo, "central tampoco debe modificarse cuando falla cerrado por esquema incompatible");
+    } finally {
+      await closeControlDb(controlDbFinal);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1AProyeccionInlineNoDisponibleRespondePendienteSinMensajeEnganosoYCentralYaCambio() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+
+      // La corrupcion de empresa.db_path se hace DESPUES de que el servidor ya arranco (no antes):
+      // validarTenantAntesDeAbrirDb() valida GUERNICA_DB_PATH contra el db_path registrado UNA SOLA
+      // VEZ al bootear (backend/server.js:13086-13087), nunca por-request -- si se corrompe antes de
+      // levantar el servidor, el boot mismo falla (fail-closed correcto, pero no es lo que este test
+      // quiere ejercer). Corrompiendolo despues del boot solo afecta la lectura fresca que hace la
+      // proyeccion inline del consumer al momento del PATCH, que es exactamente el escenario buscado.
+      const controlDbPre = await bootstrapControlDb(controlDbPath, { seed: false });
+      try {
+        await runControlQuery(controlDbPre, "UPDATE empresas SET db_path = ? WHERE id = ?", ["p1a-inexistente-projection.db", fixture.empresa.id]);
+      } finally {
+        await closeControlDb(controlDbPre);
+      }
+
+      const { response, data } = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "NuevaSinProyeccion1", confirmar_password: "NuevaSinProyeccion1"
+      }, token);
+      assertEqual(response.status, 200, "aunque la proyeccion inline no pueda completarse, la respuesta debe seguir siendo 200 (central ya cambio)");
+      assertSame(data.message, "Contraseña actualizada correctamente", "el mensaje de exito no debe cambiar aunque la proyeccion quede pendiente");
+      assertSame(data.sincronizacion_shadow, "pendiente", "sin proyeccion inline exitosa, sincronizacion_shadow debe ser 'pendiente'");
+      if (/intent[aá] de nuevo|volv[eé] a intentar/i.test(data.message)) {
+        throw new Error("el mensaje de exito NO debe reutilizar wording que sugiera reintentar el cambio de password");
+      }
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertSame(await bcrypt.compare("NuevaSinProyeccion1", central.password_hash), true, "central debe reflejar la nueva password aunque la proyeccion local inline haya quedado pendiente");
+      const fila = await getControlQuery(controlDb, "SELECT estado FROM sync_pendiente WHERE membership_id = ? AND tipo_operacion = 'password'", [fixture.membership.id]);
+      assertSame(fila.estado, "pendiente", "la fila de outbox debe quedar pendiente cuando la proyeccion inline no pudo completarse");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1AControlDbAusenteNuncaSeCreaPorVerificacionNiPorDrenaje() {
+  const controlDbPathInexistente = tempDbPath();
+  try {
+    assertSame(fs.existsSync(controlDbPathInexistente), false, "precondicion: el path de control db no debe existir todavia");
+    const soporte = await p1aVerificarSoporteS0Standalone({ controlDbPath: controlDbPathInexistente });
+    assertSame(soporte.soportaS0, false, "sin archivo, la verificacion de soporte S0 debe reportar false, nunca lanzar ni crear");
+    assertSame(fs.existsSync(controlDbPathInexistente), false, "verificarSoporteS0Standalone NUNCA debe crear el archivo de control db");
+
+    const drenaje = await p1aDrenarOutboxPassword({ controlDbPath: controlDbPathInexistente });
+    assertSame(drenaje.ok, false, "drenarOutboxPassword sobre control db ausente debe fallar de forma controlada");
+    assertSame(drenaje.errorCode, "CONTROL_DB_AUSENTE", "el codigo de error debe identificar la ausencia del control plane");
+    assertSame(fs.existsSync(controlDbPathInexistente), false, "drenarOutboxPassword NUNCA debe crear el archivo de control db");
+  } finally {
+    fs.rmSync(controlDbPathInexistente, { force: true });
+  }
+}
+
+async function testP1AReconcileMarkerGlobalProtegePasswordYNuncaEscribeSyncPendiente() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `p1a-reconcile-marker-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "P1A Reconcile Marker", dbPath: "guernica.db" });
+    const centralHashVigente = await bcrypt.hash("CentralYaCambiadaXYZ1", 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: centralHashVigente, activo: 1
+    });
+    const membership = await crearMembership(controlDb, {
+      usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: admin.rol, activo: admin.activo
+    });
+    await runControlQuery(
+      controlDb,
+      `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado, procesado_en)
+       VALUES (?, ?, ?, ?, 'password', 1, 'procesado', datetime('now'))`,
+      [central.id, empresa.id, membership.id, admin.id]
+    );
+    await closeControlDb(controlDb);
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    if (!check.ok) throw new Error(`CHECK marker password fallo: ${check.message}`);
+    assertSame(check.usuarios[0].estados.includes("PASSWORD_PROTECTED_CENTRAL_FIRST"), true, "CHECK debe reportar PASSWORD_PROTECTED_CENTRAL_FIRST cuando existe el marker global");
+    assertSame(check.usuarios[0].estados.includes("PASSWORD_MISMATCH"), false, "un mismatch protegido por el marker NUNCA debe clasificarse como PASSWORD_MISMATCH reparable");
+    assertEqual(check.summary.protected_central, 1, "CHECK debe contar la proteccion de password");
+
+    const controlDbCheckSnapshot = await bootstrapControlDb(controlDbPath, { seed: false });
+    const syncPendienteAntes = await allControlQuery(controlDbCheckSnapshot, "SELECT * FROM sync_pendiente");
+    await closeControlDb(controlDbCheckSnapshot);
+    assertEqual(syncPendienteAntes.length, 1, "CHECK jamas debe escribir en sync_pendiente -- debe seguir habiendo exactamente la fila sembrada");
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`APPLY marker password fallo: ${apply.message}`);
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralDespues = await getControlQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespues.password_hash, centralHashVigente, "central.password_hash NUNCA debe revertirse al valor local stale mientras el marker exista");
+      const syncPendienteDespues = await allControlQuery(controlDb, "SELECT * FROM sync_pendiente");
+      assertEqual(syncPendienteDespues.length, 1, "APPLY tampoco debe escribir en sync_pendiente -- ni crear ni modificar filas, esa tabla es exclusiva del bridge/consumer");
+      assertSame(syncPendienteDespues[0].estado, "procesado", "APPLY no debe alterar el estado de la fila existente");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1AMarkerGlobalProtegeMembershipSinFilaPropia() {
+  const businessDbA = bootstrapFreshTestDb();
+  const businessDbB = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const adminA = (await allSql(businessDbA, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const adminB = (await allSql(businessDbB, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slugA = `p1a-marker-sinfila-a-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const slugB = `p1a-marker-sinfila-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaA = await registrarEmpresa(controlDb, { slug: slugA, nombre: "P1A Marker Sin Fila A", dbPath: "guernica.db" });
+    const empresaB = await registrarEmpresa(controlDb, { slug: slugB, nombre: "P1A Marker Sin Fila B", dbPath: "guernica.db" });
+    const centralHashVigente = await bcrypt.hash("CentralGlobalVigente1", 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: "Usuario Multiempresa P1A", usuarioReferencia: "p1a-multiempresa", passwordHash: centralHashVigente, activo: 1
+    });
+    const membershipA = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaA.id, usuarioLocalId: adminA.id, rol: "admin", activo: 1 });
+    const membershipB = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaB.id, usuarioLocalId: adminB.id, rol: "admin", activo: 1 });
+
+    await runControlQuery(
+      controlDb,
+      `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+       VALUES (?, ?, ?, ?, 'password', 1, 'pendiente')`,
+      [central.id, empresaA.id, membershipA.id, adminA.id]
+    );
+    await closeControlDb(controlDb);
+
+    const checkB = await reconcileShadowUsers({ empresaSlug: slugB, mode: "check", controlDbPath, businessDbPath: businessDbB });
+    if (!checkB.ok) throw new Error(`CHECK empresa B fallo: ${checkB.message}`);
+    assertSame(checkB.usuarios[0].estados.includes("PASSWORD_PROTECTED_CENTRAL_FIRST"), true, "el marker global (por usuario_id) debe proteger tambien a la membership B, aunque B no tenga fila propia en sync_pendiente");
+
+    const applyB = await reconcileShadowUsers({ empresaSlug: slugB, mode: "apply", controlDbPath, businessDbPath: businessDbB });
+    if (!applyB.ok) throw new Error(`APPLY empresa B fallo: ${applyB.message}`);
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralDespues = await getControlQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespues.password_hash, centralHashVigente, "central no debe revertirse por B pese a que B no tiene fila propia en sync_pendiente");
+      const filaB = await getControlQuery(controlDb, "SELECT id FROM sync_pendiente WHERE membership_id = ? AND tipo_operacion = 'password'", [membershipB.id]);
+      assertSame(filaB, undefined, "APPLY no debe crear una fila de outbox para B -- el backfill es responsabilidad exclusiva del consumer, no del reconciliador");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbA, { force: true });
+    fs.rmSync(businessDbB, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1AMarkerEsEspecificoDeTipoPasswordNoDeRolActivo() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const empresaSlug = `p1a-marker-tipo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug: empresaSlug, nombre: "P1A Marker Tipo", dbPath: "guernica.db" });
+    const placeholderHash = await bcrypt.hash("PlaceholderTipoTest1", 10);
+    const central = await crearUsuarioCentral(controlDb, {
+      nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: placeholderHash, activo: 1
+    });
+    const membership = await crearMembership(controlDb, {
+      usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: admin.rol, activo: admin.activo
+    });
+    await runControlQuery(
+      controlDb,
+      `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+       VALUES (?, ?, ?, ?, 'rol_activo', 1, 'pendiente')`,
+      [central.id, empresa.id, membership.id, admin.id]
+    );
+    await closeControlDb(controlDb);
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    if (!check.ok) throw new Error(`CHECK fallo: ${check.message}`);
+    assertSame(check.usuarios[0].estados.includes("PASSWORD_MISMATCH"), true, "un marker de tipo rol_activo NO debe proteger el password -- debe seguir reportandose PASSWORD_MISMATCH");
+    assertSame(check.usuarios[0].estados.includes("PASSWORD_PROTECTED_CENTRAL_FIRST"), false, "sin marker de tipo password, no debe reportarse proteccion de password");
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`APPLY fallo: ${apply.message}`);
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralDespues = await getControlQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespues.password_hash, admin.password, "sin marker de password, APPLY debe seguir copiando local->central como siempre (comportamiento legacy intacto)");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1APreS0PreservaPasswordLegacyExactamente() {
+  const businessDbPath = bootstrapFreshTestDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const admin = (await allSql(businessDbPath, "SELECT * FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const dbVieja = await authSyncB2S0CrearControlDbEsquemaViejo(controlDbPath);
+    const empresaSlug = `p1a-preS0-password-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(dbVieja, { slug: empresaSlug, nombre: "P1A Pre-S0 Password", dbPath: "guernica.db" });
+    const placeholderHash = await bcrypt.hash("PlaceholderPreS0Test1", 10);
+    const central = await crearUsuarioCentral(dbVieja, { nombre: admin.nombre, usuarioReferencia: admin.usuario, passwordHash: placeholderHash, activo: 1 });
+    await crearMembership(dbVieja, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: admin.id, rol: admin.rol, activo: admin.activo });
+    await closeControlDb(dbVieja);
+
+    const check = await reconcileShadowUsers({ empresaSlug, mode: "check", controlDbPath, businessDbPath });
+    if (!check.ok) throw new Error(`CHECK pre-S0 password fallo: ${check.message}`);
+    assertSame(check.usuarios[0].estados.includes("PASSWORD_MISMATCH"), true, "pre-S0 debe seguir detectando PASSWORD_MISMATCH exactamente como antes de P1A");
+    assertEqual(check.summary.protected_central, 0, "pre-S0 no tiene esquema para evaluar proteccion -- debe quedar en 0, igual que siempre");
+
+    const apply = await reconcileShadowUsers({ empresaSlug, mode: "apply", controlDbPath, businessDbPath });
+    if (!apply.ok) throw new Error(`APPLY pre-S0 password fallo: ${apply.message}`);
+    assertEqual(apply.summary.repaired, 1, "APPLY pre-S0 debe reparar el password exactamente como antes de P1A");
+
+    const dbFinal = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralDespues = await getControlQuery(dbFinal, "SELECT password_hash FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespues.password_hash, admin.password, "pre-S0 sigue siendo LOCAL-FIRST para password, sin cambios de comportamiento");
+    } finally {
+      await closeControlDb(dbFinal);
+    }
+  } finally {
+    fs.rmSync(businessDbPath, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1AFanOutCreaFilaParaTodasLasMembershipsIncluidasInactivas() {
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    // UNIQUE(usuario_id, empresa_id) en usuario_empresas: una identidad central solo puede tener UNA
+    // membership por empresa -- por eso hacen falta 3 empresas DISTINTAS (no 2) para cubrir los 3
+    // casos (activa/activa, inactiva en empresa activa, activa en empresa inactiva) bajo la MISMA
+    // identidad central.
+    const slugActiva1 = `p1a-fanout-activa1-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const slugActiva2 = `p1a-fanout-activa2-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const slugInactiva = `p1a-fanout-inactiva-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaActiva1 = await registrarEmpresa(controlDb, { slug: slugActiva1, nombre: "P1A Fanout Empresa Activa 1", dbPath: "guernica.db", activa: 1 });
+    const empresaActiva2 = await registrarEmpresa(controlDb, { slug: slugActiva2, nombre: "P1A Fanout Empresa Activa 2", dbPath: "guernica.db", activa: 1 });
+    const empresaInactiva = await registrarEmpresa(controlDb, { slug: slugInactiva, nombre: "P1A Fanout Empresa Inactiva", dbPath: "guernica.db", activa: 0 });
+    const placeholderHash = await bcrypt.hash("PlaceholderFanout1", 10);
+    const central = await crearUsuarioCentral(controlDb, { nombre: "Fanout Test", usuarioReferencia: "p1a-fanout", passwordHash: placeholderHash, activo: 1 });
+    const membershipActivaActiva = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaActiva1.id, usuarioLocalId: 1, rol: "admin", activo: 1 });
+    const membershipInactivaEnEmpresaActiva = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaActiva2.id, usuarioLocalId: 2, rol: "colaborador", activo: 0 });
+    const membershipEnEmpresaInactiva = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaInactiva.id, usuarioLocalId: 3, rol: "admin", activo: 1 });
+    await closeControlDb(controlDb);
+
+    const commit = await userControlBridge.actualizarPasswordCentralFirst({
+      usuarioCentralId: central.id, expectedVersion: 0, passwordHash: await bcrypt.hash("NuevaFanout1", 10), controlDbPath
+    });
+    assertSame(commit.ok, true, "el commit central debe confirmar");
+    assertEqual(commit.memberships.length, 3, "el fan-out debe cubrir las 3 memberships sin filtrar por activo/empresa.activa");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const filas = await allControlQuery(controlDb, "SELECT membership_id, estado, version_objetivo FROM sync_pendiente WHERE tipo_operacion = 'password'");
+      assertEqual(filas.length, 3, "deben crearse exactamente 3 filas de outbox, una por membership");
+      for (const membershipId of [membershipActivaActiva.id, membershipInactivaEnEmpresaActiva.id, membershipEnEmpresaInactiva.id]) {
+        const fila = filas.find((f) => Number(f.membership_id) === Number(membershipId));
+        assertSame(Boolean(fila), true, `debe existir fila de outbox para membership_id=${membershipId}`);
+        assertSame(fila.estado, "pendiente", "toda fila recien creada por el fan-out debe nacer pendiente");
+        assertEqual(Number(fila.version_objetivo), 1, "version_objetivo debe ser la nueva version central");
+      }
+      const columnas = await allControlQuery(controlDb, "PRAGMA table_info(sync_pendiente)");
+      assertSame(columnas.some((c) => c.name.toLowerCase().includes("password") || c.name.toLowerCase().includes("hash")), false, "sync_pendiente jamas debe tener una columna que pueda alojar un hash");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1AConsumerNoProcesaEmpresaInactivaYSincronizaMembershipInactiva() {
+  // UNIQUE(usuario_id, empresa_id): la membership "admin" y la membership "colaborador inactiva"
+  // deben vivir en DOS empresas activas distintas (no la misma), cada una con su propia business db.
+  // bootstrapFreshRegisteredTenantDb() (no bootstrapFreshTestDb()) porque el consumer resuelve la
+  // business db via resolveEmpresaDbPath(empresa.db_path), que exige el archivo DENTRO de database/.
+  const businessDbActiva1 = bootstrapFreshRegisteredTenantDb();
+  const businessDbActiva2 = bootstrapFreshRegisteredTenantDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const localAdmin = (await allSql(businessDbActiva1, "SELECT id, password FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const localColaborador = (await allSql(businessDbActiva2, "SELECT id, password FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slugActiva1 = `p1a-consumer-activa1-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const slugActiva2 = `p1a-consumer-activa2-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const slugInactiva = `p1a-consumer-inactiva-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaActiva1 = await registrarEmpresa(controlDb, { slug: slugActiva1, nombre: "P1A Consumer Empresa Activa 1", dbPath: path.basename(businessDbActiva1), activa: 1 });
+    const empresaActiva2 = await registrarEmpresa(controlDb, { slug: slugActiva2, nombre: "P1A Consumer Empresa Activa 2", dbPath: path.basename(businessDbActiva2), activa: 1 });
+    const empresaInactiva = await registrarEmpresa(controlDb, { slug: slugInactiva, nombre: "P1A Consumer Empresa Inactiva", dbPath: "guernica.db", activa: 0 });
+    const centralHashNuevo = await bcrypt.hash("NuevaConsumer1", 10);
+    const central = await crearUsuarioCentral(controlDb, { nombre: "Consumer Test", usuarioReferencia: "p1a-consumer", passwordHash: centralHashNuevo, activo: 1 });
+    const membershipAdmin = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaActiva1.id, usuarioLocalId: localAdmin.id, rol: "admin", activo: 1 });
+    const membershipColaboradorInactivo = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaActiva2.id, usuarioLocalId: localColaborador.id, rol: "colaborador", activo: 0 });
+    const membershipEmpresaInactiva = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaInactiva.id, usuarioLocalId: 999, rol: "admin", activo: 1 });
+
+    await runControlQuery(controlDb,
+      `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+       VALUES (?, ?, ?, ?, 'password', 1, 'pendiente')`,
+      [central.id, empresaActiva1.id, membershipAdmin.id, localAdmin.id]);
+    await runControlQuery(controlDb,
+      `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+       VALUES (?, ?, ?, ?, 'password', 1, 'pendiente')`,
+      [central.id, empresaActiva2.id, membershipColaboradorInactivo.id, localColaborador.id]);
+    await runControlQuery(controlDb,
+      `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+       VALUES (?, ?, ?, ?, 'password', 1, 'pendiente')`,
+      [central.id, empresaInactiva.id, membershipEmpresaInactiva.id, 999]);
+    await closeControlDb(controlDb);
+
+    const resultado = await p1aDrenarOutboxPassword({ controlDbPath });
+    assertSame(resultado.ok, true, "el drenaje debe completarse ok");
+    assertEqual(resultado.total, 3, "deben evaluarse las 3 filas pendientes");
+
+    const porMembership = Object.fromEntries(resultado.resultados.map((r) => [r.membershipId, r]));
+    assertSame(porMembership[membershipAdmin.id].resultado, "PROCESADO", "membership activa en empresa activa debe procesarse");
+    assertSame(porMembership[membershipColaboradorInactivo.id].resultado, "PROCESADO", "una membership inactiva en una empresa activa SI debe sincronizarse -- el password es global, no depende de membership.activo");
+    assertSame(porMembership[membershipEmpresaInactiva.id].resultado, "SKIP_EMPRESA_INACTIVA", "el consumer no debe procesar filas de una empresa inactiva");
+
+    const localAdminDespues = (await allSql(businessDbActiva1, "SELECT password FROM usuarios WHERE id = ?", [localAdmin.id]))[0];
+    const localColaboradorDespues = (await allSql(businessDbActiva2, "SELECT password FROM usuarios WHERE id = ?", [localColaborador.id]))[0];
+    assertSame(await bcrypt.compare("NuevaConsumer1", localAdminDespues.password), true, "local admin debe reflejar el hash central nuevo");
+    assertSame(await bcrypt.compare("NuevaConsumer1", localColaboradorDespues.password), true, "local colaborador (membership inactiva) debe reflejar igualmente el hash central nuevo");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const filaInactiva = await getControlQuery(controlDb, "SELECT estado FROM sync_pendiente WHERE membership_id = ?", [membershipEmpresaInactiva.id]);
+      assertSame(filaInactiva.estado, "pendiente", "la fila de la empresa inactiva debe permanecer pendiente indefinidamente, sin ser eliminada ni marcada procesada");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(businessDbActiva1);
+    limpiarTenantTestDb(businessDbActiva2);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+// (fin testP1AConsumerNoProcesaEmpresaInactivaYSincronizaMembershipInactiva)
+
+async function testP1AConsumerNoAbreBusinessDbInexistenteConCreate() {
+  const controlDbPath = tempDbPath();
+  const nombreInexistente = `p1a-consumer-ausente-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const pathInexistente = path.join(ROOT, "database", nombreInexistente);
+  try {
+    assertSame(fs.existsSync(pathInexistente), false, "precondicion: el archivo de business db no debe existir");
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slug = `p1a-consumer-ausente-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug, nombre: "P1A Consumer DB Ausente", dbPath: nombreInexistente, activa: 1 });
+    const central = await crearUsuarioCentral(controlDb, { nombre: "Ausente Test", usuarioReferencia: "p1a-ausente", passwordHash: await bcrypt.hash("Nueva1", 10), activo: 1 });
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: 1, rol: "admin", activo: 1 });
+    await runControlQuery(controlDb,
+      `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+       VALUES (?, ?, ?, ?, 'password', 1, 'pendiente')`, [central.id, empresa.id, membership.id, 1]);
+    await closeControlDb(controlDb);
+
+    const resultado = await p1aProcesarPendientePasswordStandalone(
+      { usuarioId: central.id, empresaId: empresa.id, membershipId: membership.id, usuarioLocalId: 1, versionObjetivo: 1 },
+      { controlDbPath }
+    );
+    assertSame(resultado.resultado, "SKIP_BUSINESS_DB_AUSENTE", "una business db inexistente debe producir SKIP, nunca crearla");
+    assertSame(fs.existsSync(pathInexistente), false, "el consumer NUNCA debe crear el archivo de business db (abre sin OPEN_CREATE)");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const fila = await getControlQuery(controlDb, "SELECT estado FROM sync_pendiente WHERE membership_id = ?", [membership.id]);
+      assertSame(fila.estado, "pendiente", "la fila debe permanecer pendiente cuando la business db no existe");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    fs.rmSync(pathInexistente, { force: true });
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1AConsumerUsuarioLocalInexistenteDejaFilaPendienteSinRevertirCentral() {
+  const businessDbPath = bootstrapFreshRegisteredTenantDb();
+  const controlDbPath = tempDbPath();
+  try {
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slug = `p1a-consumer-localinexistente-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug, nombre: "P1A Consumer Local Inexistente", dbPath: path.basename(businessDbPath), activa: 1 });
+    const centralHashNuevo = await bcrypt.hash("NuevaLocalInexistente1", 10);
+    const central = await crearUsuarioCentral(controlDb, { nombre: "Local Inexistente Test", usuarioReferencia: "p1a-localinexistente", passwordHash: centralHashNuevo, activo: 1 });
+    const usuarioLocalInexistente = 999999;
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: usuarioLocalInexistente, rol: "admin", activo: 1 });
+    await runControlQuery(controlDb,
+      `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+       VALUES (?, ?, ?, ?, 'password', 1, 'pendiente')`, [central.id, empresa.id, membership.id, usuarioLocalInexistente]);
+    await closeControlDb(controlDb);
+
+    const resultado = await p1aProcesarPendientePasswordStandalone(
+      { usuarioId: central.id, empresaId: empresa.id, membershipId: membership.id, usuarioLocalId: usuarioLocalInexistente, versionObjetivo: 1 },
+      { controlDbPath }
+    );
+    assertSame(resultado.resultado, "SKIP_USUARIO_LOCAL_INEXISTENTE", "un usuario_local_id que no existe en la business db debe producir SKIP, sin lanzar");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const centralDespues = await getControlQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [central.id]);
+      assertSame(centralDespues.password_hash, centralHashNuevo, "central NUNCA debe revertirse por un fallo del lado local");
+      const fila = await getControlQuery(controlDb, "SELECT estado FROM sync_pendiente WHERE membership_id = ?", [membership.id]);
+      assertSame(fila.estado, "pendiente", "la fila debe permanecer pendiente cuando el usuario local no existe");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(businessDbPath);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ABackfillAgregaMembershipCreadaDespuesSinAlterarFilasExistentes() {
+  const businessDbA = bootstrapFreshRegisteredTenantDb();
+  const businessDbB = bootstrapFreshRegisteredTenantDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const localA = (await allSql(businessDbA, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    const localB = (await allSql(businessDbB, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slugA = `p1a-backfill-a-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const slugB = `p1a-backfill-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaA = await registrarEmpresa(controlDb, { slug: slugA, nombre: "P1A Backfill A", dbPath: path.basename(businessDbA), activa: 1 });
+    const empresaB = await registrarEmpresa(controlDb, { slug: slugB, nombre: "P1A Backfill B", dbPath: path.basename(businessDbB), activa: 1 });
+    const centralHash = await bcrypt.hash("BackfillVigente1", 10);
+    const central = await crearUsuarioCentral(controlDb, { nombre: "Backfill Test", usuarioReferencia: "p1a-backfill", passwordHash: centralHash, activo: 1 });
+    const membershipA = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaA.id, usuarioLocalId: localA.id, rol: "admin", activo: 1 });
+
+    await runControlQuery(controlDb,
+      `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado, procesado_en)
+       VALUES (?, ?, ?, ?, 'password', 1, 'procesado', datetime('now'))`,
+      [central.id, empresaA.id, membershipA.id, localA.id]);
+    await closeControlDb(controlDb);
+
+    // Recien AHORA se crea la membership B -- simula alta posterior de una segunda empresa, DESPUES
+    // de que el password ya se hubiera cambiado (y consumido) cuando solo existia A.
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const membershipB = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresaB.id, usuarioLocalId: localB.id, rol: "admin", activo: 1 });
+    await closeControlDb(controlDb);
+
+    const resultado = await p1aDrenarOutboxPassword({ controlDbPath });
+    assertSame(resultado.ok, true, "el drenaje debe completarse ok");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    let versionCentralActual;
+    try {
+      const filaA = await getControlQuery(controlDb, "SELECT estado, version_objetivo FROM sync_pendiente WHERE membership_id = ?", [membershipA.id]);
+      assertSame(filaA.estado, "procesado", "el backfill NUNCA debe reabrir una fila ya procesada de una membership existente");
+      assertEqual(Number(filaA.version_objetivo), 1, "el backfill no debe alterar el version_objetivo de una fila existente");
+
+      const filaB = await getControlQuery(controlDb, "SELECT estado, version_objetivo FROM sync_pendiente WHERE membership_id = ?", [membershipB.id]);
+      assertSame(Boolean(filaB), true, "el backfill debe crear una fila nueva para la membership creada despues del cambio de password");
+      const centralRow = await getControlQuery(controlDb, "SELECT version FROM usuarios WHERE id = ?", [central.id]);
+      versionCentralActual = Number(centralRow.version);
+      assertEqual(Number(filaB.version_objetivo), versionCentralActual, "version_objetivo de la fila de backfill debe ser la version central ACTUAL");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+
+    const localBDespues = (await allSql(businessDbB, "SELECT password FROM usuarios WHERE id = ?", [localB.id]))[0];
+    assertSame(await bcrypt.compare("BackfillVigente1", localBDespues.password), true, "tras el drenaje (backfill + proceso), B debe terminar con el hash central vigente");
+  } finally {
+    limpiarTenantTestDb(businessDbA);
+    limpiarTenantTestDb(businessDbB);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ACierreUsaVersionObjetivoYGeneracionViejaNoCierraGeneracionNueva() {
+  const businessDbPath = bootstrapFreshRegisteredTenantDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const localAdmin = (await allSql(businessDbPath, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slug = `p1a-generacion-vieja-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug, nombre: "P1A Generacion Vieja", dbPath: path.basename(businessDbPath), activa: 1 });
+    const hashV2 = await bcrypt.hash("GeneracionDosVigente1", 10);
+    const central = await crearUsuarioCentral(controlDb, { nombre: "Generacion Test", usuarioReferencia: "p1a-generacion", passwordHash: hashV2, activo: 1 });
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: localAdmin.id, rol: "admin", activo: 1 });
+    await runControlQuery(controlDb,
+      `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+       VALUES (?, ?, ?, ?, 'password', 2, 'pendiente')`, [central.id, empresa.id, membership.id, localAdmin.id]);
+    await closeControlDb(controlDb);
+
+    const resultadoV1 = await p1aProcesarPendientePasswordStandalone(
+      { usuarioId: central.id, empresaId: empresa.id, membershipId: membership.id, usuarioLocalId: localAdmin.id, versionObjetivo: 1 },
+      { controlDbPath }
+    );
+    assertSame(resultadoV1.resultado, "PENDING_GENERACION_MAS_NUEVA", "cerrar con un version_objetivo viejo (1) NO debe poder cerrar la fila que ya avanzo a la generacion 2");
+
+    controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const fila = await getControlQuery(controlDb, "SELECT estado, version_objetivo FROM sync_pendiente WHERE membership_id = ?", [membership.id]);
+      assertSame(fila.estado, "pendiente", "la fila de la generacion 2 debe seguir pendiente -- el intento de la generacion 1 no debe haberla tocado");
+      assertEqual(Number(fila.version_objetivo), 2, "version_objetivo debe seguir siendo 2, nunca revertido");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+
+    const resultadoV2 = await p1aDrenarOutboxPassword({ controlDbPath });
+    assertSame(resultadoV2.ok, true, "el drenaje real debe completarse");
+    const localDespues = (await allSql(businessDbPath, "SELECT password FROM usuarios WHERE id = ?", [localAdmin.id]))[0];
+    assertSame(await bcrypt.compare("GeneracionDosVigente1", localDespues.password), true, "el proximo pase debe converger local a la generacion 2 (la vigente), re-leyendo el hash actual");
+  } finally {
+    limpiarTenantTestDb(businessDbPath);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1ARetryTrasEscrituraLocalOkEsSeguroIdempotente() {
+  const businessDbPath = bootstrapFreshRegisteredTenantDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const localAdmin = (await allSql(businessDbPath, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slug = `p1a-retry-idempotente-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresa = await registrarEmpresa(controlDb, { slug, nombre: "P1A Retry Idempotente", dbPath: path.basename(businessDbPath), activa: 1 });
+    const hashVigente = await bcrypt.hash("RetryIdempotente1", 10);
+    const central = await crearUsuarioCentral(controlDb, { nombre: "Retry Test", usuarioReferencia: "p1a-retry", passwordHash: hashVigente, activo: 1 });
+    const membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: empresa.id, usuarioLocalId: localAdmin.id, rol: "admin", activo: 1 });
+    await runControlQuery(controlDb,
+      `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+       VALUES (?, ?, ?, ?, 'password', 1, 'pendiente')`, [central.id, empresa.id, membership.id, localAdmin.id]);
+    await closeControlDb(controlDb);
+
+    const intento = { usuarioId: central.id, empresaId: empresa.id, membershipId: membership.id, usuarioLocalId: localAdmin.id, versionObjetivo: 1 };
+    const r1 = await p1aProcesarPendientePasswordStandalone(intento, { controlDbPath });
+    assertSame(r1.resultado, "PROCESADO", "el primer intento debe procesar y cerrar la fila normalmente");
+
+    const r2 = await p1aProcesarPendientePasswordStandalone(intento, { controlDbPath });
+    assertSame(r2.resultado, "PENDING_GENERACION_MAS_NUEVA", "un retry sobre una fila ya cerrada no debe re-cerrarla (el CAS por version_objetivo+estado=pendiente ya no matchea)");
+
+    const localDespues = (await allSql(businessDbPath, "SELECT password FROM usuarios WHERE id = ?", [localAdmin.id]))[0];
+    assertSame(await bcrypt.compare("RetryIdempotente1", localDespues.password), true, "el retry debe re-escribir el MISMO hash vigente (idempotente), nunca corromperlo");
+  } finally {
+    limpiarTenantTestDb(businessDbPath);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1AFilaFallidaNoBloqueaElRestoDelLote() {
+  const businessDbOk = bootstrapFreshRegisteredTenantDb();
+  const controlDbPath = tempDbPath();
+  try {
+    const localOk = (await allSql(businessDbOk, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const slugOk = `p1a-lote-ok-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const slugRoto = `p1a-lote-roto-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const empresaOk = await registrarEmpresa(controlDb, { slug: slugOk, nombre: "P1A Lote OK", dbPath: path.basename(businessDbOk), activa: 1 });
+    const nombreInexistente = `p1a-lote-roto-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+    const empresaRota = await registrarEmpresa(controlDb, { slug: slugRoto, nombre: "P1A Lote Roto", dbPath: nombreInexistente, activa: 1 });
+    const hashVigente = await bcrypt.hash("LoteMixto1", 10);
+    const centralOk = await crearUsuarioCentral(controlDb, { nombre: "Lote OK", usuarioReferencia: "p1a-lote-ok", passwordHash: hashVigente, activo: 1 });
+    const centralRoto = await crearUsuarioCentral(controlDb, { nombre: "Lote Roto", usuarioReferencia: "p1a-lote-roto", passwordHash: await bcrypt.hash("NoImporta1", 10), activo: 1 });
+    const membershipOk = await crearMembership(controlDb, { usuarioId: centralOk.id, empresaId: empresaOk.id, usuarioLocalId: localOk.id, rol: "admin", activo: 1 });
+    const membershipRoto = await crearMembership(controlDb, { usuarioId: centralRoto.id, empresaId: empresaRota.id, usuarioLocalId: 1, rol: "admin", activo: 1 });
+    await runControlQuery(controlDb,
+      `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+       VALUES (?, ?, ?, ?, 'password', 1, 'pendiente')`, [centralOk.id, empresaOk.id, membershipOk.id, localOk.id]);
+    await runControlQuery(controlDb,
+      `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+       VALUES (?, ?, ?, ?, 'password', 1, 'pendiente')`, [centralRoto.id, empresaRota.id, membershipRoto.id, 1]);
+    await closeControlDb(controlDb);
+
+    const resultado = await p1aDrenarOutboxPassword({ controlDbPath });
+    assertSame(resultado.ok, true, "el drenaje del lote debe completarse ok pese a que una fila no pueda procesarse");
+    assertEqual(resultado.total, 2, "deben evaluarse ambas filas");
+    const porMembership = Object.fromEntries(resultado.resultados.map((r) => [r.membershipId, r]));
+    assertSame(porMembership[membershipOk.id].resultado, "PROCESADO", "la fila sana debe procesarse pese a que la otra fila del lote falle");
+    assertSame(porMembership[membershipRoto.id].resultado, "SKIP_BUSINESS_DB_AUSENTE", "la fila rota debe quedar como SKIP, sin abortar el resto del lote");
+
+    const localOkDespues = (await allSql(businessDbOk, "SELECT password FROM usuarios WHERE id = ?", [localOk.id]))[0];
+    assertSame(await bcrypt.compare("LoteMixto1", localOkDespues.password), true, "la fila sana debe terminar sincronizada correctamente");
+  } finally {
+    limpiarTenantTestDb(businessDbOk);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1AAislamientoCrossTenantCambioDePasswordNoAfectaOtraIdentidad() {
+  const dbPath1 = bootstrapFreshRegisteredTenantDb();
+  const dbPath2 = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath1, controlDbPath2;
+  try {
+    const fixture1 = await setupCentralFixture({ businessDbPath: dbPath1 });
+    const fixture2 = await setupCentralFixture({ businessDbPath: dbPath2 });
+    controlDbPath1 = fixture1.controlDbPath;
+    controlDbPath2 = fixture2.controlDbPath;
+
+    await withServer(dbPath1, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture1.centralPassword);
+      const { response } = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture1.localUserId}/password`, {
+        password: "TenantUnoNueva1", confirmar_password: "TenantUnoNueva1"
+      }, token);
+      assertEqual(response.status, 200, "el cambio de password del tenant 1 debe completarse ok");
+    }, extraEnvCentral(fixture1));
+
+    const controlDb2 = await bootstrapControlDb(controlDbPath2, { seed: false });
+    try {
+      const central2 = await getControlQuery(controlDb2, "SELECT password_hash, version FROM usuarios WHERE id = ?", [fixture2.central.id]);
+      assertSame(await bcrypt.compare(fixture2.centralPassword, central2.password_hash), true, "la identidad central del tenant 2 (control db separada) no debe verse afectada por el cambio en el tenant 1");
+      assertEqual(Number(central2.version), 0, "version del tenant 2 debe seguir en 0");
+      const syncPendiente2 = await allControlQuery(controlDb2, "SELECT * FROM sync_pendiente");
+      assertEqual(syncPendiente2.length, 0, "no debe haber ninguna fila de outbox en la control db del tenant 2");
+    } finally {
+      await closeControlDb(controlDb2);
+    }
+
+    const local2 = (await allSql(dbPath2, "SELECT password FROM usuarios WHERE id = ?", [fixture2.localUserId]))[0];
+    assertSame(await bcrypt.compare(fixture2.localPassword, local2.password), true, "la business db local del tenant 2 no debe verse afectada por el cambio en el tenant 1");
+  } finally {
+    limpiarTenantTestDb(dbPath1);
+    limpiarTenantTestDb(dbPath2);
+    if (controlDbPath1) fs.rmSync(controlDbPath1, { force: true });
+    if (controlDbPath2) fs.rmSync(controlDbPath2, { force: true });
+  }
+}
+
+async function testP1AConcurrenciaDosCambiosSimultaneosUnoGanaOtroConflictoExplicito() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", fixture.centralPassword);
+      const [r1, r2] = await Promise.all([
+        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "ConcurrenteA111", confirmar_password: "ConcurrenteA111" }, token),
+        requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, { password: "ConcurrenteB222", confirmar_password: "ConcurrenteB222" }, token)
+      ]);
+
+      const statuses = [r1.response.status, r2.response.status].sort();
+      assertSame(JSON.stringify(statuses), JSON.stringify([200, 409]), `de dos cambios concurrentes exactamente uno debe confirmar (200) y el otro debe recibir conflicto explicito (409) -- nunca last-write-wins silencioso (statuses=${JSON.stringify(statuses)})`);
+
+      const ganador = r1.response.status === 200 ? "ConcurrenteA111" : "ConcurrenteB222";
+      const perdedor = r1.response.status === 200 ? "ConcurrenteB222" : "ConcurrenteA111";
+
+      const loginGanador = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: ganador }, null);
+      assertEqual(loginGanador.response.status, 200, "el password del intento que confirmo (200) debe ser el que autentica");
+      const loginPerdedor = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: perdedor }, null);
+      assertEqual(loginPerdedor.response.status, 401, "el password del intento rechazado (409) NUNCA debe quedar vigente");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT version FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertEqual(Number(central.version), 1, "version debe haberse incrementado EXACTAMENTE una vez, nunca dos, pese a los dos intentos concurrentes");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
   }
 }
