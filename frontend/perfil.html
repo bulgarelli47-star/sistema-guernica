@@ -95,52 +95,205 @@
     // solamente, nunca localStorage). Mismo contrato que frontend/usuarios.html.
     let passwordIdempotencyKey=null;
     function invalidarPasswordIdempotencyKey(){passwordIdempotencyKey=null}
+    // AUTH-SYNC-B2-P1B R2B: distingue EDITAR UNA ACCION ACTUAL (siempre nueva key) de REINGRESAR EL
+    // SECRETO PARA RECUPERAR UNA OPERACION PENDIENTE (la key debe sobrevivir el reingreso). Default
+    // false; se activa EXCLUSIVAMENTE al abrir el modal y encontrar un pending record vigente.
+    let passwordRecoveryMode=false;
+
+    // AUTH-SYNC-B2-P1B LOST-RESPONSE RECOVERY: mismo contrato que frontend/usuarios.html -- ver
+    // comentarios completos alli. La key tambien se persiste en sessionStorage (nunca
+    // password/hash) para sobrevivir un reload accidental despues de un commit cuya respuesta se
+    // perdio.
+    const SESSION_KEY="guernicaSession";
+    const PENDING_OP_TTL_MS=15*60*1000;
+    function pendingOpStorageKey(targetUsuarioId){return `atlas:password-operation:${targetUsuarioId}`}
+    function guardarPendingOperation({key,targetUsuarioId,actorUsuarioId}){
+      try{sessionStorage.setItem(pendingOpStorageKey(targetUsuarioId),JSON.stringify({key,targetUsuarioId:Number(targetUsuarioId),actorUsuarioId:Number(actorUsuarioId),createdAt:new Date().toISOString()}))}catch{}
+    }
+    function pendingOperationVencidaOAjena(record,actorUsuarioIdActual){
+      const vencido=!record||!record.createdAt||(Date.now()-new Date(record.createdAt).getTime())>PENDING_OP_TTL_MS;
+      const actorDistinto=!record||Number(record.actorUsuarioId)!==Number(actorUsuarioIdActual);
+      return vencido||actorDistinto;
+    }
+    function leerPendingOperation(targetUsuarioId,actorUsuarioIdActual){
+      const storageKey=pendingOpStorageKey(targetUsuarioId);
+      let record;
+      try{record=JSON.parse(sessionStorage.getItem(storageKey)||"null")}catch{record=null}
+      if(!record||pendingOperationVencidaOAjena(record,actorUsuarioIdActual)){try{sessionStorage.removeItem(storageKey)}catch{}return null}
+      return record;
+    }
+    function borrarPendingOperation(targetUsuarioId){try{sessionStorage.removeItem(pendingOpStorageKey(targetUsuarioId))}catch{}}
+    function limpiarPendingOperationsVencidasOAjenas(actorUsuarioIdActual){
+      try{
+        const aBorrar=[];
+        for(let i=0;i<sessionStorage.length;i++){
+          const k=sessionStorage.key(i);
+          if(!k||!k.startsWith("atlas:password-operation:"))continue;
+          let record;
+          try{record=JSON.parse(sessionStorage.getItem(k)||"null")}catch{record=null}
+          if(!record||pendingOperationVencidaOAjena(record,actorUsuarioIdActual))aBorrar.push(k);
+        }
+        aBorrar.forEach((k)=>sessionStorage.removeItem(k));
+      }catch{}
+    }
+    // Storage de sesion: MISMO contrato que login.html (guernicaSession/guernicaUser), pero al
+    // guardar una sesion recuperada (T2) se limpian AMBAS copias primero y se escribe UNA sola
+    // autoridad de storage segun `remember`.
+    function limpiarAmbasCopiasDeSesion(){
+      try{
+        localStorage.removeItem(SESSION_KEY);sessionStorage.removeItem(SESSION_KEY);
+        localStorage.removeItem(USER_KEY);sessionStorage.removeItem(USER_KEY);
+      }catch{}
+    }
+    function leerSesionActual(){
+      try{return JSON.parse(localStorage.getItem(SESSION_KEY)||sessionStorage.getItem(SESSION_KEY)||"null")}catch{return null}
+    }
+    function tokenActual(){
+      const sesion=leerSesionActual();
+      return sesion&&sesion.token&&sesion.expires_at&&new Date(sesion.expires_at).getTime()>Date.now()?sesion.token:null;
+    }
+    function guardarSesionRecuperada({token,expires_at,remember,user}){
+      limpiarAmbasCopiasDeSesion();
+      const target=remember?localStorage:sessionStorage;
+      try{
+        target.setItem(USER_KEY,JSON.stringify(user));
+        target.setItem(SESSION_KEY,JSON.stringify({token,expires_at,remember:Boolean(remember)}));
+      }catch{}
+    }
     async function apiJson(res,fallback){const type=res.headers.get("content-type")||"";if(!type.includes("application/json"))throw new Error(fallback||"Respuesta no válida del servidor");return res.json()}
     function initials(name){return String(name||"Usuario").trim().split(/\s+/).slice(0,2).map(p=>p[0]).join("").toUpperCase()||"U"}
     function msg(el,text,type=""){el.className=`message ${type}`;el.textContent=text}
     function paintPhoto(){const url=$("fotoUrl").value||currentUser.foto_url||"";$("photoPreview").textContent=url?"":initials($("nombre").value||currentUser.nombre);$("photoPreview").style.backgroundImage=url?`url("${url}")`:"";document.querySelectorAll(".user-box strong").forEach(n=>n.textContent=$("nombre").value||currentUser.nombre||"Usuario");document.querySelectorAll(".user-box small").forEach(n=>n.textContent=currentUser.rol||"Usuario");document.querySelectorAll(".avatar").forEach(a=>{if(url){a.textContent="";a.style.backgroundImage=`url("${url}")`;a.style.backgroundSize="cover";a.style.backgroundPosition="center"}else{a.textContent=initials($("nombre").value||currentUser.nombre);a.style.backgroundImage=""}})}
     async function loadUser(){if(!currentUser.id){window.location.href="/login";return}try{const res=await fetch(`/usuarios/${currentUser.id}`);if(res.ok){currentUser={...currentUser,...await apiJson(res,"No se pudo cargar el usuario")};writeUser(currentUser)}}catch{}$("nombre").value=currentUser.nombre||"";$("usuario").value=currentUser.usuario||"";$("email").value=currentUser.email||"";$("telefono").value=currentUser.telefono||"";$("fotoUrl").value=currentUser.foto_url||"";$("rolTexto").textContent=currentUser.rol||"-";paintPhoto();if(location.hash==="#password")abrirModalPassword()}
     async function uploadPhoto(file){if(!file)return;if(!file.type.startsWith("image/"))return msg($("fotoMensaje"),"La foto debe ser una imagen","error");if(file.size>5*1024*1024)return msg($("fotoMensaje"),"La foto no puede superar 5 MB","error");const reader=new FileReader();reader.onload=async()=>{try{const res=await fetch("/usuarios/foto",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({nombre:$("usuario").value||"perfil",data_url:reader.result})});const data=await apiJson(res,"No se pudo subir la foto");if(!res.ok)throw new Error(data.message||"No se pudo subir la foto");$("fotoUrl").value=data.url;paintPhoto();msg($("fotoMensaje"),"Foto lista. Guardá el perfil para aplicarla.","ok")}catch(e){msg($("fotoMensaje"),e.message||"Error al subir foto","error")}};reader.readAsDataURL(file)}
-    function abrirModalPassword(){invalidarPasswordIdempotencyKey();passwordModal.classList.add("open");password.focus()}
+    function abrirModalPassword(){
+      invalidarPasswordIdempotencyKey();
+      passwordRecoveryMode=false;
+      // Self-change en perfil.html: actor === target === currentUser.id siempre.
+      const pendiente=leerPendingOperation(currentUser.id,currentUser.id);
+      if(pendiente){
+        passwordIdempotencyKey=pendiente.key;
+        passwordRecoveryMode=true;
+        msg(passwordMensaje,"Hay un cambio de contraseña pendiente de confirmar. Ingresá la misma contraseña que intentaste usar para recuperar la operación.","");
+      }
+      passwordModal.classList.add("open");password.focus()
+    }
     function cerrarModalPassword(){passwordModal.classList.remove("open");passwordForm.reset();msg(passwordMensaje,"")}
-    subirFoto.onclick=()=>fotoFile.click();fotoFile.onchange=e=>uploadPhoto(e.target.files?.[0]);abrirPassword.onclick=abrirModalPassword;cerrarPassword.onclick=cerrarModalPassword;cancelarPassword.onclick=cerrarModalPassword;passwordModal.onclick=e=>{if(e.target===passwordModal)cerrarModalPassword()};
-    // AUTH-SYNC-B2-P1B: editar password/confirmacion siempre invalida la key -- el proximo submit
-    // es, por definicion, una accion nueva.
-    password.addEventListener("input",invalidarPasswordIdempotencyKey);confirmarPassword.addEventListener("input",invalidarPasswordIdempotencyKey);
+    // Cerrar/cancelar DELIBERADAMENTE el modal en RECOVERY MODE es abandonar esa recuperacion --
+    // una reapertura posterior NO debe recuperarla; el proximo submit genera una key nueva.
+    function cancelarModalPassword(){borrarPendingOperation(currentUser.id);invalidarPasswordIdempotencyKey();passwordRecoveryMode=false;cerrarModalPassword()}
+    subirFoto.onclick=()=>fotoFile.click();fotoFile.onchange=e=>uploadPhoto(e.target.files?.[0]);abrirPassword.onclick=abrirModalPassword;cerrarPassword.onclick=cancelarModalPassword;cancelarPassword.onclick=cancelarModalPassword;passwordModal.onclick=e=>{if(e.target===passwordModal)cancelarModalPassword()};
+    // AUTH-SYNC-B2-P1B R2B: editar password/confirmacion invalida la key (en memoria Y en
+    // sessionStorage) SALVO durante RECOVERY MODE -- ahi el usuario esta deliberadamente
+    // reingresando el secreto (nunca persistido) para recuperar una operacion pendiente.
+    function invalidarPasswordIdempotencyKeyYPending(){if(passwordRecoveryMode)return;invalidarPasswordIdempotencyKey();borrarPendingOperation(currentUser.id)}
+    password.addEventListener("input",invalidarPasswordIdempotencyKeyYPending);confirmarPassword.addEventListener("input",invalidarPasswordIdempotencyKeyYPending);
     perfilForm.onsubmit=async(e)=>{e.preventDefault();try{const payload={nombre:nombre.value.trim(),email:email.value.trim(),telefono:telefono.value.trim(),foto_url:fotoUrl.value.trim()};const res=await fetch(`/usuarios/${currentUser.id}/perfil`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});const data=await apiJson(res,"No se pudo guardar el perfil");if(!res.ok)throw new Error(data.message||"No se pudo guardar el perfil");currentUser={...currentUser,...data.usuario};writeUser(currentUser);paintPhoto();msg(mensaje,data.message||"Perfil actualizado","ok")}catch(err){msg(mensaje,err.message||"Error al guardar perfil","error")}};
-    passwordForm.onsubmit=async(e)=>{
-      e.preventDefault();
-      // AUTH-SYNC-B2-P1B: primera submit de esta accion -> genera key; un retry de la MISMA accion
-      // incierta (el usuario no edito los campos) reutiliza la MISMA key.
-      if(!passwordIdempotencyKey)passwordIdempotencyKey=crypto.randomUUID();
+    // AUTH-SYNC-B2-P1B LOST-RESPONSE RECOVERY: envio normal (fetch global, wrapped por
+    // auth-interceptor.js). Devuelve un resultado discriminado en vez de tirar.
+    async function enviarPatchPasswordNormal(id,passwordValue,confirmarValue,key){
       let res;
       try{
-        res=await fetch(`/usuarios/${currentUser.id}/password`,{method:"PATCH",headers:{"Content-Type":"application/json","Idempotency-Key":passwordIdempotencyKey},body:JSON.stringify({password:password.value,confirmar_password:confirmarPassword.value})});
-      }catch(err){
-        // Error de red: la accion sigue incierta -- CONSERVAR la key.
-        msg(passwordMensaje,"No se pudo conectar. Reintenta con el mismo formulario.","error");
-        return;
-      }
+        res=await fetch(`/usuarios/${id}/password`,{method:"PATCH",headers:{"Content-Type":"application/json","Idempotency-Key":key},body:JSON.stringify({password:passwordValue,confirmar_password:confirmarValue})});
+      }catch(err){return{kind:"network-error"}}
       let data;
-      try{
-        data=await apiJson(res,"No se pudo actualizar la contraseña");
-      }catch(err){
-        // Respuesta desconocida (no JSON): la accion sigue incierta -- CONSERVAR la key.
-        msg(passwordMensaje,err.message||"Respuesta no válida del servidor. Reintenta con el mismo formulario.","error");
-        return;
-      }
-      if(res.status===409&&data.code==="IDEMPOTENCY_OPERATION_IN_PROGRESS"){
-        // Conservar la key: el propio contrato pide reintentar con la MISMA clave.
+      try{data=await apiJson(res,"No se pudo actualizar la contraseña")}catch(err){return{kind:"unknown"}}
+      return{kind:"response",status:res.status,data};
+    }
+    // PATCH con token EXPLICITO via window._fetchOriginal -- exclusivamente dentro del flujo de
+    // recovery (nunca para llamadas normales): el fallback con T1 cuando el login con la password
+    // nueva no confirmo. Bypassea el wrapper global para que un 401 no dispare su auto-redirect
+    // antes de clasificar el resultado.
+    async function patchPasswordConTokenExplicito(id,passwordValue,confirmarValue,key,token){
+      return window._fetchOriginal(`/usuarios/${id}/password`,{method:"PATCH",headers:{"Content-Type":"application/json","Idempotency-Key":key,Authorization:`Bearer ${token}`},body:JSON.stringify({password:passwordValue,confirmar_password:confirmarValue})});
+    }
+    function procesarRespuestaPassword(status,data,id){
+      if(status===409&&data.code==="IDEMPOTENCY_OPERATION_IN_PROGRESS"){
+        // Conservar key + pending + recovery mode: el propio contrato pide reintentar con la MISMA
+        // clave.
         msg(passwordMensaje,data.message||"Ya hay una operacion en curso. Reintenta en unos instantes.","error");
         return;
       }
-      // Cualquier otra respuesta (success, VERSION_CONFLICT, IDEMPOTENCY_KEY_REUSED, 400, etc.) es
-      // DEFINITIVA -- la accion deja de estar incierta.
       invalidarPasswordIdempotencyKey();
-      if(!res.ok){msg(passwordMensaje,data.message||"No se pudo actualizar la contraseña","error");return}
+      borrarPendingOperation(id);
+      passwordRecoveryMode=false;
+      if(status<200||status>=300){msg(passwordMensaje,data.message||"No se pudo actualizar la contraseña","error");return}
       cerrarModalPassword();
-      msg(mensaje,data.message||"Contraseña actualizada","ok")
+      msg(mensaje,data.message||"Contraseña actualizada","ok");
+    }
+    // Recovery de self-change ante una respuesta incierta. NUNCA reenvia de inmediato con T1 --
+    // primero login con la password NUEVA. Maximo: 1 intento de /login + 1 fallback de PATCH con
+    // T1. Nunca encadena mas alla de eso (no loops).
+    async function recuperarSelfChange({id,password:passwordValue,confirmarPassword:confirmarValue,key,actor}){
+      const sesionActual=leerSesionActual();
+      const remember=Boolean(sesionActual&&sesionActual.remember);
+      const usuarioLogin=actor.usuario;
+      msg(passwordMensaje,"Verificando si el cambio de contraseña se aplicó...","");
+      let loginRes;
+      try{
+        loginRes=await fetch("/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({usuario:usuarioLogin,password:passwordValue,remember})});
+      }catch(err){
+        msg(passwordMensaje,"No se pudo verificar el estado del cambio. Reintenta con el mismo formulario en unos instantes.","error");
+        return;
+      }
+      let loginData;
+      try{loginData=await loginRes.json()}catch(err){
+        msg(passwordMensaje,"Respuesta no válida al verificar el cambio. Reintenta con el mismo formulario.","error");
+        return;
+      }
+      if(loginRes.status===200&&loginData.token&&loginData.expires_at&&loginData.user){
+        guardarSesionRecuperada({token:loginData.token,expires_at:loginData.expires_at,remember,user:loginData.user});
+        currentUser=loginData.user;
+        const resultado=await enviarPatchPasswordNormal(id,passwordValue,confirmarValue,key);
+        if(resultado.kind==="response")return procesarRespuestaPassword(resultado.status,resultado.data,id);
+        msg(passwordMensaje,"El cambio de contraseña ya se aplicó, pero no se pudo confirmar el resultado. Volvé a intentarlo.","error");
+        return;
+      }
+      if(loginRes.status===401){
+        const token=tokenActual();
+        if(!token){msg(passwordMensaje,"Tu sesión ya no es válida. Iniciá sesión nuevamente para confirmar el cambio.","error");return}
+        let fallbackRes;
+        try{fallbackRes=await patchPasswordConTokenExplicito(id,passwordValue,confirmarValue,key,token)}catch(err){
+          msg(passwordMensaje,"No se pudo confirmar el cambio. Reintenta con el mismo formulario.","error");
+          return;
+        }
+        let fallbackData;
+        try{fallbackData=await fallbackRes.json()}catch(err){
+          msg(passwordMensaje,"Respuesta no válida al confirmar el cambio. Reintenta con el mismo formulario.","error");
+          return;
+        }
+        if(fallbackRes.status===401){
+          msg(passwordMensaje,"Tu contraseña ya se actualizó, pero tu sesión quedó inválida. Iniciá sesión nuevamente con la nueva contraseña para confirmarlo.","error");
+          return;
+        }
+        return procesarRespuestaPassword(fallbackRes.status,fallbackData,id);
+      }
+      const mensajeFinal=loginRes.status===429?"Demasiados intentos. Esperá unos minutos antes de volver a intentar.":(loginData&&loginData.message)||"No se pudo verificar el estado del cambio. Reintenta en unos instantes.";
+      msg(passwordMensaje,mensajeFinal,"error");
+    }
+    passwordForm.onsubmit=async(e)=>{
+      e.preventDefault();
+      const id=currentUser.id;
+      // AUTH-SYNC-B2-P1B: primera submit de esta accion -> genera key; se persiste en
+      // sessionStorage ANTES del PATCH para sobrevivir un reload si la respuesta se pierde.
+      if(!passwordIdempotencyKey)passwordIdempotencyKey=crypto.randomUUID();
+      guardarPendingOperation({key:passwordIdempotencyKey,targetUsuarioId:id,actorUsuarioId:id});
+      const passwordValue=password.value,confirmarValue=confirmarPassword.value;
+      // AUTH-SYNC-B2-P1B R2B: en perfil.html actor===target siempre. Al REANUDAR una operacion
+      // recuperada, el token almacenado puede ya estar revocado por un commit ANTERIOR cuya
+      // respuesta se perdio -- se va DIRECTO al flujo de recovery (login primero, contrato: "NO
+      // retry inmediato con T1"), sin gastar un intento con un token que ya sospechamos stale.
+      if(passwordRecoveryMode){
+        await recuperarSelfChange({id,password:passwordValue,confirmarPassword:confirmarValue,key:passwordIdempotencyKey,actor:currentUser});
+        return;
+      }
+      const resultado=await enviarPatchPasswordNormal(id,passwordValue,confirmarValue,passwordIdempotencyKey);
+      if(resultado.kind==="response")return procesarRespuestaPassword(resultado.status,resultado.data,id);
+      // Respuesta incierta (primer intento de esta accion): en perfil.html actor===target siempre
+      // -> recovery directo, nunca un simple reintento con T1.
+      await recuperarSelfChange({id,password:passwordValue,confirmarPassword:confirmarValue,key:passwordIdempotencyKey,actor:currentUser});
     };
+    limpiarPendingOperationsVencidasOAjenas(currentUser.id);
     loadUser();
   </script>
   <script src="/nav-permissions.js?v=6" defer></script>

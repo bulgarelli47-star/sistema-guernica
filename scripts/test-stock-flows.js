@@ -4,6 +4,7 @@ const net = require("net");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
+const vm = require("vm");
 const { spawn, spawnSync } = require("child_process");
 const sqlite3 = require("sqlite3").verbose();
 const bcrypt = require("bcrypt");
@@ -21172,6 +21173,32 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testP1BUsuariosHtmlConservaKeyAnteFalloDeRedYLaInvalidaAlEditar);
   await _run(testP1BPerfilHtmlGeneraUuidYEnviaHeader);
   await _run(testP1BPerfilHtmlConservaKeyAnteFalloDeRedYLaInvalidaAlEditar);
+  await _run(testP1BRecoveryUsuariosHtmlReloadActivaRecoveryMode);
+  await _run(testP1BRecoveryPerfilHtmlReloadActivaRecoveryMode);
+  await _run(testP1BRecoveryUsuariosHtmlInputPasswordEnRecoveryModePreservaK);
+  await _run(testP1BRecoveryUsuariosHtmlInputConfirmacionEnRecoveryModePreservaK);
+  await _run(testP1BRecoveryPerfilHtmlInputsEnRecoveryModePreservanKYSubmitLaReutiliza);
+  await _run(testP1BRecoveryUsuariosHtmlSubmitPosteriorReutilizaKOriginalSinNuevoUUID);
+  await _run(testP1BRecoveryCancelarDuranteRecoveryBorraKYModoFalso);
+  await _run(testP1BRecoveryDespuesDeCancelarNuevaAperturaGeneraKDistinta);
+  await _run(testP1BRecoveryUsuariosHtmlEditarPasswordFueraDeRecoveryInvalidaK);
+  await _run(testP1BRecoveryUsuariosHtmlEditarConfirmacionFueraDeRecoveryInvalidaK);
+  await _run(testP1BRecoveryPendingTTLVencidoNoActivaRecoveryMode);
+  await _run(testP1BRecoveryPendingActorAjenoNoActivaRecoveryMode);
+  await _run(testP1BRecoverySuccessLimpiaRecoveryModeYPending);
+  await _run(testP1BRecoveryVersionConflictLimpiaRecoveryModeYPending);
+  await _run(testP1BRecoveryKeyReusedLimpiaRecoveryModeYPending);
+  await _run(testP1BRecoveryInProgressConservaPendingYK);
+  await _run(testP1BRecoveryNetworkErrorDuranteRecoveryConservaPendingYK);
+  await _run(testP1BRecoveryReloadEscribirLoginNuevaPasswordT2ReplaySameK);
+  await _run(testP1BRecoveryReloadPrimeraOperacionNuncaConfirmoFallbackT1);
+  await _run(testP1BRecoveryStorageNuncaContienePasswordNiHashDinamico);
+  await _run(testP1BRecoveryAuthInterceptorByteIdenticoAOrigen);
+  await _run(testP1BRecoveryHttpAdminCambiaOtroResponseLostMismaSesionReplay200);
+  await _run(testP1BRecoveryHttpSelfChangeResponseLostSesionViejaDa401);
+  await _run(testP1BRecoveryHttpSelfChangeLoginNuevaPasswordT2RetrySameKeyReplay200);
+  await _run(testP1BRecoveryHttpFallbackT1FuncionaCuandoCommitOriginalNuncaConfirmo);
+  await _run(testP1BRecoveryHttpFallbackT1TambienInvalidoQuedaTerminalSinLoop);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -43282,28 +43309,864 @@ async function testP1BOperacionIdempotenciaAusenteFallaCerradoAntesDeBcrypt() {
 async function testP1BUsuariosHtmlGeneraUuidYEnviaHeader() {
   const contenido = fs.readFileSync(path.join(ROOT, "frontend", "usuarios.html"), "utf8");
   assertSame(contenido.includes("passwordIdempotencyKey = crypto.randomUUID()"), true, "usuarios.html debe generar la key con crypto.randomUUID()");
-  assertSame(/"Idempotency-Key"\s*:\s*passwordIdempotencyKey/.test(contenido), true, "usuarios.html debe enviar el header Idempotency-Key en el PATCH de password");
+  assertSame(contenido.includes('"Idempotency-Key": key'), true, "usuarios.html debe enviar el header Idempotency-Key en el PATCH de password");
 }
 
 async function testP1BUsuariosHtmlConservaKeyAnteFalloDeRedYLaInvalidaAlEditar() {
   const contenido = fs.readFileSync(path.join(ROOT, "frontend", "usuarios.html"), "utf8");
-  assertSame(contenido.includes('$("nuevaPassword").addEventListener("input", invalidarPasswordIdempotencyKey)'), true, "editar el password debe invalidar la key");
-  assertSame(contenido.includes('$("confirmarNuevaPassword").addEventListener("input", invalidarPasswordIdempotencyKey)'), true, "editar la confirmacion debe invalidar la key");
-  assertSame(contenido.includes("CONSERVAR la key para"), true, "debe conservar la key ante error de red");
-  assertSame(contenido.includes("Conservar la key: el propio contrato pide reintentar con la MISMA clave."), true, "IDEMPOTENCY_OPERATION_IN_PROGRESS debe conservar la key");
+  assertSame(contenido.includes('$("nuevaPassword").addEventListener("input", invalidarPasswordIdempotencyKeyYPending)'), true, "editar el password debe invalidar la key y el pending record (fuera de recovery mode)");
+  assertSame(contenido.includes('$("confirmarNuevaPassword").addEventListener("input", invalidarPasswordIdempotencyKeyYPending)'), true, "editar la confirmacion debe invalidar la key y el pending record (fuera de recovery mode)");
+  assertSame(contenido.includes('return { kind: "network-error" };'), true, "debe reportar un error de red como incierto");
+  assertSame(contenido.includes("Conservar key + pending + recovery mode: el propio contrato pide reintentar con la MISMA"), true, "IDEMPOTENCY_OPERATION_IN_PROGRESS debe conservar la key, el pending record y el recovery mode");
 }
 
 async function testP1BPerfilHtmlGeneraUuidYEnviaHeader() {
   const contenido = fs.readFileSync(path.join(ROOT, "frontend", "perfil.html"), "utf8");
   assertSame(contenido.includes("passwordIdempotencyKey=crypto.randomUUID()"), true, "perfil.html debe generar la key con crypto.randomUUID()");
-  assertSame(/"Idempotency-Key"\s*:\s*passwordIdempotencyKey/.test(contenido), true, "perfil.html debe enviar el header Idempotency-Key en el PATCH de password");
+  assertSame(contenido.includes('"Idempotency-Key":key'), true, "perfil.html debe enviar el header Idempotency-Key en el PATCH de password");
 }
 
 async function testP1BPerfilHtmlConservaKeyAnteFalloDeRedYLaInvalidaAlEditar() {
   const contenido = fs.readFileSync(path.join(ROOT, "frontend", "perfil.html"), "utf8");
-  assertSame(contenido.includes('password.addEventListener("input",invalidarPasswordIdempotencyKey)'), true, "editar el password debe invalidar la key");
-  assertSame(contenido.includes('confirmarPassword.addEventListener("input",invalidarPasswordIdempotencyKey)'), true, "editar la confirmacion debe invalidar la key");
-  assertSame(contenido.includes("Error de red: la accion sigue incierta -- CONSERVAR la key."), true, "debe conservar la key ante error de red");
-  assertSame(contenido.includes("Respuesta desconocida (no JSON): la accion sigue incierta -- CONSERVAR la key."), true, "debe conservar la key ante respuesta desconocida");
-  assertSame(contenido.includes("Conservar la key: el propio contrato pide reintentar con la MISMA clave."), true, "IDEMPOTENCY_OPERATION_IN_PROGRESS debe conservar la key");
+  assertSame(contenido.includes('password.addEventListener("input",invalidarPasswordIdempotencyKeyYPending)'), true, "editar el password debe invalidar la key y el pending record (fuera de recovery mode)");
+  assertSame(contenido.includes('confirmarPassword.addEventListener("input",invalidarPasswordIdempotencyKeyYPending)'), true, "editar la confirmacion debe invalidar la key y el pending record (fuera de recovery mode)");
+  assertSame(contenido.includes('return{kind:"network-error"}'), true, "debe reportar un error de red como incierto");
+  assertSame(contenido.includes('return{kind:"unknown"}'), true, "debe reportar una respuesta no parseable como incierta");
+  assertSame(contenido.includes("Conservar key + pending + recovery mode: el propio contrato pide reintentar con la MISMA"), true, "IDEMPOTENCY_OPERATION_IN_PROGRESS debe conservar la key, el pending record y el recovery mode");
+}
+
+// ===================================================================================
+// AUTH-SYNC-B2-P1B R2B — LOST-RESPONSE CLIENT RECOVERY (entorno de ejecucion dinamica)
+// ===================================================================================
+// Ejecuta el codigo REAL de usuarios.html/perfil.html (mas auth-interceptor.js, byte-identico a
+// 5e862dd) dentro de un sandbox de vm de Node -- nunca busca strings en el HTML para probar
+// comportamiento. Los elementos con `id` se registran como propiedades del sandbox (replica la
+// "named access on window" de los navegadores reales), asi que tanto el patron $(id) de
+// usuarios.html como las referencias globales bare de perfil.html funcionan sin cambios.
+
+function crearElementoDomSimulado() {
+  const el = {
+    value: "", textContent: "", className: "", disabled: false, style: {}, dataset: {},
+    _clases: new Set(), _listeners: {},
+    classList: {
+      add(...cs) { cs.forEach((c) => el._clases.add(c)); },
+      remove(...cs) { cs.forEach((c) => el._clases.delete(c)); },
+      contains(c) { return el._clases.has(c); },
+      toggle(c, force) {
+        if (force === undefined) { if (el._clases.has(c)) el._clases.delete(c); else el._clases.add(c); }
+        else if (force) el._clases.add(c); else el._clases.delete(c);
+      }
+    },
+    addEventListener(evt, cb) { (el._listeners[evt] = el._listeners[evt] || []).push(cb); },
+    removeEventListener(evt, cb) { if (el._listeners[evt]) el._listeners[evt] = el._listeners[evt].filter((f) => f !== cb); },
+    dispatchEvent(evt) { (el._listeners[evt.type] || []).forEach((cb) => cb(evt)); return true; },
+    focus() {}, blur() {}, reset() { el.value = ""; },
+    contains() { return false; }, closest() { return null; },
+    querySelector() { return null; }, querySelectorAll() { return []; },
+    setAttribute() {}, getAttribute() { return null; },
+    appendChild() {}, remove() {}
+  };
+  return el;
+}
+
+function crearStorageSimulado(datosIniciales = {}) {
+  const datos = new Map(Object.entries(datosIniciales));
+  return {
+    getItem(k) { return datos.has(k) ? datos.get(k) : null; },
+    setItem(k, v) { datos.set(k, String(v)); },
+    removeItem(k) { datos.delete(k); },
+    clear() { datos.clear(); },
+    key(i) { return Array.from(datos.keys())[i] ?? null; },
+    get length() { return datos.size; },
+    _datosCrudos: datos
+  };
+}
+
+// fetchHandler(llamada) -> { status, body, noJson? } (o Promise de eso); lanzar simula error de red.
+function crearEntornoFrontendSimulado({ localStorageInicial = {}, sessionStorageInicial = {}, fetchHandler } = {}) {
+  const llamadasFetch = [];
+  const localStorageMock = crearStorageSimulado(localStorageInicial);
+  const sessionStorageMock = crearStorageSimulado(sessionStorageInicial);
+  const elementos = new Map();
+  function obtenerElemento(id) {
+    if (!elementos.has(id)) elementos.set(id, crearElementoDomSimulado());
+    return elementos.get(id);
+  }
+
+  async function fetchRaw(url, options = {}) {
+    const llamada = {
+      url: String(url),
+      method: String((options && options.method) || "GET").toUpperCase(),
+      headers: (options && options.headers) || {},
+      body: options && options.body
+    };
+    llamadasFetch.push(llamada);
+    const respuesta = await fetchHandler(llamada);
+    return {
+      status: respuesta.status,
+      ok: respuesta.status >= 200 && respuesta.status < 300,
+      headers: { get: () => null },
+      json: async () => {
+        if (respuesta.noJson) throw new Error("Respuesta no JSON (simulada)");
+        return respuesta.body;
+      }
+    };
+  }
+
+  let contadorRandomUUID = 0;
+  const cryptoMock = {
+    randomUUID: () => { contadorRandomUUID++; return crypto.randomUUID(); },
+    createHash: (...args) => crypto.createHash(...args)
+  };
+
+  const documentMock = {
+    getElementById: (id) => obtenerElemento(id),
+    addEventListener() {}, removeEventListener() {},
+    querySelector() { return null; }, querySelectorAll() { return []; },
+    createElement: () => crearElementoDomSimulado(),
+    activeElement: null,
+    body: crearElementoDomSimulado()
+  };
+
+  const sandbox = {
+    console,
+    localStorage: localStorageMock,
+    sessionStorage: sessionStorageMock,
+    fetch: fetchRaw,
+    crypto: cryptoMock,
+    setTimeout, clearTimeout,
+    requestAnimationFrame: (cb) => cb(),
+    location: { href: "", pathname: "/usuarios.html", origin: "http://localhost" }
+  };
+  sandbox.document = documentMock;
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+
+  vm.createContext(sandbox);
+
+  return { sandbox, obtenerElemento, localStorageMock, sessionStorageMock, llamadasFetch, contadorRandomUUID: () => contadorRandomUUID };
+}
+
+// Precarga TODOS los `id="..."` del HTML como propiedades del sandbox (replica la named-access-on-
+// window real de los navegadores) -- necesario para perfil.html, que referencia elementos como
+// globals bare (p.ej. `password.focus()`), no solo via $(id).
+function precargarIdsComoGlobals(sandbox, html, obtenerElemento) {
+  const ids = new Set();
+  const regex = /\bid="([^"]+)"/g;
+  let m;
+  while ((m = regex.exec(html))) ids.add(m[1]);
+  for (const id of ids) sandbox[id] = obtenerElemento(id);
+}
+
+function cargarPaginaFrontendEnSandbox(entorno, nombreArchivo) {
+  const interceptor = fs.readFileSync(path.join(ROOT, "frontend", "auth-interceptor.js"), "utf8");
+  const html = fs.readFileSync(path.join(ROOT, "frontend", nombreArchivo), "utf8");
+  precargarIdsComoGlobals(entorno.sandbox, html, entorno.obtenerElemento);
+  vm.runInContext(interceptor, entorno.sandbox);
+  const match = html.match(/<script>([\s\S]*?)<\/script>/);
+  if (!match) throw new Error(`No se encontro <script> inline en ${nombreArchivo}`);
+  vm.runInContext(match[1], entorno.sandbox);
+}
+
+function fakeEvent() { return { preventDefault() {} }; }
+function dispararInput(elemento, valor) { elemento.value = valor; elemento.dispatchEvent({ type: "input" }); }
+function construirSesionStorageJSON({ token, remember = false, expiresInMs = 8 * 60 * 60 * 1000 }) {
+  return JSON.stringify({ token, expires_at: new Date(Date.now() + expiresInMs).toISOString(), remember });
+}
+function construirUserStorageJSON({ id, nombre = "Admin Test", usuario = "admin", rol = "admin" }) {
+  return JSON.stringify({ id, nombre, usuario, rol });
+}
+function pendingOpKeyEnStorage(targetUsuarioId) { return `atlas:password-operation:${targetUsuarioId}`; }
+
+// --- #1/#2 RELOAD: la key sobrevive y activa recovery mode al reabrir el modal --------------------
+
+async function testP1BRecoveryUsuariosHtmlReloadActivaRecoveryMode() {
+  const targetId = 501, actorId = 501;
+  const sessionJson = construirSesionStorageJSON({ token: "T1-simulado" });
+  const userJson = construirUserStorageJSON({ id: actorId });
+
+  const entorno1 = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: sessionJson, guernicaUser: userJson },
+    fetchHandler: async () => ({ status: 200, body: {} })
+  });
+  cargarPaginaFrontendEnSandbox(entorno1, "usuarios.html");
+  entorno1.sandbox.guardarPendingOperation({ key: "K1-RELOAD-TEST", targetUsuarioId: targetId, actorUsuarioId: actorId });
+  const datosPersistidos = Object.fromEntries(entorno1.sessionStorageMock._datosCrudos);
+
+  const entorno2 = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: sessionJson, guernicaUser: userJson },
+    sessionStorageInicial: datosPersistidos,
+    fetchHandler: async () => ({ status: 200, body: {} })
+  });
+  cargarPaginaFrontendEnSandbox(entorno2, "usuarios.html");
+  entorno2.sandbox.abrirPassword(targetId);
+
+  const registro = entorno2.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId));
+  assertSame(registro !== null, true, "el pending record debe seguir existiendo tras abrir el modal");
+  assertSame(JSON.parse(registro).key, "K1-RELOAD-TEST", "la key recuperada debe ser EXACTAMENTE K1");
+  assertSame(entorno2.obtenerElemento("passwordMensaje").textContent.includes("pendiente de confirmar"), true, "debe mostrarse el mensaje conceptual de recovery");
+}
+
+async function testP1BRecoveryPerfilHtmlReloadActivaRecoveryMode() {
+  const actorId = 502;
+  const sessionJson = construirSesionStorageJSON({ token: "T1-simulado" });
+  const userJson = construirUserStorageJSON({ id: actorId });
+  const fetchHandler = async (llamada) => (llamada.url === `/usuarios/${actorId}` ? { status: 200, body: { id: actorId, nombre: "Admin Test", usuario: "admin" } } : { status: 200, body: {} });
+
+  const entorno1 = crearEntornoFrontendSimulado({ localStorageInicial: { guernicaSession: sessionJson, guernicaUser: userJson }, fetchHandler });
+  cargarPaginaFrontendEnSandbox(entorno1, "perfil.html");
+  entorno1.sandbox.guardarPendingOperation({ key: "K1-PERFIL-RELOAD", targetUsuarioId: actorId, actorUsuarioId: actorId });
+  const datosPersistidos = Object.fromEntries(entorno1.sessionStorageMock._datosCrudos);
+
+  const entorno2 = crearEntornoFrontendSimulado({ localStorageInicial: { guernicaSession: sessionJson, guernicaUser: userJson }, sessionStorageInicial: datosPersistidos, fetchHandler });
+  cargarPaginaFrontendEnSandbox(entorno2, "perfil.html");
+  entorno2.sandbox.abrirModalPassword();
+
+  const registro = entorno2.sessionStorageMock.getItem(pendingOpKeyEnStorage(actorId));
+  assertSame(registro !== null, true, "el pending record debe seguir existiendo tras abrir el modal");
+  assertSame(JSON.parse(registro).key, "K1-PERFIL-RELOAD", "la key recuperada debe ser EXACTAMENTE K1");
+}
+
+// --- #3/#4/#5 input durante recovery mode NUNCA borra la key (comportamiento REAL, no strings) ----
+
+async function testP1BRecoveryUsuariosHtmlInputPasswordEnRecoveryModePreservaK() {
+  const targetId = 503, actorId = 503;
+  const entorno = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: construirSesionStorageJSON({ token: "T1" }), guernicaUser: construirUserStorageJSON({ id: actorId }) },
+    fetchHandler: async () => ({ status: 200, body: {} })
+  });
+  cargarPaginaFrontendEnSandbox(entorno, "usuarios.html");
+  entorno.sandbox.guardarPendingOperation({ key: "K1-INPUT-PW", targetUsuarioId: targetId, actorUsuarioId: actorId });
+  entorno.sandbox.abrirPassword(targetId);
+
+  dispararInput(entorno.obtenerElemento("nuevaPassword"), "PasswordReintentada1");
+
+  const registro = entorno.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId));
+  assertSame(registro !== null, true, "el input en recovery mode NO debe borrar el pending record");
+  assertSame(JSON.parse(registro).key, "K1-INPUT-PW", "la key debe seguir siendo K1 tras el input en el campo password");
+}
+
+async function testP1BRecoveryUsuariosHtmlInputConfirmacionEnRecoveryModePreservaK() {
+  const targetId = 504, actorId = 504;
+  const entorno = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: construirSesionStorageJSON({ token: "T1" }), guernicaUser: construirUserStorageJSON({ id: actorId }) },
+    fetchHandler: async () => ({ status: 200, body: {} })
+  });
+  cargarPaginaFrontendEnSandbox(entorno, "usuarios.html");
+  entorno.sandbox.guardarPendingOperation({ key: "K1-INPUT-CONFIRM", targetUsuarioId: targetId, actorUsuarioId: actorId });
+  entorno.sandbox.abrirPassword(targetId);
+
+  dispararInput(entorno.obtenerElemento("confirmarNuevaPassword"), "PasswordReintentada1");
+
+  const registro = entorno.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId));
+  assertSame(registro !== null, true, "el input en recovery mode NO debe borrar el pending record");
+  assertSame(JSON.parse(registro).key, "K1-INPUT-CONFIRM", "la key debe seguir siendo K1 tras el input en el campo de confirmacion");
+}
+
+// Al reanudar una operacion recuperada, el submit va SIEMPRE directo a recuperarSelfChange (login
+// primero) -- este mock simula un login exitoso con un token nuevo, para que las pruebas que solo
+// quieren verificar la REUTILIZACION de la key no tengan que modelar el ciclo completo de recovery.
+function respuestaLoginExitosaMock({ id, usuario = "admin", token = "T2-MOCK" }) {
+  return { status: 200, body: { message: "Login correcto", token, expires_at: new Date(Date.now() + 8 * 3600 * 1000).toISOString(), remember: false, user: { id, nombre: "Admin Test", usuario, rol: "admin" } } };
+}
+
+async function testP1BRecoveryPerfilHtmlInputsEnRecoveryModePreservanKYSubmitLaReutiliza() {
+  const actorId = 505;
+  let capturedHeaders = null;
+  const entorno = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: construirSesionStorageJSON({ token: "T1" }), guernicaUser: construirUserStorageJSON({ id: actorId }) },
+    fetchHandler: async (llamada) => {
+      if (llamada.url === "/login") return respuestaLoginExitosaMock({ id: actorId, token: "T2-PERFIL-INPUTS" });
+      if (llamada.url === `/usuarios/${actorId}/password`) { capturedHeaders = llamada.headers; return { status: 200, body: { message: "Contraseña actualizada correctamente", sincronizacion_shadow: "pendiente" } }; }
+      return { status: 200, body: {} };
+    }
+  });
+  cargarPaginaFrontendEnSandbox(entorno, "perfil.html");
+  entorno.sandbox.guardarPendingOperation({ key: "K1-PERFIL-INPUTS", targetUsuarioId: actorId, actorUsuarioId: actorId });
+  entorno.sandbox.abrirModalPassword();
+
+  dispararInput(entorno.obtenerElemento("password"), "PasswordRecuperada1");
+  let registro = JSON.parse(entorno.sessionStorageMock.getItem(pendingOpKeyEnStorage(actorId)));
+  assertSame(registro.key, "K1-PERFIL-INPUTS", "input en password (recovery) NO debe borrar la key");
+
+  dispararInput(entorno.obtenerElemento("confirmarPassword"), "PasswordRecuperada1");
+  registro = JSON.parse(entorno.sessionStorageMock.getItem(pendingOpKeyEnStorage(actorId)));
+  assertSame(registro.key, "K1-PERFIL-INPUTS", "input en confirmarPassword (recovery) NO debe borrar la key");
+
+  // --- #6/#7: el submit posterior reutiliza EXACTAMENTE K1, sin generar ninguna key nueva. -------
+  await entorno.sandbox.passwordForm.onsubmit(fakeEvent());
+  assertSame(capturedHeaders !== null, true, "el submit debe haber llamado al PATCH de password");
+  assertSame(capturedHeaders["Idempotency-Key"], "K1-PERFIL-INPUTS", "el submit debe reutilizar EXACTAMENTE K1");
+  assertEqual(entorno.contadorRandomUUID(), 0, "en todo el flujo no debio generarse NINGUNA key nueva (crypto.randomUUID)");
+}
+
+// --- #6/#7 (usuarios.html): submit posterior reutiliza K1 exacta, cero UUID nuevas -----------------
+
+async function testP1BRecoveryUsuariosHtmlSubmitPosteriorReutilizaKOriginalSinNuevoUUID() {
+  const targetId = 506, actorId = 506;
+  let capturedHeaders = null;
+  const entorno = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: construirSesionStorageJSON({ token: "T1" }), guernicaUser: construirUserStorageJSON({ id: actorId }) },
+    fetchHandler: async (llamada) => {
+      if (llamada.url === "/login") return respuestaLoginExitosaMock({ id: actorId, token: "T2-SUBMIT-REUSE" });
+      if (llamada.url === `/usuarios/${targetId}/password`) { capturedHeaders = llamada.headers; return { status: 200, body: { message: "Contraseña actualizada correctamente", sincronizacion_shadow: "pendiente" } }; }
+      return { status: 200, body: {} };
+    }
+  });
+  cargarPaginaFrontendEnSandbox(entorno, "usuarios.html");
+  entorno.sandbox.guardarPendingOperation({ key: "K1-SUBMIT-REUSE", targetUsuarioId: targetId, actorUsuarioId: actorId });
+  entorno.sandbox.abrirPassword(targetId);
+  assertEqual(entorno.contadorRandomUUID(), 0, "abrir el modal con pending NO debe generar una key nueva");
+
+  dispararInput(entorno.obtenerElemento("nuevaPassword"), "PasswordRecuperada1");
+  dispararInput(entorno.obtenerElemento("confirmarNuevaPassword"), "PasswordRecuperada1");
+  assertEqual(entorno.contadorRandomUUID(), 0, "reingresar el secreto en recovery mode NO debe generar una key nueva");
+
+  await entorno.sandbox.cambiarPassword(fakeEvent());
+
+  assertSame(capturedHeaders !== null, true, "el submit debe haber llamado al PATCH de password");
+  assertSame(capturedHeaders["Idempotency-Key"], "K1-SUBMIT-REUSE", "el submit debe reutilizar EXACTAMENTE K1, sin generar una nueva");
+  assertEqual(entorno.contadorRandomUUID(), 0, "en todo el flujo de recovery no debio generarse NINGUNA key nueva");
+}
+
+// --- #8/#9 cancelar recovery abandona la operacion; la proxima accion genera K2 != K1 --------------
+
+async function testP1BRecoveryCancelarDuranteRecoveryBorraKYModoFalso() {
+  const targetId = 507, actorId = 507;
+  const entorno = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: construirSesionStorageJSON({ token: "T1" }), guernicaUser: construirUserStorageJSON({ id: actorId }) },
+    fetchHandler: async () => ({ status: 200, body: {} })
+  });
+  cargarPaginaFrontendEnSandbox(entorno, "usuarios.html");
+  entorno.sandbox.guardarPendingOperation({ key: "K1-CANCEL", targetUsuarioId: targetId, actorUsuarioId: actorId });
+  entorno.sandbox.abrirPassword(targetId);
+  assertSame(entorno.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId)) !== null, true, "precondicion: el pending debe existir antes de cancelar");
+
+  entorno.sandbox.cancelarModalPassword();
+
+  assertSame(entorno.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId)), null, "cancelar durante recovery debe borrar el pending record");
+}
+
+async function testP1BRecoveryDespuesDeCancelarNuevaAperturaGeneraKDistinta() {
+  const targetId = 508, actorId = 508;
+  let capturedHeaders = null;
+  const entorno = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: construirSesionStorageJSON({ token: "T1" }), guernicaUser: construirUserStorageJSON({ id: actorId }) },
+    fetchHandler: async (llamada) => {
+      if (llamada.url === `/usuarios/${targetId}/password`) { capturedHeaders = llamada.headers; return { status: 200, body: { message: "Contraseña actualizada correctamente", sincronizacion_shadow: "pendiente" } }; }
+      return { status: 200, body: {} };
+    }
+  });
+  cargarPaginaFrontendEnSandbox(entorno, "usuarios.html");
+  entorno.sandbox.guardarPendingOperation({ key: "K1-ANTES-DE-CANCELAR", targetUsuarioId: targetId, actorUsuarioId: actorId });
+  entorno.sandbox.abrirPassword(targetId);
+  entorno.sandbox.cancelarModalPassword();
+
+  // Reapertura: sin pending, debe ser una accion COMPLETAMENTE nueva.
+  entorno.sandbox.abrirPassword(targetId);
+  dispararInput(entorno.obtenerElemento("nuevaPassword"), "PasswordNueva2");
+  dispararInput(entorno.obtenerElemento("confirmarNuevaPassword"), "PasswordNueva2");
+  await entorno.sandbox.cambiarPassword(fakeEvent());
+
+  assertSame(capturedHeaders !== null, true, "el submit debe haber llamado al PATCH de password");
+  assertSame(capturedHeaders["Idempotency-Key"] !== "K1-ANTES-DE-CANCELAR", true, "la nueva accion debe usar una key DISTINTA de la cancelada");
+  assertEqual(entorno.contadorRandomUUID(), 1, "debio generarse EXACTAMENTE una key nueva para la accion nueva");
+}
+
+// --- #10/#11 accion normal (NO recovery): editar SI invalida, exactamente como el contrato P1B ----
+
+async function testP1BRecoveryUsuariosHtmlEditarPasswordFueraDeRecoveryInvalidaK() {
+  const targetId = 509;
+  const entorno = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: construirSesionStorageJSON({ token: "T1" }), guernicaUser: construirUserStorageJSON({ id: targetId }) },
+    fetchHandler: async () => ({ status: 200, body: {} })
+  });
+  cargarPaginaFrontendEnSandbox(entorno, "usuarios.html");
+  entorno.sandbox.abrirPassword(targetId); // sin pending -> recoveryMode=false
+  entorno.sandbox.guardarPendingOperation({ key: "K-ACCION-FRESCA-PW", targetUsuarioId: targetId, actorUsuarioId: targetId });
+
+  dispararInput(entorno.obtenerElemento("nuevaPassword"), "OtroPassword1");
+
+  assertSame(entorno.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId)), null, "editar password FUERA de recovery mode debe borrar el pending record (contrato P1B original)");
+}
+
+async function testP1BRecoveryUsuariosHtmlEditarConfirmacionFueraDeRecoveryInvalidaK() {
+  const targetId = 510;
+  const entorno = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: construirSesionStorageJSON({ token: "T1" }), guernicaUser: construirUserStorageJSON({ id: targetId }) },
+    fetchHandler: async () => ({ status: 200, body: {} })
+  });
+  cargarPaginaFrontendEnSandbox(entorno, "usuarios.html");
+  entorno.sandbox.abrirPassword(targetId);
+  entorno.sandbox.guardarPendingOperation({ key: "K-ACCION-FRESCA-CONFIRM", targetUsuarioId: targetId, actorUsuarioId: targetId });
+
+  dispararInput(entorno.obtenerElemento("confirmarNuevaPassword"), "OtroPassword1");
+
+  assertSame(entorno.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId)), null, "editar confirmacion FUERA de recovery mode debe borrar el pending record (contrato P1B original)");
+}
+
+// --- #12/#13 pending TTL vencido / actor ajeno se purgan y NUNCA activan recovery mode -------------
+
+async function testP1BRecoveryPendingTTLVencidoNoActivaRecoveryMode() {
+  const targetId = 511, actorId = 511;
+  let capturedHeaders = null;
+  const entorno = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: construirSesionStorageJSON({ token: "T1" }), guernicaUser: construirUserStorageJSON({ id: actorId }) },
+    fetchHandler: async (llamada) => {
+      if (llamada.url === `/usuarios/${targetId}/password`) { capturedHeaders = llamada.headers; return { status: 200, body: { message: "ok" } }; }
+      return { status: 200, body: {} };
+    }
+  });
+  cargarPaginaFrontendEnSandbox(entorno, "usuarios.html");
+  const vencido = { key: "K-VENCIDA", targetUsuarioId: targetId, actorUsuarioId: actorId, createdAt: new Date(Date.now() - 20 * 60 * 1000).toISOString() };
+  entorno.sessionStorageMock.setItem(pendingOpKeyEnStorage(targetId), JSON.stringify(vencido));
+
+  entorno.sandbox.abrirPassword(targetId);
+  assertSame(entorno.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId)), null, "un pending vencido debe purgarse al abrir el modal, nunca activar recovery mode");
+
+  dispararInput(entorno.obtenerElemento("nuevaPassword"), "PasswordNueva1");
+  dispararInput(entorno.obtenerElemento("confirmarNuevaPassword"), "PasswordNueva1");
+  await entorno.sandbox.cambiarPassword(fakeEvent());
+  assertSame(capturedHeaders["Idempotency-Key"] !== "K-VENCIDA", true, "la accion nueva debe usar una key DISTINTA de la vencida (nunca se reutiliza silenciosamente)");
+  assertEqual(entorno.contadorRandomUUID(), 1, "debio generarse una key nueva -- no estabamos en recovery mode");
+}
+
+async function testP1BRecoveryPendingActorAjenoNoActivaRecoveryMode() {
+  const targetId = 512, actorId = 512, otroActorId = 513;
+  const entorno = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: construirSesionStorageJSON({ token: "T1" }), guernicaUser: construirUserStorageJSON({ id: actorId }) },
+    fetchHandler: async () => ({ status: 200, body: {} })
+  });
+  cargarPaginaFrontendEnSandbox(entorno, "usuarios.html");
+  entorno.sandbox.guardarPendingOperation({ key: "K-DE-OTRO-ACTOR", targetUsuarioId: targetId, actorUsuarioId: otroActorId });
+
+  entorno.sandbox.abrirPassword(targetId);
+  assertSame(entorno.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId)), null, "un pending de OTRO actor debe purgarse al abrir el modal, nunca activar recovery mode para el actor actual");
+}
+
+// --- #14/#15/#16 respuesta definitiva limpia pending + recovery mode -------------------------------
+// Prueba indirecta pero real de "recoveryMode=false": una SEGUNDA accion (nueva) creada
+// inmediatamente despues debe seguir invalidandose normalmente ante un input -- si recoveryMode
+// hubiese quedado en true por error, ese input NO invalidaria el pending de la segunda accion.
+
+async function verificarLimpiezaTrasRespuestaDefinitiva(primeraRespuesta, descripcion) {
+  const targetId = 600 + Math.floor(Math.random() * 100000);
+  const actorId = targetId;
+  let intentos = 0;
+  const entorno = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: construirSesionStorageJSON({ token: "T1" }), guernicaUser: construirUserStorageJSON({ id: actorId }) },
+    fetchHandler: async (llamada) => {
+      // El primer submit reanuda una operacion recuperada -> recuperarSelfChange llama a /login
+      // primero. La segunda accion (nueva, sin recovery mode) no pasa por login.
+      if (llamada.url === "/login") return respuestaLoginExitosaMock({ id: actorId, token: `T2-DEFINITIVA-${targetId}` });
+      if (llamada.url === `/usuarios/${targetId}/password`) {
+        intentos++;
+        if (intentos === 1) return primeraRespuesta;
+        throw new Error("network error simulado (segunda accion)");
+      }
+      return { status: 200, body: {} };
+    }
+  });
+  cargarPaginaFrontendEnSandbox(entorno, "usuarios.html");
+  entorno.sandbox.guardarPendingOperation({ key: "K-DEFINITIVA-1", targetUsuarioId: targetId, actorUsuarioId: actorId });
+  entorno.sandbox.abrirPassword(targetId);
+  dispararInput(entorno.obtenerElemento("nuevaPassword"), "Password1");
+  dispararInput(entorno.obtenerElemento("confirmarNuevaPassword"), "Password1");
+  await entorno.sandbox.cambiarPassword(fakeEvent());
+  assertSame(entorno.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId)), null, `${descripcion}: debe borrar el pending record`);
+
+  await entorno.sandbox.cambiarPassword(fakeEvent());
+  assertSame(entorno.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId)) !== null, true, `${descripcion}: la segunda accion (incierta) debe crear su PROPIO pending`);
+  dispararInput(entorno.obtenerElemento("nuevaPassword"), "PasswordCambiadaDeNuevo1");
+  assertSame(entorno.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId)), null, `${descripcion}: el input en la SEGUNDA accion (no-recovery) debe invalidar su pending -- prueba que recoveryMode quedo en false`);
+}
+
+async function testP1BRecoverySuccessLimpiaRecoveryModeYPending() {
+  await verificarLimpiezaTrasRespuestaDefinitiva({ status: 200, body: { message: "Contraseña actualizada correctamente", sincronizacion_shadow: "pendiente" } }, "success 200");
+}
+async function testP1BRecoveryVersionConflictLimpiaRecoveryModeYPending() {
+  await verificarLimpiezaTrasRespuestaDefinitiva({ status: 409, body: { code: "VERSION_CONFLICT", message: "La contraseña fue modificada por otra operación. Volvé a intentar." } }, "VERSION_CONFLICT 409");
+}
+async function testP1BRecoveryKeyReusedLimpiaRecoveryModeYPending() {
+  await verificarLimpiezaTrasRespuestaDefinitiva({ status: 409, body: { code: "IDEMPOTENCY_KEY_REUSED", message: "Esta clave de idempotencia ya fue usada para una operacion distinta." } }, "IDEMPOTENCY_KEY_REUSED 409");
+}
+
+// --- #17/#18 IN_PROGRESS / network error conservan pending + K -------------------------------------
+
+async function testP1BRecoveryInProgressConservaPendingYK() {
+  const targetId = 514, actorId = 514;
+  const entorno = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: construirSesionStorageJSON({ token: "T1" }), guernicaUser: construirUserStorageJSON({ id: actorId }) },
+    fetchHandler: async (llamada) => {
+      if (llamada.url === "/login") return respuestaLoginExitosaMock({ id: actorId, token: "T2-IN-PROGRESS" });
+      return llamada.url === `/usuarios/${targetId}/password`
+        ? { status: 409, body: { code: "IDEMPOTENCY_OPERATION_IN_PROGRESS", message: "Ya hay una operacion en curso." } }
+        : { status: 200, body: {} };
+    }
+  });
+  cargarPaginaFrontendEnSandbox(entorno, "usuarios.html");
+  entorno.sandbox.guardarPendingOperation({ key: "K-IN-PROGRESS", targetUsuarioId: targetId, actorUsuarioId: actorId });
+  entorno.sandbox.abrirPassword(targetId);
+  dispararInput(entorno.obtenerElemento("nuevaPassword"), "Password1");
+  dispararInput(entorno.obtenerElemento("confirmarNuevaPassword"), "Password1");
+  await entorno.sandbox.cambiarPassword(fakeEvent());
+
+  const registro = entorno.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId));
+  assertSame(registro !== null, true, "IN_PROGRESS debe conservar el pending record");
+  assertSame(JSON.parse(registro).key, "K-IN-PROGRESS", "la key conservada debe seguir siendo K-IN-PROGRESS");
+}
+
+async function testP1BRecoveryNetworkErrorDuranteRecoveryConservaPendingYK() {
+  const targetId = 515, actorId = 515;
+  const entorno = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: construirSesionStorageJSON({ token: "T1" }), guernicaUser: construirUserStorageJSON({ id: actorId }) },
+    fetchHandler: async (llamada) => {
+      if (llamada.url === `/usuarios/${targetId}/password`) throw new Error("network error simulado");
+      if (llamada.url === "/login") throw new Error("network error simulado en login de recovery");
+      return { status: 200, body: {} };
+    }
+  });
+  cargarPaginaFrontendEnSandbox(entorno, "usuarios.html");
+  entorno.sandbox.guardarPendingOperation({ key: "K-NETWORK-ERROR", targetUsuarioId: targetId, actorUsuarioId: actorId });
+  entorno.sandbox.abrirPassword(targetId);
+  dispararInput(entorno.obtenerElemento("nuevaPassword"), "Password1");
+  dispararInput(entorno.obtenerElemento("confirmarNuevaPassword"), "Password1");
+  await entorno.sandbox.cambiarPassword(fakeEvent());
+
+  const registro = entorno.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId));
+  assertSame(registro !== null, true, "un network error durante recovery debe conservar el pending record");
+  assertSame(JSON.parse(registro).key, "K-NETWORK-ERROR", "la key conservada debe seguir siendo K-NETWORK-ERROR");
+}
+
+// --- #19/#20 caso obligatorio real: reload -> escribir -> recovery completo (login+T2 o T1) --------
+
+async function testP1BRecoveryReloadEscribirLoginNuevaPasswordT2ReplaySameK() {
+  const targetId = 516, actorId = 516;
+  const sessionJson = construirSesionStorageJSON({ token: "T1-VIEJO" });
+  const userJson = construirUserStorageJSON({ id: actorId, usuario: "admin" });
+
+  const entorno1 = crearEntornoFrontendSimulado({ localStorageInicial: { guernicaSession: sessionJson, guernicaUser: userJson }, fetchHandler: async () => ({ status: 200, body: {} }) });
+  cargarPaginaFrontendEnSandbox(entorno1, "usuarios.html");
+  entorno1.sandbox.guardarPendingOperation({ key: "K1-T2-REPLAY", targetUsuarioId: targetId, actorUsuarioId: actorId });
+  const sessionStoragePersistido = Object.fromEntries(entorno1.sessionStorageMock._datosCrudos);
+
+  let loginLlamadas = 0, patchConT2 = null;
+  const entorno2 = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: sessionJson, guernicaUser: userJson },
+    sessionStorageInicial: sessionStoragePersistido,
+    fetchHandler: async (llamada) => {
+      if (llamada.url === "/login") {
+        loginLlamadas++;
+        return { status: 200, body: { message: "Login correcto", token: "T2-NUEVO", expires_at: new Date(Date.now() + 8 * 3600 * 1000).toISOString(), remember: false, user: { id: actorId, nombre: "Admin", usuario: "admin", rol: "admin" } } };
+      }
+      if (llamada.url === `/usuarios/${targetId}/password`) {
+        if (llamada.headers.Authorization === "Bearer T2-NUEVO") {
+          patchConT2 = llamada;
+          return { status: 200, body: { message: "Contraseña actualizada correctamente", sincronizacion_shadow: "pendiente" } };
+        }
+        // El commit ORIGINAL ya sucedio y revoco T1 -- cualquier intento con T1 (viejo) debe fallar.
+        return { status: 401, body: { message: "Sesión inválida. Iniciá sesión nuevamente." } };
+      }
+      return { status: 200, body: {} };
+    }
+  });
+  cargarPaginaFrontendEnSandbox(entorno2, "usuarios.html");
+  entorno2.sandbox.abrirPassword(targetId);
+  dispararInput(entorno2.obtenerElemento("nuevaPassword"), "PasswordRecuperada1");
+  dispararInput(entorno2.obtenerElemento("confirmarNuevaPassword"), "PasswordRecuperada1");
+
+  await entorno2.sandbox.cambiarPassword(fakeEvent());
+
+  assertEqual(loginLlamadas, 1, "debe intentarse /login EXACTAMENTE una vez");
+  assertSame(patchConT2 !== null, true, "debe reenviarse el PATCH con el token NUEVO (T2)");
+  assertSame(patchConT2.headers["Idempotency-Key"], "K1-T2-REPLAY", "el retry con T2 debe usar EXACTAMENTE la key recuperada K1");
+  assertSame(entorno2.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId)), null, "el 200 definitivo debe limpiar el pending record");
+}
+
+async function testP1BRecoveryReloadPrimeraOperacionNuncaConfirmoFallbackT1() {
+  const targetId = 517, actorId = 517;
+  const sessionJson = construirSesionStorageJSON({ token: "T1-AUN-VALIDO" });
+  const userJson = construirUserStorageJSON({ id: actorId, usuario: "admin" });
+
+  const entorno1 = crearEntornoFrontendSimulado({ localStorageInicial: { guernicaSession: sessionJson, guernicaUser: userJson }, fetchHandler: async () => ({ status: 200, body: {} }) });
+  cargarPaginaFrontendEnSandbox(entorno1, "usuarios.html");
+  // Simula: se guardo la key ANTES del primer PATCH (contrato), pero ese PATCH nunca llego a
+  // confirmar en el servidor (network se corto ANTES del commit) -- T1 sigue siendo valida.
+  entorno1.sandbox.guardarPendingOperation({ key: "K1-NUNCA-CONFIRMO", targetUsuarioId: targetId, actorUsuarioId: actorId });
+  const sessionStoragePersistido = Object.fromEntries(entorno1.sessionStorageMock._datosCrudos);
+
+  let loginLlamadas = 0, patchConT1 = null, confirmado = false;
+  const entorno2 = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: sessionJson, guernicaUser: userJson },
+    sessionStorageInicial: sessionStoragePersistido,
+    fetchHandler: async (llamada) => {
+      if (llamada.url === "/login") {
+        loginLlamadas++;
+        // El commit NUNCA sucedio -- la password nueva NO esta vigente en la central.
+        return { status: 401, body: { message: "Contrasena incorrecta" } };
+      }
+      if (llamada.url === `/usuarios/${targetId}/password`) {
+        if (llamada.headers.Authorization === "Bearer T1-AUN-VALIDO") {
+          patchConT1 = llamada;
+          confirmado = true;
+          return { status: 200, body: { message: "Contraseña actualizada correctamente", sincronizacion_shadow: "pendiente" } };
+        }
+        return { status: 401, body: { message: "Sesión inválida. Iniciá sesión nuevamente." } };
+      }
+      return { status: 200, body: {} };
+    }
+  });
+  cargarPaginaFrontendEnSandbox(entorno2, "usuarios.html");
+  entorno2.sandbox.abrirPassword(targetId);
+  dispararInput(entorno2.obtenerElemento("nuevaPassword"), "PasswordRecuperada1");
+  dispararInput(entorno2.obtenerElemento("confirmarNuevaPassword"), "PasswordRecuperada1");
+
+  await entorno2.sandbox.cambiarPassword(fakeEvent());
+
+  assertEqual(loginLlamadas, 1, "debe intentarse /login EXACTAMENTE una vez");
+  assertSame(patchConT1 !== null, true, "debe intentarse el fallback con T1 (todavia valida)");
+  assertSame(patchConT1.headers["Idempotency-Key"], "K1-NUNCA-CONFIRMO", "el fallback con T1 debe usar EXACTAMENTE la key recuperada K1");
+  assertSame(confirmado, true, "la operacion debe confirmar via el fallback con T1");
+  assertSame(entorno2.sessionStorageMock.getItem(pendingOpKeyEnStorage(targetId)), null, "el 200 definitivo debe limpiar el pending record");
+}
+
+// --- #21 storage nunca contiene password/hash/derivado, sobre datos REALES capturados -------------
+
+async function testP1BRecoveryStorageNuncaContienePasswordNiHashDinamico() {
+  const targetId = 518, actorId = 518;
+  const passwordUsada = "SecretoQueNuncaDebeQuedarEnStorage1";
+  const entorno = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: construirSesionStorageJSON({ token: "T1" }), guernicaUser: construirUserStorageJSON({ id: actorId }) },
+    fetchHandler: async () => ({ status: 200, body: {} })
+  });
+  cargarPaginaFrontendEnSandbox(entorno, "usuarios.html");
+  entorno.sandbox.abrirPassword(targetId);
+  dispararInput(entorno.obtenerElemento("nuevaPassword"), passwordUsada);
+  dispararInput(entorno.obtenerElemento("confirmarNuevaPassword"), passwordUsada);
+  await entorno.sandbox.cambiarPassword(fakeEvent());
+
+  const hashSimulado = await bcrypt.hash(passwordUsada, 10);
+  const todosLosValores = [
+    ...Array.from(entorno.localStorageMock._datosCrudos.values()),
+    ...Array.from(entorno.sessionStorageMock._datosCrudos.values())
+  ].join("\n");
+  assertSame(todosLosValores.includes(passwordUsada), false, "el storage NUNCA debe contener el password en texto plano");
+  assertSame(todosLosValores.toLowerCase().includes("$2b$") || todosLosValores.includes(hashSimulado), false, "el storage NUNCA debe contener un hash bcrypt");
+}
+
+// --- #22 auth-interceptor.js byte-identico al commit base 5e862dd ---------------------------------
+
+async function testP1BRecoveryAuthInterceptorByteIdenticoAOrigen() {
+  // git diff (a diferencia de comparar bytes crudos de fs.readFileSync vs git show) normaliza
+  // automaticamente CRLF/LF segun la config del repo -- evita un falso positivo por el checkout
+  // de Windows, verificando lo que realmente importa: CONTENIDO identico, no bytes crudos en disco.
+  const diff = spawnSync("git", ["diff", "--stat", "5e862ddc0c7af9d7253e849cecd3fdccd496772c", "--", "frontend/auth-interceptor.js"], { cwd: ROOT, encoding: "utf8" });
+  assertEqual(diff.status, 0, "git diff debe poder ejecutarse contra el commit base 5e862dd");
+  assertSame(diff.stdout.trim(), "", "frontend/auth-interceptor.js debe ser IDENTICO (sin diff) al commit base 5e862dd");
+}
+
+// ===================================================================================
+// AUTH-SYNC-B2-P1B R2B — invariantes de BACKEND sobre HTTP real (regression-guard)
+// ===================================================================================
+// El backend NO se toco en este checkpoint -- estos tests reconfirman, contra el servidor REAL,
+// las mismas invariantes de fondo que ya sustentan al mecanismo de recovery del frontend.
+
+async function testP1BRecoveryHttpAdminCambiaOtroResponseLostMismaSesionReplay200() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    await runSql(dbPath, "INSERT INTO usuarios (nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, ?)",
+      ["Colaborador Recovery R2B", "colaborador.recovery.r2b", await bcrypt.hash("ColaboradorViejo1", 10), "colaborador", 1]);
+    const localColaborador = (await allSql(dbPath, "SELECT id FROM usuarios WHERE usuario = ?", ["colaborador.recovery.r2b"]))[0];
+
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    let controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    const centralColaborador = await crearUsuarioCentral(controlDb, { nombre: "Colaborador Central Recovery R2B", usuarioReferencia: "colaborador.recovery.r2b", passwordHash: await bcrypt.hash("ColabCentral1", 10), activo: 1 });
+    const membershipColaborador = await crearMembership(controlDb, { usuarioId: centralColaborador.id, empresaId: fixture.empresa.id, usuarioLocalId: localColaborador.id, rol: "colaborador", activo: 1 });
+    await closeControlDb(controlDb);
+
+    const key = crypto.randomUUID();
+    await withServer(dbPath, async (baseUrl) => {
+      const tokenAdmin = await login(baseUrl, "admin", fixture.centralPassword);
+      const solicitudHuellaReal = crypto.createHash("sha256").update(JSON.stringify({
+        metodo: "PATCH", endpoint: "/usuarios/:id/password",
+        empresaId: Number(fixture.empresa.id), targetUsuarioLocalId: Number(localColaborador.id),
+        targetUsuarioCentralId: Number(centralColaborador.id), targetMembershipId: Number(membershipColaborador.id),
+        actorCentralId: Number(fixture.central.id), actorMembershipId: Number(fixture.membership.id)
+      })).digest("hex");
+      const directo = await userControlBridge.actualizarPasswordCentralFirstIdempotente({
+        usuarioCentralId: centralColaborador.id, expectedVersion: 0, passwordHash: await bcrypt.hash("NuevaDelColaborador1", 10),
+        idempotencyKey: key, endpointLogico: "/usuarios/:id/password", solicitudHuella: solicitudHuellaReal,
+        actorCentralId: fixture.central.id, actorMembershipId: fixture.membership.id, controlDbPath
+      });
+      assertSame(directo.ok, true, "la operacion 'perdida' (admin sobre OTRO usuario) debe haberse confirmado del lado del servidor");
+
+      const retry = await requestJson(baseUrl, "PATCH", `/usuarios/${localColaborador.id}/password`, {
+        password: "NuevaDelColaborador1", confirmar_password: "NuevaDelColaborador1"
+      }, tokenAdmin, { "Idempotency-Key": key });
+      assertEqual(retry.response.status, 200, "admin->otro: la MISMA sesion, sin re-login, debe recibir el replay durable");
+    }, extraEnvCentral(fixture));
+
+    const controlDb2 = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const colaboradorCentral = await getControlQuery(controlDb2, "SELECT version FROM usuarios WHERE id = ?", [centralColaborador.id]);
+      assertEqual(Number(colaboradorCentral.version), 1, "version del colaborador debe seguir en 1 -- sin segunda escritura");
+    } finally {
+      await closeControlDb(controlDb2);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BRecoveryHttpSelfChangeResponseLostSesionViejaDa401() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const key = crypto.randomUUID();
+    const solicitudHuellaReal = crypto.createHash("sha256").update(JSON.stringify({
+      metodo: "PATCH", endpoint: "/usuarios/:id/password",
+      empresaId: Number(fixture.empresa.id), targetUsuarioLocalId: Number(fixture.localUserId),
+      targetUsuarioCentralId: Number(fixture.central.id), targetMembershipId: Number(fixture.membership.id),
+      actorCentralId: Number(fixture.central.id), actorMembershipId: Number(fixture.membership.id)
+    })).digest("hex");
+
+    await withServer(dbPath, async (baseUrl) => {
+      const tokenViejo = await login(baseUrl, "admin", fixture.centralPassword);
+      const directo = await userControlBridge.actualizarPasswordCentralFirstIdempotente({
+        usuarioCentralId: fixture.central.id, expectedVersion: 0, passwordHash: await bcrypt.hash("SelfChangeGapR2B1", 10),
+        idempotencyKey: key, endpointLogico: "/usuarios/:id/password", solicitudHuella: solicitudHuellaReal,
+        actorCentralId: fixture.central.id, actorMembershipId: fixture.membership.id, controlDbPath
+      });
+      assertSame(directo.ok, true, "el commit self-change 'perdido' debe haberse confirmado del lado del servidor");
+
+      const retryNaive = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "SelfChangeGapR2B1", confirmar_password: "SelfChangeGapR2B1"
+      }, tokenViejo, { "Idempotency-Key": key });
+      assertEqual(retryNaive.response.status, 401, "self-change con T1 (backend puro, sin recovery de cliente) sigue dando 401 -- P1A-SR no cambia");
+      assertSame(retryNaive.data.message, "Sesión inválida. Iniciá sesión nuevamente.", "mensaje exacto de revocacion de P1A-SR");
+    }, extraEnvCentral(fixture));
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BRecoveryHttpSelfChangeLoginNuevaPasswordT2RetrySameKeyReplay200() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const key = crypto.randomUUID();
+    const solicitudHuellaReal = crypto.createHash("sha256").update(JSON.stringify({
+      metodo: "PATCH", endpoint: "/usuarios/:id/password",
+      empresaId: Number(fixture.empresa.id), targetUsuarioLocalId: Number(fixture.localUserId),
+      targetUsuarioCentralId: Number(fixture.central.id), targetMembershipId: Number(fixture.membership.id),
+      actorCentralId: Number(fixture.central.id), actorMembershipId: Number(fixture.membership.id)
+    })).digest("hex");
+
+    await withServer(dbPath, async (baseUrl) => {
+      const directo = await userControlBridge.actualizarPasswordCentralFirstIdempotente({
+        usuarioCentralId: fixture.central.id, expectedVersion: 0, passwordHash: await bcrypt.hash("RecoveryFlowR2B123", 10),
+        idempotencyKey: key, endpointLogico: "/usuarios/:id/password", solicitudHuella: solicitudHuellaReal,
+        actorCentralId: fixture.central.id, actorMembershipId: fixture.membership.id, controlDbPath
+      });
+      assertSame(directo.ok, true, "el commit self-change debe confirmar del lado del servidor");
+
+      const tokenNuevo = await login(baseUrl, "admin", "RecoveryFlowR2B123");
+      const retry = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "RecoveryFlowR2B123", confirmar_password: "RecoveryFlowR2B123"
+      }, tokenNuevo, { "Idempotency-Key": key });
+      assertEqual(retry.response.status, 200, "el retry con T2 y la MISMA key debe recibir el replay durable");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT password_hash, version, password_version FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertEqual(Number(central.version), 1, "version debe seguir en 1 -- el retry via T2 NO debe haber ejecutado un segundo CAS");
+      assertEqual(Number(central.password_version), 1, "password_version debe seguir en 1 -- sin revocacion nueva");
+      assertSame(await bcrypt.compare("RecoveryFlowR2B123", central.password_hash), true, "el hash central sigue siendo el de la operacion original");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BRecoveryHttpFallbackT1FuncionaCuandoCommitOriginalNuncaConfirmo() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const key = crypto.randomUUID();
+
+    await withServer(dbPath, async (baseUrl) => {
+      const tokenViejo = await login(baseUrl, "admin", fixture.centralPassword);
+      const loginFallido = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "NuncaConfirmoR2B123" }, null);
+      assertEqual(loginFallido.response.status, 401, "login con una password que la central nunca tuvo debe rechazar 401");
+
+      const fallback = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "NuncaConfirmoR2B123", confirmar_password: "NuncaConfirmoR2B123"
+      }, tokenViejo, { "Idempotency-Key": key });
+      assertEqual(fallback.response.status, 200, "el fallback con T1 debe ejecutar limpiamente cuando el commit original nunca habia confirmado");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT password_hash, version FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertEqual(Number(central.version), 1, "version debe haber incrementado exactamente una vez, via el fallback");
+      assertSame(await bcrypt.compare("NuncaConfirmoR2B123", central.password_hash), true, "el password final debe ser el del fallback");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function testP1BRecoveryHttpFallbackT1TambienInvalidoQuedaTerminalSinLoop() {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let controlDbPath;
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    controlDbPath = fixture.controlDbPath;
+    const key = crypto.randomUUID();
+
+    await withServer(dbPath, async (baseUrl) => {
+      const tokenViejo = await login(baseUrl, "admin", fixture.centralPassword);
+      const primerCambio = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "CommitRealR2B123", confirmar_password: "CommitRealR2B123"
+      }, tokenViejo, { "Idempotency-Key": crypto.randomUUID() });
+      assertEqual(primerCambio.response.status, 200, "el cambio real debe confirmar");
+
+      const loginRes = await requestJson(baseUrl, "POST", "/login", { usuario: "admin", password: "OtraPasswordIncorrectaR2B1" }, null);
+      assertEqual(loginRes.response.status, 401, "login con una password que no es la vigente debe rechazar 401");
+
+      const fallback = await requestJson(baseUrl, "PATCH", `/usuarios/${fixture.localUserId}/password`, {
+        password: "OtraPasswordIncorrectaR2B1", confirmar_password: "OtraPasswordIncorrectaR2B1"
+      }, tokenViejo, { "Idempotency-Key": key });
+      assertEqual(fallback.response.status, 401, "el fallback con T1 tambien debe rechazar -- estado terminal, sin mas reintentos automaticos");
+    }, extraEnvCentral(fixture));
+
+    const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+    try {
+      const central = await getControlQuery(controlDb, "SELECT password_hash, version FROM usuarios WHERE id = ?", [fixture.central.id]);
+      assertEqual(Number(central.version), 1, "solo el cambio real debe haber incrementado la version");
+      assertSame(await bcrypt.compare("CommitRealR2B123", central.password_hash), true, "el password final debe seguir siendo el del cambio real");
+    } finally {
+      await closeControlDb(controlDb);
+    }
+  } finally {
+    limpiarTenantTestDb(dbPath);
+    if (controlDbPath) fs.rmSync(controlDbPath, { force: true });
+  }
 }
