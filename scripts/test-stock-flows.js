@@ -21199,6 +21199,11 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testP1BRecoveryHttpSelfChangeLoginNuevaPasswordT2RetrySameKeyReplay200);
   await _run(testP1BRecoveryHttpFallbackT1FuncionaCuandoCommitOriginalNuncaConfirmo);
   await _run(testP1BRecoveryHttpFallbackT1TambienInvalidoQuedaTerminalSinLoop);
+  await _run(testB2S0b1Migracion003a004AgregaColumnaSinTocarFilas);
+  await _run(testB2S0b1ProvisionFreshIncluyeColumna004);
+  await _run(testB2S0b1Esquema003EsBehindYArranqueFallaCerrado);
+  await _run(testB2S0b1MigracionReintentoIdempotente);
+  await _run(testB2S0b1ColumnaPreexistenteSinHistorialFallaCerradoSinCorromper);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -32911,7 +32916,9 @@ async function testMT1E2C3MigratorCatalogValidation() {
   // testMT1F5C1Catalogo002Real certifica de forma dedicada).
   // AUTH-SYNC-B2-P1A-SR: "003_sesiones_password_version" es ahora la segunda migration REAL del
   // catalogo -- mismo patron de actualizacion que cuando se agrego 002 (comentario de arriba).
-  assertEqual(BUSINESS_MIGRATIONS.length, 3, "catalogo de produccion debe tener exactamente 3 entradas");
+  // AUTH-SYNC-B2-S0b1: "004_usuarios_central_rol_activo_version" es ahora la tercera migration REAL
+  // -- mismo patron; las afirmaciones especificas de 001/002/003 se conservan intactas.
+  assertEqual(BUSINESS_MIGRATIONS.length, 4, "catalogo de produccion debe tener exactamente 4 entradas");
   assertEqual(BUSINESS_MIGRATIONS[0].sequence, 1, "catalogo de produccion: sequence de la primera entrada debe ser 1");
   assertSame(
     BUSINESS_MIGRATIONS[0].migrationId, "001_legacy_runtime_baseline",
@@ -32933,8 +32940,15 @@ async function testMT1E2C3MigratorCatalogValidation() {
   );
   assertSame(BUSINESS_MIGRATIONS[2].kind, "MIGRATION", "catalogo de produccion: kind de la tercera entrada debe ser MIGRATION");
   assertSame(typeof BUSINESS_MIGRATIONS[2].up, "function", "catalogo de produccion: la entrada 003 debe tener up(db) callable");
-  const tieneAlgun004 = BUSINESS_MIGRATIONS.some((m) => typeof m.migrationId === "string" && m.migrationId.startsWith("004_"));
-  assertSame(tieneAlgun004, false, "catalogo de produccion NO debe contener ningun migrationId que empiece con 004_ (PROHIBIDO todavia)");
+  assertEqual(BUSINESS_MIGRATIONS[3].sequence, 4, "catalogo de produccion: sequence de la cuarta entrada debe ser 4");
+  assertSame(
+    BUSINESS_MIGRATIONS[3].migrationId, "004_usuarios_central_rol_activo_version",
+    "catalogo de produccion: migrationId de la cuarta entrada debe ser 004_usuarios_central_rol_activo_version"
+  );
+  assertSame(BUSINESS_MIGRATIONS[3].kind, "MIGRATION", "catalogo de produccion: kind de la cuarta entrada debe ser MIGRATION");
+  assertSame(typeof BUSINESS_MIGRATIONS[3].up, "function", "catalogo de produccion: la entrada 004 debe tener up(db) callable");
+  const tieneAlgun005 = BUSINESS_MIGRATIONS.some((m) => typeof m.migrationId === "string" && m.migrationId.startsWith("005_"));
+  assertSame(tieneAlgun005, false, "catalogo de produccion NO debe contener ningun migrationId que empiece con 005_ (PROHIBIDO todavia)");
 }
 
 // MT-1E3B: helpers para tests del puente pre-baseline legacy. dropSesionesColumns simula el
@@ -36245,7 +36259,9 @@ async function testMT1F1SchemaNoCurrentFailsClosed() {
     // del catalogo conocido (sequence=4), no en sequence=3 (ya ocupado por la migration 003 real).
     // BEHIND es alcanzable en principio ahora que el catalogo tiene mas de una entrada, pero no es
     // el foco de este test.
-    await runSql(tenant.dbPath, "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (4, '999_migracion_futura', datetime('now'))");
+    // AUTH-SYNC-B2-S0b1: el catalogo real ahora termina en 004 (sequence=4 ocupado por
+    // 004_usuarios_central_rol_activo_version) -- la fila AHEAD ficticia pasa a sequence=5.
+    await runSql(tenant.dbPath, "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (5, '999_migracion_futura', datetime('now'))");
     let antes = snapshotSQLitePersistente(tenant.dbPath);
     let resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
     mt1f1AssertFallo(resultado, TENANT_RUNTIME_ERROR_CODES.TENANT_SCHEMA_NOT_CURRENT, "schema AHEAD");
@@ -36253,8 +36269,9 @@ async function testMT1F1SchemaNoCurrentFailsClosed() {
     assertSame(JSON.stringify(snapshotSQLitePersistente(tenant.dbPath)), JSON.stringify(antes), "AHEAD: sin mutacion persistente");
 
     // INVALID_HISTORY: la migracion 1 dice otra cosa (se quita antes la fila AHEAD agregada arriba,
-    // que ahora vive en sequence=4 -- sequence=3 es la migration real 003, nunca se toca).
-    await runSql(tenant.dbPath, "DELETE FROM atlas_schema_migrations WHERE sequence = 4");
+    // que ahora vive en sequence=5 -- sequence=3 y sequence=4 son las migrations reales 003 y 004,
+    // nunca se tocan).
+    await runSql(tenant.dbPath, "DELETE FROM atlas_schema_migrations WHERE sequence = 5");
     await runSql(tenant.dbPath, "UPDATE atlas_schema_migrations SET migration_id = '001_otra_cosa' WHERE sequence = 1");
     antes = snapshotSQLitePersistente(tenant.dbPath);
     resultado = await mt1f1Resolver(tenant, escenario.controlDbPath);
@@ -38126,6 +38143,8 @@ async function mt1f5c1DbSoloBaseline001() {
   // aplicada 003_sesiones_password_version -- se revierte igual que las tablas de 002 de arriba,
   // para que esta DB quede genuinamente en el estado "solo baseline 001".
   await runSql(dbPath, "ALTER TABLE sesiones DROP COLUMN password_version");
+  // AUTH-SYNC-B2-S0b1: idem para 004_usuarios_central_rol_activo_version.
+  await runSql(dbPath, "ALTER TABLE usuarios DROP COLUMN central_rol_activo_version");
   await runSql(dbPath, "DELETE FROM atlas_schema_migrations WHERE sequence <> 1");
   return dbPath;
 }
@@ -38189,7 +38208,8 @@ function mt1f5c1MasterKeyDisponible(envExtra = {}) {
 async function testMT1F5C1Catalogo002Real() {
   // AUTH-SYNC-B2-P1A-SR: catalogo real ahora tiene 3 entradas (001 baseline + 002 + 003) -- mismo
   // patron de actualizacion que testMT1E2C3MigratorCatalogValidation.
-  assertEqual(BUSINESS_MIGRATIONS.length, 3, "catalogo debe tener exactamente 3 entradas");
+  // AUTH-SYNC-B2-S0b1: ahora 4 entradas (+ 004) -- afirmaciones de 001/002/003 sin cambios.
+  assertEqual(BUSINESS_MIGRATIONS.length, 4, "catalogo debe tener exactamente 4 entradas");
   assertEqual(BUSINESS_MIGRATIONS[0].sequence, 1, "primera entrada sequence=1");
   assertSame(BUSINESS_MIGRATIONS[0].migrationId, "001_legacy_runtime_baseline", "primera entrada es el baseline");
   assertSame(BUSINESS_MIGRATIONS[0].kind, "BASELINE", "primera entrada kind BASELINE");
@@ -38202,7 +38222,11 @@ async function testMT1F5C1Catalogo002Real() {
   assertSame(BUSINESS_MIGRATIONS[2].migrationId, "003_sesiones_password_version", "tercera entrada es la migration nueva de este slice");
   assertSame(BUSINESS_MIGRATIONS[2].kind, "MIGRATION", "tercera entrada kind MIGRATION");
   assertSame(typeof BUSINESS_MIGRATIONS[2].up, "function", "tercera entrada tiene up(db) callable");
-  assertSame(BUSINESS_MIGRATIONS[3], undefined, "no existe una cuarta entrada (004)");
+  assertEqual(BUSINESS_MIGRATIONS[3].sequence, 4, "cuarta entrada sequence=4");
+  assertSame(BUSINESS_MIGRATIONS[3].migrationId, "004_usuarios_central_rol_activo_version", "cuarta entrada es la migration de B2-S0b1");
+  assertSame(BUSINESS_MIGRATIONS[3].kind, "MIGRATION", "cuarta entrada kind MIGRATION");
+  assertSame(typeof BUSINESS_MIGRATIONS[3].up, "function", "cuarta entrada tiene up(db) callable");
+  assertSame(BUSINESS_MIGRATIONS[4], undefined, "no existe una quinta entrada (005)");
 }
 
 async function testMT1F5C1Migracion002Desde001QuedaCurrent() {
@@ -38210,19 +38234,25 @@ async function testMT1F5C1Migracion002Desde001QuedaCurrent() {
   const backupPath = `${dbPath}.f5c1backup`;
   try {
     const antes = await verificarBusinessSchemaVersion(dbPath);
-    assertSame(antes.state, "BEHIND", "un 001-only debe clasificar BEHIND contra el catalogo real de 3 entradas");
+    assertSame(antes.state, "BEHIND", "un 001-only debe clasificar BEHIND contra el catalogo real de 4 entradas");
 
     const resultado = await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
     assertSame(resultado.status, "MIGRATED", "status debe ser MIGRATED");
     // AUTH-SYNC-B2-P1A-SR: desde 001-only, una sola corrida aplica TODO lo pendiente -- ahora 002 y
     // 003 en el mismo batch (mismo comportamiento del motor, catalogo mas largo).
-    assertSame(JSON.stringify(resultado.applied), JSON.stringify(["002_tenant_integration_credentials", "003_sesiones_password_version"]), "applied debe ser exactamente [002, 003]");
+    // AUTH-SYNC-B2-S0b1: idem, ahora 002, 003 y 004 en el mismo batch.
+    assertSame(
+      JSON.stringify(resultado.applied),
+      JSON.stringify(["002_tenant_integration_credentials", "003_sesiones_password_version", "004_usuarios_central_rol_activo_version"]),
+      "applied debe ser exactamente [002, 003, 004]"
+    );
 
     const historia = await allSql(dbPath, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence ASC");
-    assertEqual(historia.length, 3, "historial final debe tener 3 filas");
+    assertEqual(historia.length, 4, "historial final debe tener 4 filas");
     assertSame(historia[0].migration_id, "001_legacy_runtime_baseline", "fila 1 exacta");
     assertSame(historia[1].migration_id, "002_tenant_integration_credentials", "fila 2 exacta");
     assertSame(historia[2].migration_id, "003_sesiones_password_version", "fila 3 exacta");
+    assertSame(historia[3].migration_id, "004_usuarios_central_rol_activo_version", "fila 4 exacta");
 
     const despues = await verificarBusinessSchemaVersion(dbPath);
     assertSame(despues.state, "CURRENT", "despues de migrar debe ser CURRENT");
@@ -38284,10 +38314,12 @@ async function testMT1F5C1ProvisionFreshQuedaCurrent002() {
     const historia = await allSql(businessPath, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence ASC");
     // AUTH-SYNC-B2-P1A-SR: un tenant fresco ahora nace CURRENT contra el catalogo completo de 3
     // entradas (001, 002, 003).
-    assertEqual(historia.length, 3, "historial debe tener 3 filas (001, 002, 003)");
+    // AUTH-SYNC-B2-S0b1: ahora 4 entradas (001, 002, 003, 004).
+    assertEqual(historia.length, 4, "historial debe tener 4 filas (001, 002, 003, 004)");
     assertSame(historia[0].migration_id, "001_legacy_runtime_baseline", "fila 1 exacta");
     assertSame(historia[1].migration_id, "002_tenant_integration_credentials", "fila 2 exacta");
     assertSame(historia[2].migration_id, "003_sesiones_password_version", "fila 3 exacta");
+    assertSame(historia[3].migration_id, "004_usuarios_central_rol_activo_version", "fila 4 exacta");
 
     const schema = await verificarBusinessSchemaVersion(businessPath);
     assertSame(schema.state, "CURRENT", "verificacion independiente debe confirmar CURRENT");
@@ -42290,14 +42322,22 @@ async function testP1ASRBusinessDbMigrada002a003ContieneLaColumna() {
 
     const resultado = await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath: migBackup });
     assertSame(resultado.status, "MIGRATED", "la migracion 002->003 debe completarse");
-    assertSame(JSON.stringify(resultado.applied), JSON.stringify(["003_sesiones_password_version"]), "debe aplicarse EXACTAMENTE la migracion 003, ninguna otra");
+    // AUTH-SYNC-B2-S0b1: desde 002 el motor aplica todo lo pendiente del catalogo real -- 003 (la
+    // migracion que este test certifica) y, a continuacion, 004. Se sigue exigiendo que 003 sea
+    // EXACTAMENTE la primera aplicada y que su columna exista; 004 solo se agrega al final.
+    assertSame(
+      JSON.stringify(resultado.applied),
+      JSON.stringify(["003_sesiones_password_version", "004_usuarios_central_rol_activo_version"]),
+      "debe aplicarse EXACTAMENTE la migracion 003 y luego 004, ninguna otra"
+    );
 
     const columnasDespues = await allSql(dbPath, "PRAGMA table_info(sesiones)");
     assertSame(columnasDespues.some((c) => c.name === "password_version"), true, "tras migrar de 002 a 003, sesiones.password_version debe existir");
 
     const historyDespues = await allSql(dbPath, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence ASC");
-    assertEqual(historyDespues.length, 3, "el historial debe quedar en 3 filas (001,002,003)");
-    assertSame(historyDespues[2].migration_id, "003_sesiones_password_version", "la fila 3 del historial debe ser la migracion nueva");
+    assertEqual(historyDespues.length, 4, "el historial debe quedar en 4 filas (001,002,003,004)");
+    assertSame(historyDespues[2].migration_id, "003_sesiones_password_version", "la fila 3 del historial debe ser la migracion de password");
+    assertSame(historyDespues[3].migration_id, "004_usuarios_central_rol_activo_version", "la fila 4 del historial debe ser 004");
   } finally {
     fs.rmSync(dbPath, { force: true });
     fs.rmSync(migBackup, { force: true });
@@ -42329,6 +42369,172 @@ async function testP1ASRMigracion003EsIdempotente() {
   } finally {
     fs.rmSync(dbPath, { force: true });
     fs.rmSync(migBackup1, { force: true });
+  }
+}
+
+// AUTH-SYNC-B2-S0b1: business DB SEMBRADA y desechable (bootstrapFreshTestDb, siempre en os.tmpdir(),
+// nunca SOURCE_DB) llevada a un estado GENUINO de "detenida en 003": sin la columna de 004 y sin la
+// fila 4 del historial -- el mismo estado en que quedaria una base real que todavia no corrio 004.
+async function b2s0b1FixtureDetenidaEn003() {
+  const dbPath = bootstrapFreshTestDb();
+  await runSql(dbPath, "ALTER TABLE usuarios DROP COLUMN central_rol_activo_version");
+  await runSql(dbPath, "DELETE FROM atlas_schema_migrations WHERE sequence = 4");
+  const columnas = await allSql(dbPath, "PRAGMA table_info(usuarios)");
+  assertSame(columnas.some((c) => c.name === "central_rol_activo_version"), false, "precondicion: en 003 la columna de 004 no debe existir");
+  const historia = await allSql(dbPath, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence ASC");
+  assertEqual(historia.length, 3, "precondicion: el historial debe estar en [001,002,003]");
+  assertSame(historia[2].migration_id, "003_sesiones_password_version", "precondicion: la ultima migracion aplicada debe ser 003");
+  return dbPath;
+}
+
+function b2s0b1LimpiarDb(...paths) {
+  for (const p of paths) {
+    for (const sufijo of ["", "-wal", "-shm", "-journal"]) fs.rmSync(p + sufijo, { force: true });
+  }
+}
+
+const B2S0B1_COLUMNAS_USUARIO_PREVIAS = "id, nombre, usuario, password, rol, activo, email, telefono, foto_url, ultimo_acceso, creado_en, actualizado_en, intentos_fallidos, bloqueado_hasta";
+
+async function testB2S0b1Migracion003a004AgregaColumnaSinTocarFilas() {
+  const dbPath = await b2s0b1FixtureDetenidaEn003();
+  const backupPath = `${dbPath}.b2s0b1backup`;
+  try {
+    // Filas preexistentes variadas ademas del seed: roles y estados distintos, password propia.
+    await runSql(dbPath, "INSERT INTO usuarios (nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, ?)", ["B2 Encargado", "b2s0b1.encargado", "hash-encargado", "encargado", 1]);
+    await runSql(dbPath, "INSERT INTO usuarios (nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, ?)", ["B2 Colaborador Inactivo", "b2s0b1.colaborador", "hash-colaborador", "colaborador", 0]);
+    const filasAntes = await allSql(dbPath, `SELECT ${B2S0B1_COLUMNAS_USUARIO_PREVIAS} FROM usuarios ORDER BY id ASC`);
+    assertSame(filasAntes.length >= 3, true, "precondicion: debe haber filas preexistentes (seed + 2 agregadas)");
+
+    const antes = await verificarBusinessSchemaVersion(dbPath);
+    assertSame(antes.state, "BEHIND", "una DB detenida en 003 debe clasificar BEHIND");
+
+    const resultado = await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+    assertSame(resultado.status, "MIGRATED", "la migracion 003->004 debe completarse");
+    assertSame(resultado.fromMigrationId, "003_sesiones_password_version", "debe partir de 003");
+    assertSame(JSON.stringify(resultado.applied), JSON.stringify(["004_usuarios_central_rol_activo_version"]), "debe aplicarse EXACTAMENTE 004, ninguna otra");
+
+    const columnas = await allSql(dbPath, "PRAGMA table_info(usuarios)");
+    const col = columnas.find((c) => c.name === "central_rol_activo_version");
+    assertSame(Boolean(col), true, "la columna central_rol_activo_version debe existir tras migrar");
+    assertSame(String(col.type).toUpperCase(), "INTEGER", "la columna debe ser INTEGER");
+    assertEqual(Number(col.notnull), 0, "la columna debe admitir NULL");
+    assertSame(col.dflt_value, null, "la columna no debe tener DEFAULT");
+
+    const filasDespues = await allSql(dbPath, `SELECT ${B2S0B1_COLUMNAS_USUARIO_PREVIAS} FROM usuarios ORDER BY id ASC`);
+    assertSame(JSON.stringify(filasDespues), JSON.stringify(filasAntes), "rol, activo, password y el resto de columnas preexistentes deben quedar byte-identicos");
+    const noNulos = await allSql(dbPath, "SELECT COUNT(*) AS n FROM usuarios WHERE central_rol_activo_version IS NOT NULL");
+    assertEqual(Number(noNulos[0].n), 0, "todas las filas preexistentes deben quedar con central_rol_activo_version NULL");
+
+    const sesionesCols = await allSql(dbPath, "PRAGMA table_info(sesiones)");
+    assertSame(sesionesCols.some((c) => c.name === "password_version"), true, "003 (sesiones.password_version) debe seguir intacta");
+
+    const historia = await allSql(dbPath, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence ASC");
+    assertEqual(historia.length, 4, "el historial debe quedar en 4 filas");
+    assertSame(historia[2].migration_id, "003_sesiones_password_version", "fila 3 sigue siendo 003");
+    assertSame(historia[3].migration_id, "004_usuarios_central_rol_activo_version", "fila 4 debe ser 004");
+
+    const despues = await verificarBusinessSchemaVersion(dbPath);
+    assertSame(despues.state, "CURRENT", "el verificador debe reconocer 004 como CURRENT");
+    assertSame(fs.existsSync(backupPath), true, "el migrador debe dejar el backup previo");
+  } finally {
+    b2s0b1LimpiarDb(dbPath, backupPath);
+  }
+}
+
+async function testB2S0b1ProvisionFreshIncluyeColumna004() {
+  const controlDbPath = await mt1e5dControlDbVacio();
+  const businessName = `b2s0b1-fresh-${Date.now()}-${Math.random().toString(16).slice(2)}.db`;
+  const businessPath = resolveEmpresaDbPath(businessName);
+  try {
+    const resultado = await provisionarTenantDb({
+      controlDbPath, empresaSlug: "b2s0b1-fresh", empresaNombre: "B2 S0b1 Fresh", businessDbPath: businessName
+    });
+    assertSame(resultado.status, "PROVISIONED", "el provisioning fresco debe completarse");
+    assertSame(resultado.schemaState, "CURRENT", "un tenant fresco debe nacer CURRENT contra el catalogo completo");
+    const col = (await allSql(businessPath, "PRAGMA table_info(usuarios)")).find((c) => c.name === "central_rol_activo_version");
+    assertSame(Boolean(col), true, "un tenant fresco debe incluir usuarios.central_rol_activo_version");
+    assertSame(String(col.type).toUpperCase(), "INTEGER", "la columna debe ser INTEGER");
+    const historia = await allSql(businessPath, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence ASC");
+    assertEqual(historia.length, 4, "historial fresco debe tener 4 filas");
+    assertSame(historia[3].migration_id, "004_usuarios_central_rol_activo_version", "la fila 4 del historial fresco debe ser 004");
+    const noNulos = await allSql(businessPath, "SELECT COUNT(*) AS n FROM usuarios WHERE central_rol_activo_version IS NOT NULL");
+    assertEqual(Number(noNulos[0].n), 0, "un tenant fresco no debe traer versiones de proyeccion inventadas");
+  } finally {
+    fs.rmSync(controlDbPath, { force: true });
+    b2s0b1LimpiarDb(businessPath);
+  }
+}
+
+async function testB2S0b1Esquema003EsBehindYArranqueFallaCerrado() {
+  const dbPath = await b2s0b1FixtureDetenidaEn003();
+  try {
+    const estado = await verificarBusinessSchemaVersion(dbPath);
+    assertSame(estado.state, "BEHIND", "una DB en 003 debe clasificar BEHIND contra el catalogo con 004");
+    assertSame(estado.expectedMigrationId, "004_usuarios_central_rol_activo_version", "la migracion esperada debe ser 004");
+
+    // Arranque legacy (sin ATLAS_*): el boot verify-only debe abortar, nunca auto-migrar.
+    const { code, logs } = await esperarStartupFallido(dbPath, {});
+    assertSame(code !== 0, true, "el arranque sobre una DB en 003 debe terminar con exit code distinto de 0");
+    assertSame(logs.includes("no esta en estado CURRENT"), true, "el motivo del fallo debe ser el esquema no CURRENT");
+    assertSame(logs.includes("BEHIND"), true, "el log debe informar el estado BEHIND");
+
+    const columnas = await allSql(dbPath, "PRAGMA table_info(usuarios)");
+    assertSame(columnas.some((c) => c.name === "central_rol_activo_version"), false, "un arranque fallido nunca debe agregar la columna (sin auto-migracion)");
+    const historia = await allSql(dbPath, "SELECT sequence FROM atlas_schema_migrations");
+    assertEqual(historia.length, 3, "un arranque fallido nunca debe alterar el historial");
+  } finally {
+    b2s0b1LimpiarDb(dbPath);
+  }
+}
+
+async function testB2S0b1MigracionReintentoIdempotente() {
+  const dbPath = await b2s0b1FixtureDetenidaEn003();
+  const backup1 = `${dbPath}.b2s0b1backup1`;
+  const backup2 = `${dbPath}.b2s0b1backup2`;
+  try {
+    const primera = await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath: backup1 });
+    assertSame(primera.status, "MIGRATED", "la primera corrida debe migrar 003->004");
+    const segunda = await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath: backup2 });
+    assertSame(segunda.status, "ALREADY_CURRENT", "una segunda corrida sobre una DB ya en 004 debe ser un no-op");
+    assertSame(fs.existsSync(backup2), false, "ALREADY_CURRENT no debe crear backup");
+
+    const columnas = await allSql(dbPath, "PRAGMA table_info(usuarios)");
+    assertEqual(columnas.filter((c) => c.name === "central_rol_activo_version").length, 1, "la columna no debe duplicarse");
+    const historia = await allSql(dbPath, "SELECT sequence, migration_id FROM atlas_schema_migrations ORDER BY sequence ASC");
+    assertEqual(historia.length, 4, "el historial no debe duplicar filas");
+    assertEqual(new Set(historia.map((h) => h.migration_id)).size, 4, "cada migration_id debe aparecer una sola vez");
+  } finally {
+    b2s0b1LimpiarDb(dbPath, backup1, backup2);
+  }
+}
+
+async function testB2S0b1ColumnaPreexistenteSinHistorialFallaCerradoSinCorromper() {
+  // Estado inconsistente (columna ya presente, historial en 003): el motor existente debe fallar
+  // cerrado -- ROLLBACK, historial intacto, columna no duplicada -- nunca "reparar" en silencio.
+  const dbPath = bootstrapFreshTestDb();
+  const backupPath = `${dbPath}.b2s0b1backup`;
+  try {
+    await runSql(dbPath, "DELETE FROM atlas_schema_migrations WHERE sequence = 4");
+    const antes = await verificarBusinessSchemaVersion(dbPath);
+    assertSame(antes.state, "BEHIND", "precondicion: historial en 003 debe clasificar BEHIND");
+
+    let errorMigracion = null;
+    try {
+      await migrarTenantDb({ mode: "DIRECT", businessDbPath: dbPath, backupPath });
+    } catch (error) {
+      errorMigracion = error;
+    }
+    assertSame(errorMigracion && errorMigracion.code, "MIGRATION_FAILED", "aplicar 004 sobre una columna ya existente debe fallar como MIGRATION_FAILED");
+    assertSame(errorMigracion && errorMigracion.migrationId, "004_usuarios_central_rol_activo_version", "el fallo debe atribuirse a 004");
+
+    const historia = await allSql(dbPath, "SELECT sequence FROM atlas_schema_migrations");
+    assertEqual(historia.length, 3, "el ROLLBACK debe dejar el historial en 003, sin fila 004 a medias");
+    const columnas = await allSql(dbPath, "PRAGMA table_info(usuarios)");
+    assertEqual(columnas.filter((c) => c.name === "central_rol_activo_version").length, 1, "la columna no debe duplicarse");
+    const integridad = (await allSql(dbPath, "PRAGMA integrity_check"))[0];
+    assertSame(integridad.integrity_check, "ok", "la base debe seguir integra tras el fallo");
+  } finally {
+    b2s0b1LimpiarDb(dbPath, backupPath);
   }
 }
 

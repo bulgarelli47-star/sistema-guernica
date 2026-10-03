@@ -60,6 +60,17 @@ async function up003SesionesPasswordVersion(db) {
   await runQuery(db, "ALTER TABLE sesiones ADD COLUMN password_version INTEGER");
 }
 
+// AUTH-SYNC-B2-S0b1: version de proyeccion CENTRAL -> TENANT de rol/activo de la membership
+// (usuario_empresas.version de Control DB) ya aplicada sobre esta fila local. Es la base de la
+// escritura monotonica de B2 (una generacion mas antigua nunca sobrescribe una mas reciente, ver
+// B2-RS-C0-H1/H2). Columna ESPECIFICA de rol/activo -- nunca se reutiliza para password ni para la
+// version general de la identidad central. NULL deliberado: las filas existentes nunca fueron
+// proyectadas desde Control, y legacy nunca lee ni escribe esta columna (D4). Ninguna fila existente
+// se toca: ALTER TABLE ADD COLUMN sin DEFAULT deja rol, activo, password y todo lo demas intacto.
+async function up004UsuariosCentralRolActivoVersion(db) {
+  await runQuery(db, "ALTER TABLE usuarios ADD COLUMN central_rol_activo_version INTEGER");
+}
+
 const BUSINESS_MIGRATIONS = Object.freeze([
   Object.freeze({
     sequence: 1,
@@ -77,6 +88,12 @@ const BUSINESS_MIGRATIONS = Object.freeze([
     migrationId: "003_sesiones_password_version",
     kind: "MIGRATION",
     up: up003SesionesPasswordVersion
+  }),
+  Object.freeze({
+    sequence: 4,
+    migrationId: "004_usuarios_central_rol_activo_version",
+    kind: "MIGRATION",
+    up: up004UsuariosCentralRolActivoVersion
   })
 ]);
 
