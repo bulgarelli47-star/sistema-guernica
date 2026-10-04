@@ -21282,6 +21282,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testB2S1aCarreraDosUltimosAdmins);
   await _run(testB2S1aVersionObsoletaRechazada);
   await _run(testB2S1aEstadoCoincidenteSinModificacion);
+  await _run(testB2S1aR1PrecondicionVersionAntesDelNoOp);
   await _run(testB2S1aMembershipInexistenteOAjena);
   await _run(testB2S1aCambioYPendienteEnUnaTransaccion);
   await _run(testB2S1aErrorEntreCambioYPendienteRollbackIntegral);
@@ -44456,8 +44457,12 @@ async function testB2S1aCarreraDosUltimosAdmins() {
       b2s1aCambiar(f, { actor: actorVigente, membershipId: t.membershipId, activo: 0, expectedVersion: 0 }),
       b2s1aCambiar(f, { actor: c.centralId, membershipId: t.membershipId, activo: 0, expectedVersion: 0 })
     ]);
+    // B2-S1a-R1: la segunda llega con una expected_version ya consumida -> VERSION_CONFLICT (nunca
+    // un segundo exito ni un no-op que oculte el conflicto).
     const tipos = [r1.resultado, r2.resultado].sort();
-    assertSame(JSON.stringify(tipos), JSON.stringify([B2S1A_RESULTADOS.CONFIRMADO, B2S1A_RESULTADOS.SIN_CAMBIOS].sort()), `una confirma, la otra no escribe (${JSON.stringify([r1, r2])})`);
+    assertSame(JSON.stringify(tipos), JSON.stringify([B2S1A_RESULTADOS.CONFIRMADO, B2S1A_RESULTADOS.VERSION_CONFLICT].sort()), `una confirma, la otra es conflicto sin escritura (${JSON.stringify([r1, r2])})`);
+    assertEqual([r1, r2].find((r) => r.resultado === B2S1A_RESULTADOS.VERSION_CONFLICT).versionActual, 1, "el conflicto informa la generacion vigente");
+    assertSame([r1, r2].filter((r) => r.ok).length, 1, "un solo exito");
     assertEqual((await b2s1aMembership(f, t.membershipId)).version, 1, "la version avanzo exactamente una vez");
     // La misma version esperada con intencion opuesta llega tarde: conflicto, sin escritura.
     const tarde = await b2s1aCambiar(f, { actor: c.centralId, membershipId: t.membershipId, activo: 1, expectedVersion: 0 });
@@ -44498,8 +44503,81 @@ async function testB2S1aEstadoCoincidenteSinModificacion() {
     assertSame(r.resultado, B2S1A_RESULTADOS.SIN_CAMBIOS, "sin cambios");
     assertSame(r.ok, true, "no es un error");
     assertEqual(r.versionActual, 0, "version informada");
-    assertSame(r.versionEsperadaCoincide, true, "version esperada coincidente");
     assertSame(await b2s1aPendienteRolActivo(f, x.membershipId), undefined, "sin pendiente nuevo");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+// B2-S1a-R1: expected_version es precondicion ANTES del no-op. Casos A-G de la orden R1.
+async function testB2S1aR1PrecondicionVersionAntesDelNoOp() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1a.r1");
+    const colab = await b2s1aMiembro(f, "b2s1a.r1colab");
+    await b2s0b2InsertarLapida(f.controlDbPath, {
+      usuarioId: x.centralId, empresaId: f.empresa.id, membershipId: x.membershipId, usuarioLocalId: x.localId,
+      tipo: "password", versionObjetivo: 4, estado: "pendiente"
+    });
+    // Generacion 1 (activo=0) y luego 2 (activo=1): version vigente 2, estado activo=1, lapida procesada
+    // por el consumer para observar que los no-op/conflictos no la reabren.
+    assertSame((await b2s1aCambiar(f, { membershipId: x.membershipId, activo: 0, expectedVersion: 0 })).resultado, B2S1A_RESULTADOS.CONFIRMADO, "generacion 1");
+    assertSame((await b2s1aCambiar(f, { membershipId: x.membershipId, activo: 1, expectedVersion: 1 })).resultado, B2S1A_RESULTADOS.CONFIRMADO, "generacion 2");
+    assertSame((await b2s0b3aProcesarPendienteRolActivo({ membershipId: x.membershipId, controlDbPath: f.controlDbPath })).resultado, B2S0B3A_RESULTADOS.CERRADO, "lapida procesada en 2");
+    const membershipsAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM usuario_empresas ORDER BY id ASC"));
+    const pendientesAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente ORDER BY id ASC"));
+    const centralAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT id, password_hash, password_version, version, activo FROM usuarios ORDER BY id ASC"));
+    const localAntes = await b2s0b2Local(f.dbPath, x.localId);
+    const verificarSinEscritura = async (etiqueta) => {
+      assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM usuario_empresas ORDER BY id ASC")), membershipsAntes, `${etiqueta}: usuario_empresas intacto`);
+      assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente ORDER BY id ASC")), pendientesAntes, `${etiqueta}: sync_pendiente intacto (ni crea ni reabre)`);
+      assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT id, password_hash, password_version, version, activo FROM usuarios ORDER BY id ASC")), centralAntes, `${etiqueta}: contrasenas e identidad intactas`);
+      assertSame((await b2s0b2Local(f.dbPath, x.localId)).password, localAntes.password, `${etiqueta}: password local intacto`);
+    };
+
+    // A. Estado coincidente + version vigente -> SIN_CAMBIOS (G: sin generacion nueva ni pendiente).
+    const a = await b2s1aSinCambiosControl(f, () => b2s1aCambiar(f, { membershipId: x.membershipId, activo: 1, expectedVersion: 2 }), "A");
+    assertSame(a.resultado, B2S1A_RESULTADOS.SIN_CAMBIOS, "A: no-op con version vigente");
+    assertEqual(a.versionActual, 2, "A: version vigente informada");
+    await verificarSinEscritura("A");
+    // B. Estado coincidente + version obsoleta -> VERSION_CONFLICT.
+    for (const vieja of [0, 1]) {
+      const b = await b2s1aSinCambiosControl(f, () => b2s1aCambiar(f, { membershipId: x.membershipId, activo: 1, expectedVersion: vieja }), `B(${vieja})`);
+      assertSame(b.resultado, B2S1A_RESULTADOS.VERSION_CONFLICT, `B: coincidente con version obsoleta ${vieja}`);
+      assertSame(b.ok, false, "B: no es exito");
+      assertEqual(b.versionActual, 2, "B: informa la generacion vigente");
+    }
+    await verificarSinEscritura("B");
+    // C. Estado coincidente + version futura -> VERSION_CONFLICT.
+    const c = await b2s1aSinCambiosControl(f, () => b2s1aCambiar(f, { membershipId: x.membershipId, activo: 1, expectedVersion: 3 }), "C");
+    assertSame(c.resultado, B2S1A_RESULTADOS.VERSION_CONFLICT, "C: coincidente con version futura");
+    await verificarSinEscritura("C");
+    // D. Estado distinto + version obsoleta -> VERSION_CONFLICT.
+    const d = await b2s1aSinCambiosControl(f, () => b2s1aCambiar(f, { membershipId: x.membershipId, activo: 0, expectedVersion: 1 }), "D");
+    assertSame(d.resultado, B2S1A_RESULTADOS.VERSION_CONFLICT, "D: distinto con version obsoleta");
+    await verificarSinEscritura("D");
+    // Las validaciones de autoridad siguen precediendo a la version (semantica intacta).
+    const noAut = await b2s1aCambiar(f, { actor: colab.centralId, membershipId: x.membershipId, activo: 1, expectedVersion: 0 });
+    assertSame(noAut.resultado, B2S1A_RESULTADOS.NO_AUTORIZADO, "autorizacion antes que version");
+    const self = await b2s1aCambiar(f, { membershipId: f.membershipId, activo: 1, expectedVersion: 99 });
+    assertSame(self.resultado, B2S1A_RESULTADOS.AUTOMODIFICACION, "automodificacion antes que version");
+    // E. Dos solicitudes concurrentes, misma version y misma intencion: un unico exito.
+    const [e1, e2] = await Promise.all([
+      b2s1aCambiar(f, { membershipId: x.membershipId, activo: 0, expectedVersion: 2 }),
+      b2s1aCambiar(f, { membershipId: x.membershipId, activo: 0, expectedVersion: 2 })
+    ]);
+    assertSame(JSON.stringify([e1.resultado, e2.resultado].sort()), JSON.stringify([B2S1A_RESULTADOS.CONFIRMADO, B2S1A_RESULTADOS.VERSION_CONFLICT].sort()), `E: una confirma y la otra es conflicto (${JSON.stringify([e1, e2])})`);
+    assertEqual((await b2s1aMembership(f, x.membershipId)).version, 3, "E: una sola generacion nueva");
+    const p = await b2s1aPendienteRolActivo(f, x.membershipId);
+    assertSame(JSON.stringify([p.estado, p.version_objetivo]), JSON.stringify(["pendiente", 3]), "E: pendiente reabierto una vez, con 3");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT id, password_hash, password_version, version, activo FROM usuarios ORDER BY id ASC")), centralAntes, "E: contrasenas e identidad intactas");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente WHERE tipo_operacion = 'password'")), JSON.stringify(JSON.parse(pendientesAntes).filter((fila) => fila.tipo_operacion === "password")), "E: pendiente password intacto");
+    // H. Flujo normal ADMIN -> Control -> pendiente -> S0b3a.
+    const h = await b2s0b3aProcesarPendienteRolActivo({ membershipId: x.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(h.resultado, B2S0B3A_RESULTADOS.CERRADO, "H: S0b3a cierra la generacion 3");
+    const local = await b2s0b2Local(f.dbPath, x.localId);
+    assertSame(JSON.stringify([local.activo, local.v]), JSON.stringify([0, 3]), "H: tenant proyectado en 3");
   } finally {
     b2s0b2Limpiar(f);
   }
@@ -44661,10 +44739,11 @@ async function testB2S1aReintentoSinSegundaEscritura() {
     const x = await b2s1aMiembro(f, "b2s1a.retry");
     const args = { membershipId: x.membershipId, activo: 0, expectedVersion: 0 };
     assertSame((await b2s1aCambiar(f, args)).resultado, B2S1A_RESULTADOS.CONFIRMADO, "primera ejecucion");
-    // Reintento identico (p.ej. respuesta perdida): no hay segunda escritura central.
+    // Reintento identico (p.ej. respuesta perdida): no hay segunda escritura central. B2-S1a-R1: su
+    // expected_version ya fue consumida -> VERSION_CONFLICT (no es replay HTTP idempotente).
     const r = await b2s1aSinCambiosControl(f, () => b2s1aCambiar(f, args), "reintento");
-    assertSame(r.resultado, B2S1A_RESULTADOS.SIN_CAMBIOS, "el reintento no escribe");
-    assertSame(r.versionEsperadaCoincide, false, "informa que la version ya avanzo (no es replay HTTP)");
+    assertSame(r.resultado, B2S1A_RESULTADOS.VERSION_CONFLICT, "el reintento no escribe y reporta conflicto");
+    assertEqual(r.versionActual, 1, "informa la generacion vigente");
     assertEqual((await b2s1aMembership(f, x.membershipId)).version, 1, "una sola generacion");
   } finally {
     b2s0b2Limpiar(f);

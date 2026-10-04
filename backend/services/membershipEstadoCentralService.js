@@ -229,16 +229,15 @@ async function cambiarEstadoMembershipCentral({
       return await terminarSinEscritura(rechazo(R.AUTOMODIFICACION, "AUTOMODIFICACION", base));
     }
 
+    // Precondicion de version ANTES de evaluar el no-op: un pedido basado en una generacion distinta
+    // de la vigente es siempre conflicto, aunque el estado pedido ya coincida.
     const versionActual = Number(destino.version);
-    const activoActual = Number(destino.activo) === 1 ? 1 : 0;
-    if (activoActual === activoNuevo) {
-      return await terminarSinEscritura({
-        ok: true, resultado: R.SIN_CAMBIOS, ...base, activo: activoActual, versionActual,
-        versionEsperadaCoincide: versionActual === versionEsperada
-      });
-    }
     if (versionActual !== versionEsperada) {
       return await terminarSinEscritura(rechazo(R.VERSION_CONFLICT, "VERSION_CONFLICT", { ...base, versionActual }));
+    }
+    const activoActual = Number(destino.activo) === 1 ? 1 : 0;
+    if (activoActual === activoNuevo) {
+      return await terminarSinEscritura({ ok: true, resultado: R.SIN_CAMBIOS, ...base, activo: activoActual, versionActual });
     }
 
     // R6: nunca dejar a la empresa sin administradores con acceso efectivo. Se cuenta DENTRO de la
