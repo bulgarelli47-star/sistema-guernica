@@ -68,6 +68,11 @@ const {
   drenarOutboxRolActivo: b2s0b3aDrenarOutboxRolActivo
 } = require("../database/process-rol-activo-outbox");
 const {
+  validarConfiguracionWorker: b2s0b3bValidarConfiguracionWorker,
+  crearWorkerRolActivo: b2s0b3bCrearWorkerRolActivo,
+  ejecutarWorkerOnce: b2s0b3bEjecutarWorkerOnce
+} = require("../database/run-rol-activo-worker");
+const {
   procesarPendientePasswordStandalone: p1aProcesarPendientePasswordStandalone,
   verificarSoporteS0Standalone: p1aVerificarSoporteS0Standalone,
   drenarOutboxPassword: p1aDrenarOutboxPassword
@@ -21246,6 +21251,20 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testB2S0b3aCasSoloCierraClaveExacta);
   await _run(testB2S0b3aNoProcesableTerminalConservaPendiente);
   await _run(testB2S0b3aDrenajeNoTocaPasswordP1);
+  await _run(testB2S0b3bOnceSinPendientes);
+  await _run(testB2S0b3bOnceVariosPendientesValidos);
+  await _run(testB2S0b3bWatchRecuperaTrasFallaTransitoria);
+  await _run(testB2S0b3bTerminalNoBloqueaOtros);
+  await _run(testB2S0b3bDosWorkersSinDobleCierre);
+  await _run(testB2S0b3bReinicioConservaPendiente);
+  await _run(testB2S0b3bNuevaGeneracionDuranteProcesamiento);
+  await _run(testB2S0b3bDetencionOrdenada);
+  await _run(testB2S0b3bConfiguracionInvalidaFallaCerrada);
+  await _run(testB2S0b3bSingleLegacyNoEjecuta);
+  await _run(testB2S0b3bNoTocaPendientesPassword);
+  await _run(testB2S0b3bAislamientoEntreEmpresas);
+  await _run(testB2S0b3bLimitePorCicloSinInanicion);
+  await _run(testB2S0b3bSinEscriturasEnBasesProtegidas);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -43673,6 +43692,516 @@ async function testB2S0b3aDrenajeNoTocaPasswordP1() {
     assertSame(/process-central-outbox/.test(fuente), false, "el consumer no depende del consumer de password");
     assertSame(/require\(["'](https?|net|axios|node-fetch)["']\)/.test(fuente), false, "sin HTTP");
     assertSame(/setInterval|setTimeout|cron/i.test(fuente), false, "sin scheduler");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+// AUTH-SYNC-B2-S0b3b: worker de recuperacion rol_activo (database/run-rol-activo-worker.js). WATCH se
+// prueba con reloj y planificador inyectados (cada ciclo se dispara explicitamente desde el test):
+// sin esperas arbitrarias y sin temporizadores reales pendientes al terminar.
+function b2s0b3bConfig(f, extra = {}) {
+  return { authMode: "central", tenancyMode: "multi", bridgeMode: "shadow", controlDbPath: f.controlDbPath, ...extra };
+}
+
+function b2s0b3bPlanificador() {
+  const cola = [];
+  return {
+    programar: (fn, ms) => { const t = { fn, ms, cancelado: false }; cola.push(t); return t; },
+    cancelar: (t) => { t.cancelado = true; },
+    activos: () => cola.filter((t) => !t.cancelado),
+    async disparar() {
+      const t = cola.shift();
+      if (!t || t.cancelado) throw new Error("b2s0b3bPlanificador: no hay ciclo programado activo");
+      await t.fn();
+      return t;
+    }
+  };
+}
+
+// Membership adicional en el tenant A (usuario local + identidad central + membership + pendiente),
+// equivalente a una transaccion central valida ya comprometida.
+async function b2s0b3bMembershipExtra(f, { usuario, rol, activo, version, lapida = "pendiente" }) {
+  const local = await runSql(f.dbPath, "INSERT INTO usuarios (nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, ?)", [`B2S0b3b ${usuario}`, usuario, `hash-${usuario}`, "colaborador", 1]);
+  const control = new sqlite3.Database(f.controlDbPath);
+  let central;
+  let membership;
+  try {
+    central = await crearUsuarioCentral(control, { nombre: `B2S0b3b ${usuario}`, usuarioReferencia: usuario, passwordHash: await bcrypt.hash("Extra123", 4), activo: 1 });
+    membership = await crearMembership(control, { usuarioId: central.id, empresaId: f.empresa.id, usuarioLocalId: local.lastID, rol, activo });
+    await runControlQuery(control, "UPDATE usuario_empresas SET version = ? WHERE id = ?", [version, membership.id]);
+  } finally {
+    await closeControlDb(control);
+  }
+  if (lapida) {
+    await b2s0b2InsertarLapida(f.controlDbPath, {
+      usuarioId: central.id, empresaId: f.empresa.id, membershipId: membership.id, usuarioLocalId: local.lastID,
+      tipo: "rol_activo", versionObjetivo: version, estado: lapida
+    });
+  }
+  return { localId: local.lastID, centralId: central.id, membershipId: membership.id };
+}
+
+async function b2s0b3bEstadoPendientes(controlDbPath) {
+  return allSql(controlDbPath, "SELECT membership_id, tipo_operacion, version_objetivo, estado FROM sync_pendiente ORDER BY id ASC");
+}
+
+async function testB2S0b3bOnceSinPendientes() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3, lapida: "procesado" });
+    const control = await b2s0b2EstadoControl(f.controlDbPath);
+    const archivo = b2s0b3aArchivo(f.dbPath);
+    const r = await b2s0b3bEjecutarWorkerOnce(b2s0b3bConfig(f));
+    assertSame(r.ok, true, `ONCE ok (${JSON.stringify(r)})`);
+    assertSame(r.modo, "ONCE", "modo ONCE");
+    assertEqual(r.resumen.seleccionados, 0, "sin pendientes seleccionados");
+    assertEqual(r.resumen.procesados, 0, "sin procesamiento");
+    assertSame(r.resumen.errorLectura, null, "sin error de lectura");
+    assertSame(await b2s0b2EstadoControl(f.controlDbPath), control, "Control intacto");
+    assertSame(b2s0b3aArchivo(f.dbPath), archivo, "tenant intacto");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3bOnceVariosPendientesValidos() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3 });
+    const x = await b2s0b3bMembershipExtra(f, { usuario: "b2s0b3b.x", rol: "admin", activo: 1, version: 7 });
+    const y = await b2s0b3bMembershipExtra(f, { usuario: "b2s0b3b.y", rol: "colaborador", activo: 0, version: 2 });
+    const r = await b2s0b3bEjecutarWorkerOnce(b2s0b3bConfig(f));
+    assertSame(r.ok, true, "ONCE ok");
+    assertEqual(r.resumen.seleccionados, 3, "tres pendientes seleccionados");
+    assertEqual(r.resumen.cerrados, 3, `tres cierres efectivos (${JSON.stringify(r.resumen.detalle)})`);
+    assertSame(r.resumen.detalle.every((d) => d.resultado === B2S0B3A_RESULTADOS.CERRADO), true, "detalle auditable por pendiente");
+    const pend = await b2s0b3bEstadoPendientes(f.controlDbPath);
+    assertSame(pend.every((p) => p.estado === "procesado"), true, "todos cerrados en Control");
+    const lx = await b2s0b2Local(f.dbPath, x.localId);
+    const ly = await b2s0b2Local(f.dbPath, y.localId);
+    assertSame(JSON.stringify([lx.rol, lx.activo, lx.v]), JSON.stringify(["admin", 1, 7]), "x proyectado");
+    assertSame(JSON.stringify([ly.rol, ly.activo, ly.v]), JSON.stringify(["colaborador", 0, 2]), "y proyectado");
+    assertSame(JSON.stringify(r.resumen).includes("hash-"), false, "el resumen no expone hashes");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3bWatchRecuperaTrasFallaTransitoria() {
+  let f;
+  const apartado = () => `${f.dbPath}.b2s0b3b-apartado`;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 0, version: 4 });
+    let ahora = 1000000;
+    const plan = b2s0b3bPlanificador();
+    const senales = new (require("events").EventEmitter)();
+    const w = b2s0b3bCrearWorkerRolActivo(b2s0b3bConfig(f, { intervaloMs: 10000, backoffBaseMs: 5000, backoffMaxMs: 60000 }), { reloj: () => ahora, programar: plan.programar, cancelar: plan.cancelar });
+    assertSame(w.ok, true, "worker creado");
+    const programados = [];
+    w.eventos.on("programado", (p) => programados.push(p.demoraMs));
+    const fin = w.iniciarWatch({ senales });
+
+    fs.renameSync(f.dbPath, apartado());
+    let ciclo;
+    w.eventos.once("ciclo", (c) => { ciclo = c; });
+    await plan.disparar();
+    assertEqual(ciclo.transitorios, 1, "ciclo 1: falla transitoria");
+    assertSame(ciclo.detalle[0].motivo, "BUSINESS_DB_AUSENTE", "motivo transitorio");
+    assertEqual(programados[0], 20000, "ciclo fallido: demora con backoff (2x intervalo)");
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "pendiente", "pendiente conservado");
+
+    fs.renameSync(apartado(), f.dbPath);
+    w.eventos.once("ciclo", (c) => { ciclo = c; });
+    await plan.disparar();
+    assertEqual(ciclo.omitidosPorBackoff, 1, "ciclo 2: dentro del backoff no reintenta");
+    assertEqual(ciclo.procesados, 0, "ciclo 2: sin tormenta de reintentos");
+    assertEqual(programados[1], 10000, "ciclo sin fallas vuelve al intervalo base");
+
+    ahora += 5000;
+    w.eventos.once("ciclo", (c) => { ciclo = c; });
+    await plan.disparar();
+    assertEqual(ciclo.cerrados, 1, "ciclo 3: recuperado y cerrado");
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "procesado", "pendiente cerrado");
+    assertEqual((await b2s0b2Local(f.dbPath, f.localUserId)).activo, 0, "proyectado");
+
+    const est = await w.detener();
+    assertSame(est.detenido, true, "detenido");
+    const final = await fin;
+    assertEqual(final.ciclos, 3, "WATCH resuelve tras tres ciclos");
+    assertEqual(plan.activos().length, 0, "ningun ciclo queda programado");
+    assertEqual(senales.listenerCount("SIGTERM") + senales.listenerCount("SIGINT"), 0, "manejadores de senal retirados");
+  } finally {
+    if (f && fs.existsSync(apartado())) fs.renameSync(apartado(), f.dbPath);
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3bTerminalNoBloqueaOtros() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3 });
+    // Pendiente terminal PRIMERO en el orden (id menor): su usuario local no existe.
+    await runSql(f.dbPath, "DELETE FROM usuarios WHERE id = ?", [f.localUserId]);
+    const ok = await b2s0b3bMembershipExtra(f, { usuario: "b2s0b3b.ok", rol: "admin", activo: 1, version: 5 });
+    let ahora = 5000000;
+    const w = b2s0b3bCrearWorkerRolActivo(b2s0b3bConfig(f, { maxOperacionesPorCiclo: 1 }), { reloj: () => ahora });
+    const c1 = await w.ejecutarCiclo();
+    assertEqual(c1.terminales, 1, "ciclo 1 procesa el terminal");
+    assertSame(c1.detalle[0].motivo, "USUARIO_LOCAL_INEXISTENTE", "diagnostico registrado");
+    assertSame(c1.limiteAlcanzado, true, "limite por ciclo respetado");
+    const c2 = await w.ejecutarCiclo();
+    assertEqual(c2.cerrados, 1, "ciclo 2 avanza al siguiente pendiente y lo cierra");
+    assertEqual(c2.detalle[0].membershipId, ok.membershipId, "el pendiente valido no queda bloqueado");
+    const c3 = await w.ejecutarCiclo();
+    assertEqual(c3.omitidosPorCuarentena, 1, "el terminal queda en cuarentena");
+    assertEqual(c3.procesados, 0, "sin reintentos en tormenta");
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "pendiente", "el terminal se conserva, nunca se trata como exito");
+    // Una generacion nueva de esa membership sale de cuarentena y se reintenta.
+    await b2s0b3aTransaccionCentral(f.controlDbPath, f.membershipId, { rol: "colaborador", activo: 1 });
+    const c4 = await w.ejecutarCiclo();
+    assertEqual(c4.procesados, 1, "la generacion nueva se evalua");
+    assertEqual(c4.terminales, 1, "sigue terminal (usuario local inexistente)");
+    // Pasada la cuarentena se reevalua una vez, no en cada ciclo.
+    ahora += w.config.cuarentenaTerminalMs;
+    const c5 = await w.ejecutarCiclo();
+    assertEqual(c5.procesados, 1, "reevaluacion tras la cuarentena");
+    await w.detener();
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3bDosWorkersSinDobleCierre() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3 });
+    const extras = [];
+    for (const n of [1, 2, 3]) {
+      extras.push(await b2s0b3bMembershipExtra(f, { usuario: `b2s0b3b.par${n}`, rol: "admin", activo: n % 2, version: n + 1 }));
+    }
+    const w1 = b2s0b3bCrearWorkerRolActivo(b2s0b3bConfig(f));
+    const w2 = b2s0b3bCrearWorkerRolActivo(b2s0b3bConfig(f));
+    const [c1, c2] = await Promise.all([w1.ejecutarCiclo(), w2.ejecutarCiclo()]);
+    // Convergencia final con un tercer worker (un pendiente con transitorio en ambos se recupera aca).
+    const c3 = (await b2s0b3bEjecutarWorkerOnce(b2s0b3bConfig(f))).resumen;
+    const cierres = new Map();
+    for (const c of [c1, c2, c3]) {
+      for (const d of c.detalle) {
+        if (d.resultado === B2S0B3A_RESULTADOS.CERRADO) cierres.set(d.membershipId, (cierres.get(d.membershipId) || 0) + 1);
+      }
+    }
+    assertEqual(cierres.size, 4, `cada pendiente cerrado (${JSON.stringify([...cierres])})`);
+    assertSame([...cierres.values()].every((n) => n === 1), true, "ninguna generacion cerrada dos veces");
+    assertEqual(c1.cerrados + c2.cerrados + c3.cerrados, 4, "exactamente 4 cierres entre los tres workers");
+    assertSame((await b2s0b3bEstadoPendientes(f.controlDbPath)).every((p) => p.estado === "procesado"), true, "todos procesados");
+    await w1.detener();
+    await w2.detener();
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3bReinicioConservaPendiente() {
+  let f;
+  const apartado = () => `${f.dbPath}.b2s0b3b-reinicio`;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 6 });
+    fs.renameSync(f.dbPath, apartado());
+    const w1 = b2s0b3bCrearWorkerRolActivo(b2s0b3bConfig(f));
+    const c1 = await w1.ejecutarCiclo();
+    assertEqual(c1.transitorios, 1, "antes del reinicio: transitorio");
+    await w1.detener();
+    // "Reinicio": instancia nueva, sin memoria de la anterior (cursor, backoff y cuarentena vacios).
+    fs.renameSync(apartado(), f.dbPath);
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "pendiente", "el pendiente sobrevive en Control");
+    const w2 = b2s0b3bCrearWorkerRolActivo(b2s0b3bConfig(f));
+    assertEqual(w2.estado().enBackoff, 0, "el worker nuevo no hereda estado");
+    const c2 = await w2.ejecutarCiclo();
+    assertEqual(c2.cerrados, 1, "tras el reinicio el pendiente se cierra");
+    const c3 = await w2.ejecutarCiclo();
+    assertEqual(c3.seleccionados, 0, "nada pendiente");
+    await w2.detener();
+  } finally {
+    if (f && fs.existsSync(apartado())) fs.renameSync(apartado(), f.dbPath);
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3bNuevaGeneracionDuranteProcesamiento() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 10 });
+    let disparado = false;
+    // Intercalado determinista: entre la seleccion del worker (version 10) y la invocacion del
+    // consumer, una transaccion central valida produce la generacion 11.
+    const procesarConCambio = async (args) => {
+      if (!disparado) {
+        disparado = true;
+        await b2s0b3aTransaccionCentral(f.controlDbPath, f.membershipId, { rol: "colaborador", activo: 0 });
+      }
+      return b2s0b3aProcesarPendienteRolActivo(args);
+    };
+    const w = b2s0b3bCrearWorkerRolActivo(b2s0b3bConfig(f), { procesarPendiente: procesarConCambio });
+    const c1 = await w.ejecutarCiclo();
+    assertEqual(c1.reemplazados, 1, `la seleccion de 10 queda reemplazada (${JSON.stringify(c1.detalle)})`);
+    assertEqual(c1.detalle[0].versionObjetivo, 10, "detalle de la generacion seleccionada");
+    assertEqual((await b2s0b2Local(f.dbPath, f.localUserId)).v, null, "10 nunca se proyecto");
+    const c2 = await w.ejecutarCiclo();
+    assertEqual(c2.cerrados, 1, "la generacion vigente se toma en el ciclo siguiente");
+    assertEqual(c2.detalle[0].versionObjetivo, 11, "cierra 11");
+    const local = await b2s0b2Local(f.dbPath, f.localUserId);
+    assertSame(JSON.stringify([local.rol, local.activo, local.v]), JSON.stringify(["colaborador", 0, 11]), "tenant en 11");
+    await w.detener();
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3bDetencionOrdenada() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3 });
+    const extra = await b2s0b3bMembershipExtra(f, { usuario: "b2s0b3b.stop", rol: "admin", activo: 1, version: 2 });
+    const plan = b2s0b3bPlanificador();
+    const senales = new (require("events").EventEmitter)();
+    let llamadas = 0;
+    // SIGTERM llega mientras la primera operacion esta en curso: esa operacion termina completa y no
+    // se toma la siguiente.
+    const procesarConSenal = async (args) => {
+      llamadas += 1;
+      if (llamadas === 1) senales.emit("SIGTERM");
+      return b2s0b3aProcesarPendienteRolActivo(args);
+    };
+    const w = b2s0b3bCrearWorkerRolActivo(b2s0b3bConfig(f), { programar: plan.programar, cancelar: plan.cancelar, procesarPendiente: procesarConSenal });
+    let ciclo;
+    w.eventos.once("ciclo", (c) => { ciclo = c; });
+    const fin = w.iniciarWatch({ senales });
+    assertEqual(senales.listenerCount("SIGTERM"), 1, "SIGTERM instalado");
+    assertEqual(senales.listenerCount("SIGINT"), 1, "SIGINT instalado");
+    await plan.disparar();
+    const final = await fin;
+    assertSame(final.senal, "SIGTERM", "detenido por SIGTERM");
+    assertEqual(llamadas, 1, "no se toma una operacion nueva tras la senal");
+    assertEqual(ciclo.cerrados, 1, "la operacion en curso termino completa (cerrada)");
+    assertSame(ciclo.interrumpidoPorDetencion, true, "ciclo marcado como interrumpido");
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "procesado", "primero cerrado");
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, extra.membershipId)).estado, "pendiente", "el no tomado sigue pendiente (se recupera en otro arranque)");
+    assertEqual(plan.activos().length, 0, "ningun ciclo programado tras detener");
+    assertEqual(senales.listenerCount("SIGTERM") + senales.listenerCount("SIGINT"), 0, "manejadores retirados");
+    const despues = await w.ejecutarCiclo();
+    assertSame(despues.motivo, "WORKER_DETENIDO", "un worker detenido no ejecuta ciclos");
+
+    // Instalacion real sobre process: se agregan y se retiran exactamente los manejadores propios.
+    const antes = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
+    const plan2 = b2s0b3bPlanificador();
+    const w2 = b2s0b3bCrearWorkerRolActivo(b2s0b3bConfig(f), { programar: plan2.programar, cancelar: plan2.cancelar });
+    const fin2 = w2.iniciarWatch();
+    assertSame(JSON.stringify([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]), JSON.stringify([antes[0] + 1, antes[1] + 1]), "manejadores en process");
+    // Dos pedidos simultaneos de ciclo en la misma instancia: nunca se superponen.
+    const [a, b] = await Promise.all([w2.ejecutarCiclo(), w2.ejecutarCiclo()]);
+    assertSame([a.motivo, b.motivo].includes("CICLO_EN_CURSO"), true, "el segundo pedido se omite");
+    await w2.detener();
+    await fin2;
+    assertSame(JSON.stringify([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]), JSON.stringify(antes), "process sin manejadores residuales");
+    assertEqual(plan2.activos().length, 0, "sin ciclos programados");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3bConfiguracionInvalidaFallaCerrada() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3 });
+    const control = await b2s0b2EstadoControl(f.controlDbPath);
+    const ausente = path.join(os.tmpdir(), `b2s0b3b-control-ausente-${Date.now()}.db`);
+    const casos = [
+      [{ controlDbPath: undefined }, "CONTROL_DB_NO_CONFIGURADO"],
+      [{ controlDbPath: ausente }, "CONTROL_DB_AUSENTE"],
+      [{ controlDbPath: "database/atlas_control.db" }, "CONTROL_DB_RUTA_RELATIVA"],
+      [{ bridgeMode: "off" }, "BRIDGE_NO_SHADOW"],
+      [{ intervaloMs: 500 }, "CONFIG_FUERA_DE_RANGO"],
+      [{ intervaloMs: "abc" }, "CONFIG_FUERA_DE_RANGO"],
+      [{ maxOperacionesPorCiclo: 0 }, "CONFIG_FUERA_DE_RANGO"],
+      [{ maxOperacionesPorCiclo: 501 }, "CONFIG_FUERA_DE_RANGO"],
+      [{ backoffBaseMs: 60000, backoffMaxMs: 1000 }, "CONFIG_FUERA_DE_RANGO"],
+      [{ businessDbPath: f.dbPath }, "RUTA_BUSINESS_NO_ADMITIDA"]
+    ];
+    for (const [cambio, codigo] of casos) {
+      const w = b2s0b3bCrearWorkerRolActivo(b2s0b3bConfig(f, cambio));
+      assertSame(w.ok, false, `config invalida rechazada (${JSON.stringify(cambio)})`);
+      assertSame(w.errorCode, codigo, `codigo (${JSON.stringify(cambio)})`);
+      assertSame(typeof w.ejecutarCiclo, "undefined", "sin worker operable");
+      const once = await b2s0b3bEjecutarWorkerOnce(b2s0b3bConfig(f, cambio));
+      assertSame(once.ok, false, "ONCE tambien rechaza");
+    }
+    assertSame(fs.existsSync(ausente), false, "nunca se crea un Control DB");
+    assertSame(await b2s0b2EstadoControl(f.controlDbPath), control, "Control intacto");
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "pendiente", "pendiente intacto");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3bSingleLegacyNoEjecuta() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3 });
+    for (const [cambio, codigo] of [
+      [{ authMode: "legacy" }, "MODO_NO_CENTRAL"],
+      [{ authMode: undefined, tenancyMode: undefined, bridgeMode: undefined }, "MODO_NO_CENTRAL"],
+      [{ tenancyMode: "single" }, "MODO_NO_MULTI"],
+      [{ tenancyMode: undefined }, "MODO_NO_MULTI"]
+    ]) {
+      const w = b2s0b3bCrearWorkerRolActivo(b2s0b3bConfig(f, cambio));
+      assertSame(w.errorCode, codigo, `rechazo (${JSON.stringify(cambio)})`);
+    }
+    // CLI real en proceso hijo: entorno hermetico (sin ATLAS_* heredados).
+    const baseEnv = { ...process.env };
+    for (const k of Object.keys(baseEnv)) if (k.startsWith("ATLAS_")) delete baseEnv[k];
+    const archivo = b2s0b3aArchivo(f.dbPath);
+    const control = await b2s0b2EstadoControl(f.controlDbPath);
+    const cli = (env, args) => spawnSync(process.execPath, ["database/run-rol-activo-worker.js", ...args], { cwd: ROOT, env: { ...baseEnv, ...env }, encoding: "utf8", timeout: 60000 });
+    const legacy = cli({ ATLAS_AUTH_MODE: "legacy", ATLAS_CONTROL_DB_PATH: f.controlDbPath }, ["--once"]);
+    assertEqual(legacy.status, 2, `legacy: exit 2 (${legacy.stdout}${legacy.stderr})`);
+    assertSame(legacy.stderr.includes("MODO_NO_CENTRAL"), true, "legacy: motivo explicito");
+    const single = cli({ ATLAS_AUTH_MODE: "central", ATLAS_TENANCY_MODE: "single", ATLAS_USER_BRIDGE_MODE: "shadow", ATLAS_CONTROL_DB_PATH: f.controlDbPath }, ["--once"]);
+    assertEqual(single.status, 2, "single: exit 2");
+    const sinModo = cli({ ATLAS_AUTH_MODE: "central", ATLAS_TENANCY_MODE: "multi", ATLAS_USER_BRIDGE_MODE: "shadow", ATLAS_CONTROL_DB_PATH: f.controlDbPath }, []);
+    assertEqual(sinModo.status, 2, "sin --once/--watch: exit 2");
+    assertSame(b2s0b3aArchivo(f.dbPath), archivo, "ningun rechazo escribio el tenant");
+    assertSame(await b2s0b2EstadoControl(f.controlDbPath), control, "ningun rechazo escribio Control");
+
+    // Configuracion central/multi explicita: ONCE procesa y termina; WATCH acotado termina solo.
+    const once = cli({ ATLAS_AUTH_MODE: "central", ATLAS_TENANCY_MODE: "multi", ATLAS_USER_BRIDGE_MODE: "shadow", ATLAS_CONTROL_DB_PATH: f.controlDbPath }, ["--once"]);
+    assertEqual(once.status, 0, `ONCE: exit 0 (${once.stdout}${once.stderr})`);
+    assertSame(once.stdout.includes("cerrados=1"), true, "ONCE: un cierre");
+    const watch = cli({ ATLAS_AUTH_MODE: "central", ATLAS_TENANCY_MODE: "multi", ATLAS_USER_BRIDGE_MODE: "shadow", ATLAS_CONTROL_DB_PATH: f.controlDbPath }, ["--watch", "--max-ciclos=1"]);
+    assertEqual(watch.status, 0, `WATCH acotado: exit 0 (${watch.stdout}${watch.stderr})`);
+    assertSame(watch.stdout.includes("detenido (MAX_CICLOS)"), true, "WATCH termina ordenadamente");
+    assertSame(watch.stdout.includes("seleccionados=0"), true, "WATCH: nada pendiente");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3bNoTocaPendientesPassword() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3 });
+    await b2s0b2InsertarLapida(f.controlDbPath, {
+      usuarioId: f.central.id, empresaId: f.empresa.id, membershipId: f.membershipId, usuarioLocalId: f.localUserId,
+      tipo: "password", versionObjetivo: 1, estado: "pendiente"
+    });
+    const passwordAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente WHERE tipo_operacion = 'password'"));
+    const localAntes = await b2s0b2Local(f.dbPath, f.localUserId);
+    const r = await b2s0b3bEjecutarWorkerOnce(b2s0b3bConfig(f));
+    assertEqual(r.resumen.seleccionados, 1, "solo el pendiente rol_activo es seleccionado");
+    assertEqual(r.resumen.cerrados, 1, "rol_activo cerrado");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente WHERE tipo_operacion = 'password'")), passwordAntes, "pendiente password intacto");
+    assertSame((await b2s0b2Local(f.dbPath, f.localUserId)).password, localAntes.password, "password local intacto");
+
+    const fuente = fs.readFileSync(path.join(ROOT, "database", "run-rol-activo-worker.js"), "utf8")
+      .split(/\r?\n/).filter((linea) => !linea.trim().startsWith("//")).join("\n");
+    assertSame(/\b(INSERT|DELETE|UPDATE)\s/.test(fuente), false, "el worker no escribe SQL propio");
+    assertSame(/password/i.test(fuente), false, "el worker no referencia password");
+    assertSame(/process-central-outbox|userControlBridge|reconcile-shadow-users/.test(fuente), false, "sin dependencia de P1/bridge/reconciliador");
+    assertSame(/setInterval/.test(fuente), false, "sin setInterval (ciclos nunca superpuestos)");
+    assertSame(/tipo_operacion = 'rol_activo' AND estado = 'pendiente'/.test(fuente), true, "seleccion acotada a rol_activo pendiente");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3bAislamientoEntreEmpresas() {
+  let f;
+  let t;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3 });
+    t = await b2s0b3aSegundoTenant(f, { rol: "colaborador", activo: 0, version: 6 });
+    assertEqual(t.localB.id, f.localUserId, "precondicion: colision de usuario_local_id");
+    // Un tercer pendiente falsificado (empresa cruzada) no debe afectar a nadie.
+    const x = await b2s0b3bMembershipExtra(f, { usuario: "b2s0b3b.cruz", rol: "admin", activo: 1, version: 2 });
+    await runSql(f.controlDbPath, "UPDATE sync_pendiente SET empresa_id = ? WHERE membership_id = ? AND tipo_operacion = 'rol_activo'", [t.empresaB.id, x.membershipId]);
+    const r = await b2s0b3bEjecutarWorkerOnce(b2s0b3bConfig(f));
+    assertEqual(r.resumen.cerrados, 2, `A y B cerrados (${JSON.stringify(r.resumen.detalle)})`);
+    assertEqual(r.resumen.terminales, 1, "el cruzado es terminal");
+    const filaA = await b2s0b2Local(f.dbPath, f.localUserId);
+    const filaB = await b2s0b2Local(t.dbB, t.localB.id);
+    assertSame(JSON.stringify([filaA.rol, filaA.activo, filaA.v]), JSON.stringify(["encargado", 1, 3]), "A con su membership");
+    assertSame(JSON.stringify([filaB.rol, filaB.activo, filaB.v]), JSON.stringify(["colaborador", 0, 6]), "B con su membership");
+    assertSame((await b2s0b2Local(f.dbPath, x.localId)).v, null, "el pendiente cruzado no escribio");
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, x.membershipId)).estado, "pendiente", "el cruzado se conserva");
+  } finally {
+    b2s0b2Limpiar(f);
+    if (t) limpiarTenantTestDb(t.dbB);
+  }
+}
+
+async function testB2S0b3bLimitePorCicloSinInanicion() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3 });
+    // El primer pendiente es terminal (usuario local inexistente); luego cuatro validos.
+    await runSql(f.dbPath, "DELETE FROM usuarios WHERE id = ?", [f.localUserId]);
+    const validos = [];
+    for (const n of [1, 2, 3, 4]) {
+      validos.push(await b2s0b3bMembershipExtra(f, { usuario: `b2s0b3b.lim${n}`, rol: "admin", activo: 1, version: n }));
+    }
+    const w = b2s0b3bCrearWorkerRolActivo(b2s0b3bConfig(f, { maxOperacionesPorCiclo: 2 }));
+    const vistos = [];
+    const ciclos = [];
+    for (let i = 0; i < 4; i += 1) {
+      const c = await w.ejecutarCiclo();
+      ciclos.push(c);
+      assertSame(c.procesados <= 2, true, `ciclo ${i + 1}: maximo 2 operaciones`);
+      for (const d of c.detalle) vistos.push(d.membershipId);
+    }
+    assertSame(JSON.stringify(vistos.slice(0, 5)), JSON.stringify([f.membershipId, ...validos.map((v) => v.membershipId)]), `recorrido en orden con cursor, sin repetir el primer bloque (${JSON.stringify(vistos)})`);
+    for (const v of validos) {
+      assertSame((await b2s0b3aPendiente(f.controlDbPath, v.membershipId)).estado, "procesado", `valido ${v.membershipId} cerrado`);
+    }
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "pendiente", "el terminal se conserva");
+    assertEqual(ciclos[3].procesados, 0, "luego solo queda el terminal, en cuarentena");
+    assertEqual(ciclos[3].omitidosPorCuarentena, 1, "cuarentena contabilizada");
+    // Una pagina que falla en lectura nunca se omite en silencio.
+    const roto = b2s0b3bCrearWorkerRolActivo(b2s0b3bConfig(f));
+    fs.writeFileSync(`${f.controlDbPath}.b2s0b3b-copia`, fs.readFileSync(f.controlDbPath));
+    fs.writeFileSync(f.controlDbPath, Buffer.alloc(4096, 0x5a));
+    const cr = await roto.ejecutarCiclo();
+    fs.writeFileSync(f.controlDbPath, fs.readFileSync(`${f.controlDbPath}.b2s0b3b-copia`));
+    assertSame(cr.errorLectura !== null, true, "error de lectura informado en el resumen");
+    assertEqual(cr.procesados, 0, "sin procesamiento a ciegas");
+    await w.detener();
+    await roto.detener();
+  } finally {
+    if (f) fs.rmSync(`${f.controlDbPath}.b2s0b3b-copia`, { force: true });
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3bSinEscriturasEnBasesProtegidas() {
+  let f;
+  const protegidas = [path.join(ROOT, "database", "guernica.db"), path.join(ROOT, "database", "atlas_control.db")];
+  const hash = (p) => (fs.existsSync(p) ? sha256Archivo(p) : "AUSENTE");
+  try {
+    const antes = protegidas.map(hash);
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3 });
+    await b2s0b3bMembershipExtra(f, { usuario: "b2s0b3b.prot", rol: "admin", activo: 0, version: 4 });
+    const plan = b2s0b3bPlanificador();
+    const w = b2s0b3bCrearWorkerRolActivo(b2s0b3bConfig(f), { programar: plan.programar, cancelar: plan.cancelar });
+    const fin = w.iniciarWatch({ senales: new (require("events").EventEmitter)() });
+    await plan.disparar();
+    await plan.disparar();
+    await w.detener();
+    await fin;
+    const once = await b2s0b3bEjecutarWorkerOnce(b2s0b3bConfig(f));
+    assertEqual(once.resumen.seleccionados, 0, "todo procesado");
+    assertSame(JSON.stringify(protegidas.map(hash)), JSON.stringify(antes), "guernica.db y atlas_control.db del repositorio intactos");
+    for (const p of protegidas) {
+      assertSame(path.resolve(p) !== path.resolve(f.dbPath) && path.resolve(p) !== path.resolve(f.controlDbPath), true, "el worker opero solo sobre fixtures descartables");
+    }
   } finally {
     b2s0b2Limpiar(f);
   }
