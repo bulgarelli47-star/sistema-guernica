@@ -78,6 +78,9 @@ const {
   cambiarEstadoMembershipCentral: b2s1aCambiarEstado
 } = require("../backend/services/membershipEstadoCentralService");
 const {
+  cambiarEstadoMembershipCentralIdempotente: b2s1b1Idempotente
+} = require("../backend/services/membershipEstadoCentralService");
+const {
   procesarPendientePasswordStandalone: p1aProcesarPendientePasswordStandalone,
   verificarSoporteS0Standalone: p1aVerificarSoporteS0Standalone,
   drenarOutboxPassword: p1aDrenarOutboxPassword
@@ -21293,6 +21296,29 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testB2S1aReactivacionAdminGlobalInactivoNoEsEfectivo);
   await _run(testB2S1aConsumerS0b3aProyectaPendienteGenerado);
   await _run(testB2S1aConcurrenciaEntreEmpresasAislada);
+  await _run(testB2S1b1PrimeraModificacionExitosa);
+  await _run(testB2S1b1ReplayIdenticoDeExito);
+  await _run(testB2S1b1ReplayTrasRespuestaPerdida);
+  await _run(testB2S1b1MismaClaveOtroEstado);
+  await _run(testB2S1b1MismaClaveOtraVersion);
+  await _run(testB2S1b1MismaClaveOtroDestinatario);
+  await _run(testB2S1b1ClaveReutilizadaEntreEmpresas);
+  await _run(testB2S1b1ClaveReutilizadaPorOtroActor);
+  await _run(testB2S1b1ColisionConPasswordP1);
+  await _run(testB2S1b1ConcurrenciaMismaClave);
+  await _run(testB2S1b1DosClavesMismaVersion);
+  await _run(testB2S1b1VersionObsoleta409Durable);
+  await _run(testB2S1b1ReplayExactoDel409);
+  await _run(testB2S1b1NoOpVersionVigente);
+  await _run(testB2S1b1ActorSinPermisosNoReservaClave);
+  await _run(testB2S1b1AutomodificacionYUltimoAdmin);
+  await _run(testB2S1b1DestinoInexistenteOAjeno);
+  await _run(testB2S1b1FalloSqliteRollbackIntegralYReintento);
+  await _run(testB2S1b1PendientePasswordCoexistenteIntacto);
+  await _run(testB2S1b1ConfirmaConBusinessInaccesible);
+  await _run(testB2S1b1ConsumerProyectaSinMutarRespuestaYReintentoHistorico);
+  await _run(testB2S1b1WriterS1aSinRegresion);
+  await _run(testB2S1b1FormatoClaveYFilaEnProgreso);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -44721,8 +44747,9 @@ async function testB2S1aPendientePasswordCoexistenteIntacto() {
     const fuente = fs.readFileSync(path.join(ROOT, "backend", "services", "membershipEstadoCentralService.js"), "utf8")
       .split(/\r?\n/).filter((linea) => !linea.trim().startsWith("//")).join("\n");
     const updates = (fuente.match(/\bUPDATE\s+\w+/g) || []).sort();
-    assertSame(JSON.stringify(updates), JSON.stringify(["UPDATE sync_pendiente", "UPDATE usuario_empresas"]), "solo actualiza membership y sync_pendiente");
-    assertSame(JSON.stringify(fuente.match(/\bINSERT\s+INTO\s+\w+/g) || []), JSON.stringify(["INSERT INTO sync_pendiente"]), "solo inserta la lapida");
+    // B2-S1b1: el modulo agrega la variante idempotente, que ademas escribe operacion_idempotencia.
+    assertSame(JSON.stringify(updates), JSON.stringify(["UPDATE operacion_idempotencia", "UPDATE sync_pendiente", "UPDATE usuario_empresas"]), "solo actualiza membership, sync_pendiente y su clave de idempotencia");
+    assertSame(JSON.stringify((fuente.match(/\bINSERT\s+INTO\s+\w+/g) || []).sort()), JSON.stringify(["INSERT INTO operacion_idempotencia", "INSERT INTO sync_pendiente"]), "solo inserta la lapida y la reserva de idempotencia");
     assertSame(/\bDELETE\s/.test(fuente), false, "nunca borra");
     assertSame(/password|sesiones/i.test(fuente), false, "nunca referencia password ni sesiones");
     assertSame(/SET\s+rol\b|rol\s*=\s*\?,/i.test(fuente), false, "nunca escribe rol");
@@ -44825,6 +44852,478 @@ async function testB2S1aConcurrenciaEntreEmpresasAislada() {
   } finally {
     b2s0b2Limpiar(f);
     if (t) limpiarTenantTestDb(t.dbB);
+  }
+}
+
+// AUTH-SYNC-B2-S1b1: variante idempotente durable del writer de estado
+// (cambiarEstadoMembershipCentralIdempotente). Reutiliza las fixtures de S1a.
+function b2s1b1Llamar(f, { actor = f.actorId, actorMembership = f.membershipId, empresaId = f.empresa.id, usuarioLocalId, activo, expectedVersion, clave }) {
+  return b2s1b1Idempotente({
+    actorUsuarioId: actor, actorMembershipId: actorMembership, empresaId, usuarioLocalId,
+    activo, expectedVersion, idempotencyKey: clave, controlDbPath: f.controlDbPath
+  });
+}
+
+async function b2s1b1Fila(f, clave) {
+  return (await allSql(f.controlDbPath, "SELECT * FROM operacion_idempotencia WHERE clave = ?", [clave]))[0];
+}
+
+async function b2s1b1Claves(f) {
+  return Number((await allSql(f.controlDbPath, "SELECT COUNT(*) AS n FROM operacion_idempotencia"))[0].n);
+}
+
+function b2s1b1Respuesta(r) {
+  return JSON.stringify({ http: r.resultadoHttp, json: r.resultadoJson });
+}
+
+async function testB2S1b1PrimeraModificacionExitosa() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.x");
+    const r = await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: false, expectedVersion: 0, clave: "s1b1-k1" });
+    assertSame(r.resultado, B2S1A_RESULTADOS.CONFIRMADO, `confirmado (${JSON.stringify(r)})`);
+    assertSame(JSON.stringify([r.durable, r.replay, r.resultadoHttp]), JSON.stringify([true, false, 200]), "durable, no replay, 200");
+    assertSame(JSON.stringify(r.resultadoJson), JSON.stringify({
+      code: "ESTADO_ACTUALIZADO",
+      message: "Usuario desactivado en el control central. La sincronizacion con la sucursal quedo pendiente al confirmar.",
+      usuario_id: x.localId,
+      activo: false,
+      version: 1,
+      operacion: { tipo: "rol_activo", version_objetivo: 1 },
+      sincronizacion_tenant: "pendiente_al_commit"
+    }), "cuerpo durable exacto");
+    const fila = await b2s1b1Fila(f, "s1b1-k1");
+    assertSame(JSON.stringify([fila.estado, fila.endpoint, fila.usuario_id, fila.membership_id, fila.resultado_http]), JSON.stringify(["confirmada", "/usuarios/:id/estado", f.actorId, f.membershipId, 200]), "clave confirmada con su namespace y actor");
+    assertSame(fila.resultado_json, JSON.stringify(r.resultadoJson), "resultado_json almacenado = respuesta devuelta");
+    assertSame(/^[0-9a-f]{64}$/.test(fila.solicitud_huella), true, "huella sha256");
+    const m = await b2s1aMembership(f, x.membershipId);
+    assertSame(JSON.stringify([m.activo, m.version]), JSON.stringify([0, 1]), "membership en la generacion 1");
+    const p = await b2s1aPendienteRolActivo(f, x.membershipId);
+    assertSame(JSON.stringify([p.estado, p.version_objetivo]), JSON.stringify(["pendiente", 1]), "lapida pendiente con 1");
+    assertSame(/password|hash/i.test(fila.resultado_json), false, "el cuerpo no contiene secretos");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1ReplayIdenticoDeExito() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.replay");
+    const args = { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-replay" };
+    const r1 = await b2s1b1Llamar(f, args);
+    const r2 = await b2s1aSinCambiosControl(f, () => b2s1b1Llamar(f, args), "replay");
+    assertSame(r2.replay, true, "segunda llamada es replay");
+    assertSame(r2.resultado, B2S1A_RESULTADOS.CONFIRMADO, "replay informa el resultado original");
+    assertSame(b2s1b1Respuesta(r2), b2s1b1Respuesta(r1), "respuesta identica");
+    assertEqual((await b2s1aMembership(f, x.membershipId)).version, 1, "sin segunda generacion");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1ReplayTrasRespuestaPerdida() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.perdida");
+    const args = { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-perdida" };
+    await b2s1b1Llamar(f, args); // el cliente nunca recibe esta respuesta
+    const fila = await b2s1b1Fila(f, "s1b1-perdida");
+    const r = await b2s1aSinCambiosControl(f, () => b2s1b1Llamar(f, args), "reintento tras perdida");
+    assertSame(r.replay, true, "replay, no VERSION_CONFLICT");
+    assertEqual(r.resultadoHttp, 200, "200 original");
+    assertSame(JSON.stringify(r.resultadoJson), fila.resultado_json, "exactamente la respuesta original");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function b2s1b1ReusoSinEscritura(f, args, etiqueta) {
+  const r = await b2s1aSinCambiosControl(f, () => b2s1b1Llamar(f, args), etiqueta);
+  assertSame(r.resultado, "IDEMPOTENCY_KEY_REUSED", `${etiqueta}: clave reutilizada (${JSON.stringify(r)})`);
+  assertEqual(r.resultadoHttp, 409, `${etiqueta}: 409`);
+  assertSame(r.resultadoJson, undefined, `${etiqueta}: nunca expone el resultado original`);
+  assertSame(r.replay, false, `${etiqueta}: no es replay`);
+  return r;
+}
+
+async function testB2S1b1MismaClaveOtroEstado() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.otroestado");
+    await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-reuso" });
+    await b2s1b1ReusoSinEscritura(f, { usuarioLocalId: x.localId, activo: 1, expectedVersion: 0, clave: "s1b1-reuso" }, "otro estado");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1MismaClaveOtraVersion() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.otraversion");
+    await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-reuso-v" });
+    await b2s1b1ReusoSinEscritura(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 1, clave: "s1b1-reuso-v" }, "otra version");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1MismaClaveOtroDestinatario() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.dest1");
+    const y = await b2s1aMiembro(f, "b2s1b1.dest2");
+    await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-reuso-d" });
+    await b2s1b1ReusoSinEscritura(f, { usuarioLocalId: y.localId, activo: 0, expectedVersion: 0, clave: "s1b1-reuso-d" }, "otro destinatario");
+    assertEqual((await b2s1aMembership(f, y.membershipId)).activo, 1, "y intacto");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1ClaveReutilizadaEntreEmpresas() {
+  let f;
+  let t;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.empa");
+    t = await b2s0b3aSegundoTenant(f, { rol: "admin", activo: 1, version: 0 });
+    await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-empresas" });
+    await b2s1b1ReusoSinEscritura(f, {
+      actor: t.centralB.id, actorMembership: t.membershipB.id, empresaId: t.empresaB.id,
+      usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-empresas"
+    }, "admin de otra empresa");
+  } finally {
+    b2s0b2Limpiar(f);
+    if (t) limpiarTenantTestDb(t.dbB);
+  }
+}
+
+async function testB2S1b1ClaveReutilizadaPorOtroActor() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.actor");
+    const c = await b2s1aMiembro(f, "b2s1b1.adminc", { rol: "admin" });
+    await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-actor" });
+    await b2s1b1ReusoSinEscritura(f, { actor: c.centralId, actorMembership: c.membershipId, usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-actor" }, "otro actor");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1ColisionConPasswordP1() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.pwd");
+    // Clave usada primero por P1B (password): /estado no la reutiliza ni la reproduce.
+    const p1 = await userControlBridge.actualizarPasswordCentralFirstIdempotente({
+      usuarioCentralId: x.centralId, expectedVersion: 0, passwordHash: await bcrypt.hash("Nueva1234", 4),
+      idempotencyKey: "s1b1-colision-p1", endpointLogico: "/usuarios/:id/password", solicitudHuella: "huella-p1",
+      actorCentralId: f.actorId, actorMembershipId: f.membershipId, controlDbPath: f.controlDbPath
+    });
+    assertSame(p1.ok, true, "P1B confirma su operacion");
+    const filaP1 = JSON.stringify(await b2s1b1Fila(f, "s1b1-colision-p1"));
+    await b2s1b1ReusoSinEscritura(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-colision-p1" }, "clave de P1B en /estado");
+    assertSame(JSON.stringify(await b2s1b1Fila(f, "s1b1-colision-p1")), filaP1, "fila P1B intacta");
+    // Clave usada primero por /estado: P1B la rechaza como reutilizada, sin tocar password.
+    await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-colision-estado" });
+    const centralAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT password_hash, password_version, version FROM usuarios WHERE id = ?", [x.centralId]));
+    const p1b = await userControlBridge.actualizarPasswordCentralFirstIdempotente({
+      usuarioCentralId: x.centralId, expectedVersion: 1, passwordHash: await bcrypt.hash("Otra1234", 4),
+      idempotencyKey: "s1b1-colision-estado", endpointLogico: "/usuarios/:id/password", solicitudHuella: "huella-p1-2",
+      actorCentralId: f.actorId, actorMembershipId: f.membershipId, controlDbPath: f.controlDbPath
+    });
+    assertSame(p1b.errorCode, "IDEMPOTENCY_KEY_REUSED", "P1B no reproduce una clave de /estado");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT password_hash, password_version, version FROM usuarios WHERE id = ?", [x.centralId])), centralAntes, "password intacto");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1ConcurrenciaMismaClave() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.concurrente");
+    const args = { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-concurrente" };
+    const [a, b] = await Promise.all([b2s1b1Llamar(f, args), b2s1b1Llamar(f, args)]);
+    const originales = [a, b].filter((r) => r.replay === false);
+    const replays = [a, b].filter((r) => r.replay === true);
+    assertEqual(originales.length, 1, `una sola ejecucion (${JSON.stringify([a, b])})`);
+    assertEqual(replays.length, 1, "la otra es replay");
+    assertSame(b2s1b1Respuesta(replays[0]), b2s1b1Respuesta(originales[0]), "replay identico");
+    assertEqual((await b2s1aMembership(f, x.membershipId)).version, 1, "una sola generacion");
+    assertEqual(await b2s1b1Claves(f), 1, "una sola fila de idempotencia");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1DosClavesMismaVersion() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.dosclaves");
+    const [a, b] = await Promise.all([
+      b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-ka" }),
+      b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-kb" })
+    ]);
+    const tipos = [a.resultado, b.resultado].sort();
+    assertSame(JSON.stringify(tipos), JSON.stringify([B2S1A_RESULTADOS.CONFIRMADO, B2S1A_RESULTADOS.VERSION_CONFLICT].sort()), `una confirma y la otra es conflicto (${JSON.stringify([a, b])})`);
+    const conflicto = [a, b].find((r) => r.resultado === B2S1A_RESULTADOS.VERSION_CONFLICT);
+    assertSame(JSON.stringify([conflicto.durable, conflicto.resultadoHttp, conflicto.resultadoJson.version_actual]), JSON.stringify([true, 409, 1]), "409 durable con la version vigente");
+    assertEqual(await b2s1b1Claves(f), 2, "ambas claves confirmadas");
+    assertEqual((await b2s1aMembership(f, x.membershipId)).version, 1, "una sola generacion");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1VersionObsoleta409Durable() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.obsoleta");
+    await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-gen1" });
+    const membershipAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM usuario_empresas ORDER BY id ASC"));
+    const pendientesAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente ORDER BY id ASC"));
+    const r = await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 1, expectedVersion: 0, clave: "s1b1-obsoleta" });
+    assertSame(JSON.stringify([r.resultado, r.durable, r.resultadoHttp]), JSON.stringify([B2S1A_RESULTADOS.VERSION_CONFLICT, true, 409]), "409 durable");
+    assertSame(JSON.stringify(r.resultadoJson), JSON.stringify({ code: "VERSION_CONFLICT", message: "El usuario fue modificado por otra operacion. Actualiza los datos y volve a intentar.", version_actual: 1 }), "cuerpo 409 exacto");
+    const fila = await b2s1b1Fila(f, "s1b1-obsoleta");
+    assertSame(JSON.stringify([fila.estado, fila.resultado_http]), JSON.stringify(["confirmada", 409]), "409 confirmado");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM usuario_empresas ORDER BY id ASC")), membershipAntes, "membership intacta");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente ORDER BY id ASC")), pendientesAntes, "pendientes intactos");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1ReplayExactoDel409() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.replay409");
+    await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-g1" });
+    const args409 = { usuarioLocalId: x.localId, activo: 1, expectedVersion: 0, clave: "s1b1-409" };
+    const r1 = await b2s1b1Llamar(f, args409);
+    const r2 = await b2s1aSinCambiosControl(f, () => b2s1b1Llamar(f, args409), "replay 409");
+    assertSame(JSON.stringify([r2.replay, r2.resultado]), JSON.stringify([true, B2S1A_RESULTADOS.VERSION_CONFLICT]), "replay del conflicto");
+    assertSame(b2s1b1Respuesta(r2), b2s1b1Respuesta(r1), "409 identico");
+    // Aunque luego la generacion avance, la misma clave sigue devolviendo el 409 historico.
+    assertSame((await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 1, expectedVersion: 1, clave: "s1b1-g2" })).resultado, B2S1A_RESULTADOS.CONFIRMADO, "generacion 2 con otra clave");
+    const r3 = await b2s1b1Llamar(f, args409);
+    assertSame(b2s1b1Respuesta(r3), b2s1b1Respuesta(r1), "el 409 historico no cambia");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1NoOpVersionVigente() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.noop");
+    const args = { usuarioLocalId: x.localId, activo: true, expectedVersion: 0, clave: "s1b1-noop" };
+    const r = await b2s1b1Llamar(f, args);
+    assertSame(JSON.stringify([r.resultado, r.durable, r.resultadoHttp]), JSON.stringify([B2S1A_RESULTADOS.SIN_CAMBIOS, true, 200]), "no-op durable");
+    assertSame(JSON.stringify(r.resultadoJson), JSON.stringify({ code: "SIN_CAMBIOS", message: "El usuario ya tenia ese estado.", usuario_id: x.localId, activo: true, version: 0 }), "cuerpo exacto");
+    assertEqual((await b2s1aMembership(f, x.membershipId)).version, 0, "sin generacion nueva");
+    assertSame(await b2s1aPendienteRolActivo(f, x.membershipId), undefined, "sin lapida");
+    const r2 = await b2s1aSinCambiosControl(f, () => b2s1b1Llamar(f, args), "replay no-op");
+    assertSame(b2s1b1Respuesta(r2), b2s1b1Respuesta(r), "replay identico del no-op");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1ActorSinPermisosNoReservaClave() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.obj");
+    const enc = await b2s1aMiembro(f, "b2s1b1.enc", { rol: "encargado" });
+    const r = await b2s1aSinCambiosControl(f, () => b2s1b1Llamar(f, { actor: enc.centralId, actorMembership: enc.membershipId, usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-sinpermiso" }), "sin permisos");
+    assertSame(JSON.stringify([r.resultado, r.motivo, r.resultadoHttp, r.durable]), JSON.stringify([B2S1A_RESULTADOS.NO_AUTORIZADO, "ACTOR_NO_ADMIN", 403, false]), "403 no durable");
+    assertEqual(await b2s1b1Claves(f), 0, "la clave no se consumio");
+    const ajena = await b2s1b1Llamar(f, { actorMembership: enc.membershipId, usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-sinpermiso" });
+    assertSame(ajena.motivo, "ACTOR_MEMBERSHIP_NO_CORRESPONDE", "la membership de sesion debe ser la del actor");
+    assertEqual(await b2s1b1Claves(f), 0, "tampoco consume la clave");
+    const ok = await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-sinpermiso" });
+    assertSame(JSON.stringify([ok.resultado, ok.replay]), JSON.stringify([B2S1A_RESULTADOS.CONFIRMADO, false]), "la misma clave sigue disponible para una operacion autorizada");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1AutomodificacionYUltimoAdmin() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const colab = await b2s1aMiembro(f, "b2s1b1.colab");
+    const self = await b2s1aSinCambiosControl(f, () => b2s1b1Llamar(f, { usuarioLocalId: f.localUserId, activo: 0, expectedVersion: 0, clave: "s1b1-self" }), "self");
+    assertSame(JSON.stringify([self.resultado, self.resultadoHttp, self.durable]), JSON.stringify([B2S1A_RESULTADOS.AUTOMODIFICACION, 403, false]), "automodificacion 403 no durable");
+    const porColab = await b2s1b1Llamar(f, { actor: colab.centralId, actorMembership: colab.membershipId, usuarioLocalId: f.localUserId, activo: 0, expectedVersion: 0, clave: "s1b1-ultimo" });
+    assertSame(porColab.resultado, B2S1A_RESULTADOS.NO_AUTORIZADO, "nadie sin autoridad desactiva al ultimo admin");
+    assertEqual(await b2s1aAdminsEfectivos(f), 1, "el ultimo admin efectivo se conserva");
+    assertEqual(await b2s1b1Claves(f), 0, "ninguna clave consumida");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1DestinoInexistenteOAjeno() {
+  let f;
+  let t;
+  try {
+    f = await b2s1aFixture();
+    const sinMembership = await runSql(f.dbPath, "INSERT INTO usuarios (nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, ?)", ["S1b1 Sin", "s1b1.sin", "hash-sin", "colaborador", 1]);
+    t = await b2s0b3aSegundoTenant(f, { rol: "colaborador", activo: 1, version: 0 });
+    for (const [etiqueta, args, resultado, http] of [
+      ["inexistente", { usuarioLocalId: 999999 }, B2S1A_RESULTADOS.MEMBERSHIP_NO_ENCONTRADA, 404],
+      ["local sin membership", { usuarioLocalId: sinMembership.lastID }, B2S1A_RESULTADOS.MEMBERSHIP_NO_ENCONTRADA, 404],
+      ["empresa ajena al actor", { empresaId: t.empresaB.id, usuarioLocalId: t.localB.id }, B2S1A_RESULTADOS.NO_AUTORIZADO, 403]
+    ]) {
+      const r = await b2s1aSinCambiosControl(f, () => b2s1b1Llamar(f, { activo: 0, expectedVersion: 0, clave: `s1b1-dest-${etiqueta}`, ...args }), etiqueta);
+      assertSame(JSON.stringify([r.resultado, r.resultadoHttp, r.durable]), JSON.stringify([resultado, http, false]), `${etiqueta} (${JSON.stringify(r)})`);
+    }
+    assertEqual(await b2s1b1Claves(f), 0, "ninguna clave consumida");
+  } finally {
+    b2s0b2Limpiar(f);
+    if (t) limpiarTenantTestDb(t.dbB);
+  }
+}
+
+async function testB2S1b1FalloSqliteRollbackIntegralYReintento() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.rollback");
+    // Falla REAL de SQLite (trigger solo en el Control descartable), despues de la reserva de la
+    // clave y del UPDATE de la membership dentro de la misma transaccion.
+    await runSql(f.controlDbPath, "CREATE TRIGGER s1b1_falla_ins BEFORE INSERT ON sync_pendiente BEGIN SELECT RAISE(ABORT, 's1b1 falla outbox'); END");
+    await runSql(f.controlDbPath, "CREATE TRIGGER s1b1_falla_upd BEFORE UPDATE ON sync_pendiente BEGIN SELECT RAISE(ABORT, 's1b1 falla outbox'); END");
+    const args = { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-rollback" };
+    const r = await b2s1aSinCambiosControl(f, () => b2s1b1Llamar(f, args), "fallo antes del commit");
+    assertSame(JSON.stringify([r.resultado, r.resultadoHttp, r.durable]), JSON.stringify([B2S1A_RESULTADOS.FALLO_TRANSACCIONAL, 503, false]), `fallo transaccional (${JSON.stringify(r)})`);
+    assertEqual(await b2s1b1Claves(f), 0, "sin reserva huerfana");
+    assertSame(JSON.stringify(Object.values(await b2s1aMembership(f, x.membershipId)).slice(2)), JSON.stringify([1, 0]), "sin mutacion huerfana");
+    await runSql(f.controlDbPath, "DROP TRIGGER s1b1_falla_ins");
+    await runSql(f.controlDbPath, "DROP TRIGGER s1b1_falla_upd");
+    const r2 = await b2s1b1Llamar(f, args);
+    assertSame(JSON.stringify([r2.resultado, r2.replay]), JSON.stringify([B2S1A_RESULTADOS.CONFIRMADO, false]), "el reintento con la misma clave ejecuta una sola vez");
+    assertEqual((await b2s1aMembership(f, x.membershipId)).version, 1, "una generacion");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1PendientePasswordCoexistenteIntacto() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.pwdpend");
+    await b2s0b2InsertarLapida(f.controlDbPath, {
+      usuarioId: x.centralId, empresaId: f.empresa.id, membershipId: x.membershipId, usuarioLocalId: x.localId,
+      tipo: "password", versionObjetivo: 2, estado: "pendiente"
+    });
+    const pwdAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente WHERE tipo_operacion = 'password'"));
+    const centralAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT id, password_hash, password_version, version, activo FROM usuarios ORDER BY id ASC"));
+    const r = await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-pwdpend" });
+    assertSame(r.resultado, B2S1A_RESULTADOS.CONFIRMADO, "confirmado");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente WHERE tipo_operacion = 'password'")), pwdAntes, "pendiente password intacto");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT id, password_hash, password_version, version, activo FROM usuarios ORDER BY id ASC")), centralAntes, "identidad global intacta");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1ConfirmaConBusinessInaccesible() {
+  let f;
+  const apartado = () => `${f.dbPath}.s1b1-apartado`;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.offline");
+    fs.renameSync(f.dbPath, apartado());
+    const r = await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-offline" });
+    assertSame(r.resultado, B2S1A_RESULTADOS.CONFIRMADO, "confirmacion central sin tenant");
+    assertSame(r.resultadoJson.sincronizacion_tenant, "pendiente_al_commit", "no declara el tenant actualizado");
+    assertSame(fs.existsSync(f.dbPath), false, "no materializa la business DB");
+    assertSame((await b2s1aPendienteRolActivo(f, x.membershipId)).estado, "pendiente", "pendiente durable");
+  } finally {
+    if (f && fs.existsSync(apartado())) fs.renameSync(apartado(), f.dbPath);
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1ConsumerProyectaSinMutarRespuestaYReintentoHistorico() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.proy", { rol: "encargado" });
+    const args = { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s1b1-proy" };
+    const r = await b2s1b1Llamar(f, args);
+    const filaAntes = JSON.stringify(await b2s1b1Fila(f, "s1b1-proy"));
+    const c = await b2s0b3aProcesarPendienteRolActivo({ membershipId: x.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(c.resultado, B2S0B3A_RESULTADOS.CERRADO, "S0b3a proyecta la lapida creada");
+    const local = await b2s0b2Local(f.dbPath, x.localId);
+    assertSame(JSON.stringify([local.rol, local.activo, local.v]), JSON.stringify(["encargado", 0, 1]), "tenant proyectado");
+    assertSame(JSON.stringify(await b2s1b1Fila(f, "s1b1-proy")), filaAntes, "la respuesta durable no se muta tras la proyeccion");
+    // Reintento despues del procesamiento: respuesta historica identica (pendiente_al_commit).
+    const r2 = await b2s1aSinCambiosControl(f, () => b2s1b1Llamar(f, args), "reintento tras S0b3a");
+    assertSame(b2s1b1Respuesta(r2), b2s1b1Respuesta(r), "respuesta historica identica");
+    assertSame(r2.resultadoJson.sincronizacion_tenant, "pendiente_al_commit", "estado conocido al commit, no el actual");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1WriterS1aSinRegresion() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.s1a");
+    const r = await b2s1aCambiar(f, { membershipId: x.membershipId, activo: 0, expectedVersion: 0 });
+    assertSame(JSON.stringify([r.resultado, r.versionNueva, r.pendiente.accion]), JSON.stringify([B2S1A_RESULTADOS.CONFIRMADO, 1, "CREADA"]), "S1a confirma igual que antes");
+    assertEqual(await b2s1b1Claves(f), 0, "S1a no usa operacion_idempotencia");
+    const conflicto = await b2s1aCambiar(f, { membershipId: x.membershipId, activo: 0, expectedVersion: 0 });
+    assertSame(conflicto.resultado, B2S1A_RESULTADOS.VERSION_CONFLICT, "S1a-R1: precondicion antes del no-op");
+    const noop = await b2s1aCambiar(f, { membershipId: x.membershipId, activo: 0, expectedVersion: 1 });
+    assertSame(noop.resultado, B2S1A_RESULTADOS.SIN_CAMBIOS, "no-op con version vigente");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S1b1FormatoClaveYFilaEnProgreso() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s1b1.formato");
+    for (const clave of [undefined, "", "   ", "a".repeat(129), "linea\nquebrada", 12345]) {
+      const r = await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave });
+      assertSame(JSON.stringify([r.resultado, r.motivo, r.resultadoHttp]), JSON.stringify([B2S1A_RESULTADOS.PARAMETROS_INVALIDOS, "IDEMPOTENCY_KEY_INVALIDA", 400]), `clave invalida rechazada (${JSON.stringify(clave)})`);
+    }
+    const larga = "b".repeat(128);
+    const ok = await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: `  ${larga}  ` });
+    assertSame(ok.resultado, B2S1A_RESULTADOS.CONFIRMADO, "128 caracteres (tras trim) se aceptan");
+    assertSame(Boolean(await b2s1b1Fila(f, larga)), true, "se almacena normalizada");
+    // Fila en_progreso persistida (anomala): fail-closed, sin ejecutar ni adjudicarse nada.
+    await runSql(f.controlDbPath, "INSERT INTO operacion_idempotencia (clave, endpoint, usuario_id, membership_id, solicitud_huella, estado) VALUES (?, ?, ?, ?, ?, 'en_progreso')", ["s1b1-colgada", "/usuarios/:id/estado", f.actorId, f.membershipId, "x"]);
+    const colgada = await b2s1aSinCambiosControl(f, () => b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 1, expectedVersion: 1, clave: "s1b1-colgada" }), "en_progreso");
+    assertSame(JSON.stringify([colgada.resultado, colgada.resultadoHttp]), JSON.stringify(["IDEMPOTENCY_OPERATION_IN_PROGRESS", 409]), "fail-closed ante en_progreso");
+    assertEqual((await b2s1aMembership(f, x.membershipId)).version, 1, "sin ejecucion");
+  } finally {
+    b2s0b2Limpiar(f);
   }
 }
 

@@ -18,8 +18,10 @@
 // nunca rol, nunca sesiones, nunca filas 'password' de sync_pendiente, nunca otras empresas.
 //
 // Idempotencia: expected_version (CAS) impide escrituras duplicadas o basadas en una generacion
-// vieja, pero NO es un replay HTTP idempotente (respuesta perdida tras commit, reutilizacion de una
-// Idempotency-Key con otro contenido). Ese contrato queda para la integracion HTTP.
+// vieja, pero NO es un replay HTTP idempotente. El replay durable (respuesta perdida tras commit,
+// reutilizacion de una Idempotency-Key con otro contenido) lo provee la variante
+// cambiarEstadoMembershipCentralIdempotente (AUTH-SYNC-B2-S1b1), sobre el MISMO nucleo de reglas.
+const crypto = require("crypto");
 const fs = require("fs");
 const sqlite3 = require("sqlite3");
 const { DEFAULT_DB_PATH, closeDb, runQuery, getQuery, allQuery } = require("../../database/init-control-db");
@@ -145,19 +147,143 @@ async function registrarPendienteRolActivo(db, membership, versionObjetivo) {
   return { accion: "CREADA" };
 }
 
-async function cambiarEstadoMembershipCentral({
-  actorUsuarioId, empresaId, membershipId, activo, expectedVersion, controlDbPath
-} = {}) {
-  const actorId = enteroPositivo(actorUsuarioId);
-  const empresa = enteroPositivo(empresaId);
-  const destinoId = enteroPositivo(membershipId);
-  const activoNuevo = normalizarActivo(activo);
-  const versionEsperada = enteroNoNegativo(expectedVersion);
-  if (!actorId || !empresa || !destinoId || activoNuevo === null || versionEsperada === null) {
-    return rechazo(R.PARAMETROS_INVALIDOS, "PARAMETROS_INVALIDOS");
-  }
+// Nucleo compartido por el writer S1a y su variante idempotente S1b1: TODAS las reglas (R1-R7, R10 y
+// la precondicion de version de S1a-R1) sobre una conexion YA dentro de una transaccion BEGIN
+// IMMEDIATE abierta por el caller. Nunca ejecuta BEGIN/COMMIT/ROLLBACK: devuelve el resultado y si
+// escribio, y el caller decide. `actorMembershipIdEsperada` (opcional) exige que la membership del
+// actor resuelta en Control sea exactamente la de su sesion. `alAutorizar` (opcional) corre una sola
+// vez, dentro de la misma transaccion, cuando actor, empresa y destino ya fueron validados (R1-R5) y
+// antes de la precondicion de version -- la variante idempotente reserva ahi su clave.
+async function evaluarYAplicarCambioEstado(db, {
+  actorId, empresa, destinoId, activoNuevo, versionEsperada, actorMembershipIdEsperada = null, alAutorizar = null
+}) {
   const base = { membershipId: destinoId, empresaId: empresa };
+  const sinEscritura = (resultado) => ({ escribio: false, resultado });
 
+  if (!(await verificarEsquema(db))) {
+    return sinEscritura(rechazo(R.ESQUEMA_INCOMPATIBLE, "ESQUEMA_CONTROL_INCOMPATIBLE", base));
+  }
+
+  // R2: empresa existente y activa.
+  const empresaRow = await getQuery(db, "SELECT id, activa FROM empresas WHERE id = ?", [empresa]);
+  if (!empresaRow || Number(empresaRow.activa) !== 1) {
+    return sinEscritura(rechazo(R.EMPRESA_NO_DISPONIBLE, empresaRow ? "EMPRESA_INACTIVA" : "EMPRESA_INEXISTENTE", base));
+  }
+
+  // R1: actor existente y globalmente activo.
+  const actor = await getQuery(db, "SELECT id, activo FROM usuarios WHERE id = ?", [actorId]);
+  if (!actor) {
+    return sinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_INEXISTENTE", base));
+  }
+  if (Number(actor.activo) !== 1) {
+    return sinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_INACTIVO", base));
+  }
+
+  // R3: membership del actor en ESTA empresa, activa y con rol admin.
+  const actorMembership = await getQuery(
+    db,
+    "SELECT id, rol, activo FROM usuario_empresas WHERE usuario_id = ? AND empresa_id = ?",
+    [actorId, empresa]
+  );
+  if (!actorMembership) {
+    return sinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_SIN_MEMBERSHIP", base));
+  }
+  if (actorMembershipIdEsperada !== null && Number(actorMembership.id) !== actorMembershipIdEsperada) {
+    return sinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_MEMBERSHIP_NO_CORRESPONDE", base));
+  }
+  if (Number(actorMembership.activo) !== 1) {
+    return sinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_MEMBERSHIP_INACTIVA", base));
+  }
+  if (actorMembership.rol !== ROL_ADMIN) {
+    return sinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_NO_ADMIN", base));
+  }
+
+  // R4: destino de ESTA empresa. Inexistente y ajena se informan igual (sin enumerar otras empresas).
+  const destino = destinoId === null ? null : await getQuery(
+    db,
+    "SELECT id, usuario_id, empresa_id, usuario_local_id, rol, activo, version FROM usuario_empresas WHERE id = ?",
+    [destinoId]
+  );
+  if (!destino || Number(destino.empresa_id) !== empresa) {
+    return sinEscritura(rechazo(R.MEMBERSHIP_NO_ENCONTRADA, "MEMBERSHIP_NO_ENCONTRADA", base));
+  }
+
+  // R5: nunca sobre la propia identidad (ni la propia membership).
+  if (Number(destino.usuario_id) === actorId || Number(destino.id) === Number(actorMembership.id)) {
+    return sinEscritura(rechazo(R.AUTOMODIFICACION, "AUTOMODIFICACION", base));
+  }
+
+  if (alAutorizar) {
+    await alAutorizar();
+  }
+
+  // Precondicion de version ANTES de evaluar el no-op: un pedido basado en una generacion distinta
+  // de la vigente es siempre conflicto, aunque el estado pedido ya coincida.
+  const versionActual = Number(destino.version);
+  const usuarioLocalId = Number(destino.usuario_local_id);
+  if (versionActual !== versionEsperada) {
+    return sinEscritura(rechazo(R.VERSION_CONFLICT, "VERSION_CONFLICT", { ...base, usuarioLocalId, versionActual }));
+  }
+  const activoActual = Number(destino.activo) === 1 ? 1 : 0;
+  if (activoActual === activoNuevo) {
+    return sinEscritura({ ok: true, resultado: R.SIN_CAMBIOS, ...base, usuarioLocalId, activo: activoActual, versionActual });
+  }
+
+  // R6: nunca dejar a la empresa sin administradores con acceso efectivo. Se cuenta DENTRO de la
+  // transaccion, excluyendo al destino, despues de las validaciones de autoridad.
+  if (activoNuevo === 0 && destino.rol === ROL_ADMIN) {
+    const restantes = await contarAdminsEfectivos(db, empresa, { excluirMembershipId: destinoId });
+    if (restantes < 1) {
+      return sinEscritura(rechazo(R.ULTIMO_ADMIN_PROTEGIDO, "ULTIMO_ADMIN_PROTEGIDO", base));
+    }
+  }
+
+  // R7 + CAS: unica escritura sobre la membership destino.
+  const cas = await runQuery(
+    db,
+    `UPDATE usuario_empresas
+     SET activo = ?, version = version + 1, actualizado_en = datetime('now')
+     WHERE id = ? AND empresa_id = ? AND version = ?`,
+    [activoNuevo, destinoId, empresa, versionEsperada]
+  );
+  if (cas.changes !== 1) {
+    return sinEscritura(rechazo(R.VERSION_CONFLICT, "VERSION_CONFLICT", { ...base, usuarioLocalId, versionActual }));
+  }
+  const versionNueva = versionEsperada + 1;
+
+  // R10: pendiente durable en la MISMA transaccion. Si algo falla de aca en adelante, el caller hace
+  // ROLLBACK (escribio=false): el UPDATE de arriba nunca se confirma sin su lapida.
+  const pendiente = await registrarPendienteRolActivo(db, destino, versionNueva);
+  if (pendiente.accion === "INCONSISTENTE") {
+    return sinEscritura(rechazo(R.ESTADO_INCONSISTENTE, "LAPIDA_ASOCIACION_INCONSISTENTE", base));
+  }
+  const verificacion = await getQuery(
+    db,
+    "SELECT version_objetivo, estado FROM sync_pendiente WHERE membership_id = ? AND tipo_operacion = 'rol_activo'",
+    [destinoId]
+  );
+  if (!verificacion || Number(verificacion.version_objetivo) !== versionNueva || verificacion.estado !== "pendiente") {
+    return sinEscritura(rechazo(R.FALLO_TRANSACCIONAL, "PENDIENTE_NO_VERIFICADO", base));
+  }
+
+  return {
+    escribio: true,
+    resultado: {
+      ok: true,
+      resultado: R.CONFIRMADO,
+      ...base,
+      usuarioLocalId,
+      activo: activoNuevo,
+      versionAnterior: versionEsperada,
+      versionNueva,
+      pendiente: { tipo: "rol_activo", versionObjetivo: versionNueva, estado: "pendiente", accion: pendiente.accion }
+    }
+  };
+}
+
+// Abre Control (sin crearlo), corre `cuerpo` dentro de UN BEGIN IMMEDIATE y hace COMMIT solo si el
+// cuerpo lo pide; cualquier otro desenlace o excepcion es ROLLBACK integral.
+async function ejecutarEnTransaccionControl(controlDbPath, base, cuerpo) {
   const dbPath = controlDbPath || DEFAULT_DB_PATH;
   if (!fs.existsSync(dbPath)) {
     return rechazo(R.ERROR_TRANSITORIO, "CONTROL_DB_AUSENTE", base);
@@ -168,126 +294,14 @@ async function cambiarEstadoMembershipCentral({
   } catch (error) {
     return rechazo(R.ERROR_TRANSITORIO, "CONTROL_DB_INACCESIBLE", { ...base, codigo: error.code || null });
   }
-
   let transaccionAbierta = false;
-  const terminarSinEscritura = async (resultado) => {
-    await runQuery(db, "ROLLBACK");
-    transaccionAbierta = false;
-    return resultado;
-  };
   try {
     await runQuery(db, "BEGIN IMMEDIATE");
     transaccionAbierta = true;
-
-    if (!(await verificarEsquema(db))) {
-      return await terminarSinEscritura(rechazo(R.ESQUEMA_INCOMPATIBLE, "ESQUEMA_CONTROL_INCOMPATIBLE", base));
-    }
-
-    // R2: empresa existente y activa.
-    const empresaRow = await getQuery(db, "SELECT id, activa FROM empresas WHERE id = ?", [empresa]);
-    if (!empresaRow || Number(empresaRow.activa) !== 1) {
-      return await terminarSinEscritura(rechazo(R.EMPRESA_NO_DISPONIBLE, empresaRow ? "EMPRESA_INACTIVA" : "EMPRESA_INEXISTENTE", base));
-    }
-
-    // R1: actor existente y globalmente activo.
-    const actor = await getQuery(db, "SELECT id, activo FROM usuarios WHERE id = ?", [actorId]);
-    if (!actor) {
-      return await terminarSinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_INEXISTENTE", base));
-    }
-    if (Number(actor.activo) !== 1) {
-      return await terminarSinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_INACTIVO", base));
-    }
-
-    // R3: membership del actor en ESTA empresa, activa y con rol admin.
-    const actorMembership = await getQuery(
-      db,
-      "SELECT id, rol, activo FROM usuario_empresas WHERE usuario_id = ? AND empresa_id = ?",
-      [actorId, empresa]
-    );
-    if (!actorMembership) {
-      return await terminarSinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_SIN_MEMBERSHIP", base));
-    }
-    if (Number(actorMembership.activo) !== 1) {
-      return await terminarSinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_MEMBERSHIP_INACTIVA", base));
-    }
-    if (actorMembership.rol !== ROL_ADMIN) {
-      return await terminarSinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_NO_ADMIN", base));
-    }
-
-    // R4: destino de ESTA empresa. Inexistente y ajena se informan igual (sin enumerar otras empresas).
-    const destino = await getQuery(
-      db,
-      "SELECT id, usuario_id, empresa_id, usuario_local_id, rol, activo, version FROM usuario_empresas WHERE id = ?",
-      [destinoId]
-    );
-    if (!destino || Number(destino.empresa_id) !== empresa) {
-      return await terminarSinEscritura(rechazo(R.MEMBERSHIP_NO_ENCONTRADA, "MEMBERSHIP_NO_ENCONTRADA", base));
-    }
-
-    // R5: nunca sobre la propia identidad (ni la propia membership).
-    if (Number(destino.usuario_id) === actorId || Number(destino.id) === Number(actorMembership.id)) {
-      return await terminarSinEscritura(rechazo(R.AUTOMODIFICACION, "AUTOMODIFICACION", base));
-    }
-
-    // Precondicion de version ANTES de evaluar el no-op: un pedido basado en una generacion distinta
-    // de la vigente es siempre conflicto, aunque el estado pedido ya coincida.
-    const versionActual = Number(destino.version);
-    if (versionActual !== versionEsperada) {
-      return await terminarSinEscritura(rechazo(R.VERSION_CONFLICT, "VERSION_CONFLICT", { ...base, versionActual }));
-    }
-    const activoActual = Number(destino.activo) === 1 ? 1 : 0;
-    if (activoActual === activoNuevo) {
-      return await terminarSinEscritura({ ok: true, resultado: R.SIN_CAMBIOS, ...base, activo: activoActual, versionActual });
-    }
-
-    // R6: nunca dejar a la empresa sin administradores con acceso efectivo. Se cuenta DENTRO de la
-    // transaccion, excluyendo al destino, despues de las validaciones de autoridad.
-    if (activoNuevo === 0 && destino.rol === ROL_ADMIN) {
-      const restantes = await contarAdminsEfectivos(db, empresa, { excluirMembershipId: destinoId });
-      if (restantes < 1) {
-        return await terminarSinEscritura(rechazo(R.ULTIMO_ADMIN_PROTEGIDO, "ULTIMO_ADMIN_PROTEGIDO", base));
-      }
-    }
-
-    // R7 + CAS: unica escritura sobre la membership destino.
-    const cas = await runQuery(
-      db,
-      `UPDATE usuario_empresas
-       SET activo = ?, version = version + 1, actualizado_en = datetime('now')
-       WHERE id = ? AND empresa_id = ? AND version = ?`,
-      [activoNuevo, destinoId, empresa, versionEsperada]
-    );
-    if (cas.changes !== 1) {
-      return await terminarSinEscritura(rechazo(R.VERSION_CONFLICT, "VERSION_CONFLICT", { ...base, versionActual }));
-    }
-    const versionNueva = versionEsperada + 1;
-
-    // R10: pendiente durable en la MISMA transaccion.
-    const pendiente = await registrarPendienteRolActivo(db, destino, versionNueva);
-    if (pendiente.accion === "INCONSISTENTE") {
-      return await terminarSinEscritura(rechazo(R.ESTADO_INCONSISTENTE, "LAPIDA_ASOCIACION_INCONSISTENTE", base));
-    }
-    const verificacion = await getQuery(
-      db,
-      "SELECT version_objetivo, estado FROM sync_pendiente WHERE membership_id = ? AND tipo_operacion = 'rol_activo'",
-      [destinoId]
-    );
-    if (!verificacion || Number(verificacion.version_objetivo) !== versionNueva || verificacion.estado !== "pendiente") {
-      return await terminarSinEscritura(rechazo(R.FALLO_TRANSACCIONAL, "PENDIENTE_NO_VERIFICADO", base));
-    }
-
-    await runQuery(db, "COMMIT");
+    const { commit, resultado } = await cuerpo(db);
+    await runQuery(db, commit ? "COMMIT" : "ROLLBACK");
     transaccionAbierta = false;
-    return {
-      ok: true,
-      resultado: R.CONFIRMADO,
-      ...base,
-      usuarioLocalId: Number(destino.usuario_local_id),
-      activo: activoNuevo,
-      versionAnterior: versionEsperada,
-      versionNueva,
-      pendiente: { tipo: "rol_activo", versionObjetivo: versionNueva, estado: "pendiente", accion: pendiente.accion }
-    };
+    return resultado;
   } catch (error) {
     let rollbackFallido = false;
     if (transaccionAbierta) {
@@ -305,8 +319,259 @@ async function cambiarEstadoMembershipCentral({
   }
 }
 
+async function cambiarEstadoMembershipCentral({
+  actorUsuarioId, empresaId, membershipId, activo, expectedVersion, controlDbPath
+} = {}) {
+  const actorId = enteroPositivo(actorUsuarioId);
+  const empresa = enteroPositivo(empresaId);
+  const destinoId = enteroPositivo(membershipId);
+  const activoNuevo = normalizarActivo(activo);
+  const versionEsperada = enteroNoNegativo(expectedVersion);
+  if (!actorId || !empresa || !destinoId || activoNuevo === null || versionEsperada === null) {
+    return rechazo(R.PARAMETROS_INVALIDOS, "PARAMETROS_INVALIDOS");
+  }
+  const base = { membershipId: destinoId, empresaId: empresa };
+  return ejecutarEnTransaccionControl(controlDbPath, base, async (db) => {
+    const { escribio, resultado } = await evaluarYAplicarCambioEstado(db, { actorId, empresa, destinoId, activoNuevo, versionEsperada });
+    return { commit: escribio, resultado };
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// AUTH-SYNC-B2-S1b1: variante con Idempotency-Key DURABLE (operacion_idempotencia), para el futuro
+// handler HTTP de PATCH /usuarios/:id/estado. Reserva de clave, cambio de membership, lapida
+// rol_activo y respuesta HTTP definitiva se confirman en UN solo COMMIT de Control. La respuesta
+// almacenada es INMUTABLE: nunca se reescribe despues del COMMIT (p.ej. con el resultado de una
+// proyeccion) -- sincronizacion_tenant describe el estado conocido AL COMMIT.
+const ENDPOINT_LOGICO_ESTADO = "/usuarios/:id/estado";
+const IDEMPOTENCY_KEY_MAX = 128;
+
+const RESULTADOS_IDEMPOTENCIA = Object.freeze({
+  IDEMPOTENCY_KEY_REUSED: "IDEMPOTENCY_KEY_REUSED",
+  IDEMPOTENCY_OPERATION_IN_PROGRESS: "IDEMPOTENCY_OPERATION_IN_PROGRESS"
+});
+
+// Status HTTP sugerido para resultados NO durables (rechazos que nunca consumen la clave); el
+// handler de S1b2 decide el mapeo final.
+const HTTP_NO_DURABLE = Object.freeze({
+  [R.PARAMETROS_INVALIDOS]: 400,
+  [R.NO_AUTORIZADO]: 403,
+  [R.AUTOMODIFICACION]: 403,
+  [R.EMPRESA_NO_DISPONIBLE]: 403,
+  [R.MEMBERSHIP_NO_ENCONTRADA]: 404,
+  [R.ULTIMO_ADMIN_PROTEGIDO]: 409,
+  [RESULTADOS_IDEMPOTENCIA.IDEMPOTENCY_KEY_REUSED]: 409,
+  [RESULTADOS_IDEMPOTENCIA.IDEMPOTENCY_OPERATION_IN_PROGRESS]: 409,
+  [R.ESQUEMA_INCOMPATIBLE]: 503,
+  [R.ERROR_TRANSITORIO]: 503,
+  [R.FALLO_TRANSACCIONAL]: 503,
+  [R.ESTADO_INCONSISTENTE]: 500
+});
+
+const RESULTADO_POR_CODIGO_DURABLE = Object.freeze({
+  ESTADO_ACTUALIZADO: R.CONFIRMADO,
+  SIN_CAMBIOS: R.SIN_CAMBIOS,
+  VERSION_CONFLICT: R.VERSION_CONFLICT
+});
+
+// Mismo criterio de formato que P1B (server.js:validarIdempotencyKeyHeader): string no vacia tras
+// trim, <= 128 caracteres, sin CR/LF.
+function normalizarIdempotencyKey(valor) {
+  if (typeof valor !== "string" || /[\r\n]/.test(valor)) return null;
+  const clave = valor.trim();
+  return clave && clave.length <= IDEMPOTENCY_KEY_MAX ? clave : null;
+}
+
+// Representacion canonica (orden de claves fijo) de la OPERACION, sin secretos. A diferencia de
+// P1B, expected_version SI integra la huella: la envia el cliente y un reintento legitimo reenvia la
+// misma; otra version con la misma clave es otro contenido.
+function calcularHuellaEstado({ empresaId, actorCentralId, actorMembershipId, targetUsuarioLocalId, targetMembershipId, activo, expectedVersion }) {
+  const payload = JSON.stringify({
+    metodo: "PATCH",
+    endpoint: ENDPOINT_LOGICO_ESTADO,
+    empresaId: Number(empresaId),
+    actorCentralId: Number(actorCentralId),
+    actorMembershipId: Number(actorMembershipId),
+    targetUsuarioLocalId: Number(targetUsuarioLocalId),
+    targetMembershipId: targetMembershipId === null ? null : Number(targetMembershipId),
+    activo: Number(activo),
+    expectedVersion: Number(expectedVersion)
+  });
+  return crypto.createHash("sha256").update(payload).digest("hex");
+}
+
+async function verificarEsquemaIdempotencia(db) {
+  const columnas = new Set((await allQuery(db, "PRAGMA table_info(operacion_idempotencia)")).map((c) => c.name));
+  return ["clave", "endpoint", "usuario_id", "membership_id", "solicitud_huella", "estado", "resultado_http", "resultado_json", "creado_en", "confirmada_en"]
+    .every((n) => columnas.has(n));
+}
+
+// Respuesta HTTP definitiva de un resultado durable (CONFIRMADO / SIN_CAMBIOS / VERSION_CONFLICT),
+// o null si el resultado no se almacena. Nunca incluye datos de identidad central ni secretos.
+function respuestaDurable(r) {
+  if (r.resultado === R.CONFIRMADO) {
+    return {
+      http: 200,
+      json: {
+        code: "ESTADO_ACTUALIZADO",
+        message: r.activo === 1
+          ? "Usuario activado en el control central. La sincronizacion con la sucursal quedo pendiente al confirmar."
+          : "Usuario desactivado en el control central. La sincronizacion con la sucursal quedo pendiente al confirmar.",
+        usuario_id: r.usuarioLocalId,
+        activo: r.activo === 1,
+        version: r.versionNueva,
+        operacion: { tipo: "rol_activo", version_objetivo: r.pendiente.versionObjetivo },
+        sincronizacion_tenant: "pendiente_al_commit"
+      }
+    };
+  }
+  if (r.resultado === R.SIN_CAMBIOS) {
+    return {
+      http: 200,
+      json: {
+        code: "SIN_CAMBIOS",
+        message: "El usuario ya tenia ese estado.",
+        usuario_id: r.usuarioLocalId,
+        activo: r.activo === 1,
+        version: r.versionActual
+      }
+    };
+  }
+  if (r.resultado === R.VERSION_CONFLICT) {
+    return {
+      http: 409,
+      json: {
+        code: "VERSION_CONFLICT",
+        message: "El usuario fue modificado por otra operacion. Actualiza los datos y volve a intentar.",
+        version_actual: r.versionActual
+      }
+    };
+  }
+  return null;
+}
+
+async function cambiarEstadoMembershipCentralIdempotente({
+  actorUsuarioId, actorMembershipId, empresaId, usuarioLocalId, activo, expectedVersion, idempotencyKey, controlDbPath
+} = {}) {
+  const actorId = enteroPositivo(actorUsuarioId);
+  const actorMembership = enteroPositivo(actorMembershipId);
+  const empresa = enteroPositivo(empresaId);
+  const localId = enteroPositivo(usuarioLocalId);
+  const activoNuevo = normalizarActivo(activo);
+  const versionEsperada = enteroNoNegativo(expectedVersion);
+  const clave = normalizarIdempotencyKey(idempotencyKey);
+  const conHttp = (resultado) => ({ ...resultado, durable: false, replay: false, resultadoHttp: HTTP_NO_DURABLE[resultado.resultado] || 500 });
+  if (!actorId || !actorMembership || !empresa || !localId || activoNuevo === null || versionEsperada === null) {
+    return conHttp(rechazo(R.PARAMETROS_INVALIDOS, "PARAMETROS_INVALIDOS"));
+  }
+  if (!clave) {
+    return conHttp(rechazo(R.PARAMETROS_INVALIDOS, "IDEMPOTENCY_KEY_INVALIDA"));
+  }
+  const base = { empresaId: empresa, usuarioLocalId: localId };
+
+  const resultado = await ejecutarEnTransaccionControl(controlDbPath, base, async (db) => {
+    if (!(await verificarEsquema(db)) || !(await verificarEsquemaIdempotencia(db))) {
+      return { commit: false, resultado: rechazo(R.ESQUEMA_INCOMPATIBLE, "ESQUEMA_CONTROL_INCOMPATIBLE", base) };
+    }
+
+    // Destino resuelto en Control por (empresa, usuario_local_id) -- nunca un membership id del cliente.
+    const destinoRow = await getQuery(
+      db,
+      "SELECT id FROM usuario_empresas WHERE empresa_id = ? AND usuario_local_id = ?",
+      [empresa, localId]
+    );
+    const destinoId = destinoRow ? Number(destinoRow.id) : null;
+    const huella = calcularHuellaEstado({
+      empresaId: empresa,
+      actorCentralId: actorId,
+      actorMembershipId: actorMembership,
+      targetUsuarioLocalId: localId,
+      targetMembershipId: destinoId,
+      activo: activoNuevo,
+      expectedVersion: versionEsperada
+    });
+
+    // Clave existente: replay SOLO ante coincidencia estricta de endpoint, actor, membership del
+    // actor y huella. Cualquier otra fila (otro actor, otra empresa, password P1, otro contenido)
+    // jamas expone su resultado.
+    const existente = await getQuery(db, "SELECT * FROM operacion_idempotencia WHERE clave = ?", [clave]);
+    if (existente) {
+      if (existente.estado === "confirmada") {
+        const coincide = existente.endpoint === ENDPOINT_LOGICO_ESTADO
+          && Number(existente.usuario_id) === actorId
+          && Number(existente.membership_id) === actorMembership
+          && existente.solicitud_huella === huella;
+        if (!coincide) {
+          return { commit: false, resultado: rechazo(RESULTADOS_IDEMPOTENCIA.IDEMPOTENCY_KEY_REUSED, "IDEMPOTENCY_KEY_REUSED", base) };
+        }
+        const resultadoJson = JSON.parse(existente.resultado_json);
+        const resultadoHttp = Number(existente.resultado_http);
+        return {
+          commit: false,
+          resultado: {
+            ok: resultadoHttp < 400,
+            resultado: RESULTADO_POR_CODIGO_DURABLE[resultadoJson.code] || null,
+            replay: true,
+            durable: true,
+            resultadoHttp,
+            resultadoJson
+          }
+        };
+      }
+      // 'en_progreso' persistido es anomalo bajo este contrato (la reserva nunca sobrevive a su
+      // transaccion): fail-closed, nunca se reejecuta ni se adjudica la operacion.
+      return { commit: false, resultado: rechazo(RESULTADOS_IDEMPOTENCIA.IDEMPOTENCY_OPERATION_IN_PROGRESS, "IDEMPOTENCY_OPERATION_IN_PROGRESS", base) };
+    }
+
+    // Operacion nueva: mismo nucleo que S1a; la clave se reserva recien cuando actor, empresa y
+    // destino quedaron validados (400/403/404 nunca consumen la clave).
+    const { resultado: r } = await evaluarYAplicarCambioEstado(db, {
+      actorId,
+      empresa,
+      destinoId,
+      activoNuevo,
+      versionEsperada,
+      actorMembershipIdEsperada: actorMembership,
+      alAutorizar: () => runQuery(
+        db,
+        `INSERT INTO operacion_idempotencia (clave, endpoint, usuario_id, membership_id, solicitud_huella, estado)
+         VALUES (?, ?, ?, ?, ?, 'en_progreso')`,
+        [clave, ENDPOINT_LOGICO_ESTADO, actorId, actorMembership, huella]
+      )
+    });
+    const durable = respuestaDurable(r);
+    if (!durable) {
+      // Rechazo no durable: ROLLBACK de la reserva (si la hubo) y de cualquier escritura parcial.
+      return { commit: false, resultado: r };
+    }
+    const confirmacion = await runQuery(
+      db,
+      `UPDATE operacion_idempotencia
+       SET estado = 'confirmada', resultado_http = ?, resultado_json = ?, confirmada_en = datetime('now')
+       WHERE clave = ? AND estado = 'en_progreso'`,
+      [durable.http, JSON.stringify(durable.json), clave]
+    );
+    if (confirmacion.changes !== 1) {
+      return { commit: false, resultado: rechazo(R.FALLO_TRANSACCIONAL, "IDEMPOTENCIA_NO_CONFIRMADA", base) };
+    }
+    return {
+      commit: true,
+      resultado: { ...r, replay: false, durable: true, resultadoHttp: durable.http, resultadoJson: durable.json }
+    };
+  });
+
+  if (resultado.durable) {
+    return resultado;
+  }
+  return conHttp(resultado);
+}
+
 module.exports = {
   RESULTADOS_ESTADO_MEMBERSHIP,
+  RESULTADOS_IDEMPOTENCIA,
+  ENDPOINT_LOGICO_ESTADO,
   contarAdminsEfectivos,
-  cambiarEstadoMembershipCentral
+  calcularHuellaEstado,
+  cambiarEstadoMembershipCentral,
+  cambiarEstadoMembershipCentralIdempotente
 };
