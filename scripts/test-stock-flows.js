@@ -60,6 +60,14 @@ const {
   proyectarRolActivoMembership: b2s0b2ProyectarRolActivoMembership
 } = require("../database/project-membership-rol-activo");
 const {
+  RESULTADOS_OUTBOX_ROL_ACTIVO: B2S0B3A_RESULTADOS,
+  leerPendienteRolActivo: b2s0b3aLeerPendienteRolActivo,
+  cerrarPendienteRolActivoCas: b2s0b3aCerrarPendienteRolActivoCas,
+  clasificarSinCierre: b2s0b3aClasificarSinCierre,
+  procesarPendienteRolActivo: b2s0b3aProcesarPendienteRolActivo,
+  drenarOutboxRolActivo: b2s0b3aDrenarOutboxRolActivo
+} = require("../database/process-rol-activo-outbox");
+const {
   procesarPendientePasswordStandalone: p1aProcesarPendientePasswordStandalone,
   verificarSoporteS0Standalone: p1aVerificarSoporteS0Standalone,
   drenarOutboxPassword: p1aDrenarOutboxPassword
@@ -21224,6 +21232,20 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testB2S0b2ErrorControlSinCambioLocal);
   await _run(testB2S0b2SinLapidaNoIntroduceAutoridad);
   await _run(testB2S0b2LegacyYPasswordP1SinRegresion);
+  await _run(testB2S0b3aCrashTrasCommitCentralAntesDeProyectar);
+  await _run(testB2S0b3aProyeccionSinCierreYReintento);
+  await _run(testB2S0b3aDosConsumidoresMismoPendiente);
+  await _run(testB2S0b3aControlCambiaDuranteProcesamiento);
+  await _run(testB2S0b3aPendienteReemplazadoAntesDelCierre);
+  await _run(testB2S0b3aMensajeAtrasadoYGeneracionObsoleta);
+  await _run(testB2S0b3aTenantInaccesibleTransitorio);
+  await _run(testB2S0b3aSchemaBehindNoCierra);
+  await _run(testB2S0b3aMembershipInexistenteOReasignada);
+  await _run(testB2S0b3aColisionIdsEntreEmpresas);
+  await _run(testB2S0b3aLapidaProcesadaVsPendiente);
+  await _run(testB2S0b3aCasSoloCierraClaveExacta);
+  await _run(testB2S0b3aNoProcesableTerminalConservaPendiente);
+  await _run(testB2S0b3aDrenajeNoTocaPasswordP1);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -43102,6 +43124,555 @@ async function testB2S0b2LegacyYPasswordP1SinRegresion() {
     assertSame(JSON.stringify(updates), JSON.stringify(["UPDATE usuarios"]), "un unico UPDATE, sobre usuarios");
     assertSame(/password/i.test(fuente), false, "la primitiva no referencia password");
     assertSame(/require\(["'](https?|net|axios|node-fetch)["']\)/.test(fuente), false, "la primitiva no hace HTTP");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+// AUTH-SYNC-B2-S0b3a: consumer del outbox rol_activo (database/process-rol-activo-outbox.js). Las
+// filas rol_activo se preparan SOLO en fixtures descartables que reproducen la transaccion central
+// valida del futuro writer (membership + pendiente reabierto en la MISMA transaccion). Los
+// intercalados se reproducen paso a paso con las mismas funciones exportadas que usa el consumer,
+// sin hooks de produccion ni esperas arbitrarias.
+async function b2s0b3aTransaccionCentral(controlDbPath, membershipId, { rol, activo }) {
+  const db = new sqlite3.Database(controlDbPath);
+  try {
+    await runControlQuery(db, "BEGIN IMMEDIATE");
+    try {
+      await runControlQuery(db, "UPDATE usuario_empresas SET rol = ?, activo = ?, version = version + 1 WHERE id = ?", [rol, activo, membershipId]);
+      const fila = await getControlQuery(db, "SELECT usuario_id, empresa_id, usuario_local_id, version FROM usuario_empresas WHERE id = ?", [membershipId]);
+      const upsert = await runControlQuery(
+        db,
+        "UPDATE sync_pendiente SET version_objetivo = ?, estado = 'pendiente', procesado_en = NULL WHERE membership_id = ? AND tipo_operacion = 'rol_activo'",
+        [fila.version, membershipId]
+      );
+      if (upsert.changes === 0) {
+        await runControlQuery(
+          db,
+          `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+           VALUES (?, ?, ?, ?, 'rol_activo', ?, 'pendiente')`,
+          [fila.usuario_id, fila.empresa_id, membershipId, fila.usuario_local_id, fila.version]
+        );
+      }
+      await runControlQuery(db, "COMMIT");
+      return Number(fila.version);
+    } catch (error) {
+      await runControlQuery(db, "ROLLBACK");
+      throw error;
+    }
+  } finally {
+    await closeControlDb(db);
+  }
+}
+
+async function b2s0b3aPendiente(controlDbPath, membershipId) {
+  return (await allSql(controlDbPath, "SELECT * FROM sync_pendiente WHERE membership_id = ? AND tipo_operacion = 'rol_activo'", [membershipId]))[0];
+}
+
+// Segundo tenant registrado en el MISMO Control, con usuario_local_id colisionando con el de A.
+async function b2s0b3aSegundoTenant(f, { rol, activo, version }) {
+  const dbB = bootstrapFreshRegisteredTenantDb();
+  const localB = (await allSql(dbB, "SELECT id FROM usuarios WHERE usuario = ?", ["admin"]))[0];
+  const slugB = `b2s0b3a-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const control = new sqlite3.Database(f.controlDbPath);
+  let empresaB;
+  let centralB;
+  let membershipB;
+  try {
+    empresaB = await registrarEmpresa(control, { slug: slugB, nombre: "B2S0b3a Tenant B", dbPath: path.basename(dbB), activa: 1 });
+    centralB = await crearUsuarioCentral(control, { nombre: "B2S0b3a Central B", usuarioReferencia: "b2s0b3a-central-b", passwordHash: await bcrypt.hash("CentralB123", 4), activo: 1 });
+    membershipB = await crearMembership(control, { usuarioId: centralB.id, empresaId: empresaB.id, usuarioLocalId: localB.id, rol, activo });
+    await runControlQuery(control, "UPDATE usuario_empresas SET version = ? WHERE id = ?", [version, membershipB.id]);
+    await runControlQuery(
+      control,
+      `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+       VALUES (?, ?, ?, ?, 'rol_activo', ?, 'pendiente')`,
+      [centralB.id, empresaB.id, membershipB.id, localB.id, version]
+    );
+  } finally {
+    await closeControlDb(control);
+  }
+  await insertarTenantIdentityTest(dbB, empresaB.id, slugB);
+  return { dbB, localB, empresaB, centralB, membershipB, slugB };
+}
+
+function b2s0b3aArchivo(dbPath) {
+  return JSON.stringify(snapshotSQLitePersistente(dbPath));
+}
+
+async function testB2S0b3aCrashTrasCommitCentralAntesDeProyectar() {
+  let f;
+  try {
+    // Estado exacto que deja un crash tras el commit central: membership en g=10 con su pendiente
+    // abierto, tenant nunca proyectado.
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 9 });
+    await runSql(f.controlDbPath, "UPDATE sync_pendiente SET estado = 'procesado' WHERE membership_id = ?", [f.membershipId]);
+    const g = await b2s0b3aTransaccionCentral(f.controlDbPath, f.membershipId, { rol: "encargado", activo: 0 });
+    assertEqual(g, 10, "precondicion: generacion central 10");
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "pendiente", "precondicion: pendiente abierto");
+    assertSame((await b2s0b2Local(f.dbPath, f.localUserId)).v, null, "precondicion: tenant sin proyectar");
+
+    const r = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(r.resultado, B2S0B3A_RESULTADOS.CERRADO, `el reintento tras el crash debe cerrar (${JSON.stringify(r)})`);
+    assertSame(r.cerrado, true, "cerrado=true");
+    assertSame(r.proyeccion.resultado, B2S0B2_RESULTADOS.APLICADO, "la proyeccion aplico la generacion pendiente");
+    assertEqual(r.versionObjetivo, 10, "informa la generacion cerrada");
+    const local = await b2s0b2Local(f.dbPath, f.localUserId);
+    assertEqual(local.v, 10, "tenant en la generacion 10");
+    assertEqual(local.activo, 0, "activo proyectado");
+    const pendiente = await b2s0b3aPendiente(f.controlDbPath, f.membershipId);
+    assertSame(pendiente.estado, "procesado", "pendiente cerrado");
+    assertEqual(pendiente.version_objetivo, 10, "version_objetivo intacta");
+    assertSame(pendiente.procesado_en !== null, true, "procesado_en registrado");
+    const membership = (await allSql(f.controlDbPath, "SELECT rol, activo, version FROM usuario_empresas WHERE id = ?", [f.membershipId]))[0];
+    assertSame(JSON.stringify(membership), JSON.stringify({ rol: "encargado", activo: 0, version: 10 }), "el consumer nunca cambia rol/activo/version en Control");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3aProyeccionSinCierreYReintento() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 4 });
+    // B: crash entre la proyeccion local confirmada y el CAS -- se reproduce ejecutando solo la
+    // primitiva de proyeccion (lo que el consumer habia completado antes de caer).
+    const proy = await b2s0b2ProyectarRolActivoMembership({ membershipId: f.membershipId, controlDbPath: f.controlDbPath, empresaIdEsperada: f.empresa.id });
+    assertSame(proy.resultado, B2S0B2_RESULTADOS.APLICADO, "proyeccion local confirmada");
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "pendiente", "sin CAS el pendiente sigue abierto (recuperable)");
+    const archivo = b2s0b3aArchivo(f.dbPath);
+
+    // C: reintento -- converge sin reescribir el tenant y cierra.
+    const r = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, versionObjetivo: 4, controlDbPath: f.controlDbPath });
+    assertSame(r.resultado, B2S0B3A_RESULTADOS.CERRADO, `el reintento cierra (${JSON.stringify(r)})`);
+    assertSame(r.proyeccion.resultado, B2S0B2_RESULTADOS.YA_CONVERGIDO, "el reintento no reescribe el tenant");
+    assertSame(b2s0b3aArchivo(f.dbPath), archivo, "business DB byte-identica en el reintento");
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "procesado", "pendiente cerrado");
+
+    // Un tercer intento ya no hace nada.
+    const r2 = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, versionObjetivo: 4, controlDbPath: f.controlDbPath });
+    assertSame(r2.resultado, B2S0B3A_RESULTADOS.YA_PROCESADO, "repeticion sobre un pendiente cerrado");
+    assertSame(r2.cerrado, false, "nunca se informa un cierre nuevo");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3aDosConsumidoresMismoPendiente() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 5 });
+    // Intercalado determinista: consumer 1 lee y proyecta; consumer 2 completa y cierra; recien
+    // entonces consumer 1 intenta su CAS.
+    const lectura1 = await b2s0b3aLeerPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(lectura1.ok, true, "consumer 1 lee el pendiente");
+    const proy1 = await b2s0b2ProyectarRolActivoMembership({ membershipId: f.membershipId, controlDbPath: f.controlDbPath, empresaIdEsperada: f.empresa.id });
+    assertSame(proy1.resultado, B2S0B2_RESULTADOS.APLICADO, "consumer 1 proyecta");
+    const r2 = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(r2.resultado, B2S0B3A_RESULTADOS.CERRADO, "consumer 2 cierra");
+    assertSame(r2.proyeccion.resultado, B2S0B2_RESULTADOS.YA_CONVERGIDO, "consumer 2 encuentra el tenant convergido");
+    const p = lectura1.pendiente;
+    const cas1 = await b2s0b3aCerrarPendienteRolActivoCas({
+      controlDbPath: f.controlDbPath, membershipId: f.membershipId, versionObjetivo: p.version_objetivo,
+      usuarioId: p.usuario_id, empresaId: p.empresa_id, usuarioLocalId: p.usuario_local_id
+    });
+    assertSame(cas1.ok, true, "el CAS tardio no falla");
+    assertEqual(cas1.changes, 0, "el CAS tardio no modifica filas");
+    const c1 = await b2s0b3aClasificarSinCierre({ membershipId: f.membershipId, controlDbPath: f.controlDbPath, pendienteLeido: p }, { membershipId: f.membershipId });
+    assertSame(c1.resultado, B2S0B3A_RESULTADOS.CERRADO_POR_OTRO_CONSUMIDOR, "consumer 1 informa cierre ajeno");
+    assertSame(c1.cerrado, false, "consumer 1 no se atribuye el cierre");
+
+    // Concurrencia real: dos consumers completos sobre una generacion nueva. Exactamente uno cierra.
+    const g = await b2s0b3aTransaccionCentral(f.controlDbPath, f.membershipId, { rol: "colaborador", activo: 1 });
+    const resultados = await Promise.all([
+      b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath }),
+      b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath })
+    ]);
+    const cerrados = resultados.filter((r) => r.resultado === B2S0B3A_RESULTADOS.CERRADO);
+    const otros = resultados.filter((r) => r.resultado !== B2S0B3A_RESULTADOS.CERRADO);
+    assertEqual(cerrados.length, 1, `exactamente un cierre (${JSON.stringify(resultados)})`);
+    // La lectura de Control de la primitiva S0b2 no fija busy_timeout: si coincide con el commit del
+    // CAS ajeno puede devolver un error transitorio -- nunca un segundo cierre.
+    assertSame([B2S0B3A_RESULTADOS.CERRADO_POR_OTRO_CONSUMIDOR, B2S0B3A_RESULTADOS.YA_PROCESADO, B2S0B3A_RESULTADOS.ERROR_TRANSITORIO].includes(otros[0].resultado), true, `el otro consumer no informa un cierre nuevo (${JSON.stringify(otros[0])})`);
+    assertSame(otros[0].cerrado, false, "el otro consumer nunca informa cerrado");
+    const pendiente = await b2s0b3aPendiente(f.controlDbPath, f.membershipId);
+    assertSame(pendiente.estado, "procesado", "pendiente cerrado una vez");
+    assertEqual(pendiente.version_objetivo, g, "generacion cerrada correcta");
+    const local = await b2s0b2Local(f.dbPath, f.localUserId);
+    assertEqual(local.v, g, "tenant en la generacion cerrada");
+    assertSame(local.rol, "colaborador", "rol de la generacion cerrada");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3aControlCambiaDuranteProcesamiento() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 10 });
+    // Variante 1: Control pasa a g11 entre la lectura del pendiente (10) y la proyeccion.
+    const lectura = await b2s0b3aLeerPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    const g11 = await b2s0b3aTransaccionCentral(f.controlDbPath, f.membershipId, { rol: "colaborador", activo: 0 });
+    assertEqual(g11, 11, "precondicion: generacion 11");
+    const proy = await b2s0b2ProyectarRolActivoMembership({ membershipId: f.membershipId, controlDbPath: f.controlDbPath, empresaIdEsperada: f.empresa.id });
+    assertEqual(proy.versionCentral, 11, "la primitiva proyecta la generacion vigente, nunca la leida antes");
+    const c = await b2s0b3aClasificarSinCierre({ membershipId: f.membershipId, controlDbPath: f.controlDbPath, pendienteLeido: lectura.pendiente }, { membershipId: f.membershipId });
+    assertSame(c.resultado, B2S0B3A_RESULTADOS.REEMPLAZADO_POR_VERSION_POSTERIOR, "el intento sobre 10 queda reemplazado");
+    const pend = await b2s0b3aPendiente(f.controlDbPath, f.membershipId);
+    assertSame(pend.estado, "pendiente", "la generacion 11 sigue pendiente (sin perdida)");
+    assertEqual(pend.version_objetivo, 11, "version_objetivo vigente");
+    const r = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(r.resultado, B2S0B3A_RESULTADOS.CERRADO, "el siguiente intento cierra 11");
+    assertSame(r.proyeccion.resultado, B2S0B2_RESULTADOS.YA_CONVERGIDO, "11 ya estaba proyectada");
+
+    // Variante 2: Control avanza entre la proyeccion y el CAS -- lectura(12) + proyeccion(12) +
+    // nueva transaccion central (13) + CAS(12) => cero filas, reemplazado; el reintento cierra 13.
+    const g12 = await b2s0b3aTransaccionCentral(f.controlDbPath, f.membershipId, { rol: "encargado", activo: 1 });
+    const lectura12 = await b2s0b3aLeerPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    const proy12 = await b2s0b2ProyectarRolActivoMembership({ membershipId: f.membershipId, controlDbPath: f.controlDbPath, empresaIdEsperada: f.empresa.id });
+    assertEqual(proy12.versionCentral, g12, "proyeccion de 12");
+    const g13 = await b2s0b3aTransaccionCentral(f.controlDbPath, f.membershipId, { rol: "admin", activo: 1 });
+    const p = lectura12.pendiente;
+    const cas = await b2s0b3aCerrarPendienteRolActivoCas({
+      controlDbPath: f.controlDbPath, membershipId: f.membershipId, versionObjetivo: p.version_objetivo,
+      usuarioId: p.usuario_id, empresaId: p.empresa_id, usuarioLocalId: p.usuario_local_id
+    });
+    assertEqual(cas.changes, 0, "el CAS de 12 no cierra el pendiente de 13");
+    const c2 = await b2s0b3aClasificarSinCierre({ membershipId: f.membershipId, controlDbPath: f.controlDbPath, pendienteLeido: p }, { membershipId: f.membershipId });
+    assertSame(c2.resultado, B2S0B3A_RESULTADOS.REEMPLAZADO_POR_VERSION_POSTERIOR, "clasificado como reemplazado");
+    const r13 = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(r13.resultado, B2S0B3A_RESULTADOS.CERRADO, "13 se proyecta y cierra");
+    assertSame(r13.proyeccion.resultado, B2S0B2_RESULTADOS.APLICADO, "13 se aplica");
+    const local = await b2s0b2Local(f.dbPath, f.localUserId);
+    assertEqual(local.v, g13, "tenant en la ultima generacion");
+    assertSame(local.rol, "admin", "rol de la ultima generacion");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3aPendienteReemplazadoAntesDelCierre() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 10 });
+    await b2s0b3aTransaccionCentral(f.controlDbPath, f.membershipId, { rol: "colaborador", activo: 1 });
+    const archivo = b2s0b3aArchivo(f.dbPath);
+    const control = await b2s0b2EstadoControl(f.controlDbPath);
+    // El mensaje de la generacion 10 llega cuando la fila ya fue reabierta con 11.
+    const r10 = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, versionObjetivo: 10, controlDbPath: f.controlDbPath });
+    assertSame(r10.resultado, B2S0B3A_RESULTADOS.REEMPLAZADO_POR_VERSION_POSTERIOR, "10 reemplazado por 11");
+    assertSame(r10.cerrado, false, "sin cierre");
+    assertSame(b2s0b3aArchivo(f.dbPath), archivo, "10 nunca se proyecta");
+    assertSame(await b2s0b2EstadoControl(f.controlDbPath), control, "Control intacto");
+    const r11 = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, versionObjetivo: 11, controlDbPath: f.controlDbPath });
+    assertSame(r11.resultado, B2S0B3A_RESULTADOS.CERRADO, "11 se procesa y cierra");
+    const local = await b2s0b2Local(f.dbPath, f.localUserId);
+    assertEqual(local.v, 11, "tenant en 11");
+    assertSame(local.rol, "colaborador", "rol de 11");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3aMensajeAtrasadoYGeneracionObsoleta() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 10 });
+    await b2s0b3aTransaccionCentral(f.controlDbPath, f.membershipId, { rol: "colaborador", activo: 0 });
+    const r11 = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(r11.resultado, B2S0B3A_RESULTADOS.CERRADO, "11 aplicada y cerrada");
+    const archivo = b2s0b3aArchivo(f.dbPath);
+    const control = await b2s0b2EstadoControl(f.controlDbPath);
+    const r10 = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, versionObjetivo: 10, controlDbPath: f.controlDbPath });
+    assertSame(r10.resultado, B2S0B3A_RESULTADOS.REEMPLAZADO_POR_VERSION_POSTERIOR, "mensaje atrasado de 10");
+    assertSame(b2s0b3aArchivo(f.dbPath), archivo, "cero escrituras locales");
+    assertSame(await b2s0b2EstadoControl(f.controlDbPath), control, "cero escrituras en Control");
+    const local = await b2s0b2Local(f.dbPath, f.localUserId);
+    assertEqual(local.v, 11, "11 no retrocede");
+
+    // Tenant adelantado a Control (vL=13 > g): la primitiva rechaza y el pendiente NO se cierra.
+    const g12 = await b2s0b3aTransaccionCentral(f.controlDbPath, f.membershipId, { rol: "encargado", activo: 1 });
+    await b2s0b2SetLocal(f.dbPath, f.localUserId, { rol: "admin", activo: 1, version: g12 + 1 });
+    const archivoAdelantado = b2s0b3aArchivo(f.dbPath);
+    const rObs = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(rObs.resultado, B2S0B3A_RESULTADOS.GENERACION_OBSOLETA, "generacion obsoleta");
+    assertSame(rObs.cerrado, false, "no se cierra automaticamente");
+    const pend = await b2s0b3aPendiente(f.controlDbPath, f.membershipId);
+    assertSame(pend.estado, "pendiente", "pendiente conservado para investigacion");
+    assertEqual(pend.version_objetivo, g12, "version_objetivo conservada");
+    assertSame(b2s0b3aArchivo(f.dbPath), archivoAdelantado, "la generacion local mas nueva no se pisa");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3aTenantInaccesibleTransitorio() {
+  let f;
+  const apartado = () => `${f.dbPath}.b2s0b3a-apartado`;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 0, version: 3 });
+    fs.renameSync(f.dbPath, apartado());
+    const r = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(r.resultado, B2S0B3A_RESULTADOS.ERROR_TRANSITORIO, `tenant ausente es transitorio (${JSON.stringify(r)})`);
+    assertSame(r.motivo, "BUSINESS_DB_AUSENTE", "motivo explicito");
+    assertSame(r.clase, "TRANSITORIO", "clase transitoria");
+    assertSame(fs.existsSync(f.dbPath), false, "nunca se materializa una business DB nueva");
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "pendiente", "pendiente conservado");
+    fs.renameSync(apartado(), f.dbPath);
+
+    const ausente = path.join(os.tmpdir(), `b2s0b3a-control-ausente-${Date.now()}.db`);
+    const rc = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: ausente });
+    assertSame(rc.resultado, B2S0B3A_RESULTADOS.ERROR_TRANSITORIO, "Control ausente es transitorio");
+    assertSame(fs.existsSync(ausente), false, "nunca se crea un Control DB");
+
+    const r2 = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(r2.resultado, B2S0B3A_RESULTADOS.CERRADO, "al volver el tenant el reintento cierra");
+    assertEqual((await b2s0b2Local(f.dbPath, f.localUserId)).activo, 0, "proyectado");
+  } finally {
+    if (f && fs.existsSync(apartado())) fs.renameSync(apartado(), f.dbPath);
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3aSchemaBehindNoCierra() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3 });
+    const fila004 = (await allSql(f.dbPath, "SELECT * FROM atlas_schema_migrations WHERE sequence = 4"))[0];
+    await runSql(f.dbPath, "ALTER TABLE usuarios DROP COLUMN central_rol_activo_version");
+    await runSql(f.dbPath, "DELETE FROM atlas_schema_migrations WHERE sequence = 4");
+    const archivo = b2s0b3aArchivo(f.dbPath);
+    const r = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(r.resultado, B2S0B3A_RESULTADOS.ERROR_TRANSITORIO, "schema BEHIND no se procesa");
+    assertSame(r.motivo, "ESQUEMA_TENANT_NO_CURRENT", "motivo explicito");
+    assertSame(r.cerrado, false, "sin cierre");
+    assertSame(b2s0b3aArchivo(f.dbPath), archivo, "cero escrituras locales");
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "pendiente", "pendiente conservado");
+
+    // Tras la migracion operativa (aca reproducida en la fixture), el reintento cierra.
+    await runSql(f.dbPath, "ALTER TABLE usuarios ADD COLUMN central_rol_activo_version INTEGER");
+    await runSql(f.dbPath, "INSERT INTO atlas_schema_migrations (sequence, migration_id, applied_at) VALUES (?, ?, ?)", [fila004.sequence, fila004.migration_id, fila004.applied_at]);
+    const r2 = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(r2.resultado, B2S0B3A_RESULTADOS.CERRADO, "tras migrar, el pendiente se cierra");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3aMembershipInexistenteOReasignada() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3 });
+    const otroLocal = await runSql(f.dbPath, "INSERT INTO usuarios (nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, ?)", ["B2S0b3a Otro", "b2s0b3a.otro", "hash-otro", "colaborador", 1]);
+    const archivo = b2s0b3aArchivo(f.dbPath);
+    const verificar = async (etiqueta, motivo) => {
+      const r = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+      assertSame(r.resultado, B2S0B3A_RESULTADOS.ESTADO_INCONSISTENTE, `${etiqueta}: inconsistente (${JSON.stringify(r)})`);
+      assertSame(r.motivo, motivo, `${etiqueta}: motivo`);
+      assertSame(r.clase, "TERMINAL", `${etiqueta}: terminal`);
+      assertSame(b2s0b3aArchivo(f.dbPath), archivo, `${etiqueta}: cero escrituras locales`);
+      assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "pendiente", `${etiqueta}: pendiente conservado`);
+    };
+
+    await runSql(f.controlDbPath, "UPDATE usuario_empresas SET usuario_local_id = ? WHERE id = ?", [otroLocal.lastID, f.membershipId]);
+    await verificar("usuario local reasignado", "ASOCIACION_INCONSISTENTE");
+    await runSql(f.controlDbPath, "UPDATE usuario_empresas SET usuario_local_id = ? WHERE id = ?", [f.localUserId, f.membershipId]);
+
+    const control = new sqlite3.Database(f.controlDbPath);
+    let otroCentral;
+    try {
+      otroCentral = await crearUsuarioCentral(control, { nombre: "B2S0b3a Otro Central", usuarioReferencia: "b2s0b3a-otro", passwordHash: await bcrypt.hash("Otro123", 4), activo: 1 });
+    } finally {
+      await closeControlDb(control);
+    }
+    await runSql(f.controlDbPath, "UPDATE usuario_empresas SET usuario_id = ? WHERE id = ?", [otroCentral.id, f.membershipId]);
+    await verificar("identidad reasignada", "ASOCIACION_INCONSISTENTE");
+    await runSql(f.controlDbPath, "UPDATE usuario_empresas SET usuario_id = ? WHERE id = ?", [f.central.id, f.membershipId]);
+
+    await runSql(f.controlDbPath, "UPDATE usuario_empresas SET version = version + 1 WHERE id = ?", [f.membershipId]);
+    await verificar("generacion sin pendiente", "GENERACION_CENTRAL_SIN_PENDIENTE");
+    await runSql(f.controlDbPath, "UPDATE usuario_empresas SET version = version - 1 WHERE id = ?", [f.membershipId]);
+
+    await runSql(f.controlDbPath, "DELETE FROM usuario_empresas WHERE id = ?", [f.membershipId]);
+    await verificar("membership inexistente", "MEMBERSHIP_INEXISTENTE");
+
+    const rId = await b2s0b3aProcesarPendienteRolActivo({ membershipId: "x", controlDbPath: f.controlDbPath });
+    assertSame(rId.motivo, "MEMBERSHIP_ID_INVALIDO", "id invalido");
+    const rNo = await b2s0b3aProcesarPendienteRolActivo({ membershipId: 999999, controlDbPath: f.controlDbPath });
+    assertSame(rNo.motivo, "PENDIENTE_INEXISTENTE", "sin pendiente no hay nada que procesar");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3aColisionIdsEntreEmpresas() {
+  let f;
+  let t;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3 });
+    t = await b2s0b3aSegundoTenant(f, { rol: "colaborador", activo: 0, version: 6 });
+    assertEqual(t.localB.id, f.localUserId, "precondicion: colision de usuario_local_id");
+    const archivoA = b2s0b3aArchivo(f.dbPath);
+    const archivoB = b2s0b3aArchivo(t.dbB);
+
+    // Pendiente de B procesado por un caller atado a A: rechazado sin abrir ningun tenant.
+    const rCruz = await b2s0b3aProcesarPendienteRolActivo({ membershipId: t.membershipB.id, empresaIdEsperada: f.empresa.id, controlDbPath: f.controlDbPath });
+    assertSame(rCruz.resultado, B2S0B3A_RESULTADOS.NO_PROCESABLE, "pendiente de otra empresa");
+    assertSame(rCruz.motivo, "MEMBERSHIP_DE_OTRA_EMPRESA", "motivo explicito");
+
+    // Pendiente de B falsificado con empresa_id de A: asociacion inconsistente, cero escrituras.
+    await runSql(f.controlDbPath, "UPDATE sync_pendiente SET empresa_id = ? WHERE membership_id = ? AND tipo_operacion = 'rol_activo'", [f.empresa.id, t.membershipB.id]);
+    const rFalso = await b2s0b3aProcesarPendienteRolActivo({ membershipId: t.membershipB.id, controlDbPath: f.controlDbPath });
+    assertSame(rFalso.resultado, B2S0B3A_RESULTADOS.ESTADO_INCONSISTENTE, "pendiente falsificado");
+    assertSame(rFalso.motivo, "ASOCIACION_INCONSISTENTE", "motivo explicito");
+    const casFalso = await b2s0b3aCerrarPendienteRolActivoCas({
+      controlDbPath: f.controlDbPath, membershipId: t.membershipB.id, versionObjetivo: 6,
+      usuarioId: t.centralB.id, empresaId: f.empresa.id, usuarioLocalId: t.localB.id
+    });
+    assertEqual(casFalso.changes, 0, "el CAS nunca cierra un pendiente con asociacion cruzada");
+    assertSame(b2s0b3aArchivo(f.dbPath), archivoA, "A sin escrituras");
+    assertSame(b2s0b3aArchivo(t.dbB), archivoB, "B sin escrituras");
+    await runSql(f.controlDbPath, "UPDATE sync_pendiente SET empresa_id = ? WHERE membership_id = ? AND tipo_operacion = 'rol_activo'", [t.empresaB.id, t.membershipB.id]);
+
+    // Drenaje atado a A: cierra solo A; B queda pendiente.
+    const drenA = await b2s0b3aDrenarOutboxRolActivo({ controlDbPath: f.controlDbPath, empresaIdEsperada: f.empresa.id });
+    assertSame(drenA.ok, true, "drenaje ok");
+    const porMembership = Object.fromEntries(drenA.resultados.map((r) => [r.membershipId, r.resultado]));
+    assertSame(porMembership[f.membershipId], B2S0B3A_RESULTADOS.CERRADO, "A cerrado");
+    assertSame(porMembership[t.membershipB.id], B2S0B3A_RESULTADOS.NO_PROCESABLE, "B no procesable para un drenaje de A");
+    assertSame(b2s0b3aArchivo(t.dbB), archivoB, "B intacto");
+
+    // Drenaje global: B se proyecta en SU tenant y A no recibe nada.
+    const archivoATrasA = b2s0b3aArchivo(f.dbPath);
+    const dren = await b2s0b3aDrenarOutboxRolActivo({ controlDbPath: f.controlDbPath });
+    assertEqual(dren.total, 1, "solo queda el pendiente de B");
+    assertSame(dren.resultados[0].resultado, B2S0B3A_RESULTADOS.CERRADO, "B cerrado");
+    const filaA = await b2s0b2Local(f.dbPath, f.localUserId);
+    const filaB = await b2s0b2Local(t.dbB, t.localB.id);
+    assertSame(JSON.stringify([filaA.rol, filaA.activo, filaA.v]), JSON.stringify(["encargado", 1, 3]), "A con su membership");
+    assertSame(JSON.stringify([filaB.rol, filaB.activo, filaB.v]), JSON.stringify(["colaborador", 0, 6]), "B con su membership");
+    assertSame(b2s0b3aArchivo(f.dbPath), archivoATrasA, "A sin escritura cruzada");
+  } finally {
+    b2s0b2Limpiar(f);
+    if (t) limpiarTenantTestDb(t.dbB);
+  }
+}
+
+async function testB2S0b3aLapidaProcesadaVsPendiente() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3, lapida: "procesado" });
+    // Lapida procesada + tenant divergente: el consumer no reprocesa (no es un pendiente).
+    await b2s0b2SetLocal(f.dbPath, f.localUserId, { rol: "admin", activo: 0, version: null });
+    const archivo = b2s0b3aArchivo(f.dbPath);
+    const control = await b2s0b2EstadoControl(f.controlDbPath);
+    const r = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(r.resultado, B2S0B3A_RESULTADOS.YA_PROCESADO, "lapida procesada no es un pendiente");
+    assertSame(b2s0b3aArchivo(f.dbPath), archivo, "cero escrituras locales");
+    assertSame(await b2s0b2EstadoControl(f.controlDbPath), control, "cero escrituras en Control");
+    const dren = await b2s0b3aDrenarOutboxRolActivo({ controlDbPath: f.controlDbPath });
+    assertEqual(dren.total, 0, "el drenaje solo toma pendientes");
+
+    // La misma lapida reabierta por una transaccion central valida: se procesa y vuelve a procesado.
+    const g = await b2s0b3aTransaccionCentral(f.controlDbPath, f.membershipId, { rol: "encargado", activo: 1 });
+    const r2 = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(r2.resultado, B2S0B3A_RESULTADOS.CERRADO, "lapida pendiente se procesa");
+    const pend = await b2s0b3aPendiente(f.controlDbPath, f.membershipId);
+    assertSame(pend.estado, "procesado", "vuelve a procesado");
+    assertEqual(pend.version_objetivo, g, "con la generacion vigente");
+    assertEqual((await allSql(f.controlDbPath, "SELECT COUNT(*) AS n FROM sync_pendiente WHERE membership_id = ?", [f.membershipId]))[0].n, 1, "la lapida se reutiliza, nunca se duplica");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3aCasSoloCierraClaveExacta() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 7 });
+    const ok = { controlDbPath: f.controlDbPath, membershipId: f.membershipId, versionObjetivo: 7, usuarioId: f.central.id, empresaId: f.empresa.id, usuarioLocalId: f.localUserId };
+    for (const [etiqueta, cambio] of [
+      ["version_objetivo anterior", { versionObjetivo: 6 }],
+      ["version_objetivo posterior", { versionObjetivo: 8 }],
+      ["otra identidad", { usuarioId: f.central.id + 100 }],
+      ["otra empresa", { empresaId: f.empresa.id + 100 }],
+      ["otro usuario local", { usuarioLocalId: f.localUserId + 100 }],
+      ["otra membership", { membershipId: f.membershipId + 100 }]
+    ]) {
+      const cas = await b2s0b3aCerrarPendienteRolActivoCas({ ...ok, ...cambio });
+      assertEqual(cas.changes, 0, `CAS rechaza ${etiqueta}`);
+    }
+    await runSql(f.controlDbPath, "UPDATE usuario_empresas SET version = 8 WHERE id = ?", [f.membershipId]);
+    assertEqual((await b2s0b3aCerrarPendienteRolActivoCas(ok)).changes, 0, "CAS rechaza si la membership ya avanzo de generacion");
+    await runSql(f.controlDbPath, "UPDATE usuario_empresas SET version = 7 WHERE id = ?", [f.membershipId]);
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "pendiente", "ningun intento rechazado cerro el pendiente");
+    assertEqual((await b2s0b3aCerrarPendienteRolActivoCas(ok)).changes, 1, "la clave exacta cierra");
+    assertEqual((await b2s0b3aCerrarPendienteRolActivoCas(ok)).changes, 0, "un segundo CAS no vuelve a cerrar");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3aNoProcesableTerminalConservaPendiente() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 3 });
+    await runSql(f.dbPath, "UPDATE tenant_identity SET tenant_slug = ? WHERE id = 1", ["otro-tenant-b2s0b3a"]);
+    const archivo = b2s0b3aArchivo(f.dbPath);
+    const r = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(r.resultado, B2S0B3A_RESULTADOS.NO_PROCESABLE, "identidad de tenant invalida");
+    assertSame(r.motivo, "TENANT_IDENTITY_INVALIDA", "motivo conservado de la primitiva");
+    assertSame(r.clase, "TERMINAL", "terminal");
+    assertSame(r.proyeccion.resultado, B2S0B2_RESULTADOS.NO_PROCESABLE, "diagnostico de la proyeccion incluido");
+    assertSame(b2s0b3aArchivo(f.dbPath), archivo, "cero escrituras");
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "pendiente", "pendiente conservado");
+
+    await runSql(f.dbPath, "UPDATE tenant_identity SET tenant_slug = ? WHERE id = 1", [f.empresaSlug]);
+    await runSql(f.dbPath, "DELETE FROM usuarios WHERE id = ?", [f.localUserId]);
+    const r2 = await b2s0b3aProcesarPendienteRolActivo({ membershipId: f.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(r2.motivo, "USUARIO_LOCAL_INEXISTENTE", "usuario local inexistente");
+    assertSame(r2.clase, "TERMINAL", "terminal");
+    assertEqual((await allSql(f.dbPath, "SELECT COUNT(*) AS n FROM usuarios WHERE id = ?", [f.localUserId]))[0].n, 0, "no se crea el usuario");
+    assertSame((await b2s0b3aPendiente(f.controlDbPath, f.membershipId)).estado, "pendiente", "pendiente conservado");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S0b3aDrenajeNoTocaPasswordP1() {
+  let f;
+  try {
+    f = await b2s0b2Fixture({ rol: "encargado", activo: 1, version: 2 });
+    await b2s0b2InsertarLapida(f.controlDbPath, {
+      usuarioId: f.central.id, empresaId: f.empresa.id, membershipId: f.membershipId, usuarioLocalId: f.localUserId,
+      tipo: "password", versionObjetivo: 1, estado: "pendiente"
+    });
+    const passwordAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente WHERE tipo_operacion = 'password'"));
+    const centralAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT id, password_hash, password_version, version FROM usuarios ORDER BY id ASC"));
+    const membershipAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM usuario_empresas ORDER BY id ASC"));
+    const localAntes = await b2s0b2Local(f.dbPath, f.localUserId);
+    const sesionesAntes = JSON.stringify(await allSql(f.dbPath, "SELECT * FROM sesiones ORDER BY rowid ASC"));
+
+    const dren = await b2s0b3aDrenarOutboxRolActivo({ controlDbPath: f.controlDbPath });
+    assertSame(dren.ok, true, "drenaje ok");
+    assertEqual(dren.total, 1, "solo el pendiente rol_activo");
+    assertSame(dren.resultados[0].resultado, B2S0B3A_RESULTADOS.CERRADO, "rol_activo cerrado");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente WHERE tipo_operacion = 'password'")), passwordAntes, "pendiente de password P1 intacto");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT id, password_hash, password_version, version FROM usuarios ORDER BY id ASC")), centralAntes, "identidad central intacta");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM usuario_empresas ORDER BY id ASC")), membershipAntes, "memberships intactas");
+    assertSame((await b2s0b2Local(f.dbPath, f.localUserId)).password, localAntes.password, "password local intacto");
+    assertSame(JSON.stringify(await allSql(f.dbPath, "SELECT * FROM sesiones ORDER BY rowid ASC")), sesionesAntes, "sesiones intactas");
+
+    // Alcance estatico del consumer: unica escritura = el CAS de sync_pendiente.
+    const fuente = fs.readFileSync(path.join(ROOT, "database", "process-rol-activo-outbox.js"), "utf8")
+      .split(/\r?\n/).filter((linea) => !linea.trim().startsWith("//")).join("\n");
+    assertSame(/\bINSERT\b/i.test(fuente), false, "el consumer no inserta filas");
+    assertSame(/\bDELETE\b/i.test(fuente), false, "el consumer no borra filas");
+    assertSame(JSON.stringify(fuente.match(/\bUPDATE\s+\w+/gi) || []), JSON.stringify(["UPDATE sync_pendiente"]), "un unico UPDATE, sobre sync_pendiente");
+    assertSame(/password/i.test(fuente), false, "el consumer no referencia password");
+    assertSame(/process-central-outbox/.test(fuente), false, "el consumer no depende del consumer de password");
+    assertSame(/require\(["'](https?|net|axios|node-fetch)["']\)/.test(fuente), false, "sin HTTP");
+    assertSame(/setInterval|setTimeout|cron/i.test(fuente), false, "sin scheduler");
   } finally {
     b2s0b2Limpiar(f);
   }
