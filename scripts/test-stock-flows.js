@@ -21376,6 +21376,21 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testB2S2bLegacyOffYShadowIntactos);
   await _run(testB2S2bEstadoYPasswordSinRegresionYColisionDeClaves);
   await _run(testB2S2bSinEscriturasEnBasesProtegidas);
+  await _run(testB2S3aUiBootstrapModoAutoridadSinFetchNiUuidExtra);
+  await _run(testB2S3aUiAperturaCentralCargaDetalleYSecciones);
+  await _run(testB2S3aUiPerfilCentralPutSinAutoridad);
+  await _run(testB2S3aUiRolYEstadoConGetIntermedio);
+  await _run(testB2S3aUiVersionConflictSinReintentoAutomatico);
+  await _run(testB2S3aUiErroresDefinitivosInvalidanClave);
+  await _run(testB2S3aUiOperacionInciertaConservaClaveYReplay);
+  await _run(testB2S3aUiDobleClickUnaSolaSolicitud);
+  await _run(testB2S3aUiBindingY503EnDetalleDeshabilitanAcceso);
+  await _run(testB2S3aUiAutomodificacionDeshabilitada);
+  await _run(testB2S3aUiToggleCentralAbreAccesoSinMutar);
+  await _run(testB2S3aUiLegacyIntacto);
+  await _run(testB2S3aUiVistaReducidaSinAutoridad);
+  await _run(testB2S3aUiClavesSeparadasDePasswordYCreacionSinRegresion);
+  await _run(testB2S3aHttpHeaderModoAutoridadEnGetUsuarios);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -46816,6 +46831,434 @@ async function testB2S2bSinEscriturasEnBasesProtegidas() {
     }, extraEnvCentral(f));
   });
   assertSame(huella(), antes, "guernica.db y atlas_control.db del repositorio intactos");
+}
+
+// AUTH-SYNC-B2-S3a: UI de Usuarios con autoridad central (frontend/usuarios.html ejecutado REAL en el
+// sandbox vm existente) + header X-Atlas-Authority-Mode de GET /usuarios. El fetch del sandbox se
+// reemplaza ANTES de cargar la pagina por uno que soporta headers de respuesta (el helper compartido
+// no se modifica). Todas las respuestas son deterministas.
+function s3aCrearEntorno({ actorId = 900, rol = "admin", handler }) {
+  const entorno = crearEntornoFrontendSimulado({
+    localStorageInicial: { guernicaSession: construirSesionStorageJSON({ token: "T-S3A" }), guernicaUser: construirUserStorageJSON({ id: actorId, rol }) },
+    fetchHandler: async () => ({ status: 200, body: {} })
+  });
+  const llamadas = [];
+  entorno.sandbox.fetch = async (url, options = {}) => {
+    const llamada = {
+      url: String(url),
+      method: String((options && options.method) || "GET").toUpperCase(),
+      headers: (options && options.headers) || {},
+      body: options && options.body !== undefined ? JSON.parse(options.body) : undefined
+    };
+    llamadas.push(llamada);
+    const r = await handler(llamada);
+    return {
+      status: r.status,
+      ok: r.status >= 200 && r.status < 300,
+      headers: { get: (nombre) => (r.headers && r.headers[String(nombre).toLowerCase()]) || null },
+      json: async () => {
+        if (r.noJson) throw new Error("Respuesta no JSON (simulada)");
+        return r.body;
+      }
+    };
+  };
+  return { ...entorno, llamadas };
+}
+
+function s3aEval(entorno, expresion) {
+  return vm.runInContext(expresion, entorno.sandbox);
+}
+
+async function s3aDrenar() {
+  for (let i = 0; i < 25; i += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+const S3A_USUARIO_LISTA = { id: 7, nombre: "Ana", usuario: "ana", rol: "colaborador", email: "", telefono: "", activo: true, estado: "Activo" };
+
+// Servidor simulado coherente: la autoridad central vive en `central` y cada PATCH exitoso la avanza.
+function s3aServidor({ modo = "central", central = { version: 3, rol: "colaborador", activo: true }, detalle = null, patch = null, put = null } = {}) {
+  const estado = { ...central };
+  return {
+    estado,
+    handler: async (llamada) => {
+      if (llamada.url === "/configuracion") return { status: 200, body: { config: {} } };
+      if (llamada.url === "/usuarios" && llamada.method === "GET") {
+        return { status: 200, body: [S3A_USUARIO_LISTA], headers: modo ? { "x-atlas-authority-mode": modo } : {} };
+      }
+      if (/^\/usuarios\/\d+$/.test(llamada.url) && llamada.method === "GET") {
+        if (detalle) return detalle(llamada, estado);
+        return { status: 200, body: { ...S3A_USUARIO_LISTA, membership_version: estado.version, activo_central: estado.activo, rol_central: estado.rol } };
+      }
+      if (/^\/usuarios\/\d+$/.test(llamada.url) && llamada.method === "PUT") {
+        if (put) return put(llamada, estado);
+        return { status: 200, body: { message: "Usuario actualizado correctamente", usuario: S3A_USUARIO_LISTA } };
+      }
+      if (llamada.method === "PATCH") {
+        if (patch) return patch(llamada, estado);
+        if (llamada.url.endsWith("/rol")) {
+          estado.version += 1;
+          estado.rol = llamada.body.rol;
+          return { status: 200, body: { code: "ROL_ACTUALIZADO", message: "ok", usuario_id: 7, rol: estado.rol, version: estado.version, operacion: { tipo: "rol_activo", version_objetivo: estado.version }, sincronizacion_tenant: "pendiente_al_commit" } };
+        }
+        if (llamada.url.endsWith("/estado")) {
+          estado.version += 1;
+          estado.activo = llamada.body.activo;
+          return { status: 200, body: { code: "ESTADO_ACTUALIZADO", message: "ok", usuario_id: 7, activo: estado.activo, version: estado.version, operacion: { tipo: "rol_activo", version_objetivo: estado.version }, sincronizacion_tenant: "pendiente_al_commit" } };
+        }
+        return { status: 200, body: { message: "Contraseña actualizada correctamente" } };
+      }
+      if (llamada.method === "POST") return { status: 200, body: { message: "Usuario creado correctamente" } };
+      return { status: 200, body: {} };
+    }
+  };
+}
+
+async function s3aPaginaCargada(opciones = {}) {
+  const servidor = s3aServidor(opciones.servidor || {});
+  const entorno = s3aCrearEntorno({ actorId: opciones.actorId, rol: opciones.rol, handler: servidor.handler });
+  cargarPaginaFrontendEnSandbox(entorno, "usuarios.html");
+  await s3aDrenar();
+  return { entorno, servidor };
+}
+
+function s3aRutas(entorno) {
+  return entorno.llamadas.map((l) => `${l.method} ${l.url}`);
+}
+
+async function testB2S3aUiBootstrapModoAutoridadSinFetchNiUuidExtra() {
+  for (const [modo, esperado] of [["central", "central"], ["legacy", "legacy"], [null, "legacy"], ["CENTRAL", "legacy"]]) {
+    const { entorno } = await s3aPaginaCargada({ servidor: { modo } });
+    assertSame(s3aEval(entorno, "state.modoAutoridad"), esperado, `modo=${modo}: modo de autoridad explicito (sin heuristica)`);
+    assertSame(JSON.stringify(s3aRutas(entorno)), JSON.stringify(["GET /configuracion", "GET /usuarios"]), `modo=${modo}: bootstrap sin fetch extra`);
+    assertEqual(entorno.contadorRandomUUID(), 0, `modo=${modo}: bootstrap sin UUID`);
+  }
+}
+
+async function testB2S3aUiAperturaCentralCargaDetalleYSecciones() {
+  const { entorno } = await s3aPaginaCargada({ servidor: { central: { version: 3, rol: "encargado", activo: false } } });
+  await entorno.sandbox.ejecutarAccion("edit", 7);
+  assertSame(s3aRutas(entorno).includes("GET /usuarios/7"), true, "abrir en central consulta GET /usuarios/:id");
+  const central = s3aEval(entorno, "JSON.stringify(state.central)");
+  assertSame(JSON.parse(central).membershipVersion, 3, "membership_version del detalle");
+  assertSame(JSON.stringify([JSON.parse(central).rolCentral, JSON.parse(central).activoCentral, JSON.parse(central).cargado]), JSON.stringify(["encargado", false, true]), "rol_central/activo_central del detalle (no de la lista)");
+  const el = (id) => entorno.obtenerElemento(id);
+  assertSame(JSON.stringify([el("rolCentral").value, el("estadoCentralTexto").textContent, el("btnToggleEstado").textContent]), JSON.stringify(["encargado", "Inactivo", "Activar"]), "controles de Acceso con valores centrales");
+  assertSame(el("accesoDivergencia").textContent, "Valor local aún no sincronizado.", "divergencia local/central indicada");
+  assertSame(JSON.stringify([el("rolLabel").hidden, el("activoLabel").hidden, el("loginUsuario").readOnly, el("accesoCentral").hidden, el("perfilCentralTitulo").hidden]), JSON.stringify([true, true, true, false, false]), "Perfil/Acceso separados; login solo lectura");
+  assertSame(el("guardarUsuario").textContent, "Guardar perfil", "boton de perfil");
+  assertSame(JSON.stringify([el("btnCambiarRol").disabled, el("btnToggleEstado").disabled]), JSON.stringify([false, false]), "Acceso habilitado recien tras el GET");
+  assertSame(s3aRutas(entorno).some((r) => r.startsWith("PATCH")), false, "abrir no muta");
+  assertEqual(entorno.contadorRandomUUID(), 0, "abrir no genera claves");
+}
+
+async function testB2S3aUiPerfilCentralPutSinAutoridad() {
+  const { entorno } = await s3aPaginaCargada();
+  await entorno.sandbox.ejecutarAccion("edit", 7);
+  const el = (id) => entorno.obtenerElemento(id);
+  el("nombre").value = "Ana Nueva";
+  el("loginUsuario").value = "login-manipulado";
+  el("email").value = "ana@example.com";
+  el("rol").value = "admin";
+  el("activo").checked = false;
+  await entorno.sandbox.guardarUsuario(fakeEvent());
+  const put = entorno.llamadas.find((l) => l.method === "PUT");
+  assertSame(put.url, "/usuarios/7", "PUT al usuario abierto");
+  assertSame(JSON.stringify(put.body), JSON.stringify({ nombre: "Ana Nueva", usuario: "ana", email: "ana@example.com", telefono: "" }), "PUT central: solo perfil, login original, sin rol ni activo");
+  assertSame(s3aRutas(entorno).slice(-1)[0], "GET /usuarios", "refresca la lista local");
+  assertSame(el("modalMensaje").className, "message ok", "confirmacion de perfil");
+  assertEqual(entorno.contadorRandomUUID(), 0, "el perfil no usa claves de idempotencia");
+}
+
+async function s3aVerificarSecuencia(primero, segundo) {
+  const { entorno, servidor } = await s3aPaginaCargada();
+  await entorno.sandbox.ejecutarAccion("edit", 7);
+  const ejecutar = async (tipo) => {
+    if (tipo === "rol") {
+      entorno.obtenerElemento("rolCentral").value = "encargado";
+      await entorno.sandbox.cambiarRolCentral();
+    } else {
+      await entorno.sandbox.cambiarEstadoCentral();
+    }
+  };
+  await ejecutar(primero);
+  await ejecutar(segundo);
+  const patches = entorno.llamadas.map((l, i) => ({ ...l, i })).filter((l) => l.method === "PATCH");
+  assertEqual(patches.length, 2, `${primero}->${segundo}: dos operaciones independientes`);
+  const rutas = s3aRutas(entorno);
+  for (const p of patches) {
+    assertSame(rutas[p.i + 1], "GET /usuarios/7", `${primero}->${segundo}: GET de detalle despues de cada respuesta definitiva`);
+  }
+  const [p1, p2] = patches;
+  assertSame(p1.url, `/usuarios/7/${primero}`, "primera operacion");
+  assertSame(p2.url, `/usuarios/7/${segundo}`, "segunda operacion");
+  assertEqual(p1.body.expected_version, 3, "primera con la version del GET inicial");
+  assertEqual(p2.body.expected_version, 4, "segunda con la version del GET intermedio (nunca incrementada en el cliente)");
+  assertSame(typeof p1.headers["Idempotency-Key"] === "string" && p1.headers["Idempotency-Key"] !== p2.headers["Idempotency-Key"], true, "claves distintas por accion");
+  const cuerpoRol = (primero === "rol" ? p1 : p2).body;
+  const cuerpoEstado = (primero === "estado" ? p1 : p2).body;
+  assertSame(JSON.stringify(Object.keys(cuerpoRol)), JSON.stringify(["rol", "expected_version"]), "PATCH /rol solo con rol y expected_version");
+  assertSame(cuerpoRol.rol, "encargado", "rol pedido");
+  assertSame(JSON.stringify(Object.keys(cuerpoEstado)), JSON.stringify(["activo", "expected_version"]), "PATCH /estado solo con activo y expected_version");
+  assertSame(cuerpoEstado.activo, false, "estado calculado desde activo_central");
+  assertEqual(entorno.contadorRandomUUID(), 2, "exactamente una clave por accion");
+  assertSame(JSON.stringify(JSON.parse(s3aEval(entorno, "JSON.stringify([state.central.membershipVersion, state.central.rolCentral, state.central.activoCentral])"))), JSON.stringify([5, "encargado", false]), "autoridad releida del servidor");
+  assertEqual(servidor.estado.version, 5, "servidor en la generacion 5");
+  assertSame(entorno.obtenerElemento("accesoMensaje").textContent, "Cambio guardado. Sincronización con la sucursal pendiente.", "pendiente al commit mostrado como exito");
+  assertSame(entorno.obtenerElemento("accesoMensaje").className, "message ok", "como exito");
+  assertSame(entorno.obtenerElemento("mensaje").textContent, "Cambio guardado. Sincronización con la sucursal pendiente.", "tambien en el mensaje de la pagina");
+}
+
+async function testB2S3aUiRolYEstadoConGetIntermedio() {
+  await s3aVerificarSecuencia("rol", "estado");
+  await s3aVerificarSecuencia("estado", "rol");
+}
+
+async function testB2S3aUiVersionConflictSinReintentoAutomatico() {
+  let patches = 0;
+  const { entorno } = await s3aPaginaCargada({
+    servidor: {
+      patch: (llamada, estado) => {
+        patches += 1;
+        if (patches === 1) {
+          estado.version = 9;
+          return { status: 409, body: { code: "VERSION_CONFLICT", message: "El usuario fue modificado por otra operacion.", version_actual: 9 } };
+        }
+        estado.version += 1;
+        estado.rol = llamada.body.rol;
+        return { status: 200, body: { code: "ROL_ACTUALIZADO", sincronizacion_tenant: "pendiente_al_commit" } };
+      }
+    }
+  });
+  await entorno.sandbox.ejecutarAccion("edit", 7);
+  entorno.obtenerElemento("rolCentral").value = "encargado";
+  await entorno.sandbox.cambiarRolCentral();
+  assertEqual(patches, 1, "sin reintento automatico");
+  assertSame(entorno.obtenerElemento("accesoMensaje").textContent, "La información de este usuario cambió mientras lo estabas editando.", "mensaje de conflicto");
+  assertSame(s3aRutas(entorno).slice(-1)[0], "GET /usuarios/7", "relee el detalle");
+  assertEqual(s3aEval(entorno, "state.central.membershipVersion"), 9, "version reemplazada por la del servidor");
+  assertSame(s3aEval(entorno, "rolIdempotencyKey"), null, "clave invalidada");
+  const primeraClave = entorno.llamadas.find((l) => l.method === "PATCH").headers["Idempotency-Key"];
+  entorno.obtenerElemento("rolCentral").value = "encargado";
+  await entorno.sandbox.cambiarRolCentral();
+  const segunda = entorno.llamadas.filter((l) => l.method === "PATCH")[1];
+  assertSame(JSON.stringify([segunda.body.expected_version, segunda.headers["Idempotency-Key"] !== primeraClave]), JSON.stringify([9, true]), "una nueva decision usa la version nueva y una clave nueva");
+  assertEqual(entorno.contadorRandomUUID(), 2, "una clave por decision");
+}
+
+async function testB2S3aUiErroresDefinitivosInvalidanClave() {
+  const casos = [
+    ["REUSED", { status: 409, body: { code: "IDEMPOTENCY_KEY_REUSED", message: "Esta clave de idempotencia ya fue usada para una operacion distinta." } }],
+    ["LAST_ADMIN", { status: 409, body: { code: "LAST_ADMIN_PROTECTED", message: "La empresa debe conservar al menos un administrador activo." } }],
+    ["403", { status: 403, body: { code: "ACTOR_NO_AUTORIZADO", message: "No tenes permisos para administrar usuarios" } }],
+    ["400", { status: 400, body: { code: "ROL_INVALIDO", message: "El rol debe ser admin, encargado o colaborador." } }],
+    ["428", { status: 428, body: { code: "PRECONDITION_REQUIRED", message: "Falta expected_version" } }]
+  ];
+  for (const [etiqueta, respuesta] of casos) {
+    let patches = 0;
+    const { entorno } = await s3aPaginaCargada({ servidor: { patch: () => { patches += 1; return respuesta; } } });
+    await entorno.sandbox.ejecutarAccion("edit", 7);
+    await entorno.sandbox.cambiarEstadoCentral();
+    assertEqual(patches, 1, `${etiqueta}: una sola solicitud`);
+    assertSame(s3aEval(entorno, "estadoIdempotencyKey"), null, `${etiqueta}: clave invalidada`);
+    assertSame(s3aRutas(entorno).slice(-1)[0], "GET /usuarios/7", `${etiqueta}: relee el detalle`);
+    assertSame(entorno.obtenerElemento("accesoMensaje").className, "message error", `${etiqueta}: mensaje de error`);
+    const esperado = etiqueta === "428" ? "No se pudo validar la versión del usuario" : respuesta.body.message;
+    assertSame(entorno.obtenerElemento("accesoMensaje").textContent.includes(esperado), true, `${etiqueta}: mensaje claro (${entorno.obtenerElemento("accesoMensaje").textContent})`);
+  }
+  // 404: cierra la edicion y recarga la lista.
+  const { entorno } = await s3aPaginaCargada({ servidor: { patch: () => ({ status: 404, body: { code: "USUARIO_NO_ENCONTRADO", message: "Usuario no encontrado" } }) } });
+  await entorno.sandbox.ejecutarAccion("edit", 7);
+  await entorno.sandbox.cambiarEstadoCentral();
+  assertSame(entorno.obtenerElemento("usuarioModal").classList.contains("open"), false, "404: modal cerrado");
+  assertSame(s3aEval(entorno, "state.central"), null, "404: edicion invalidada");
+  assertSame(s3aRutas(entorno).slice(-1)[0], "GET /usuarios", "404: lista recargada");
+}
+
+async function testB2S3aUiOperacionInciertaConservaClaveYReplay() {
+  const secuencia = [
+    () => { throw new Error("network error simulado"); },
+    () => ({ status: 200, noJson: true, body: null }),
+    () => ({ status: 409, body: { code: "IDEMPOTENCY_OPERATION_IN_PROGRESS", message: "Ya existe una operacion en curso con esta clave." } }),
+    () => ({ status: 503, body: { code: "CONTROL_NO_DISPONIBLE", message: "No se pudo confirmar el cambio en el control central. No se realizo ningun cambio." } }),
+    (llamada, estado) => { estado.version += 1; estado.activo = llamada.body.activo; return { status: 200, body: { code: "ESTADO_ACTUALIZADO", sincronizacion_tenant: "pendiente_al_commit" } }; }
+  ];
+  let paso = 0;
+  const { entorno } = await s3aPaginaCargada({ servidor: { patch: (llamada, estado) => secuencia[paso++](llamada, estado) } });
+  await entorno.sandbox.ejecutarAccion("edit", 7);
+  const getsAntes = s3aRutas(entorno).filter((r) => r === "GET /usuarios/7").length;
+  for (let i = 0; i < 4; i += 1) {
+    await entorno.sandbox.cambiarEstadoCentral();
+    assertSame(s3aRutas(entorno).filter((r) => r === "GET /usuarios/7").length, getsAntes, `intento ${i + 1} incierto: ningun GET antes del replay`);
+    assertSame(typeof s3aEval(entorno, "estadoIdempotencyKey"), "string", `intento ${i + 1}: la clave se conserva`);
+  }
+  await entorno.sandbox.cambiarEstadoCentral();
+  const patches = entorno.llamadas.filter((l) => l.method === "PATCH");
+  assertEqual(patches.length, 5, "cinco envios de la MISMA operacion");
+  assertSame(new Set(patches.map((p) => p.headers["Idempotency-Key"])).size, 1, "misma clave en todos los reintentos");
+  assertSame(new Set(patches.map((p) => JSON.stringify(p.body))).size, 1, "misma solicitud original (expected_version incluida)");
+  assertSame(JSON.stringify(patches[0].body), JSON.stringify({ activo: false, expected_version: 3 }), "solicitud original");
+  assertEqual(entorno.contadorRandomUUID(), 1, "una sola clave para toda la operacion");
+  assertSame(s3aRutas(entorno).slice(-1)[0], "GET /usuarios/7", "recien tras la respuesta definitiva se relee el detalle");
+  assertSame(s3aEval(entorno, "estadoIdempotencyKey"), null, "respuesta definitiva invalida la clave");
+}
+
+async function testB2S3aUiDobleClickUnaSolaSolicitud() {
+  let liberar = null;
+  const { entorno } = await s3aPaginaCargada({
+    servidor: {
+      patch: (llamada, estado) => new Promise((resolve) => {
+        liberar = () => { estado.version += 1; estado.rol = llamada.body.rol; resolve({ status: 200, body: { code: "ROL_ACTUALIZADO", sincronizacion_tenant: "pendiente_al_commit" } }); };
+      })
+    }
+  });
+  await entorno.sandbox.ejecutarAccion("edit", 7);
+  entorno.obtenerElemento("rolCentral").value = "encargado";
+  const primero = entorno.sandbox.cambiarRolCentral();
+  const segundo = entorno.sandbox.cambiarRolCentral();
+  await s3aDrenar();
+  assertSame(segundo, undefined, "el segundo click no inicia otra operacion");
+  assertSame(entorno.obtenerElemento("btnCambiarRol").disabled, true, "boton deshabilitado en vuelo");
+  assertEqual(entorno.llamadas.filter((l) => l.method === "PATCH").length, 1, "una sola solicitud en vuelo");
+  liberar();
+  await primero;
+  assertEqual(entorno.llamadas.filter((l) => l.method === "PATCH").length, 1, "doble click: una sola solicitud");
+  assertEqual(entorno.contadorRandomUUID(), 1, "doble click: una sola clave");
+  assertSame(entorno.obtenerElemento("btnCambiarRol").disabled, false, "boton rehabilitado tras la respuesta");
+}
+
+async function testB2S3aUiBindingY503EnDetalleDeshabilitanAcceso() {
+  for (const [etiqueta, respuesta, textoEsperado] of [
+    ["binding", { status: 409, body: { code: "BINDING_CENTRAL_INCONSISTENTE", message: "x" } }, "no tiene un acceso central consistente"],
+    ["503", { status: 503, body: { code: "CONTROL_NO_DISPONIBLE", message: "No se pudo leer el acceso central del usuario. Intenta nuevamente en unos minutos." } }, "No se pudo leer el acceso central"]
+  ]) {
+    const { entorno } = await s3aPaginaCargada({ servidor: { detalle: () => respuesta } });
+    await entorno.sandbox.ejecutarAccion("edit", 7);
+    assertSame(JSON.stringify([entorno.obtenerElemento("btnCambiarRol").disabled, entorno.obtenerElemento("btnToggleEstado").disabled]), JSON.stringify([true, true]), `${etiqueta}: Acceso deshabilitado`);
+    assertSame(entorno.obtenerElemento("accesoMensaje").textContent.includes(textoEsperado), true, `${etiqueta}: mensaje claro`);
+    assertSame(s3aEval(entorno, "state.central.cargado"), false, `${etiqueta}: sin valores centrales inventados`);
+    await entorno.sandbox.cambiarEstadoCentral();
+    assertSame(s3aRutas(entorno).some((r) => r.startsWith("PATCH")), false, `${etiqueta}: ninguna mutacion de autoridad`);
+    entorno.obtenerElemento("nombre").value = "Ana Perfil";
+    await entorno.sandbox.guardarUsuario(fakeEvent());
+    const put = entorno.llamadas.find((l) => l.method === "PUT");
+    assertSame(JSON.stringify(put && put.body), JSON.stringify({ nombre: "Ana Perfil", usuario: "ana", email: "", telefono: "" }), `${etiqueta}: el perfil sigue disponible, sin autoridad`);
+  }
+}
+
+async function testB2S3aUiAutomodificacionDeshabilitada() {
+  const { entorno } = await s3aPaginaCargada({ actorId: 7 });
+  await entorno.sandbox.ejecutarAccion("edit", 7);
+  assertSame(JSON.stringify([entorno.obtenerElemento("btnCambiarRol").disabled, entorno.obtenerElemento("btnToggleEstado").disabled]), JSON.stringify([true, true]), "acciones de acceso propio deshabilitadas");
+  assertSame(entorno.obtenerElemento("accesoMensaje").textContent, "No podés cambiar tu propio acceso.", "motivo explicado");
+  await entorno.sandbox.cambiarEstadoCentral();
+  entorno.obtenerElemento("rolCentral").value = "encargado";
+  await entorno.sandbox.cambiarRolCentral();
+  assertSame(s3aRutas(entorno).some((r) => r.startsWith("PATCH")), false, "ninguna mutacion propia desde la UI");
+  assertEqual(entorno.contadorRandomUUID(), 0, "sin claves");
+  entorno.obtenerElemento("nombre").value = "Ana Propia";
+  await entorno.sandbox.guardarUsuario(fakeEvent());
+  assertSame(entorno.llamadas.some((l) => l.method === "PUT"), true, "el perfil propio sigue editable");
+}
+
+async function testB2S3aUiToggleCentralAbreAccesoSinMutar() {
+  const { entorno } = await s3aPaginaCargada();
+  await entorno.sandbox.ejecutarAccion("toggle", 7);
+  assertSame(s3aRutas(entorno).slice(-1)[0], "GET /usuarios/7", "el toggle de la fila lee la autoridad central");
+  assertSame(s3aRutas(entorno).some((r) => r.startsWith("PATCH")), false, "el toggle de la fila no muta");
+  assertSame(entorno.obtenerElemento("usuarioModal").classList.contains("open"), true, "abre el usuario");
+  assertSame(entorno.obtenerElemento("accesoCentral").hidden, false, "en la seccion Acceso");
+  assertEqual(entorno.contadorRandomUUID(), 0, "sin claves");
+}
+
+async function testB2S3aUiLegacyIntacto() {
+  const { entorno } = await s3aPaginaCargada({ servidor: { modo: "legacy" } });
+  await entorno.sandbox.ejecutarAccion("edit", 7);
+  assertSame(s3aRutas(entorno).includes("GET /usuarios/7"), false, "legacy: sin GET central de detalle");
+  const el = (id) => entorno.obtenerElemento(id);
+  assertSame(JSON.stringify([el("rolLabel").hidden, el("activoLabel").hidden, el("loginUsuario").readOnly, el("accesoCentral").hidden, el("guardarUsuario").textContent]), JSON.stringify([false, false, false, true, "Guardar"]), "legacy: modal historico");
+  el("nombre").value = "Ana Legacy";
+  await entorno.sandbox.guardarUsuario(fakeEvent());
+  const put = entorno.llamadas.find((l) => l.method === "PUT");
+  assertSame(JSON.stringify(put.body), JSON.stringify({ nombre: "Ana Legacy", usuario: "ana", email: "", telefono: "", rol: "colaborador", activo: true }), "legacy: PUT historico con rol y activo");
+  await entorno.sandbox.ejecutarAccion("toggle", 7);
+  const toggle = entorno.llamadas.find((l) => l.method === "PATCH");
+  assertSame(JSON.stringify([toggle.url, toggle.body, Object.prototype.hasOwnProperty.call(toggle.headers, "Idempotency-Key")]), JSON.stringify(["/usuarios/7/estado", { activo: false }, false]), "legacy: toggle historico, sin clave ni version");
+  assertSame(s3aRutas(entorno).some((r) => r.includes("/rol")), false, "legacy: nunca /rol");
+  assertEqual(entorno.contadorRandomUUID(), 0, "legacy: ninguna clave de rol/estado");
+}
+
+async function testB2S3aUiVistaReducidaSinAutoridad() {
+  const { entorno } = await s3aPaginaCargada({ actorId: 7, rol: "colaborador" });
+  assertSame(JSON.stringify(s3aRutas(entorno)), JSON.stringify(["GET /configuracion"]), "vista reducida: ni lista ni autoridad");
+  assertSame(s3aEval(entorno, "state.modoAutoridad"), "legacy", "sin lista no hay modo central");
+  assertSame(entorno.obtenerElemento("perfilNombre").textContent, "Admin Test", "Mi perfil sigue renderizandose");
+  assertEqual(entorno.contadorRandomUUID(), 0, "sin claves");
+}
+
+async function testB2S3aUiClavesSeparadasDePasswordYCreacionSinRegresion() {
+  const { entorno } = await s3aPaginaCargada();
+  // Password P1B (otro usuario): su propia clave.
+  entorno.sandbox.abrirPassword(7);
+  dispararInput(entorno.obtenerElemento("nuevaPassword"), "PasswordS3a1");
+  dispararInput(entorno.obtenerElemento("confirmarNuevaPassword"), "PasswordS3a1");
+  await entorno.sandbox.cambiarPassword(fakeEvent());
+  const pwd = entorno.llamadas.find((l) => l.url === "/usuarios/7/password");
+  assertSame(typeof pwd.headers["Idempotency-Key"], "string", "P1B envia su clave");
+  await entorno.sandbox.ejecutarAccion("edit", 7);
+  entorno.obtenerElemento("rolCentral").value = "encargado";
+  await entorno.sandbox.cambiarRolCentral();
+  await entorno.sandbox.cambiarEstadoCentral();
+  const claves = entorno.llamadas.filter((l) => l.method === "PATCH").map((l) => l.headers["Idempotency-Key"]);
+  assertSame(JSON.stringify([claves.length, new Set(claves).size]), JSON.stringify([3, 3]), "password, rol y estado: tres claves distintas");
+  assertEqual(entorno.contadorRandomUUID(), 3, "una clave por accion");
+  // Creacion: sin cambios (modal historico, POST con rol/activo, sin GET central).
+  entorno.sandbox.abrirUsuario();
+  const el = (id) => entorno.obtenerElemento(id);
+  assertSame(JSON.stringify([el("rolLabel").hidden, el("accesoCentral").hidden, el("loginUsuario").readOnly]), JSON.stringify([false, true, false]), "creacion: modal historico");
+  el("nombre").value = "Nuevo"; el("loginUsuario").value = "nuevo"; el("password").value = "Nuevo12345"; el("confirmarPassword").value = "Nuevo12345"; el("rol").value = "encargado";
+  const getsAntes = s3aRutas(entorno).filter((r) => /^GET \/usuarios\/\d+$/.test(r)).length;
+  await entorno.sandbox.guardarUsuario(fakeEvent());
+  const post = entorno.llamadas.find((l) => l.method === "POST");
+  assertSame(JSON.stringify(post && [post.url, post.body]), JSON.stringify(["/usuarios", { nombre: "Nuevo", usuario: "nuevo", email: "", telefono: "", rol: "encargado", activo: true, password: "Nuevo12345", confirmar_password: "Nuevo12345" }]), "creacion: POST historico");
+  assertEqual(s3aRutas(entorno).filter((r) => /^GET \/usuarios\/\d+$/.test(r)).length, getsAntes, "creacion: sin GET central");
+}
+
+async function testB2S3aHttpHeaderModoAutoridadEnGetUsuarios() {
+  const CLAVES_USUARIO = ["id", "nombre", "usuario", "rol", "email", "telefono", "foto_url", "activo", "estado", "ultimo_acceso", "creado_en", "actualizado_en"];
+  const verificarLista = (r, etiqueta) => {
+    assertEqual(r.response.status, 200, `${etiqueta}: GET /usuarios 200`);
+    assertSame(Array.isArray(r.data) && r.data.length > 0, true, `${etiqueta}: lista`);
+    assertSame(r.data.every((u) => JSON.stringify(Object.keys(u)) === JSON.stringify(CLAVES_USUARIO)), true, `${etiqueta}: JSON sin cambios de contrato`);
+  };
+  await b2s1b2CentralSingle(async (f) => {
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const r = await requestJson(baseUrl, "GET", "/usuarios", null, token);
+      verificarLista(r, "central");
+      assertSame(r.response.headers.get("x-atlas-authority-mode"), "central", "central: header explicito");
+    }, extraEnvCentral(f));
+  });
+  const dbOff = bootstrapFreshTestDb();
+  const dbShadow = bootstrapFreshTestDb();
+  const controlInexistente = tempDbPath();
+  try {
+    for (const [etiqueta, dbPath, env] of [
+      ["legacy+off", dbOff, {}],
+      ["legacy+shadow", dbShadow, { ATLAS_USER_BRIDGE_MODE: "shadow", ATLAS_CONTROL_DB_PATH: controlInexistente, ATLAS_EMPRESA_SLUG: `s3a-legacy-${Date.now()}` }]
+    ]) {
+      await withServer(dbPath, async (baseUrl) => {
+        const token = await login(baseUrl, "admin", "admin123");
+        const r = await requestJson(baseUrl, "GET", "/usuarios", null, token, { "X-Atlas-Authority-Mode": "central" });
+        verificarLista(r, etiqueta);
+        assertSame(r.response.headers.get("x-atlas-authority-mode"), "legacy", `${etiqueta}: header legacy (el cliente no puede forzar central)`);
+      }, env);
+    }
+    assertSame(fs.existsSync(controlInexistente), false, "legacy no crea Control");
+  } finally {
+    fs.rmSync(dbOff, { force: true });
+    fs.rmSync(dbShadow, { force: true });
+    fs.rmSync(controlInexistente, { force: true });
+  }
 }
 
 async function testP1ASRControlSchemaNuevoContienePasswordVersionDefault0() {

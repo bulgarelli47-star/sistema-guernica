@@ -70,6 +70,7 @@
     .delete-dialog-body{display:grid;gap:12px}.delete-user-card{border:1px solid var(--border);border-radius:14px;background:#fff;padding:12px;display:grid;gap:6px}.delete-user-card strong{font-size:16px}.danger-note{border:1px solid rgba(220,38,38,.22);background:rgba(220,38,38,.08);color:#991b1b;border-radius:14px;padding:10px 12px;font-weight:750;line-height:1.35}
     @media(max-width:520px){.main{padding:12px 10px 18px;gap:10px}.card{padding:12px;border-radius:16px}.user-management-card .section-head{align-items:flex-start}.user-management-card .toolbar{width:100%;justify-content:flex-start}.user-management-card .button{min-height:40px}.user-management-card .summary{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}.user-management-card .summary-box{min-height:0;padding:10px 11px}.user-management-card .summary-box span{font-size:10px}.user-management-card .summary-box strong{font-size:18px}.user-filters-card .filters{grid-template-columns:minmax(0,1.4fr) minmax(120px,.6fr);width:100%;min-width:0}.user-filters-card .filters label:first-child{grid-column:1 / -1}.table-wrap{overflow:visible}.table{display:block;min-width:0;width:100%;border-spacing:0}.table thead{display:none}.table tbody{display:grid;gap:8px}.table tr{position:relative;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 10px;width:100%;min-width:0;padding:10px 58px 10px 10px;border:1px solid var(--border);border-radius:14px;background:#fff;box-shadow:0 10px 24px rgba(17,24,39,.08)}.table td{display:grid;gap:2px;min-width:0;padding:0;background:transparent;border:0!important;border-radius:0!important;font-size:12px;line-height:1.2;overflow-wrap:anywhere}.table td::before{content:attr(data-label);color:var(--muted);font-size:10px;font-weight:900;line-height:1.1;letter-spacing:.04em;text-transform:uppercase}.table .user-main-cell{grid-column:1 / -1;display:block;padding-right:2px}.table .user-main-cell::before,.table .user-actions-cell::before{content:none}.table .user-main-cell strong{display:block;min-width:0;font-size:16px;line-height:1.18;overflow-wrap:anywhere}.table .user-login-cell{display:none}.user-secondary-login{display:block;margin-top:2px;font-size:12px;line-height:1.15}.user-secondary-id{display:none}.table .user-access-cell,.table .user-contact-cell{grid-column:auto}.table .user-contact-cell.is-wide{grid-column:1 / -1}.table .user-contact-cell.is-empty{color:var(--muted)}.user-contact-desktop{display:none}.user-contact-mobile{display:block}.table .user-actions-cell{position:absolute;top:8px;right:8px;display:block}.table .user-actions-cell .dots-button{width:44px;height:44px;border-radius:12px}.badge{min-height:24px;padding:4px 8px;font-size:11px}.actions-popup{max-width:calc(100vw - 16px)}#usuarioModal .dialog,#passwordModal .dialog,#eliminarUsuarioModal .dialog{width:min(100%,calc(100vw - 20px));max-height:calc(100dvh - 20px)}#usuarioModal .dialog-head,#passwordModal .dialog-head,#eliminarUsuarioModal .dialog-head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:8px}#usuarioModal .dialog-head>div,#passwordModal .dialog-head>div,#eliminarUsuarioModal .dialog-head>div{min-width:0}#usuarioModal .grid,#passwordModal .grid{grid-template-columns:1fr}#usuarioModal input,#usuarioModal select,#passwordModal input,#passwordModal select{min-width:0;min-height:44px}#usuarioModal .dialog-actions,#passwordModal .dialog-actions,#eliminarUsuarioModal .dialog-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}#usuarioModal .dialog-actions>* ,#passwordModal .dialog-actions>* ,#eliminarUsuarioModal .dialog-actions>*{flex:none;min-height:44px}}
     @media(max-width:360px){.user-filters-card .filters{grid-template-columns:1fr}.table tr{grid-template-columns:1fr}.table .user-actions-cell{position:static;grid-column:1 / -1;justify-self:end;margin-top:-2px}#usuarioModal .dialog-actions,#passwordModal .dialog-actions,#eliminarUsuarioModal .dialog-actions{grid-template-columns:1fr}}
+    .modal-seccion-titulo{margin:0 0 8px;font-size:15px}.acceso-central{border-top:1px solid var(--border);margin-top:16px;padding-top:14px;display:grid;gap:10px}.estado-central{display:grid;gap:4px}.estado-central span{color:var(--muted);font-size:13px;font-weight:800}
   </style>
   <link rel="stylesheet" href="/nav-icons.css?v=6" />
   <link rel="stylesheet" href="/user-menu.css?v=4" />
@@ -124,18 +125,29 @@
       <div class="dialog-head"><div><h2 id="modalTitulo">Nuevo usuario</h2><p class="message" id="modalMensaje"></p></div><button class="icon-button" id="cerrarModal" type="button" title="Cerrar" aria-label="Cerrar"><span class="app-icon icon-close" aria-hidden="true"></span></button></div>
       <form id="usuarioForm">
         <input type="hidden" id="usuarioId">
+        <h3 class="modal-seccion-titulo" id="perfilCentralTitulo" hidden>Perfil</h3>
         <div class="grid">
           <label>Nombre completo<input id="nombre" required></label>
           <label>Usuario login<input id="loginUsuario" required autocomplete="off"></label>
           <label>Email<input id="email" type="email"></label>
           <label>Teléfono<input id="telefono"></label>
-          <label>Rol<select id="rol"><option value="admin">Dueño</option><option value="encargado">Encargado</option><option value="colaborador">Colaborador</option></select></label>
-          <label class="check-row"><input id="activo" type="checkbox" checked> Usuario activo</label>
+          <label id="rolLabel">Rol<select id="rol"><option value="admin">Dueño</option><option value="encargado">Encargado</option><option value="colaborador">Colaborador</option></select></label>
+          <label class="check-row" id="activoLabel"><input id="activo" type="checkbox" checked> Usuario activo</label>
           <label id="passwordLabel">Contraseña<input id="password" type="password" autocomplete="new-password"></label>
           <label id="confirmarLabel">Confirmar contraseña<input id="confirmarPassword" type="password" autocomplete="new-password"></label>
         </div>
         <div class="dialog-actions"><button class="button ghost" id="cancelarUsuario" type="button">Cancelar</button><button class="button" id="guardarUsuario" type="submit">Guardar</button></div>
       </form>
+      <section class="acceso-central" id="accesoCentral" hidden aria-labelledby="accesoCentralTitulo">
+        <h3 class="modal-seccion-titulo" id="accesoCentralTitulo">Acceso</h3>
+        <p class="message" id="accesoMensaje"></p>
+        <div class="grid">
+          <label>Rol<select id="rolCentral"><option value="admin">Dueño</option><option value="encargado">Encargado</option><option value="colaborador">Colaborador</option></select></label>
+          <div class="estado-central"><span>Estado</span><strong id="estadoCentralTexto">-</strong></div>
+        </div>
+        <p class="muted" id="accesoDivergencia"></p>
+        <div class="dialog-actions"><button class="button secondary" id="btnCambiarRol" type="button" disabled>Cambiar rol</button><button class="button secondary" id="btnToggleEstado" type="button" disabled>Activar / Desactivar</button></div>
+      </section>
     </div>
   </div>
 
@@ -171,7 +183,10 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const state = { usuarios: [], filtrados: [], config: {} };
+    // AUTH-SYNC-B2-S3a: modoAutoridad sale EXCLUSIVAMENTE del header X-Atlas-Authority-Mode de
+    // GET /usuarios (default "legacy", nunca se infiere central). `central` = usuario abierto en
+    // edicion con su acceso central (GET /usuarios/:id): unica fuente de autoridad para rol/estado.
+    const state = { usuarios: [], filtrados: [], config: {}, modoAutoridad: "legacy", central: null };
     // AUTH-SYNC-B2-P1B: una Idempotency-Key representa UNA accion del usuario (memoria de pagina
     // solamente -- nunca localStorage). Se genera en el primer submit real, se conserva mientras la
     // accion siga incierta (error de red, respuesta desconocida, IN_PROGRESS), y se invalida en
@@ -343,6 +358,7 @@
         const res = await fetch("/usuarios");
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || "Error al cargar usuarios");
+        state.modoAutoridad = leerModoAutoridad(res);
         state.usuarios = Array.isArray(data) ? data : [];
         renderResumen();
         filtrar();
@@ -361,7 +377,7 @@
       }
       aplicarVistaOperativaUsuarios();
     }
-    function abrirUsuario(user = null) {
+    function abrirUsuario(user = null, { enfocarAcceso = false } = {}) {
       $("usuarioForm").reset();
       $("usuarioId").value = user?.id || "";
       $("modalTitulo").textContent = user ? "Editar usuario" : "Nuevo usuario";
@@ -376,9 +392,229 @@
       $("password").required = !user;
       $("confirmarPassword").required = !user;
       msg($("modalMensaje"), "");
+      // AUTH-SYNC-B2-S3a: en autoridad central la edicion separa Perfil (PUT) de Acceso (rol/estado
+      // por sus endpoints dedicados), y la autoridad se lee SIEMPRE de GET /usuarios/:id.
+      const edicionCentral = Boolean(user) && esModoCentral();
+      prepararModalSegunModo(edicionCentral, user);
       abrirModalSeguro($("usuarioModal"), $("nombre"));
+      if (edicionCentral) return cargarDetalleCentral(user.id, { actualizarPerfil: true, enfocarAcceso });
     }
-    function cerrarUsuario() { cerrarModalSeguro($("usuarioModal")); }
+    function cerrarUsuario() { limpiarEdicionCentral(); cerrarModalSeguro($("usuarioModal")); }
+
+    // ----------------------------------------------------------------------------------------------
+    // AUTH-SYNC-B2-S3a: autoridad CENTRAL (rol y estado de la membership) desde la UI de Usuarios.
+    // Claves de idempotencia SEPARADAS por accion (rol / estado; password conserva la suya P1B), solo
+    // en memoria de pagina. Una clave nace en el primer envio de una accion intencional, se conserva
+    // mientras esa MISMA operacion siga incierta (transporte, respuesta no clasificable, IN_PROGRESS,
+    // 503) para que el reintento manual reenvie EXACTAMENTE la misma solicitud (replay), y se invalida
+    // ante cualquier respuesta definitiva, cambio del valor pedido, cambio de usuario o cierre del modal.
+    let rolIdempotencyKey = null;
+    let estadoIdempotencyKey = null;
+    let operacionRolIncierta = null;
+    let operacionEstadoIncierta = null;
+    let autoridadEnVuelo = false;
+    const MENSAJE_CONFLICTO_VERSION = "La información de este usuario cambió mientras lo estabas editando.";
+    const MENSAJE_SYNC_PENDIENTE = "Cambio guardado. Sincronización con la sucursal pendiente.";
+    const MENSAJE_AUTOMODIFICACION = "No podés cambiar tu propio acceso.";
+
+    function leerModoAutoridad(res) {
+      const valor = res && res.headers && typeof res.headers.get === "function" ? res.headers.get("X-Atlas-Authority-Mode") : null;
+      return valor === "central" ? "central" : "legacy";
+    }
+    function esModoCentral() { return state.modoAutoridad === "central"; }
+    function esPropioUsuario(id) {
+      const actorId = Number(usuarioActual().id);
+      return Number.isFinite(actorId) && actorId === Number(id);
+    }
+    function invalidarOperacionRol() { rolIdempotencyKey = null; operacionRolIncierta = null; }
+    function invalidarOperacionEstado() { estadoIdempotencyKey = null; operacionEstadoIncierta = null; }
+    function limpiarEdicionCentral() {
+      invalidarOperacionRol();
+      invalidarOperacionEstado();
+      autoridadEnVuelo = false;
+      state.central = null;
+    }
+    function prepararModalSegunModo(edicionCentral, user) {
+      limpiarEdicionCentral();
+      $("rolLabel").hidden = edicionCentral;
+      $("activoLabel").hidden = edicionCentral;
+      $("loginUsuario").readOnly = edicionCentral;
+      $("perfilCentralTitulo").hidden = !edicionCentral;
+      $("accesoCentral").hidden = !edicionCentral;
+      $("guardarUsuario").textContent = edicionCentral ? "Guardar perfil" : "Guardar";
+      if (!edicionCentral) return;
+      // El login local solo identifica al destino; nunca se edita en central (renombre bloqueado).
+      state.central = { id: Number(user.id), loginOriginal: String(user.usuario || ""), cargado: false };
+      msg($("accesoMensaje"), "Cargando acceso central...");
+      $("accesoDivergencia").textContent = "";
+      $("estadoCentralTexto").textContent = "-";
+      actualizarBotonesAutoridad();
+    }
+    function actualizarBotonesAutoridad() {
+      const c = state.central;
+      const habilitado = Boolean(c && c.cargado) && !autoridadEnVuelo && !esPropioUsuario(c && c.id);
+      $("btnCambiarRol").disabled = !habilitado;
+      $("btnToggleEstado").disabled = !habilitado;
+    }
+    // Lectura de la autoridad central del usuario abierto. Reemplaza SIEMPRE version/rol/estado con lo
+    // recibido (nunca se incrementa la version en el cliente) y nunca completa valores desde la lista.
+    async function cargarDetalleCentral(id, { actualizarPerfil = false, enfocarAcceso = false, mensaje = null } = {}) {
+      const objetivo = Number(id);
+      if (!state.central || state.central.id !== objetivo) return;
+      state.central.cargado = false;
+      actualizarBotonesAutoridad();
+      let res;
+      let data;
+      try {
+        res = await fetch(`/usuarios/${objetivo}`);
+        data = await res.json();
+      } catch (error) {
+        if (state.central && state.central.id === objetivo) msg($("accesoMensaje"), "No se pudo leer el acceso central. Cerrá y volvé a abrir el usuario.", "error");
+        return;
+      }
+      if (!state.central || state.central.id !== objetivo) return;
+      if (res.status === 404) {
+        cerrarUsuario();
+        await cargarUsuarios();
+        return msg($("mensaje"), "Usuario no encontrado", "error");
+      }
+      if (res.status === 409 && data && data.code === "BINDING_CENTRAL_INCONSISTENTE") {
+        return msg($("accesoMensaje"), "Este usuario no tiene un acceso central consistente en esta empresa. Podés editar su perfil, pero no su acceso.", "error");
+      }
+      const versionValida = data && Number.isSafeInteger(data.membership_version) && data.membership_version >= 0;
+      if (!res.ok || !versionValida || typeof data.rol_central !== "string" || typeof data.activo_central !== "boolean") {
+        return msg($("accesoMensaje"), (data && data.message) || "No se pudo leer el acceso central. Intentá nuevamente en unos minutos.", "error");
+      }
+      if (actualizarPerfil) {
+        $("nombre").value = data.nombre || "";
+        $("loginUsuario").value = data.usuario || "";
+        $("email").value = data.email || "";
+        $("telefono").value = data.telefono || "";
+        state.central.loginOriginal = String(data.usuario || "");
+      }
+      Object.assign(state.central, {
+        membershipVersion: data.membership_version,
+        rolCentral: data.rol_central,
+        activoCentral: data.activo_central,
+        cargado: true
+      });
+      $("rolCentral").value = data.rol_central;
+      $("estadoCentralTexto").textContent = data.activo_central ? "Activo" : "Inactivo";
+      $("btnToggleEstado").textContent = data.activo_central ? "Desactivar" : "Activar";
+      const divergente = normalizarRol(data.rol) !== data.rol_central || Boolean(data.activo) !== data.activo_central;
+      $("accesoDivergencia").textContent = divergente ? "Valor local aún no sincronizado." : "";
+      if (esPropioUsuario(objetivo)) msg($("accesoMensaje"), MENSAJE_AUTOMODIFICACION, "");
+      else if (mensaje) msg($("accesoMensaje"), mensaje.texto, mensaje.tipo);
+      else msg($("accesoMensaje"), "");
+      actualizarBotonesAutoridad();
+      if (enfocarAcceso && typeof $("btnToggleEstado").focus === "function") $("btnToggleEstado").focus({ preventScroll: false });
+    }
+    async function guardarPerfilCentral(id) {
+      // Solo perfil: nunca rol ni activo (la autoridad tiene sus endpoints); el login es el original.
+      const login = state.central && state.central.id === Number(id) ? state.central.loginOriginal : $("loginUsuario").value.trim();
+      const payload = { nombre: $("nombre").value.trim(), usuario: login, email: $("email").value.trim(), telefono: $("telefono").value.trim() };
+      $("guardarUsuario").disabled = true;
+      try {
+        const res = await fetch(`/usuarios/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || "Error al guardar el perfil");
+        msg($("modalMensaje"), data.message || "Perfil actualizado", "ok");
+        await cargarUsuarios();
+        msg($("mensaje"), data.message || "Perfil actualizado", "ok");
+      } catch (error) {
+        msg($("modalMensaje"), error.message || "Error al guardar el perfil", "error");
+      } finally {
+        $("guardarUsuario").disabled = false;
+      }
+    }
+    function cambiarRolCentral() {
+      const c = state.central;
+      if (autoridadEnVuelo || !c || !c.cargado) return;
+      if (esPropioUsuario(c.id)) return msg($("accesoMensaje"), MENSAJE_AUTOMODIFICACION, "error");
+      const rol = $("rolCentral").value;
+      let op = operacionRolIncierta;
+      if (!op || op.targetId !== c.id || op.rol !== rol) {
+        if (rol === c.rolCentral) return msg($("accesoMensaje"), "El usuario ya tiene ese rol.", "");
+        rolIdempotencyKey = crypto.randomUUID();
+        op = { tipo: "rol", targetId: c.id, rol, expectedVersion: c.membershipVersion, key: rolIdempotencyKey };
+      }
+      return ejecutarOperacionAutoridad(op);
+    }
+    function cambiarEstadoCentral() {
+      const c = state.central;
+      if (autoridadEnVuelo || !c || !c.cargado) return;
+      if (esPropioUsuario(c.id)) return msg($("accesoMensaje"), MENSAJE_AUTOMODIFICACION, "error");
+      let op = operacionEstadoIncierta;
+      if (!op || op.targetId !== c.id) {
+        estadoIdempotencyKey = crypto.randomUUID();
+        op = { tipo: "estado", targetId: c.id, activo: !c.activoCentral, expectedVersion: c.membershipVersion, key: estadoIdempotencyKey };
+      }
+      return ejecutarOperacionAutoridad(op);
+    }
+    function conservarOperacionIncierta(op) {
+      if (op.tipo === "rol") operacionRolIncierta = op;
+      else operacionEstadoIncierta = op;
+    }
+    function invalidarOperacion(op) {
+      if (op.tipo === "rol") invalidarOperacionRol();
+      else invalidarOperacionEstado();
+    }
+    // Envia EXACTAMENTE la operacion descripta por `op` (target, valor, expected_version y clave
+    // fijados en su primer envio): un reintento de una operacion incierta es un replay, nunca una
+    // solicitud recalculada -- por eso no se relee el detalle antes de reenviarla.
+    async function ejecutarOperacionAutoridad(op) {
+      autoridadEnVuelo = true;
+      actualizarBotonesAutoridad();
+      const cuerpo = op.tipo === "rol"
+        ? { rol: op.rol, expected_version: op.expectedVersion }
+        : { activo: op.activo, expected_version: op.expectedVersion };
+      let res;
+      let data;
+      try {
+        res = await fetch(`/usuarios/${op.targetId}/${op.tipo}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": op.key },
+          body: JSON.stringify(cuerpo)
+        });
+        data = await res.json();
+      } catch (error) {
+        conservarOperacionIncierta(op);
+        autoridadEnVuelo = false;
+        actualizarBotonesAutoridad();
+        return msg($("accesoMensaje"), "No se pudo confirmar el cambio por un problema de conexión. Reintentá: se repetirá exactamente la misma operación.", "error");
+      }
+      autoridadEnVuelo = false;
+      return procesarRespuestaAutoridad(op, res.status, data || {});
+    }
+    async function procesarRespuestaAutoridad(op, status, data) {
+      if ((status === 409 && data.code === "IDEMPOTENCY_OPERATION_IN_PROGRESS") || status === 503) {
+        // Sin resultado definitivo: se conserva la MISMA operacion para reintentarla tal cual.
+        conservarOperacionIncierta(op);
+        actualizarBotonesAutoridad();
+        return msg($("accesoMensaje"), data.message || "No se pudo confirmar el cambio. Reintentá en unos instantes.", "error");
+      }
+      // Cualquier otra respuesta es DEFINITIVA: la clave muere y la autoridad se relee por GET.
+      invalidarOperacion(op);
+      if (status === 404) {
+        cerrarUsuario();
+        await cargarUsuarios();
+        return msg($("mensaje"), "Usuario no encontrado", "error");
+      }
+      let mensaje;
+      if (status >= 200 && status < 300) {
+        const pendiente = data.sincronizacion_tenant === "pendiente_al_commit";
+        const texto = pendiente ? MENSAJE_SYNC_PENDIENTE : (data.code === "SIN_CAMBIOS" ? "Sin cambios: el usuario ya tenía ese valor." : (data.message || "Cambio guardado."));
+        mensaje = { texto, tipo: "ok" };
+        msg($("mensaje"), texto, "ok");
+      } else if (status === 409 && data.code === "VERSION_CONFLICT") {
+        mensaje = { texto: MENSAJE_CONFLICTO_VERSION, tipo: "error" };
+      } else if (status === 428) {
+        mensaje = { texto: "No se pudo validar la versión del usuario. Se recargaron sus datos; revisalos y volvé a intentar.", tipo: "error" };
+      } else {
+        mensaje = { texto: data.message || "No se pudo completar el cambio.", tipo: "error" };
+      }
+      return cargarDetalleCentral(op.targetId, { mensaje });
+    }
     function abrirPassword(id) {
       $("passwordForm").reset();
       $("passwordUsuarioId").value = id;
@@ -442,6 +678,7 @@
     async function guardarUsuario(event) {
       event.preventDefault();
       const id = $("usuarioId").value;
+      if (id && esModoCentral()) return guardarPerfilCentral(id);
       const payload = { nombre: $("nombre").value.trim(), usuario: $("loginUsuario").value.trim(), email: $("email").value.trim(), telefono: $("telefono").value.trim(), rol: $("rol").value, activo: $("activo").checked };
       if (!id) { payload.password = $("password").value; payload.confirmar_password = $("confirmarPassword").value; }
       $("guardarUsuario").disabled = true;
@@ -644,6 +881,9 @@
       if (!user) return;
       if (action === "edit") return abrirUsuario(user);
       if (action === "password") return abrirPassword(id);
+      // AUTH-SYNC-B2-S3a: en central el toggle de la fila NO muta: abre Acceso con la autoridad leida
+      // de GET /usuarios/:id (la etiqueta de la fila sigue siendo el valor local de la lista).
+      if (action === "toggle" && esModoCentral()) return abrirUsuario(user, { enfocarAcceso: true });
       if (action === "toggle") {
         const res = await fetch(`/usuarios/${id}/estado`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ activo: !user.activo }) });
         const data = await res.json();
@@ -681,6 +921,10 @@
     $("recargar").onclick = cargarUsuarios;
     $("usuarioForm").addEventListener("submit", guardarUsuario);
     $("passwordForm").addEventListener("submit", cambiarPassword);
+    $("btnCambiarRol").addEventListener("click", cambiarRolCentral);
+    $("btnToggleEstado").addEventListener("click", cambiarEstadoCentral);
+    // Elegir otro rol es una accion NUEVA: la operacion de rol pendiente (y su clave) se descarta.
+    $("rolCentral").addEventListener("change", invalidarOperacionRol);
     // AUTH-SYNC-B2-P1B R2B: editar password/confirmacion invalida la key (en memoria Y en
     // sessionStorage) SALVO durante RECOVERY MODE -- ahi el usuario esta deliberadamente
     // reingresando el secreto (nunca persistido) para recuperar una operacion pendiente, y ese

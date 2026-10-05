@@ -2344,6 +2344,9 @@ async function getUsuarioById(id) {
 }
 
 app.get("/usuarios", async (req, res) => {
+  // AUTH-SYNC-B2-S3a: modo de autoridad EXPLICITO para la UI de Usuarios (derivado unicamente de la
+  // configuracion del servidor; nunca del cliente). Solo un header: el JSON no cambia.
+  res.set("X-Atlas-Authority-Mode", ATLAS_AUTH_MODE === "central" ? "central" : "legacy");
   const estado = String(req.query.estado || "todos").toLowerCase();
   const rol = normalizarRol(req.query.rol || "");
   const params = [];
