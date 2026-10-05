@@ -12,7 +12,13 @@ const {
   procesarPendientePasswordStandalone
 } = require("../database/process-central-outbox");
 const { autenticarCredencialCentral } = require("./centralAuthSecurity");
-const { revalidarSesionCentral } = require("./centralAuthResolver");
+const { revalidarSesionCentral, abrirControlDbSoloLectura } = require("./centralAuthResolver");
+const { cambiarEstadoMembershipCentralIdempotente } = require("./services/membershipEstadoCentralService");
+const {
+  runQuery: runControlQuery,
+  getQuery: getControlQuery,
+  closeDb: closeControlDbConexion
+} = require("../database/init-control-db");
 const { getTenantContext } = require("./tenantRequestContext");
 const { resolverTenantDbRegistradoPorSlug } = require("./tenantDbRegistry");
 const { verificarTenantDbIdentity } = require("./tenantDbIdentity");
@@ -2369,11 +2375,64 @@ app.get("/usuarios", async (req, res) => {
   }
 });
 
+// AUTH-SYNC-B2-S1b2: acceso central de la membership del usuario local en la empresa de la SESION
+// (nunca de datos del cliente), resuelta exclusivamente por (empresa_id, usuario_local_id). Lectura
+// pura de Control (conexion de solo lectura). Devuelve { ok, membership } o { ok:false, motivo }.
+async function leerAccesoCentralPorUsuarioLocal({ empresaId, usuarioLocalId }) {
+  const controlDbPath = userControlBridge.resolveControlDbPath();
+  if (!fs.existsSync(controlDbPath)) return { ok: false, motivo: "CONTROL_NO_DISPONIBLE" };
+  let controlDb;
+  try {
+    controlDb = await abrirControlDbSoloLectura(controlDbPath);
+  } catch (error) {
+    return { ok: false, motivo: "CONTROL_NO_DISPONIBLE" };
+  }
+  try {
+    await runControlQuery(controlDb, "PRAGMA busy_timeout = 5000");
+    const membership = await getControlQuery(
+      controlDb,
+      `SELECT ue.id, ue.empresa_id, ue.usuario_local_id, ue.activo, ue.version
+       FROM usuario_empresas ue
+       JOIN usuarios u ON u.id = ue.usuario_id
+       WHERE ue.empresa_id = ? AND ue.usuario_local_id = ?`,
+      [empresaId, usuarioLocalId]
+    );
+    if (!membership) return { ok: false, motivo: "BINDING_CENTRAL_INCONSISTENTE" };
+    return { ok: true, membership };
+  } catch (error) {
+    logError("Error leyendo acceso central del usuario:", error);
+    return { ok: false, motivo: "CONTROL_NO_DISPONIBLE" };
+  } finally {
+    try { await closeControlDbConexion(controlDb); } catch (_) { /* conexion de solo lectura */ }
+  }
+}
+
 app.get("/usuarios/:id", async (req, res) => {
   try {
     const usuario = await getUsuarioById(Number(req.params.id));
     if (!usuario) {
       return res.status(404).json({ message: "Usuario no encontrado" });
+    }
+    // AUTH-SYNC-B2-S1b2: en auth central se agrega la generacion de la membership (apta como
+    // expected_version de PATCH /usuarios/:id/estado) y su estado central. Nunca se inventa desde la
+    // DB local: sin Control o sin binding consistente se falla cerrado. `activo` sigue siendo el valor
+    // LOCAL -- activo_central no implica que el tenant ya este sincronizado.
+    if (ATLAS_AUTH_MODE === "central") {
+      if (!req.centralSession) {
+        return rechazarNoAutenticado(res, CENTRAL_SESSION_INVALID_MESSAGE);
+      }
+      const acceso = await leerAccesoCentralPorUsuarioLocal({ empresaId: req.centralSession.empresaId, usuarioLocalId: usuario.id });
+      if (!acceso.ok) {
+        if (acceso.motivo === "BINDING_CENTRAL_INCONSISTENTE") {
+          return res.status(409).json({ code: "BINDING_CENTRAL_INCONSISTENTE", message: "El usuario no tiene un acceso central consistente en esta empresa." });
+        }
+        return res.status(503).json({ code: "CONTROL_NO_DISPONIBLE", message: "No se pudo leer el acceso central del usuario. Intenta nuevamente en unos minutos." });
+      }
+      return res.json({
+        ...usuario,
+        membership_version: Number(acceso.membership.version),
+        activo_central: Number(acceso.membership.activo) === 1
+      });
     }
     return res.json(usuario);
   } catch (error) {
@@ -2522,7 +2581,100 @@ app.put("/usuarios/:id", async (req, res) => {
   }
 });
 
+// AUTH-SYNC-B2-S1b2: respuesta HTTP para resultados NO durables del writer idempotente S1b1 (los
+// durables se devuelven exactamente como quedaron almacenados). Ninguna rama 503 presenta exito.
+function responderEstadoCentralNoDurable(res, resultado) {
+  switch (resultado.resultado) {
+    case "NO_AUTORIZADO":
+    case "EMPRESA_NO_DISPONIBLE":
+      return res.status(403).json({ code: "ACTOR_NO_AUTORIZADO", message: "No tenes permisos para administrar usuarios" });
+    case "AUTOMODIFICACION":
+      return res.status(403).json({ code: "AUTOMODIFICACION_PROHIBIDA", message: "No podés cambiar el estado de tu propio usuario." });
+    case "MEMBERSHIP_NO_ENCONTRADA":
+      return res.status(404).json({ code: "USUARIO_NO_ENCONTRADO", message: "Usuario no encontrado" });
+    case "ULTIMO_ADMIN_PROTEGIDO":
+      return res.status(409).json({ code: "LAST_ADMIN_PROTECTED", message: "La empresa debe conservar al menos un administrador activo." });
+    case "IDEMPOTENCY_KEY_REUSED":
+      return res.status(409).json({ code: "IDEMPOTENCY_KEY_REUSED", message: "Esta clave de idempotencia ya fue usada para una operacion distinta." });
+    case "IDEMPOTENCY_OPERATION_IN_PROGRESS":
+      return res.status(409).json({ code: "IDEMPOTENCY_OPERATION_IN_PROGRESS", message: "Ya existe una operacion en curso con esta clave. Reintenta con la MISMA clave en unos instantes." });
+    case "PARAMETROS_INVALIDOS":
+      return res.status(400).json({ code: "PARAMETROS_INVALIDOS", message: "Solicitud invalida." });
+    case "ESQUEMA_INCOMPATIBLE":
+    case "ERROR_TRANSITORIO":
+    case "FALLO_TRANSACCIONAL":
+      return res.status(503).json({ code: "CONTROL_NO_DISPONIBLE", message: "No se pudo confirmar el cambio en el control central. No se realizo ningun cambio. Intenta nuevamente en unos minutos." });
+    default:
+      logError("Resultado inesperado del writer central de estado", new Error(String(resultado.resultado)), `motivo=${resultado.motivo || ""}`);
+      return res.status(500).json({ code: "ERROR_INTERNO", message: "Error al cambiar estado del usuario" });
+  }
+}
+
+// AUTH-SYNC-B2-S1b2: PATCH /usuarios/:id/estado en auth central (single o multi) -- CENTRAL-FIRST via
+// el writer idempotente S1b1. Actor, su membership y la empresa salen EXCLUSIVAMENTE de la sesion
+// central revalidada por requireAuth (y requireServerPermissions ya exigio admin_usuarios + ADMIN);
+// el writer vuelve a validar toda la autoridad dentro de su transaccion. Nunca escribe la Business
+// DB ni llama al bridge legacy: el tenant se proyecta despues (consumer S0b3a / worker S0b3b).
+async function manejarPatchEstadoCentral(req, res) {
+  if (userControlBridge.getBridgeMode() !== "shadow" || !req.centralSession) {
+    return rechazarNoAutenticado(res, CENTRAL_SESSION_INVALID_MESSAGE);
+  }
+  const idCrudo = String(req.params.id || "");
+  const usuarioId = /^[1-9]\d{0,15}$/.test(idCrudo) ? Number(idCrudo) : null;
+  if (!usuarioId || !Number.isSafeInteger(usuarioId)) {
+    return res.status(400).json({ code: "USUARIO_ID_INVALIDO", message: "Identificador de usuario invalido." });
+  }
+  const idempotencyKey = validarIdempotencyKeyHeader(req.headers["idempotency-key"]);
+  if (!idempotencyKey) {
+    return res.status(400).json({ code: "IDEMPOTENCY_KEY_REQUIRED", message: "Falta una clave de idempotencia válida para esta operación." });
+  }
+  const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+  if (typeof body.activo !== "boolean") {
+    return res.status(400).json({ code: "ACTIVO_INVALIDO", message: "El campo activo debe ser true o false." });
+  }
+  if (body.expected_version === undefined || body.expected_version === null) {
+    return res.status(428).json({ code: "PRECONDITION_REQUIRED", message: "Falta expected_version: volve a cargar el usuario e intenta nuevamente." });
+  }
+  if (typeof body.expected_version !== "number" || !Number.isSafeInteger(body.expected_version) || body.expected_version < 0) {
+    return res.status(400).json({ code: "EXPECTED_VERSION_INVALIDA", message: "expected_version debe ser un entero no negativo." });
+  }
+  // F4: en multi, la empresa de la sesion debe ser la del tenant del request (requireAuth ya lo
+  // exige; se reverifica aca porque es la empresa que recibe el writer).
+  const empresaRequest = empresaAuthDelRequest();
+  if (ATLAS_TENANCY_MODE === TENANCY_MODES.MULTI && (!empresaRequest || empresaRequest.empresaId !== Number(req.centralSession.empresaId))) {
+    return rechazarNoAutenticado(res, CENTRAL_SESSION_INVALID_MESSAGE);
+  }
+
+  try {
+    // Binding local: el usuario debe existir en la Business DB de ESTE tenant (solo lectura).
+    const usuarioLocal = await getQuery("SELECT id FROM usuarios WHERE id = ?", [usuarioId]);
+    if (!usuarioLocal) {
+      return res.status(404).json({ code: "USUARIO_NO_ENCONTRADO", message: "Usuario no encontrado" });
+    }
+    const resultado = await cambiarEstadoMembershipCentralIdempotente({
+      actorUsuarioId: req.centralSession.centralId,
+      actorMembershipId: req.centralSession.membershipId,
+      empresaId: req.centralSession.empresaId,
+      usuarioLocalId: usuarioId,
+      activo: body.activo,
+      expectedVersion: body.expected_version,
+      idempotencyKey,
+      controlDbPath: userControlBridge.resolveControlDbPath()
+    });
+    if (resultado.durable) {
+      return res.status(resultado.resultadoHttp).json(resultado.resultadoJson);
+    }
+    return responderEstadoCentralNoDurable(res, resultado);
+  } catch (error) {
+    logError("Error al cambiar estado central del usuario:", error);
+    return res.status(503).json({ code: "CONTROL_NO_DISPONIBLE", message: "No se pudo confirmar el cambio en el control central. No se realizo ningun cambio. Intenta nuevamente en unos minutos." });
+  }
+}
+
 app.patch("/usuarios/:id/estado", async (req, res) => {
+  if (ATLAS_AUTH_MODE === "central") {
+    return manejarPatchEstadoCentral(req, res);
+  }
   const usuarioId = Number(req.params.id);
   const activo = req.body?.activo ? 1 : 0;
 

@@ -21319,6 +21319,19 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testB2S1b1ConsumerProyectaSinMutarRespuestaYReintentoHistorico);
   await _run(testB2S1b1WriterS1aSinRegresion);
   await _run(testB2S1b1FormatoClaveYFilaEnProgreso);
+  await _run(testB2S1b2CentralSingleFlujoCompletoYLecturaDeVersion);
+  await _run(testB2S1b2CentralMultiEmpresaPorHostYAislamiento);
+  await _run(testB2S1b2ActorNoAdminYSesionInvalida);
+  await _run(testB2S1b2AutoridadRevocadaNoObtieneReplay);
+  await _run(testB2S1b2ValidacionDeEntrada);
+  await _run(testB2S1b2ReplayConflictoYPerdidaDeRespuesta);
+  await _run(testB2S1b2ConcurrenciaHttp);
+  await _run(testB2S1b2ErrorTransitorioDeControl);
+  await _run(testB2S1b2TenantInaccesibleTrasCommitSinFalsoRollback);
+  await _run(testB2S1b2BindingInconsistenteYDestinatarioReasignado);
+  await _run(testB2S1b2LegacyShadowYOffIntactos);
+  await _run(testB2S1b2PasswordP1SinRegresion);
+  await _run(testB2S1b2SinEscriturasEnBasesProtegidas);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -25514,10 +25527,21 @@ async function testAuthSyncB2S1A2CStateGuardBridgeOffActivarYDesactivar() {
 }
 
 async function testAuthSyncB2S1A2CStateGuardMultiTenantSinEscriturasCruzadas() {
-  await mt1f4ConEscenario(async ({ a, b, pedir, loginTenant }) => {
+  await mt1f4ConEscenario(async ({ escenario, a, b, pedir, loginTenant }) => {
     const tokenA = await loginTenant(a);
-    const patchA = await pedir(a, "PATCH", `/usuarios/${a.local.id}/estado`, { activo: false }, tokenA);
-    assertEqual(patchA.status, 409, `PATCH estado en tenant A debe rechazar 409: ${patchA.texto}`);
+    // AUTH-SYNC-B2-S1b2 (adaptacion autorizada): en auth central PATCH estado es central-first; el
+    // admin de A intentando desactivarse a si mismo, con clave y expected_version validas, se rechaza
+    // con 403 por AUTOMODIFICACION -- sin escrituras en ninguna base de ninguna empresa.
+    const membershipAntes = (await allSql(escenario.controlDbPath, "SELECT * FROM usuario_empresas WHERE id = ?", [a.membership.id]))[0];
+    const centralAntes = JSON.stringify(await allSql(escenario.controlDbPath, "SELECT id, password_hash, password_version, version, activo FROM usuarios WHERE id = ?", [a.central.id]));
+    const idempotenciaAntes = JSON.stringify(await allSql(escenario.controlDbPath, "SELECT * FROM operacion_idempotencia ORDER BY clave ASC"));
+    const patchA = await pedir(a, "PATCH", `/usuarios/${a.local.id}/estado`, { activo: false, expected_version: Number(membershipAntes.version) }, tokenA, nuevaIdempotencyKeyHeader());
+    assertEqual(patchA.status, 403, `PATCH estado sobre el propio admin de A debe rechazar 403: ${patchA.texto}`);
+    assertSame(patchA.json && patchA.json.code, "AUTOMODIFICACION_PROHIBIDA", "rechazo explicito por automodificacion");
+    assertSame(JSON.stringify((await allSql(escenario.controlDbPath, "SELECT * FROM usuario_empresas WHERE id = ?", [a.membership.id]))[0]), JSON.stringify(membershipAntes), "la membership del admin no cambia");
+    assertSame(JSON.stringify(await allSql(escenario.controlDbPath, "SELECT id, password_hash, password_version, version, activo FROM usuarios WHERE id = ?", [a.central.id])), centralAntes, "la identidad central no cambia");
+    assertSame(JSON.stringify(await allSql(escenario.controlDbPath, "SELECT * FROM operacion_idempotencia ORDER BY clave ASC")), idempotenciaAntes, "ninguna operacion de idempotencia creada ni modificada");
+    assertEqual((await allSql(escenario.controlDbPath, "SELECT COUNT(*) AS n FROM sync_pendiente WHERE tipo_operacion = 'rol_activo'"))[0].n, 0, "ningun pendiente rol_activo");
 
     const localADespues = (await allSql(a.dbPath, "SELECT activo FROM usuarios WHERE id = ?", [a.local.id]))[0];
     assertEqual(Number(localADespues.activo), Number(a.local.activo), "activo local de A no debe cambiar tras el rechazo");
@@ -37627,13 +37651,23 @@ async function testMT1F4MultiBridgeUsaEmpresaExplicita() {
       // ningun payload, asi que esta llamada ahora es puramente perfil-only por diseno.
       await pedirCambio("PUT", `/usuarios/${local.id}`, { nombre: "Bridge edit", usuario: "bridge-f4", rol: "colaborador", activo: true });
       assertSame((await allSql(escenario.controlDbPath, "SELECT rol FROM usuario_empresas WHERE id = ?", [membership.id]))[0].rol, "colaborador", "PUT ya no sincroniza rol -- membership permanece intacta");
-      // AUTH-SYNC-B2-S1A2C-STATE-GUARD: PATCH estado ya no sincroniza activo bajo ningun payload en
-      // shadow -- se rechaza incondicionalmente con 409, sin tocar ninguna base. No se reutiliza
-      // pedirCambio (que exige 200) porque esta llamada ahora debe fallar deliberadamente; nada mas
-      // adelante en este bucle depende de que activo se haya puesto en 0.
-      const patchEstado = await pedir(tenant, "PATCH", `/usuarios/${local.id}/estado`, { activo: false }, tokens.get(tenant));
-      assertEqual(patchEstado.status, 409, `PATCH estado bajo shadow debe rechazar 409: ${patchEstado.texto}`);
-      assertEqual((await allSql(escenario.controlDbPath, "SELECT activo FROM usuario_empresas WHERE id = ?", [membership.id]))[0].activo, 1, "PATCH estado ya no sincroniza activo -- membership permanece intacta");
+      // AUTH-SYNC-B2-S1b2 (adaptacion autorizada): en auth central PATCH estado es central-first via el
+      // writer idempotente S1b1 -- confirma en la membership de la empresa EXPLICITA del tenant, con
+      // lapida y respuesta durable; la Business DB local no cambia (sin proyeccion en este slice).
+      const membershipAntesEstado = (await allSql(escenario.controlDbPath, "SELECT activo, version FROM usuario_empresas WHERE id = ?", [membership.id]))[0];
+      const claveEstado = nuevaIdempotencyKeyHeader();
+      const patchEstado = await pedir(tenant, "PATCH", `/usuarios/${local.id}/estado`, { activo: false, expected_version: Number(membershipAntesEstado.version) }, tokens.get(tenant), claveEstado);
+      assertEqual(patchEstado.status, 200, `PATCH estado central-first debe confirmar: ${patchEstado.texto}`);
+      assertSame(patchEstado.json.code, "ESTADO_ACTUALIZADO", "codigo funcional de exito");
+      assertSame(patchEstado.json.sincronizacion_tenant, "pendiente_al_commit", "estado de sincronizacion conocido al commit");
+      const membershipDespuesEstado = (await allSql(escenario.controlDbPath, "SELECT activo, version, empresa_id FROM usuario_empresas WHERE id = ?", [membership.id]))[0];
+      assertSame(JSON.stringify([membershipDespuesEstado.activo, membershipDespuesEstado.version, membershipDespuesEstado.empresa_id]), JSON.stringify([0, Number(membershipAntesEstado.version) + 1, tenant.empresa.id]), "activo=0 y una generacion exacta en la membership de la empresa explicita");
+      const pendienteEstado = (await allSql(escenario.controlDbPath, "SELECT estado, version_objetivo, empresa_id FROM sync_pendiente WHERE membership_id = ? AND tipo_operacion = 'rol_activo'", [membership.id]))[0];
+      assertSame(JSON.stringify([pendienteEstado.estado, pendienteEstado.version_objetivo, pendienteEstado.empresa_id]), JSON.stringify(["pendiente", Number(membershipAntesEstado.version) + 1, tenant.empresa.id]), "lapida rol_activo durable con la generacion confirmada");
+      const idempotenciaEstado = (await allSql(escenario.controlDbPath, "SELECT estado, resultado_http, resultado_json FROM operacion_idempotencia WHERE clave = ?", [claveEstado["Idempotency-Key"]]))[0];
+      assertSame(JSON.stringify([idempotenciaEstado.estado, idempotenciaEstado.resultado_http]), JSON.stringify(["confirmada", 200]), "operacion de idempotencia confirmada");
+      assertSame(idempotenciaEstado.resultado_json, JSON.stringify(patchEstado.json), "resultado durable = respuesta HTTP");
+      assertEqual((await allSql(tenant.dbPath, "SELECT activo FROM usuarios WHERE id = ?", [local.id]))[0].activo, 1, "Business DB local sin cambio de estado (sin proyeccion)");
       const password = `BridgeNuevo-${tenant.tag}-456`;
       await pedirCambio("PATCH", `/usuarios/${local.id}/password`, { password, confirmar_password: password }, nuevaIdempotencyKeyHeader());
       const central = (await allSql(escenario.controlDbPath, "SELECT password_hash FROM usuarios WHERE id = ?", [membership.usuario_id]))[0];
@@ -45325,6 +45359,411 @@ async function testB2S1b1FormatoClaveYFilaEnProgreso() {
   } finally {
     b2s0b2Limpiar(f);
   }
+}
+
+// AUTH-SYNC-B2-S1b2: PATCH /usuarios/:id/estado central-first (writer idempotente S1b1) y lectura de
+// membership_version en GET /usuarios/:id. Servidores reales hijos sobre fixtures descartables.
+async function b2s1b2CentralSingle(fn) {
+  const dbPath = bootstrapFreshRegisteredTenantDb();
+  let f = { dbPath };
+  try {
+    const fixture = await setupCentralFixture({ businessDbPath: dbPath });
+    f = { ...fixture, dbPath, membershipId: fixture.membership.id, actorId: fixture.central.id };
+    await fn(f);
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+function b2s1b2Patch(baseUrl, token, usuarioId, cuerpo, clave) {
+  return requestJson(baseUrl, "PATCH", `/usuarios/${usuarioId}/estado`, cuerpo, token, clave === null ? undefined : { "Idempotency-Key": clave });
+}
+
+async function b2s1b2Control(controlDbPath) {
+  return JSON.stringify({
+    memberships: await allSql(controlDbPath, "SELECT * FROM usuario_empresas ORDER BY id ASC"),
+    pendientes: await allSql(controlDbPath, "SELECT * FROM sync_pendiente ORDER BY id ASC"),
+    idempotencia: await allSql(controlDbPath, "SELECT * FROM operacion_idempotencia ORDER BY clave ASC"),
+    identidad: await allSql(controlDbPath, "SELECT id, password_hash, password_version, version, activo FROM usuarios ORDER BY id ASC")
+  });
+}
+
+// Miembro adicional (usuario local + identidad central + membership) en un tenant del escenario multi.
+async function b2s1b2MiembroTenant(escenario, tenant, usuario, { id = null } = {}) {
+  const local = id === null
+    ? await runSql(tenant.dbPath, "INSERT INTO usuarios (nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, 1)", [`S1b2 ${usuario}`, usuario, "hash-s1b2", "colaborador"])
+    : await runSql(tenant.dbPath, "INSERT INTO usuarios (id, nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, ?, 1)", [id, `S1b2 ${usuario}`, usuario, "hash-s1b2", "colaborador"]);
+  const localId = id === null ? local.lastID : id;
+  const control = new sqlite3.Database(escenario.controlDbPath);
+  try {
+    const central = await crearUsuarioCentral(control, { nombre: `S1b2 ${usuario}`, usuarioReferencia: usuario, passwordHash: await bcrypt.hash("S1b2Multi123", 4), activo: 1 });
+    const membership = await crearMembership(control, { usuarioId: central.id, empresaId: tenant.empresa.id, usuarioLocalId: localId, rol: "colaborador", activo: 1 });
+    return { localId, centralId: central.id, membershipId: membership.id };
+  } finally {
+    await closeControlDb(control);
+  }
+}
+
+async function testB2S1b2CentralSingleFlujoCompletoYLecturaDeVersion() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s1b2.x");
+    let respuesta;
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const g = await requestJson(baseUrl, "GET", `/usuarios/${x.localId}`, null, token);
+      assertEqual(g.response.status, 200, `GET central (${JSON.stringify(g.data)})`);
+      assertSame(JSON.stringify([g.data.id, g.data.activo, g.data.membership_version, g.data.activo_central]), JSON.stringify([x.localId, true, 0, true]), "GET expone la version central de la membership");
+      respuesta = await b2s1b2Patch(baseUrl, token, x.localId, { activo: false, expected_version: g.data.membership_version }, crypto.randomUUID());
+      assertEqual(respuesta.response.status, 200, `PATCH central (${JSON.stringify(respuesta.data)})`);
+      assertSame(JSON.stringify(respuesta.data), JSON.stringify({
+        code: "ESTADO_ACTUALIZADO",
+        message: "Usuario desactivado en el control central. La sincronizacion con la sucursal quedo pendiente al confirmar.",
+        usuario_id: x.localId,
+        activo: false,
+        version: 1,
+        operacion: { tipo: "rol_activo", version_objetivo: 1 },
+        sincronizacion_tenant: "pendiente_al_commit"
+      }), "cuerpo durable de S1b1, intacto (version 0 valida)");
+      const g2 = await requestJson(baseUrl, "GET", `/usuarios/${x.localId}`, null, token);
+      assertSame(JSON.stringify([g2.data.activo, g2.data.membership_version, g2.data.activo_central]), JSON.stringify([true, 1, false]), "GET: activo local sin proyectar, central en la generacion 1");
+      const lista = await requestJson(baseUrl, "GET", "/usuarios", null, token);
+      assertEqual(lista.response.status, 200, "GET /usuarios sigue respondiendo");
+      assertSame(lista.data.some((u) => Object.prototype.hasOwnProperty.call(u, "membership_version")), false, "GET /usuarios sin cambios de contrato");
+      assertSame(lista.data.find((u) => u.id === x.localId).activo, true, "la lista sigue mostrando el activo local");
+    }, extraEnvCentral(f));
+    const m = await b2s1aMembership(f, x.membershipId);
+    assertSame(JSON.stringify([m.activo, m.version]), JSON.stringify([0, 1]), "Control: generacion 1 con activo 0");
+    const p = await b2s1aPendienteRolActivo(f, x.membershipId);
+    assertSame(JSON.stringify([p.estado, p.version_objetivo]), JSON.stringify(["pendiente", 1]), "lapida durable");
+    const fila = (await allSql(f.controlDbPath, "SELECT estado, resultado_http, resultado_json, endpoint FROM operacion_idempotencia"))[0];
+    assertSame(JSON.stringify([fila.estado, fila.resultado_http, fila.endpoint]), JSON.stringify(["confirmada", 200, "/usuarios/:id/estado"]), "idempotencia confirmada");
+    assertSame(fila.resultado_json, JSON.stringify(respuesta.data), "respuesta HTTP = resultado durable almacenado");
+    assertEqual((await b2s0b2Local(f.dbPath, x.localId)).activo, 1, "la rama central nunca escribe la Business DB");
+  });
+}
+
+async function testB2S1b2CentralMultiEmpresaPorHostYAislamiento() {
+  await mt1f4ConEscenario(async ({ escenario, a, b, pedir, loginTenant }) => {
+    const ma = await b2s1b2MiembroTenant(escenario, a, "s1b2.multi");
+    const mb = await b2s1b2MiembroTenant(escenario, b, "s1b2.multi");
+    assertEqual(ma.localId, mb.localId, "colision de usuario_local_id entre empresas");
+    const maxA = (await allSql(a.dbPath, "SELECT MAX(id) AS m FROM usuarios"))[0].m;
+    const maxB = (await allSql(b.dbPath, "SELECT MAX(id) AS m FROM usuarios"))[0].m;
+    const soloB = await b2s1b2MiembroTenant(escenario, b, "s1b2.solob", { id: Math.max(maxA, maxB) + 100 });
+    const tokenA = await loginTenant(a);
+    await loginTenant(b);
+    const fotoB = async () => JSON.stringify([
+      await allSql(escenario.controlDbPath, "SELECT * FROM usuario_empresas WHERE empresa_id = ? ORDER BY id", [b.empresa.id]),
+      await allSql(escenario.controlDbPath, "SELECT * FROM sync_pendiente WHERE empresa_id = ? ORDER BY id", [b.empresa.id])
+    ]);
+    const fotoBAntes = await fotoB();
+
+    const g = await pedir(a, "GET", `/usuarios/${ma.localId}`, null, tokenA);
+    assertEqual(g.status, 200, `GET en A: ${g.texto}`);
+    assertEqual(g.json.membership_version, 0, "version de la membership de A");
+    const p = await pedir(a, "PATCH", `/usuarios/${ma.localId}/estado`, { activo: false, expected_version: 0 }, tokenA, nuevaIdempotencyKeyHeader());
+    assertEqual(p.status, 200, `PATCH en A: ${p.texto}`);
+    assertSame(p.json.code, "ESTADO_ACTUALIZADO", "confirmado en la empresa del Host");
+    const filaA = (await allSql(escenario.controlDbPath, "SELECT activo, version, empresa_id FROM usuario_empresas WHERE id = ?", [ma.membershipId]))[0];
+    assertSame(JSON.stringify([filaA.activo, filaA.version, filaA.empresa_id]), JSON.stringify([0, 1, a.empresa.id]), "solo la membership de A");
+    const filaB = (await allSql(escenario.controlDbPath, "SELECT activo, version FROM usuario_empresas WHERE id = ?", [mb.membershipId]))[0];
+    assertSame(JSON.stringify([filaB.activo, filaB.version]), JSON.stringify([1, 0]), "la homonima de B intacta");
+
+    // Usuario de otra empresa: su id local no existe en A.
+    const gOtro = await pedir(a, "GET", `/usuarios/${soloB.localId}`, null, tokenA);
+    assertEqual(gOtro.status, 404, "lectura de un usuario de B via A: 404");
+    const pOtro = await pedir(a, "PATCH", `/usuarios/${soloB.localId}/estado`, { activo: false, expected_version: 0 }, tokenA, nuevaIdempotencyKeyHeader());
+    assertEqual(pOtro.status, 404, `PATCH de un usuario de B via A: 404 (${pOtro.texto})`);
+    // Token de A presentado en el Host de B: autenticacion uniforme rechazada.
+    assertSame(mt1f3EsNoAutenticado(await pedir(b, "GET", `/usuarios/${mb.localId}`, null, tokenA)), true, "GET cruzado rechazado");
+    assertSame(mt1f3EsNoAutenticado(await pedir(b, "PATCH", `/usuarios/${mb.localId}/estado`, { activo: false, expected_version: 0 }, tokenA, nuevaIdempotencyKeyHeader())), true, "PATCH cruzado rechazado");
+    assertSame(await fotoB(), fotoBAntes, "empresa B intacta");
+    assertEqual((await allSql(escenario.controlDbPath, "SELECT COUNT(*) AS n FROM operacion_idempotencia"))[0].n, 1, "solo la operacion legitima consumio clave");
+  }, { bridge: true });
+}
+
+async function testB2S1b2ActorNoAdminYSesionInvalida() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s1b2.objetivo");
+    await b2s1aMiembro(f, "b2s1b2.enc", { rol: "encargado" });
+    await withServer(f.dbPath, async (baseUrl) => {
+      const tokenEnc = await login(baseUrl, "b2s1b2.enc", "Extra123");
+      const antes = await b2s1b2Control(f.controlDbPath);
+      const p = await b2s1b2Patch(baseUrl, tokenEnc, x.localId, { activo: false, expected_version: 0 }, crypto.randomUUID());
+      assertEqual(p.response.status, 403, `encargado rechazado (${JSON.stringify(p.data)})`);
+      const g = await requestJson(baseUrl, "GET", `/usuarios/${x.localId}`, null, tokenEnc);
+      assertEqual(g.response.status, 403, "lectura de usuarios exige permiso de administracion");
+      const sinToken = await b2s1b2Patch(baseUrl, null, x.localId, { activo: false, expected_version: 0 }, crypto.randomUUID());
+      assertEqual(sinToken.response.status, 401, "sin sesion: 401");
+      const basura = await b2s1b2Patch(baseUrl, "token-invalido-s1b2", x.localId, { activo: false, expected_version: 0 }, crypto.randomUUID());
+      assertEqual(basura.response.status, 401, "sesion invalida: 401");
+      assertSame(await b2s1b2Control(f.controlDbPath), antes, "ningun rechazo escribio Control");
+    }, extraEnvCentral(f));
+  });
+}
+
+async function testB2S1b2AutoridadRevocadaNoObtieneReplay() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s1b2.revocado.obj");
+    const admin2 = await b2s1aMiembro(f, "b2s1b2.admin2", { rol: "admin" });
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "b2s1b2.admin2", "Extra123");
+      const clave = crypto.randomUUID();
+      const cuerpo = { activo: false, expected_version: 0 };
+      const p1 = await b2s1b2Patch(baseUrl, token, x.localId, cuerpo, clave);
+      assertEqual(p1.response.status, 200, `admin2 confirma (${JSON.stringify(p1.data)})`);
+      const despuesDelCommit = await b2s1b2Control(f.controlDbPath);
+      // Pierde el rol ADMIN: el reintento con la clave original no obtiene el replay.
+      await runSql(f.controlDbPath, "UPDATE usuario_empresas SET rol = 'encargado' WHERE id = ?", [admin2.membershipId]);
+      const r1 = await b2s1b2Patch(baseUrl, token, x.localId, cuerpo, clave);
+      assertSame([401, 403].includes(r1.response.status), true, `rol revocado: rechazo antes del servicio (${r1.response.status} ${JSON.stringify(r1.data)})`);
+      assertSame(r1.data && r1.data.code === "ESTADO_ACTUALIZADO", false, "sin replay historico");
+      // Membership inactiva: tampoco.
+      await runSql(f.controlDbPath, "UPDATE usuario_empresas SET rol = 'admin', activo = 0 WHERE id = ?", [admin2.membershipId]);
+      const r2 = await b2s1b2Patch(baseUrl, token, x.localId, cuerpo, clave);
+      assertSame([401, 403].includes(r2.response.status), true, `membership inactiva: rechazo (${r2.response.status})`);
+      assertSame(r2.data && r2.data.code === "ESTADO_ACTUALIZADO", false, "sin replay historico");
+      const final = JSON.parse(await b2s1b2Control(f.controlDbPath));
+      const esperado = JSON.parse(despuesDelCommit);
+      assertSame(JSON.stringify([final.pendientes, final.idempotencia]), JSON.stringify([esperado.pendientes, esperado.idempotencia]), "sin pendientes ni claves nuevas");
+      assertSame(JSON.stringify(final.memberships.find((m) => m.id === x.membershipId)), JSON.stringify(esperado.memberships.find((m) => m.id === x.membershipId)), "el destino no tuvo otra generacion");
+    }, extraEnvCentral(f));
+  });
+}
+
+async function testB2S1b2ValidacionDeEntrada() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s1b2.valida");
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const antes = await b2s1b2Control(f.controlDbPath);
+      const casos = [
+        ["sin clave", x.localId, { activo: false, expected_version: 0 }, null, 400, "IDEMPOTENCY_KEY_REQUIRED"],
+        ["clave en blanco", x.localId, { activo: false, expected_version: 0 }, "   ", 400, "IDEMPOTENCY_KEY_REQUIRED"],
+        ["clave de 129", x.localId, { activo: false, expected_version: 0 }, "k".repeat(129), 400, "IDEMPOTENCY_KEY_REQUIRED"],
+        ["activo ausente", x.localId, { expected_version: 0 }, crypto.randomUUID(), 400, "ACTIVO_INVALIDO"],
+        ["activo cadena", x.localId, { activo: "false", expected_version: 0 }, crypto.randomUUID(), 400, "ACTIVO_INVALIDO"],
+        ["activo numerico", x.localId, { activo: 0, expected_version: 0 }, crypto.randomUUID(), 400, "ACTIVO_INVALIDO"],
+        ["version ausente", x.localId, { activo: false }, crypto.randomUUID(), 428, "PRECONDITION_REQUIRED"],
+        ["version null", x.localId, { activo: false, expected_version: null }, crypto.randomUUID(), 428, "PRECONDITION_REQUIRED"],
+        ["version negativa", x.localId, { activo: false, expected_version: -1 }, crypto.randomUUID(), 400, "EXPECTED_VERSION_INVALIDA"],
+        ["version fraccionaria", x.localId, { activo: false, expected_version: 1.5 }, crypto.randomUUID(), 400, "EXPECTED_VERSION_INVALIDA"],
+        ["version cadena", x.localId, { activo: false, expected_version: "0" }, crypto.randomUUID(), 400, "EXPECTED_VERSION_INVALIDA"],
+        ["version desbordada", x.localId, { activo: false, expected_version: 9007199254740992 }, crypto.randomUUID(), 400, "EXPECTED_VERSION_INVALIDA"],
+        ["id no numerico", "abc", { activo: false, expected_version: 0 }, crypto.randomUUID(), 400, "USUARIO_ID_INVALIDO"],
+        ["id cero", "0", { activo: false, expected_version: 0 }, crypto.randomUUID(), 400, "USUARIO_ID_INVALIDO"]
+      ];
+      for (const [etiqueta, id, cuerpo, clave, status, code] of casos) {
+        const r = await b2s1b2Patch(baseUrl, token, id, cuerpo, clave);
+        assertEqual(r.response.status, status, `${etiqueta} (${JSON.stringify(r.data)})`);
+        assertSame(r.data && r.data.code, code, `${etiqueta}: codigo`);
+      }
+      assertSame(await b2s1b2Control(f.controlDbPath), antes, "ninguna validacion escribio Control ni consumio claves");
+    }, extraEnvCentral(f));
+    assertEqual((await b2s0b2Local(f.dbPath, x.localId)).activo, 1, "Business DB intacta");
+  });
+}
+
+async function testB2S1b2ReplayConflictoYPerdidaDeRespuesta() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s1b2.replay");
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const k1 = crypto.randomUUID();
+      await b2s1b2Patch(baseUrl, token, x.localId, { activo: false, expected_version: 0 }, k1); // respuesta "perdida"
+      const tras = await b2s1b2Control(f.controlDbPath);
+      const reintento = await b2s1b2Patch(baseUrl, token, x.localId, { activo: false, expected_version: 0 }, k1);
+      assertEqual(reintento.response.status, 200, "reintento tras perdida: replay 200 (no 409)");
+      const original = JSON.parse((await allSql(f.controlDbPath, "SELECT resultado_json FROM operacion_idempotencia WHERE clave = ?", [k1]))[0].resultado_json);
+      assertSame(JSON.stringify(reintento.data), JSON.stringify(original), "replay exacto de la respuesta original");
+      assertSame(await b2s1b2Control(f.controlDbPath), tras, "el replay no escribe nada");
+      const reuso = await b2s1b2Patch(baseUrl, token, x.localId, { activo: true, expected_version: 1 }, k1);
+      assertEqual(reuso.response.status, 409, "misma clave, otro contenido");
+      assertSame(reuso.data.code, "IDEMPOTENCY_KEY_REUSED", "codigo de reutilizacion");
+      const k2 = crypto.randomUUID();
+      const obsoleta = await b2s1b2Patch(baseUrl, token, x.localId, { activo: true, expected_version: 0 }, k2);
+      assertEqual(obsoleta.response.status, 409, "version obsoleta");
+      assertSame(JSON.stringify(obsoleta.data), JSON.stringify({ code: "VERSION_CONFLICT", message: "El usuario fue modificado por otra operacion. Actualiza los datos y volve a intentar.", version_actual: 1 }), "409 durable de S1b1");
+      const obsoleta2 = await b2s1b2Patch(baseUrl, token, x.localId, { activo: true, expected_version: 0 }, k2);
+      assertSame(JSON.stringify([obsoleta2.response.status, obsoleta2.data]), JSON.stringify([409, obsoleta.data]), "replay exacto del 409");
+    }, extraEnvCentral(f));
+    const m = await b2s1aMembership(f, x.membershipId);
+    assertSame(JSON.stringify([m.activo, m.version]), JSON.stringify([0, 1]), "una sola generacion");
+  });
+}
+
+async function testB2S1b2ConcurrenciaHttp() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s1b2.conc1");
+    const y = await b2s1aMiembro(f, "b2s1b2.conc2");
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const k = crypto.randomUUID();
+      const [a1, a2] = await Promise.all([
+        b2s1b2Patch(baseUrl, token, x.localId, { activo: false, expected_version: 0 }, k),
+        b2s1b2Patch(baseUrl, token, x.localId, { activo: false, expected_version: 0 }, k)
+      ]);
+      assertSame(JSON.stringify([a1.response.status, a2.response.status]), JSON.stringify([200, 200]), `misma clave concurrente: ejecucion + replay (${JSON.stringify([a1.data, a2.data])})`);
+      assertSame(JSON.stringify(a1.data), JSON.stringify(a2.data), "cuerpos identicos");
+      assertEqual((await b2s1aMembership(f, x.membershipId)).version, 1, "una sola generacion");
+      assertEqual((await allSql(f.controlDbPath, "SELECT COUNT(*) AS n FROM operacion_idempotencia WHERE clave = ?", [k]))[0].n, 1, "una sola fila");
+      const [b1, b2] = await Promise.all([
+        b2s1b2Patch(baseUrl, token, y.localId, { activo: false, expected_version: 0 }, crypto.randomUUID()),
+        b2s1b2Patch(baseUrl, token, y.localId, { activo: false, expected_version: 0 }, crypto.randomUUID())
+      ]);
+      const pares = [[b1.response.status, b1.data.code], [b2.response.status, b2.data.code]].map((p) => p.join(":")).sort();
+      assertSame(JSON.stringify(pares), JSON.stringify(["200:ESTADO_ACTUALIZADO", "409:VERSION_CONFLICT"]), `claves distintas, misma version (${JSON.stringify(pares)})`);
+      assertEqual((await b2s1aMembership(f, y.membershipId)).version, 1, "una sola generacion para y");
+    }, extraEnvCentral(f));
+  });
+}
+
+async function testB2S1b2ErrorTransitorioDeControl() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s1b2.transitorio");
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const clave = crypto.randomUUID();
+      // Lock de escritura real de SQLite sobre el Control descartable: el writer agota su busy_timeout.
+      const bloqueo = await b2s0b2AbrirRw(f.controlDbPath);
+      let r;
+      try {
+        await b2s0b2Exec(bloqueo, "BEGIN IMMEDIATE");
+        r = await b2s1b2Patch(baseUrl, token, x.localId, { activo: false, expected_version: 0 }, clave);
+        await b2s0b2Exec(bloqueo, "ROLLBACK");
+      } finally {
+        await cerrarConexionTest(bloqueo);
+      }
+      assertEqual(r.response.status, 503, `Control ocupado: 503 (${JSON.stringify(r.data)})`);
+      assertSame(r.data.code, "CONTROL_NO_DISPONIBLE", "codigo controlado");
+      assertSame(/ningun cambio/.test(r.data.message), true, "no presenta exito");
+      assertEqual((await allSql(f.controlDbPath, "SELECT COUNT(*) AS n FROM operacion_idempotencia"))[0].n, 0, "la clave no se consumio");
+      assertEqual((await b2s1aMembership(f, x.membershipId)).version, 0, "sin cambio central");
+      const r2 = await b2s1b2Patch(baseUrl, token, x.localId, { activo: false, expected_version: 0 }, clave);
+      assertEqual(r2.response.status, 200, "el reintento con la misma clave confirma");
+    }, extraEnvCentral(f));
+  });
+}
+
+async function testB2S1b2TenantInaccesibleTrasCommitSinFalsoRollback() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s1b2.offline");
+    let respuesta;
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      respuesta = await b2s1b2Patch(baseUrl, token, x.localId, { activo: false, expected_version: 0 }, crypto.randomUUID());
+    }, extraEnvCentral(f));
+    assertEqual(respuesta.response.status, 200, "commit central confirmado");
+    assertSame(respuesta.data.sincronizacion_tenant, "pendiente_al_commit", "no declara el tenant actualizado");
+    // Tenant inaccesible despues del commit (registro apuntando a un archivo inexistente).
+    await runSql(f.controlDbPath, "UPDATE empresas SET db_path = ? WHERE id = ?", ["b2s1b2-tenant-ausente.db", f.empresa.id]);
+    const c1 = await b2s0b3aProcesarPendienteRolActivo({ membershipId: x.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(JSON.stringify([c1.resultado, c1.motivo]), JSON.stringify([B2S0B3A_RESULTADOS.ERROR_TRANSITORIO, "BUSINESS_DB_AUSENTE"]), "proyeccion transitoriamente imposible");
+    const m = await b2s1aMembership(f, x.membershipId);
+    assertSame(JSON.stringify([m.activo, m.version]), JSON.stringify([0, 1]), "el cambio central NO se revierte");
+    assertSame((await b2s1aPendienteRolActivo(f, x.membershipId)).estado, "pendiente", "pendiente conservado");
+    await runSql(f.controlDbPath, "UPDATE empresas SET db_path = ? WHERE id = ?", [path.basename(f.dbPath), f.empresa.id]);
+    const c2 = await b2s0b3aProcesarPendienteRolActivo({ membershipId: x.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(c2.resultado, B2S0B3A_RESULTADOS.CERRADO, "al volver el tenant, el consumer converge");
+    assertEqual((await b2s0b2Local(f.dbPath, x.localId)).activo, 0, "tenant proyectado");
+  });
+}
+
+async function testB2S1b2BindingInconsistenteYDestinatarioReasignado() {
+  await b2s1b2CentralSingle(async (f) => {
+    const sinBinding = await runSql(f.dbPath, "INSERT INTO usuarios (nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, 1)", ["S1b2 Sin", "b2s1b2.sin", "hash-sin", "colaborador"]);
+    const x = await b2s1aMiembro(f, "b2s1b2.reasignado");
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const antes = await b2s1b2Control(f.controlDbPath);
+      const g = await requestJson(baseUrl, "GET", `/usuarios/${sinBinding.lastID}`, null, token);
+      assertEqual(g.response.status, 409, `binding ausente: error seguro (${JSON.stringify(g.data)})`);
+      assertSame(g.data.code, "BINDING_CENTRAL_INCONSISTENTE", "codigo verificable");
+      assertSame(Object.prototype.hasOwnProperty.call(g.data, "membership_version"), false, "nunca una version inventada");
+      const p = await b2s1b2Patch(baseUrl, token, sinBinding.lastID, { activo: false, expected_version: 0 }, crypto.randomUUID());
+      assertEqual(p.response.status, 404, `PATCH sin binding: 404 (${JSON.stringify(p.data)})`);
+      assertSame(await b2s1b2Control(f.controlDbPath), antes, "sin escrituras ni claves");
+
+      const k = crypto.randomUUID();
+      const ok = await b2s1b2Patch(baseUrl, token, x.localId, { activo: false, expected_version: 0 }, k);
+      assertEqual(ok.response.status, 200, "operacion original confirmada");
+      // El binding del destinatario cambia entre la operacion y el reintento.
+      await runSql(f.controlDbPath, "UPDATE usuario_empresas SET usuario_local_id = ? WHERE id = ?", [sinBinding.lastID, x.membershipId]);
+      const reasignado = await b2s1b2Control(f.controlDbPath);
+      const r = await b2s1b2Patch(baseUrl, token, x.localId, { activo: false, expected_version: 0 }, k);
+      assertEqual(r.response.status, 409, `reintento con binding distinto: rechazo seguro (${JSON.stringify(r.data)})`);
+      assertSame(r.data.code, "IDEMPOTENCY_KEY_REUSED", "no reconstruye la misma huella");
+      const r2 = await b2s1b2Patch(baseUrl, token, x.localId, { activo: true, expected_version: 1 }, crypto.randomUUID());
+      assertEqual(r2.response.status, 404, "el usuario local ya no tiene membership: 404");
+      assertSame(await b2s1b2Control(f.controlDbPath), reasignado, "ni otra membership, ni generaciones, ni pendientes, ni claves nuevas");
+    }, extraEnvCentral(f));
+  });
+}
+
+async function testB2S1b2LegacyShadowYOffIntactos() {
+  const dbShadow = bootstrapFreshTestDb();
+  const dbOff = bootstrapFreshTestDb();
+  const controlInexistente = tempDbPath();
+  try {
+    for (const dbPath of [dbShadow, dbOff]) {
+      await runSql(dbPath, "INSERT INTO usuarios (id, nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, ?, 1)", [900, "S1b2 Legacy", "b2s1b2.legacy", "hash-legacy", "colaborador"]);
+    }
+    await withServer(dbShadow, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const p = await b2s1b2Patch(baseUrl, token, 900, { activo: false, expected_version: 0 }, crypto.randomUUID());
+      assertEqual(p.response.status, 409, `legacy+shadow: 409 historico (${JSON.stringify(p.data)})`);
+      assertSame(p.data.message, "La activación y desactivación de usuarios está temporalmente restringida mientras la sincronización central está habilitada.", "mensaje historico");
+      const g = await requestJson(baseUrl, "GET", "/usuarios/900", null, token);
+      assertSame(JSON.stringify([g.response.status, Object.prototype.hasOwnProperty.call(g.data, "membership_version")]), JSON.stringify([200, false]), "GET legacy sin campos centrales");
+    }, { ATLAS_USER_BRIDGE_MODE: "shadow", ATLAS_CONTROL_DB_PATH: controlInexistente, ATLAS_EMPRESA_SLUG: `s1b2-legacy-${Date.now()}` });
+    assertEqual((await allSql(dbShadow, "SELECT activo FROM usuarios WHERE id = 900"))[0].activo, 1, "legacy+shadow no escribe local");
+    assertSame(fs.existsSync(controlInexistente), false, "legacy+shadow no abre ni crea Control");
+
+    await withServer(dbOff, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const p = await b2s1b2Patch(baseUrl, token, 900, { activo: false }, null);
+      assertEqual(p.response.status, 200, `legacy+off: sin clave ni version (${JSON.stringify(p.data)})`);
+      assertSame(JSON.stringify([p.data.message, p.data.usuario.activo]), JSON.stringify(["Usuario desactivado", false]), "contrato historico");
+      const g = await requestJson(baseUrl, "GET", "/usuarios/900", null, token);
+      assertSame(JSON.stringify([g.response.status, g.data.activo, Object.prototype.hasOwnProperty.call(g.data, "membership_version")]), JSON.stringify([200, false, false]), "GET legacy sin campos centrales");
+    });
+    assertEqual((await allSql(dbOff, "SELECT activo FROM usuarios WHERE id = 900"))[0].activo, 0, "legacy+off escribe local como siempre");
+  } finally {
+    fs.rmSync(dbShadow, { force: true });
+    fs.rmSync(dbOff, { force: true });
+    fs.rmSync(controlInexistente, { force: true });
+  }
+}
+
+async function testB2S1b2PasswordP1SinRegresion() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s1b2.pwd");
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const e = await b2s1b2Patch(baseUrl, token, x.localId, { activo: false, expected_version: 0 }, crypto.randomUUID());
+      assertEqual(e.response.status, 200, "estado confirmado");
+      const lapida = JSON.stringify(await b2s1aPendienteRolActivo(f, x.membershipId));
+      const pw = await requestJson(baseUrl, "PATCH", `/usuarios/${f.localUserId}/password`, { password: "NuevaS1b2Pass1", confirmar_password: "NuevaS1b2Pass1" }, token, nuevaIdempotencyKeyHeader());
+      assertEqual(pw.response.status, 200, `P1 password sigue funcionando (${JSON.stringify(pw.data)})`);
+      assertSame(pw.data.message, "Contraseña actualizada correctamente", "contrato P1 intacto");
+      assertSame(JSON.stringify(await b2s1aPendienteRolActivo(f, x.membershipId)), lapida, "P1 no toca la lapida rol_activo");
+    }, extraEnvCentral(f));
+  });
+}
+
+async function testB2S1b2SinEscriturasEnBasesProtegidas() {
+  const protegidas = [path.join(ROOT, "database", "guernica.db"), path.join(ROOT, "database", "atlas_control.db")];
+  const huella = () => JSON.stringify(protegidas.map((p) => (fs.existsSync(p) ? sha256Archivo(p) : "AUSENTE")));
+  const antes = huella();
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s1b2.protegidas");
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      assertEqual((await b2s1b2Patch(baseUrl, token, x.localId, { activo: false, expected_version: 0 }, crypto.randomUUID())).response.status, 200, "flujo central");
+      assertEqual((await requestJson(baseUrl, "GET", `/usuarios/${x.localId}`, null, token)).response.status, 200, "lectura central");
+    }, extraEnvCentral(f));
+  });
+  assertSame(huella(), antes, "guernica.db y atlas_control.db del repositorio intactos");
 }
 
 async function testP1ASRControlSchemaNuevoContienePasswordVersionDefault0() {
