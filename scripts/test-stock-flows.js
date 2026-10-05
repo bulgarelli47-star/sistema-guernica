@@ -21360,6 +21360,22 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testB2S2aRolLuegoEstadoWorkerRecuperaG2);
   await _run(testB2S2aIdsLocalesColisionadosEntreEmpresas);
   await _run(testB2S2aInvariantesEstaticosYWritersDeEstadoIntactos);
+  await _run(testB2S2bCentralSingleCambiaRolYLecturaCentral);
+  await _run(testB2S2bCentralMultiHostYAislamiento);
+  await _run(testB2S2bActorNoAdminYSesionInvalida);
+  await _run(testB2S2bAutoridadRevocadaNoObtieneReplay);
+  await _run(testB2S2bAutomodificacionYUltimoAdmin);
+  await _run(testB2S2bValidacionDeEntrada);
+  await _run(testB2S2bReplayConflictoYPerdidaDeRespuesta);
+  await _run(testB2S2bConcurrenciaHttp);
+  await _run(testB2S2bCarreraHttpRolVsEstadoMismaVersion);
+  await _run(testB2S2bGeneracionesSucesivasRolEstadoPorHttp);
+  await _run(testB2S2bControlTemporalmenteInaccesible);
+  await _run(testB2S2bTenantInaccesibleTrasCommitSinFalsoRollback);
+  await _run(testB2S2bBindingInconsistente);
+  await _run(testB2S2bLegacyOffYShadowIntactos);
+  await _run(testB2S2bEstadoYPasswordSinRegresionYColisionDeClaves);
+  await _run(testB2S2bSinEscriturasEnBasesProtegidas);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -46359,6 +46375,447 @@ async function testB2S2aInvariantesEstaticosYWritersDeEstadoIntactos() {
   } finally {
     b2s0b2Limpiar(f);
   }
+}
+
+// AUTH-SYNC-B2-S2b: PATCH /usuarios/:id/rol central-first (writer idempotente S2a) y rol_central en
+// GET /usuarios/:id. Reutiliza los helpers HTTP de S1b2 (servidores reales hijos, fixtures descartables).
+function b2s2bPatchRol(baseUrl, token, usuarioId, cuerpo, clave) {
+  return requestJson(baseUrl, "PATCH", `/usuarios/${usuarioId}/rol`, cuerpo, token, clave === null ? undefined : { "Idempotency-Key": clave });
+}
+
+const B2S2B_MENSAJE_ROL = "Rol actualizado en el control central. La sincronizacion con la sucursal quedo pendiente al confirmar.";
+
+async function testB2S2bCentralSingleCambiaRolYLecturaCentral() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s2b.x");
+    let respuesta;
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const g = await requestJson(baseUrl, "GET", `/usuarios/${x.localId}`, null, token);
+      assertEqual(g.response.status, 200, `GET central (${JSON.stringify(g.data)})`);
+      assertSame(JSON.stringify([g.data.rol, g.data.rol_central, g.data.membership_version, g.data.activo_central]), JSON.stringify(["colaborador", "colaborador", 0, true]), "GET expone rol_central y la version de la membership");
+      respuesta = await b2s2bPatchRol(baseUrl, token, x.localId, { rol: "encargado", expected_version: g.data.membership_version }, crypto.randomUUID());
+      assertEqual(respuesta.response.status, 200, `PATCH rol (${JSON.stringify(respuesta.data)})`);
+      assertSame(JSON.stringify(respuesta.data), JSON.stringify({
+        code: "ROL_ACTUALIZADO",
+        message: B2S2B_MENSAJE_ROL,
+        usuario_id: x.localId,
+        rol: "encargado",
+        version: 1,
+        operacion: { tipo: "rol_activo", version_objetivo: 1 },
+        sincronizacion_tenant: "pendiente_al_commit"
+      }), "cuerpo durable de S2a intacto (version 0 valida)");
+      const g2 = await requestJson(baseUrl, "GET", `/usuarios/${x.localId}`, null, token);
+      assertSame(JSON.stringify([g2.data.rol, g2.data.rol_central, g2.data.membership_version, g2.data.activo_central]), JSON.stringify(["colaborador", "encargado", 1, true]), "rol local sin proyectar; rol_central de Control; version coherente");
+      const lista = await requestJson(baseUrl, "GET", "/usuarios", null, token);
+      assertEqual(lista.response.status, 200, "GET /usuarios responde");
+      assertSame(lista.data.some((u) => ["rol_central", "membership_version", "activo_central"].some((c) => Object.prototype.hasOwnProperty.call(u, c))), false, "GET /usuarios sin cambios de contrato");
+    }, extraEnvCentral(f));
+    const m = await b2s1aMembership(f, x.membershipId);
+    assertSame(JSON.stringify([m.rol, m.activo, m.version]), JSON.stringify(["encargado", 1, 1]), "Control: rol nuevo, activo intacto, una generacion");
+    const p = await b2s1aPendienteRolActivo(f, x.membershipId);
+    assertSame(JSON.stringify([p.estado, p.version_objetivo]), JSON.stringify(["pendiente", 1]), "lapida rol_activo durable");
+    const fila = (await allSql(f.controlDbPath, "SELECT estado, resultado_http, resultado_json, endpoint FROM operacion_idempotencia"))[0];
+    assertSame(JSON.stringify([fila.estado, fila.resultado_http, fila.endpoint]), JSON.stringify(["confirmada", 200, "/usuarios/:id/rol"]), "idempotencia confirmada");
+    assertSame(fila.resultado_json, JSON.stringify(respuesta.data), "respuesta HTTP = resultado durable almacenado");
+    assertSame((await b2s0b2Local(f.dbPath, x.localId)).rol, "colaborador", "la rama central nunca escribe la Business DB");
+  });
+}
+
+async function testB2S2bCentralMultiHostYAislamiento() {
+  await mt1f4ConEscenario(async ({ escenario, a, b, pedir, loginTenant }) => {
+    const ma = await b2s1b2MiembroTenant(escenario, a, "s2b.multi");
+    const mb = await b2s1b2MiembroTenant(escenario, b, "s2b.multi");
+    assertEqual(ma.localId, mb.localId, "colision de usuario_local_id entre empresas");
+    const maxA = (await allSql(a.dbPath, "SELECT MAX(id) AS m FROM usuarios"))[0].m;
+    const maxB = (await allSql(b.dbPath, "SELECT MAX(id) AS m FROM usuarios"))[0].m;
+    const soloB = await b2s1b2MiembroTenant(escenario, b, "s2b.solob", { id: Math.max(maxA, maxB) + 100 });
+    const tokenA = await loginTenant(a);
+    await loginTenant(b);
+    const fotoB = async () => JSON.stringify([
+      await allSql(escenario.controlDbPath, "SELECT * FROM usuario_empresas WHERE empresa_id = ? ORDER BY id", [b.empresa.id]),
+      await allSql(escenario.controlDbPath, "SELECT * FROM sync_pendiente WHERE empresa_id = ? ORDER BY id", [b.empresa.id])
+    ]);
+    const fotoBAntes = await fotoB();
+
+    const g = await pedir(a, "GET", `/usuarios/${ma.localId}`, null, tokenA);
+    assertSame(JSON.stringify([g.status, g.json.rol_central, g.json.membership_version]), JSON.stringify([200, "colaborador", 0]), `GET en A: ${g.texto}`);
+    const claveA = nuevaIdempotencyKeyHeader();
+    const p = await pedir(a, "PATCH", `/usuarios/${ma.localId}/rol`, { rol: "encargado", expected_version: 0 }, tokenA, claveA);
+    assertEqual(p.status, 200, `PATCH rol en A: ${p.texto}`);
+    assertSame(p.json.code, "ROL_ACTUALIZADO", "confirmado en la empresa del Host");
+    const filaA = (await allSql(escenario.controlDbPath, "SELECT rol, version, empresa_id FROM usuario_empresas WHERE id = ?", [ma.membershipId]))[0];
+    assertSame(JSON.stringify([filaA.rol, filaA.version, filaA.empresa_id]), JSON.stringify(["encargado", 1, a.empresa.id]), "solo la membership de A");
+    const filaB = (await allSql(escenario.controlDbPath, "SELECT rol, version FROM usuario_empresas WHERE id = ?", [mb.membershipId]))[0];
+    assertSame(JSON.stringify([filaB.rol, filaB.version]), JSON.stringify(["colaborador", 0]), "la homonima de B intacta");
+
+    assertEqual((await pedir(a, "GET", `/usuarios/${soloB.localId}`, null, tokenA)).status, 404, "usuario de B via Host A: 404");
+    const pOtro = await pedir(a, "PATCH", `/usuarios/${soloB.localId}/rol`, { rol: "encargado", expected_version: 0 }, tokenA, nuevaIdempotencyKeyHeader());
+    assertEqual(pOtro.status, 404, `PATCH rol de usuario de B via A: 404 (${pOtro.texto})`);
+    assertSame(mt1f3EsNoAutenticado(await pedir(b, "GET", `/usuarios/${mb.localId}`, null, tokenA)), true, "GET cruzado rechazado");
+    assertSame(mt1f3EsNoAutenticado(await pedir(b, "PATCH", `/usuarios/${mb.localId}/rol`, { rol: "encargado", expected_version: 0 }, tokenA, nuevaIdempotencyKeyHeader())), true, "PATCH cruzado rechazado");
+    assertSame(mt1f3EsNoAutenticado(await pedir(b, "PATCH", `/usuarios/${ma.localId}/rol`, { rol: "encargado", expected_version: 0 }, tokenA, claveA)), true, "el replay de A nunca se obtiene desde el Host de B");
+    assertSame(await fotoB(), fotoBAntes, "empresa B intacta (memberships y outbox)");
+    assertEqual((await allSql(escenario.controlDbPath, "SELECT COUNT(*) AS n FROM operacion_idempotencia"))[0].n, 1, "solo la operacion legitima de A consumio clave");
+  }, { bridge: true });
+}
+
+async function testB2S2bActorNoAdminYSesionInvalida() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s2b.objetivo");
+    await b2s1aMiembro(f, "b2s2b.enc", { rol: "encargado" });
+    await withServer(f.dbPath, async (baseUrl) => {
+      const tokenEnc = await login(baseUrl, "b2s2b.enc", "Extra123");
+      const antes = await b2s1b2Control(f.controlDbPath);
+      assertEqual((await b2s2bPatchRol(baseUrl, tokenEnc, x.localId, { rol: "encargado", expected_version: 0 }, crypto.randomUUID())).response.status, 403, "encargado rechazado");
+      assertEqual((await b2s2bPatchRol(baseUrl, null, x.localId, { rol: "encargado", expected_version: 0 }, crypto.randomUUID())).response.status, 401, "sin sesion: 401");
+      assertEqual((await b2s2bPatchRol(baseUrl, "token-invalido-s2b", x.localId, { rol: "encargado", expected_version: 0 }, crypto.randomUUID())).response.status, 401, "sesion invalida: 401");
+      assertSame(await b2s1b2Control(f.controlDbPath), antes, "ningun rechazo escribio Control");
+    }, extraEnvCentral(f));
+  });
+}
+
+async function testB2S2bAutoridadRevocadaNoObtieneReplay() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s2b.revocado.obj");
+    const admin2 = await b2s1aMiembro(f, "b2s2b.admin2", { rol: "admin" });
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "b2s2b.admin2", "Extra123");
+      const clave = crypto.randomUUID();
+      const cuerpo = { rol: "encargado", expected_version: 0 };
+      const p1 = await b2s2bPatchRol(baseUrl, token, x.localId, cuerpo, clave);
+      assertEqual(p1.response.status, 200, `admin2 confirma (${JSON.stringify(p1.data)})`);
+      const despuesDelCommit = JSON.parse(await b2s1b2Control(f.controlDbPath));
+      await runSql(f.controlDbPath, "UPDATE usuario_empresas SET rol = 'encargado' WHERE id = ?", [admin2.membershipId]);
+      const r1 = await b2s2bPatchRol(baseUrl, token, x.localId, cuerpo, clave);
+      assertSame([401, 403].includes(r1.response.status), true, `rol revocado: rechazo antes del servicio (${r1.response.status} ${JSON.stringify(r1.data)})`);
+      assertSame(r1.data && r1.data.code === "ROL_ACTUALIZADO", false, "sin replay historico");
+      await runSql(f.controlDbPath, "UPDATE usuario_empresas SET rol = 'admin', activo = 0 WHERE id = ?", [admin2.membershipId]);
+      const r2 = await b2s2bPatchRol(baseUrl, token, x.localId, cuerpo, clave);
+      assertSame([401, 403].includes(r2.response.status), true, `membership inactiva: rechazo (${r2.response.status})`);
+      assertSame(r2.data && r2.data.code === "ROL_ACTUALIZADO", false, "sin replay historico");
+      const final = JSON.parse(await b2s1b2Control(f.controlDbPath));
+      assertSame(JSON.stringify([final.pendientes, final.idempotencia]), JSON.stringify([despuesDelCommit.pendientes, despuesDelCommit.idempotencia]), "sin pendientes ni claves nuevas");
+      assertSame(JSON.stringify(final.memberships.find((m) => m.id === x.membershipId)), JSON.stringify(despuesDelCommit.memberships.find((m) => m.id === x.membershipId)), "el destino no tuvo otra generacion");
+    }, extraEnvCentral(f));
+  });
+}
+
+async function testB2S2bAutomodificacionYUltimoAdmin() {
+  await b2s1b2CentralSingle(async (f) => {
+    const b = await b2s1aMiembro(f, "b2s2b.adminb", { rol: "admin" });
+    await withServer(f.dbPath, async (baseUrl) => {
+      const tokenA = await login(baseUrl, "admin", f.centralPassword);
+      const tokenB = await login(baseUrl, "b2s2b.adminb", "Extra123");
+      const antes = await b2s1b2Control(f.controlDbPath);
+      const self = await b2s2bPatchRol(baseUrl, tokenA, f.localUserId, { rol: "encargado", expected_version: 0 }, crypto.randomUUID());
+      assertSame(JSON.stringify([self.response.status, self.data.code]), JSON.stringify([403, "AUTOMODIFICACION_PROHIBIDA"]), `automodificacion (${JSON.stringify(self.data)})`);
+      assertSame(await b2s1b2Control(f.controlDbPath), antes, "automodificacion sin escrituras ni claves");
+      // A degrada a B; despues B ya no tiene autoridad para degradar al ultimo admin.
+      assertEqual((await b2s2bPatchRol(baseUrl, tokenA, b.localId, { rol: "encargado", expected_version: 0 }, crypto.randomUUID())).response.status, 200, "A degrada a B");
+      const r = await b2s2bPatchRol(baseUrl, tokenB, f.localUserId, { rol: "encargado", expected_version: 0 }, crypto.randomUUID());
+      assertSame([401, 403].includes(r.response.status), true, `B degradado no tiene autoridad (${r.response.status})`);
+    }, extraEnvCentral(f));
+    assertEqual(await b2s1aAdminsEfectivos(f), 1, "la empresa conserva su ultimo admin efectivo");
+    assertSame((await b2s1aMembership(f, f.membershipId)).rol, "admin", "el ultimo admin conserva su rol");
+  });
+}
+
+async function testB2S2bValidacionDeEntrada() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s2b.valida");
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const antes = await b2s1b2Control(f.controlDbPath);
+      const casos = [
+        ["sin clave", x.localId, { rol: "encargado", expected_version: 0 }, null, 400, "IDEMPOTENCY_KEY_REQUIRED"],
+        ["clave en blanco", x.localId, { rol: "encargado", expected_version: 0 }, "   ", 400, "IDEMPOTENCY_KEY_REQUIRED"],
+        ["clave de 129", x.localId, { rol: "encargado", expected_version: 0 }, "k".repeat(129), 400, "IDEMPOTENCY_KEY_REQUIRED"],
+        ["rol ausente", x.localId, { expected_version: 0 }, crypto.randomUUID(), 400, "ROL_INVALIDO"],
+        ["alias operador", x.localId, { rol: "operador", expected_version: 0 }, crypto.randomUUID(), 400, "ROL_INVALIDO"],
+        ["alias caja", x.localId, { rol: "caja", expected_version: 0 }, crypto.randomUUID(), 400, "ROL_INVALIDO"],
+        ["mayusculas", x.localId, { rol: "Admin", expected_version: 0 }, crypto.randomUUID(), 400, "ROL_INVALIDO"],
+        ["espacios", x.localId, { rol: " encargado", expected_version: 0 }, crypto.randomUUID(), 400, "ROL_INVALIDO"],
+        ["vacio", x.localId, { rol: "", expected_version: 0 }, crypto.randomUUID(), 400, "ROL_INVALIDO"],
+        ["null", x.localId, { rol: null, expected_version: 0 }, crypto.randomUUID(), 400, "ROL_INVALIDO"],
+        ["numero", x.localId, { rol: 1, expected_version: 0 }, crypto.randomUUID(), 400, "ROL_INVALIDO"],
+        ["array", x.localId, { rol: ["admin"], expected_version: 0 }, crypto.randomUUID(), 400, "ROL_INVALIDO"],
+        ["objeto", x.localId, { rol: { valor: "admin" }, expected_version: 0 }, crypto.randomUUID(), 400, "ROL_INVALIDO"],
+        ["version ausente", x.localId, { rol: "encargado" }, crypto.randomUUID(), 428, "PRECONDITION_REQUIRED"],
+        ["version null", x.localId, { rol: "encargado", expected_version: null }, crypto.randomUUID(), 428, "PRECONDITION_REQUIRED"],
+        ["version negativa", x.localId, { rol: "encargado", expected_version: -1 }, crypto.randomUUID(), 400, "EXPECTED_VERSION_INVALIDA"],
+        ["version fraccionaria", x.localId, { rol: "encargado", expected_version: 1.5 }, crypto.randomUUID(), 400, "EXPECTED_VERSION_INVALIDA"],
+        ["version cadena", x.localId, { rol: "encargado", expected_version: "0" }, crypto.randomUUID(), 400, "EXPECTED_VERSION_INVALIDA"],
+        ["version desbordada", x.localId, { rol: "encargado", expected_version: 9007199254740992 }, crypto.randomUUID(), 400, "EXPECTED_VERSION_INVALIDA"],
+        ["id no numerico", "abc", { rol: "encargado", expected_version: 0 }, crypto.randomUUID(), 400, "USUARIO_ID_INVALIDO"],
+        ["id cero", "0", { rol: "encargado", expected_version: 0 }, crypto.randomUUID(), 400, "USUARIO_ID_INVALIDO"]
+      ];
+      for (const [etiqueta, id, cuerpo, clave, status, code] of casos) {
+        const r = await b2s2bPatchRol(baseUrl, token, id, cuerpo, clave);
+        assertEqual(r.response.status, status, `${etiqueta} (${JSON.stringify(r.data)})`);
+        assertSame(r.data && r.data.code, code, `${etiqueta}: codigo`);
+      }
+      assertSame(await b2s1b2Control(f.controlDbPath), antes, "ninguna validacion escribio Control ni consumio claves");
+    }, extraEnvCentral(f));
+  });
+}
+
+async function testB2S2bReplayConflictoYPerdidaDeRespuesta() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s2b.replay");
+    const y = await b2s1aMiembro(f, "b2s2b.replay2");
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const k1 = crypto.randomUUID();
+      await b2s2bPatchRol(baseUrl, token, x.localId, { rol: "encargado", expected_version: 0 }, k1); // respuesta "perdida"
+      const tras = await b2s1b2Control(f.controlDbPath);
+      const reintento = await b2s2bPatchRol(baseUrl, token, x.localId, { rol: "encargado", expected_version: 0 }, k1);
+      assertEqual(reintento.response.status, 200, "reintento tras perdida: replay 200 (no 409)");
+      const original = JSON.parse((await allSql(f.controlDbPath, "SELECT resultado_json FROM operacion_idempotencia WHERE clave = ?", [k1]))[0].resultado_json);
+      assertSame(JSON.stringify(reintento.data), JSON.stringify(original), "replay exacto de la respuesta original");
+      assertSame(await b2s1b2Control(f.controlDbPath), tras, "el replay no escribe nada");
+      for (const [etiqueta, id, cuerpo] of [["otro rol", x.localId, { rol: "admin", expected_version: 0 }], ["otro destino", y.localId, { rol: "encargado", expected_version: 0 }]]) {
+        const r = await b2s2bPatchRol(baseUrl, token, id, cuerpo, k1);
+        assertSame(JSON.stringify([r.response.status, r.data.code]), JSON.stringify([409, "IDEMPOTENCY_KEY_REUSED"]), `misma clave, ${etiqueta}`);
+      }
+      const k2 = crypto.randomUUID();
+      const obsoleta = await b2s2bPatchRol(baseUrl, token, x.localId, { rol: "admin", expected_version: 0 }, k2);
+      assertSame(JSON.stringify([obsoleta.response.status, obsoleta.data]), JSON.stringify([409, { code: "VERSION_CONFLICT", message: "El usuario fue modificado por otra operacion. Actualiza los datos y volve a intentar.", version_actual: 1 }]), "version obsoleta: 409 durable");
+      const obsoleta2 = await b2s2bPatchRol(baseUrl, token, x.localId, { rol: "admin", expected_version: 0 }, k2);
+      assertSame(JSON.stringify([obsoleta2.response.status, obsoleta2.data]), JSON.stringify([409, obsoleta.data]), "replay exacto del 409");
+      assertSame(await b2s1b2Control(f.controlDbPath) !== tras, true, "solo el 409 durable quedo registrado");
+    }, extraEnvCentral(f));
+    const m = await b2s1aMembership(f, x.membershipId);
+    assertSame(JSON.stringify([m.rol, m.version]), JSON.stringify(["encargado", 1]), "una sola generacion");
+    assertEqual((await b2s1aMembership(f, y.membershipId)).version, 0, "el otro destino intacto");
+  });
+}
+
+async function testB2S2bConcurrenciaHttp() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s2b.conc1");
+    const y = await b2s1aMiembro(f, "b2s2b.conc2");
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const k = crypto.randomUUID();
+      const [a1, a2] = await Promise.all([
+        b2s2bPatchRol(baseUrl, token, x.localId, { rol: "encargado", expected_version: 0 }, k),
+        b2s2bPatchRol(baseUrl, token, x.localId, { rol: "encargado", expected_version: 0 }, k)
+      ]);
+      assertSame(JSON.stringify([a1.response.status, a2.response.status]), JSON.stringify([200, 200]), `misma clave concurrente: ejecucion + replay (${JSON.stringify([a1.data, a2.data])})`);
+      assertSame(JSON.stringify(a1.data), JSON.stringify(a2.data), "cuerpos identicos");
+      assertEqual((await b2s1aMembership(f, x.membershipId)).version, 1, "una sola generacion");
+      const [b1, b2] = await Promise.all([
+        b2s2bPatchRol(baseUrl, token, y.localId, { rol: "encargado", expected_version: 0 }, crypto.randomUUID()),
+        b2s2bPatchRol(baseUrl, token, y.localId, { rol: "admin", expected_version: 0 }, crypto.randomUUID())
+      ]);
+      const pares = [[b1.response.status, b1.data.code], [b2.response.status, b2.data.code]].map((p) => p.join(":")).sort();
+      assertSame(JSON.stringify(pares), JSON.stringify(["200:ROL_ACTUALIZADO", "409:VERSION_CONFLICT"]), `dos claves, misma version (${JSON.stringify(pares)})`);
+      assertEqual((await b2s1aMembership(f, y.membershipId)).version, 1, "una sola generacion para y");
+    }, extraEnvCentral(f));
+  });
+}
+
+async function testB2S2bCarreraHttpRolVsEstadoMismaVersion() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s2b.carrera");
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const [estado, rol] = await Promise.all([
+        b2s1b2Patch(baseUrl, token, x.localId, { activo: false, expected_version: 0 }, crypto.randomUUID()),
+        b2s2bPatchRol(baseUrl, token, x.localId, { rol: "encargado", expected_version: 0 }, crypto.randomUUID())
+      ]);
+      const pares = [`${estado.response.status}:${estado.data.code}`, `${rol.response.status}:${rol.data.code}`];
+      const ganoEstado = estado.response.status === 200;
+      assertSame(JSON.stringify(pares), JSON.stringify(ganoEstado ? ["200:ESTADO_ACTUALIZADO", "409:VERSION_CONFLICT"] : ["409:VERSION_CONFLICT", "200:ROL_ACTUALIZADO"]), `un 200 y un 409 (${JSON.stringify(pares)})`);
+      const m = await b2s1aMembership(f, x.membershipId);
+      assertEqual(m.version, 1, "version final N+1");
+      assertSame(JSON.stringify([m.rol, m.activo]), JSON.stringify(ganoEstado ? ["colaborador", 0] : ["encargado", 1]), "ningun estado mixto");
+      const lapidas = await allSql(f.controlDbPath, "SELECT estado, version_objetivo FROM sync_pendiente WHERE membership_id = ? AND tipo_operacion = 'rol_activo'", [x.membershipId]);
+      assertSame(JSON.stringify(lapidas), JSON.stringify([{ estado: "pendiente", version_objetivo: 1 }]), "una sola lapida con la generacion ganadora");
+    }, extraEnvCentral(f));
+  });
+}
+
+async function testB2S2bGeneracionesSucesivasRolEstadoPorHttp() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s2b.rolestado");
+    const y = await b2s1aMiembro(f, "b2s2b.estadorol");
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      // Caso B: rol N+1 y luego estado N+2.
+      assertEqual((await b2s2bPatchRol(baseUrl, token, x.localId, { rol: "encargado", expected_version: 0 }, crypto.randomUUID())).response.status, 200, "rol g+1");
+      assertEqual((await b2s1b2Patch(baseUrl, token, x.localId, { activo: false, expected_version: 1 }, crypto.randomUUID())).response.status, 200, "estado g+2");
+      // Caso C: estado N+1 y luego rol N+2.
+      assertEqual((await b2s1b2Patch(baseUrl, token, y.localId, { activo: false, expected_version: 0 }, crypto.randomUUID())).response.status, 200, "estado g+1");
+      assertEqual((await b2s2bPatchRol(baseUrl, token, y.localId, { rol: "encargado", expected_version: 1 }, crypto.randomUUID())).response.status, 200, "rol g+2");
+    }, extraEnvCentral(f));
+    for (const m of [x, y]) {
+      const fila = await b2s1aMembership(f, m.membershipId);
+      assertSame(JSON.stringify([fila.rol, fila.activo, fila.version]), JSON.stringify(["encargado", 0, 2]), "Control: rol nuevo, activo nuevo, version N+2");
+      const p = await b2s1aPendienteRolActivo(f, m.membershipId);
+      assertSame(JSON.stringify([p.estado, p.version_objetivo]), JSON.stringify(["pendiente", 2]), "lapida N+2");
+      assertSame((await b2s0b3aProcesarPendienteRolActivo({ membershipId: m.membershipId, controlDbPath: f.controlDbPath })).resultado, B2S0B3A_RESULTADOS.CERRADO, "S0b3a cierra N+2");
+      const local = await b2s0b2Local(f.dbPath, m.localId);
+      assertSame(JSON.stringify([local.rol, local.activo, local.v]), JSON.stringify(["encargado", 0, 2]), "tenant con el snapshot completo de N+2");
+    }
+  });
+}
+
+async function testB2S2bControlTemporalmenteInaccesible() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s2b.transitorio");
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const clave = crypto.randomUUID();
+      const bloqueo = await b2s0b2AbrirRw(f.controlDbPath);
+      let r;
+      try {
+        await b2s0b2Exec(bloqueo, "BEGIN IMMEDIATE");
+        r = await b2s2bPatchRol(baseUrl, token, x.localId, { rol: "encargado", expected_version: 0 }, clave);
+        await b2s0b2Exec(bloqueo, "ROLLBACK");
+      } finally {
+        await cerrarConexionTest(bloqueo);
+      }
+      assertSame(JSON.stringify([r.response.status, r.data.code]), JSON.stringify([503, "CONTROL_NO_DISPONIBLE"]), `Control ocupado: 503 (${JSON.stringify(r.data)})`);
+      assertSame(/ningun cambio/.test(r.data.message), true, "no presenta exito");
+      assertEqual((await allSql(f.controlDbPath, "SELECT COUNT(*) AS n FROM operacion_idempotencia"))[0].n, 0, "la clave no se consumio");
+      assertEqual((await b2s1aMembership(f, x.membershipId)).version, 0, "sin cambio central");
+      assertEqual((await b2s2bPatchRol(baseUrl, token, x.localId, { rol: "encargado", expected_version: 0 }, clave)).response.status, 200, "el reintento con la misma clave confirma");
+    }, extraEnvCentral(f));
+  });
+}
+
+async function testB2S2bTenantInaccesibleTrasCommitSinFalsoRollback() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s2b.offline");
+    let respuesta;
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      respuesta = await b2s2bPatchRol(baseUrl, token, x.localId, { rol: "encargado", expected_version: 0 }, crypto.randomUUID());
+    }, extraEnvCentral(f));
+    assertSame(JSON.stringify([respuesta.response.status, respuesta.data.sincronizacion_tenant]), JSON.stringify([200, "pendiente_al_commit"]), "commit central confirmado sin declarar el tenant actualizado");
+    await runSql(f.controlDbPath, "UPDATE empresas SET db_path = ? WHERE id = ?", ["b2s2b-tenant-ausente.db", f.empresa.id]);
+    const c1 = await b2s0b3aProcesarPendienteRolActivo({ membershipId: x.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(JSON.stringify([c1.resultado, c1.motivo]), JSON.stringify([B2S0B3A_RESULTADOS.ERROR_TRANSITORIO, "BUSINESS_DB_AUSENTE"]), "proyeccion transitoriamente imposible");
+    const m = await b2s1aMembership(f, x.membershipId);
+    assertSame(JSON.stringify([m.rol, m.version]), JSON.stringify(["encargado", 1]), "el cambio central NO se revierte");
+    assertSame((await b2s1aPendienteRolActivo(f, x.membershipId)).estado, "pendiente", "pendiente conservado");
+    await runSql(f.controlDbPath, "UPDATE empresas SET db_path = ? WHERE id = ?", [path.basename(f.dbPath), f.empresa.id]);
+    assertSame((await b2s0b3aProcesarPendienteRolActivo({ membershipId: x.membershipId, controlDbPath: f.controlDbPath })).resultado, B2S0B3A_RESULTADOS.CERRADO, "al volver el tenant, el consumer converge");
+    assertSame((await b2s0b2Local(f.dbPath, x.localId)).rol, "encargado", "rol proyectado");
+  });
+}
+
+async function testB2S2bBindingInconsistente() {
+  await b2s1b2CentralSingle(async (f) => {
+    const sinBinding = await runSql(f.dbPath, "INSERT INTO usuarios (nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, 1)", ["S2b Sin", "b2s2b.sin", "hash-sin", "colaborador"]);
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const antes = await b2s1b2Control(f.controlDbPath);
+      const g = await requestJson(baseUrl, "GET", `/usuarios/${sinBinding.lastID}`, null, token);
+      assertSame(JSON.stringify([g.response.status, g.data.code, Object.prototype.hasOwnProperty.call(g.data, "rol_central")]), JSON.stringify([409, "BINDING_CENTRAL_INCONSISTENTE", false]), "binding ausente: error seguro, sin rol_central inventado");
+      const p = await b2s2bPatchRol(baseUrl, token, sinBinding.lastID, { rol: "encargado", expected_version: 0 }, crypto.randomUUID());
+      assertEqual(p.response.status, 404, `PATCH rol sin binding: 404 (${JSON.stringify(p.data)})`);
+      assertSame(await b2s1b2Control(f.controlDbPath), antes, "sin escrituras ni claves");
+    }, extraEnvCentral(f));
+  });
+}
+
+async function testB2S2bLegacyOffYShadowIntactos() {
+  const dbShadow = bootstrapFreshTestDb();
+  const dbOff = bootstrapFreshTestDb();
+  const controlInexistente = tempDbPath();
+  const putRol = { nombre: "S2b Legacy", usuario: "b2s2b.legacy", rol: "encargado", email: "", telefono: "", activo: true };
+  try {
+    for (const dbPath of [dbShadow, dbOff]) {
+      await runSql(dbPath, "INSERT INTO usuarios (id, nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, ?, 1)", [900, "S2b Legacy", "b2s2b.legacy", "hash-legacy", "colaborador"]);
+    }
+    await withServer(dbShadow, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const put = await requestJson(baseUrl, "PUT", "/usuarios/900", putRol, token);
+      assertSame(JSON.stringify([put.response.status, put.data.message]), JSON.stringify([409, "No se puede modificar usuario, rol o estado desde esta edicion mientras la sincronizacion central esta habilitada."]), `legacy+shadow: PUT con rol distinto 409 historico (${JSON.stringify(put.data)})`);
+      const p = await b2s2bPatchRol(baseUrl, token, 900, { rol: "encargado", expected_version: 0 }, crypto.randomUUID());
+      assertSame(JSON.stringify([p.response.status, p.data]), JSON.stringify([404, { ok: false, message: "Ruta no encontrada: PATCH /usuarios/900/rol" }]), "legacy+shadow: /rol 404 generico");
+    }, { ATLAS_USER_BRIDGE_MODE: "shadow", ATLAS_CONTROL_DB_PATH: controlInexistente, ATLAS_EMPRESA_SLUG: `s2b-legacy-${Date.now()}` });
+    assertSame((await allSql(dbShadow, "SELECT rol FROM usuarios WHERE id = 900"))[0].rol, "colaborador", "legacy+shadow no escribe rol local");
+    assertSame(fs.existsSync(controlInexistente), false, "legacy+shadow no abre ni crea Control");
+
+    await withServer(dbOff, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      const put = await requestJson(baseUrl, "PUT", "/usuarios/900", putRol, token);
+      assertSame(JSON.stringify([put.response.status, put.data.message, put.data.usuario.rol]), JSON.stringify([200, "Usuario actualizado correctamente", "encargado"]), `legacy+off: PUT historico (${JSON.stringify(put.data)})`);
+      const p = await b2s2bPatchRol(baseUrl, token, 900, { rol: "admin", expected_version: 0 }, crypto.randomUUID());
+      assertSame(JSON.stringify([p.response.status, p.data]), JSON.stringify([404, { ok: false, message: "Ruta no encontrada: PATCH /usuarios/900/rol" }]), "legacy+off: /rol 404 generico");
+    });
+    assertSame((await allSql(dbOff, "SELECT rol FROM usuarios WHERE id = 900"))[0].rol, "encargado", "legacy+off escribe rol local como siempre (solo via PUT)");
+  } finally {
+    fs.rmSync(dbShadow, { force: true });
+    fs.rmSync(dbOff, { force: true });
+    fs.rmSync(controlInexistente, { force: true });
+  }
+}
+
+async function testB2S2bEstadoYPasswordSinRegresionYColisionDeClaves() {
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s2b.regresion");
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      const kEstado = crypto.randomUUID();
+      const e = await b2s1b2Patch(baseUrl, token, x.localId, { activo: false, expected_version: 0 }, kEstado);
+      assertSame(JSON.stringify(e.data), JSON.stringify({
+        code: "ESTADO_ACTUALIZADO",
+        message: "Usuario desactivado en el control central. La sincronizacion con la sucursal quedo pendiente al confirmar.",
+        usuario_id: x.localId,
+        activo: false,
+        version: 1,
+        operacion: { tipo: "rol_activo", version_objetivo: 1 },
+        sincronizacion_tenant: "pendiente_al_commit"
+      }), "/estado: cuerpo durable de S1b2 intacto");
+      const kRol = crypto.randomUUID();
+      assertEqual((await b2s2bPatchRol(baseUrl, token, x.localId, { rol: "encargado", expected_version: 1 }, kRol)).response.status, 200, "rol g+2");
+      const cruce1 = await b2s2bPatchRol(baseUrl, token, x.localId, { rol: "admin", expected_version: 2 }, kEstado);
+      assertSame(JSON.stringify([cruce1.response.status, cruce1.data.code]), JSON.stringify([409, "IDEMPOTENCY_KEY_REUSED"]), "clave de /estado en /rol");
+      const cruce2 = await b2s1b2Patch(baseUrl, token, x.localId, { activo: true, expected_version: 2 }, kRol);
+      assertSame(JSON.stringify([cruce2.response.status, cruce2.data.code]), JSON.stringify([409, "IDEMPOTENCY_KEY_REUSED"]), "clave de /rol en /estado");
+      // B2-S2b-R1: P1 se aplica a OTRO usuario (x), nunca al admin actor -- cambiar la propia
+      // contrasena revoca deliberadamente la sesion (P1A-SR) y el request siguiente daria 401.
+      const kPwd = crypto.randomUUID();
+      const pw = await requestJson(baseUrl, "PATCH", `/usuarios/${x.localId}/password`, { password: "NuevaS2bPass1", confirmar_password: "NuevaS2bPass1" }, token, { "Idempotency-Key": kPwd });
+      assertSame(JSON.stringify([pw.response.status, pw.data.message]), JSON.stringify([200, "Contraseña actualizada correctamente"]), `P1 sobre otro usuario confirma (${JSON.stringify(pw.data)})`);
+      assertEqual((await requestJson(baseUrl, "GET", `/usuarios/${x.localId}`, null, token)).response.status, 200, "la sesion del admin sigue valida tras P1 sobre otro usuario");
+      const fotoCruce3 = async () => JSON.stringify({
+        membership: await b2s1aMembership(f, x.membershipId),
+        pendientes: await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente ORDER BY id ASC"),
+        claveP1: await allSql(f.controlDbPath, "SELECT * FROM operacion_idempotencia WHERE clave = ?", [kPwd]),
+        durablesRol: await allSql(f.controlDbPath, "SELECT clave FROM operacion_idempotencia WHERE endpoint = '/usuarios/:id/rol' ORDER BY clave ASC")
+      });
+      const antesCruce3 = await fotoCruce3();
+      const cruce3 = await b2s2bPatchRol(baseUrl, token, x.localId, { rol: "admin", expected_version: 2 }, kPwd);
+      assertSame(JSON.stringify([cruce3.response.status, cruce3.data.code]), JSON.stringify([409, "IDEMPOTENCY_KEY_REUSED"]), "clave de P1 en /rol");
+      assertSame(await fotoCruce3(), antesCruce3, "la tentativa /rol no cambia rol, version, lapidas ni resultados durables");
+      assertSame((await allSql(f.controlDbPath, "SELECT endpoint FROM operacion_idempotencia WHERE clave = ?", [kPwd]))[0].endpoint, "/usuarios/:id/password", "la clave sigue perteneciendo a P1");
+      const cruce4 = await requestJson(baseUrl, "PATCH", `/usuarios/${f.localUserId}/password`, { password: "OtraS2bPass1", confirmar_password: "OtraS2bPass1" }, token, { "Idempotency-Key": kRol });
+      assertSame(JSON.stringify([cruce4.response.status, cruce4.data.code]), JSON.stringify([409, "IDEMPOTENCY_KEY_REUSED"]), "clave de /rol en P1");
+    }, extraEnvCentral(f));
+    const m = await b2s1aMembership(f, x.membershipId);
+    assertSame(JSON.stringify([m.rol, m.activo, m.version]), JSON.stringify(["encargado", 0, 2]), "ningun cruce de claves escribio");
+  });
+}
+
+async function testB2S2bSinEscriturasEnBasesProtegidas() {
+  const protegidas = [path.join(ROOT, "database", "guernica.db"), path.join(ROOT, "database", "atlas_control.db")];
+  const huella = () => JSON.stringify(protegidas.map((p) => (fs.existsSync(p) ? sha256Archivo(p) : "AUSENTE")));
+  const antes = huella();
+  await b2s1b2CentralSingle(async (f) => {
+    const x = await b2s1aMiembro(f, "b2s2b.protegidas");
+    await withServer(f.dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", f.centralPassword);
+      assertEqual((await b2s2bPatchRol(baseUrl, token, x.localId, { rol: "encargado", expected_version: 0 }, crypto.randomUUID())).response.status, 200, "flujo central de rol");
+      assertEqual((await requestJson(baseUrl, "GET", `/usuarios/${x.localId}`, null, token)).response.status, 200, "lectura central");
+    }, extraEnvCentral(f));
+  });
+  assertSame(huella(), antes, "guernica.db y atlas_control.db del repositorio intactos");
 }
 
 async function testP1ASRControlSchemaNuevoContienePasswordVersionDefault0() {

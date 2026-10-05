@@ -14,6 +14,7 @@ const {
 const { autenticarCredencialCentral } = require("./centralAuthSecurity");
 const { revalidarSesionCentral, abrirControlDbSoloLectura } = require("./centralAuthResolver");
 const { cambiarEstadoMembershipCentralIdempotente } = require("./services/membershipEstadoCentralService");
+const { cambiarRolMembershipCentralIdempotente } = require("./services/membershipRolCentralService");
 const {
   runQuery: runControlQuery,
   getQuery: getControlQuery,
@@ -2391,7 +2392,7 @@ async function leerAccesoCentralPorUsuarioLocal({ empresaId, usuarioLocalId }) {
     await runControlQuery(controlDb, "PRAGMA busy_timeout = 5000");
     const membership = await getControlQuery(
       controlDb,
-      `SELECT ue.id, ue.empresa_id, ue.usuario_local_id, ue.activo, ue.version
+      `SELECT ue.id, ue.empresa_id, ue.usuario_local_id, ue.rol, ue.activo, ue.version
        FROM usuario_empresas ue
        JOIN usuarios u ON u.id = ue.usuario_id
        WHERE ue.empresa_id = ? AND ue.usuario_local_id = ?`,
@@ -2431,7 +2432,9 @@ app.get("/usuarios/:id", async (req, res) => {
       return res.json({
         ...usuario,
         membership_version: Number(acceso.membership.version),
-        activo_central: Number(acceso.membership.activo) === 1
+        activo_central: Number(acceso.membership.activo) === 1,
+        // AUTH-SYNC-B2-S2b: rol de la membership en Control (nunca el rol local ni el de la sesion).
+        rol_central: acceso.membership.rol
       });
     }
     return res.json(usuario);
@@ -2709,6 +2712,75 @@ app.patch("/usuarios/:id/estado", async (req, res) => {
     return res.status(500).json({ message: "Error al cambiar estado del usuario" });
   }
 });
+
+// AUTH-SYNC-B2-S2b: PATCH /usuarios/:id/rol -- CENTRAL-FIRST via el writer idempotente S2a, con el
+// mismo contrato de frontera que PATCH /usuarios/:id/estado (S1b2): actor, su membership y la empresa
+// salen EXCLUSIVAMENTE de la sesion central revalidada; el writer vuelve a validar toda la autoridad
+// dentro de su transaccion. La ruta SOLO existe en auth central: en legacy (off o shadow) no se
+// registra y una request cae en el 404 generico de siempre. PUT /usuarios/:id no cambia.
+const ROLES_CENTRALES_ACEPTADOS = new Set(["admin", "encargado", "colaborador"]);
+
+async function manejarPatchRolCentral(req, res) {
+  if (userControlBridge.getBridgeMode() !== "shadow" || !req.centralSession) {
+    return rechazarNoAutenticado(res, CENTRAL_SESSION_INVALID_MESSAGE);
+  }
+  const idCrudo = String(req.params.id || "");
+  const usuarioId = /^[1-9]\d{0,15}$/.test(idCrudo) ? Number(idCrudo) : null;
+  if (!usuarioId || !Number.isSafeInteger(usuarioId)) {
+    return res.status(400).json({ code: "USUARIO_ID_INVALIDO", message: "Identificador de usuario invalido." });
+  }
+  const idempotencyKey = validarIdempotencyKeyHeader(req.headers["idempotency-key"]);
+  if (!idempotencyKey) {
+    return res.status(400).json({ code: "IDEMPOTENCY_KEY_REQUIRED", message: "Falta una clave de idempotencia válida para esta operación." });
+  }
+  const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+  // Solo roles canonicos exactos: nunca alias legacy, mayusculas ni espacios normalizados.
+  if (typeof body.rol !== "string" || !ROLES_CENTRALES_ACEPTADOS.has(body.rol)) {
+    return res.status(400).json({ code: "ROL_INVALIDO", message: "El rol debe ser admin, encargado o colaborador." });
+  }
+  if (body.expected_version === undefined || body.expected_version === null) {
+    return res.status(428).json({ code: "PRECONDITION_REQUIRED", message: "Falta expected_version: volve a cargar el usuario e intenta nuevamente." });
+  }
+  if (typeof body.expected_version !== "number" || !Number.isSafeInteger(body.expected_version) || body.expected_version < 0) {
+    return res.status(400).json({ code: "EXPECTED_VERSION_INVALIDA", message: "expected_version debe ser un entero no negativo." });
+  }
+  // F4: en multi, la empresa de la sesion debe ser la del tenant del request.
+  const empresaRequest = empresaAuthDelRequest();
+  if (ATLAS_TENANCY_MODE === TENANCY_MODES.MULTI && (!empresaRequest || empresaRequest.empresaId !== Number(req.centralSession.empresaId))) {
+    return rechazarNoAutenticado(res, CENTRAL_SESSION_INVALID_MESSAGE);
+  }
+
+  try {
+    const usuarioLocal = await getQuery("SELECT id FROM usuarios WHERE id = ?", [usuarioId]);
+    if (!usuarioLocal) {
+      return res.status(404).json({ code: "USUARIO_NO_ENCONTRADO", message: "Usuario no encontrado" });
+    }
+    const resultado = await cambiarRolMembershipCentralIdempotente({
+      actorUsuarioId: req.centralSession.centralId,
+      actorMembershipId: req.centralSession.membershipId,
+      empresaId: req.centralSession.empresaId,
+      usuarioLocalId: usuarioId,
+      rol: body.rol,
+      expectedVersion: body.expected_version,
+      idempotencyKey,
+      controlDbPath: userControlBridge.resolveControlDbPath()
+    });
+    if (resultado.durable) {
+      return res.status(resultado.resultadoHttp).json(resultado.resultadoJson);
+    }
+    if (resultado.resultado === "AUTOMODIFICACION") {
+      return res.status(403).json({ code: "AUTOMODIFICACION_PROHIBIDA", message: "No podés cambiar el rol de tu propio usuario." });
+    }
+    return responderEstadoCentralNoDurable(res, resultado);
+  } catch (error) {
+    logError("Error al cambiar rol central del usuario:", error);
+    return res.status(503).json({ code: "CONTROL_NO_DISPONIBLE", message: "No se pudo confirmar el cambio en el control central. No se realizo ningun cambio. Intenta nuevamente en unos minutos." });
+  }
+}
+
+if (ATLAS_AUTH_MODE === "central") {
+  app.patch("/usuarios/:id/rol", manejarPatchRolCentral);
+}
 
 // AUTH-SYNC-B2-P1B: identificador LOGICO del endpoint para el fingerprint de idempotencia -- una
 // constante fija (nunca la URL literal con el :id interpolado, que ya viaja por separado como
