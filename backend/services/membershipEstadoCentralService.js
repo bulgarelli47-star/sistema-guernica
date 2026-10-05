@@ -147,36 +147,35 @@ async function registrarPendienteRolActivo(db, membership, versionObjetivo) {
   return { accion: "CREADA" };
 }
 
-// Nucleo compartido por el writer S1a y su variante idempotente S1b1: TODAS las reglas (R1-R7, R10 y
-// la precondicion de version de S1a-R1) sobre una conexion YA dentro de una transaccion BEGIN
-// IMMEDIATE abierta por el caller. Nunca ejecuta BEGIN/COMMIT/ROLLBACK: devuelve el resultado y si
-// escribio, y el caller decide. `actorMembershipIdEsperada` (opcional) exige que la membership del
-// actor resuelta en Control sea exactamente la de su sesion. `alAutorizar` (opcional) corre una sola
-// vez, dentro de la misma transaccion, cuando actor, empresa y destino ya fueron validados (R1-R5) y
-// antes de la precondicion de version -- la variante idempotente reserva ahi su clave.
-async function evaluarYAplicarCambioEstado(db, {
-  actorId, empresa, destinoId, activoNuevo, versionEsperada, actorMembershipIdEsperada = null, alAutorizar = null
+// Reglas de autoridad y destino (esquema, R2, R1, R3, R4, R5) compartidas por los writers de estado
+// (S1a/S1b1) y por el writer de rol (backend/services/membershipRolCentralService.js, S2a). Corre
+// sobre una conexion YA dentro de una transaccion BEGIN IMMEDIATE abierta por el caller; solo lee.
+// `actorMembershipIdEsperada` (opcional) exige que la membership del actor resuelta en Control sea
+// exactamente la de su sesion. `alAutorizar` (opcional) corre una sola vez, dentro de la misma
+// transaccion, cuando actor, empresa y destino ya fueron validados -- las variantes idempotentes
+// reservan ahi su clave. Devuelve { ok: true, destino, actorMembership } o { ok: false, resultado }.
+async function validarAutoridadYDestino(db, {
+  actorId, empresa, destinoId, actorMembershipIdEsperada = null, alAutorizar = null
 }) {
   const base = { membershipId: destinoId, empresaId: empresa };
-  const sinEscritura = (resultado) => ({ escribio: false, resultado });
 
   if (!(await verificarEsquema(db))) {
-    return sinEscritura(rechazo(R.ESQUEMA_INCOMPATIBLE, "ESQUEMA_CONTROL_INCOMPATIBLE", base));
+    return { ok: false, resultado: rechazo(R.ESQUEMA_INCOMPATIBLE, "ESQUEMA_CONTROL_INCOMPATIBLE", base) };
   }
 
   // R2: empresa existente y activa.
   const empresaRow = await getQuery(db, "SELECT id, activa FROM empresas WHERE id = ?", [empresa]);
   if (!empresaRow || Number(empresaRow.activa) !== 1) {
-    return sinEscritura(rechazo(R.EMPRESA_NO_DISPONIBLE, empresaRow ? "EMPRESA_INACTIVA" : "EMPRESA_INEXISTENTE", base));
+    return { ok: false, resultado: rechazo(R.EMPRESA_NO_DISPONIBLE, empresaRow ? "EMPRESA_INACTIVA" : "EMPRESA_INEXISTENTE", base) };
   }
 
   // R1: actor existente y globalmente activo.
   const actor = await getQuery(db, "SELECT id, activo FROM usuarios WHERE id = ?", [actorId]);
   if (!actor) {
-    return sinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_INEXISTENTE", base));
+    return { ok: false, resultado: rechazo(R.NO_AUTORIZADO, "ACTOR_INEXISTENTE", base) };
   }
   if (Number(actor.activo) !== 1) {
-    return sinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_INACTIVO", base));
+    return { ok: false, resultado: rechazo(R.NO_AUTORIZADO, "ACTOR_INACTIVO", base) };
   }
 
   // R3: membership del actor en ESTA empresa, activa y con rol admin.
@@ -186,16 +185,16 @@ async function evaluarYAplicarCambioEstado(db, {
     [actorId, empresa]
   );
   if (!actorMembership) {
-    return sinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_SIN_MEMBERSHIP", base));
+    return { ok: false, resultado: rechazo(R.NO_AUTORIZADO, "ACTOR_SIN_MEMBERSHIP", base) };
   }
   if (actorMembershipIdEsperada !== null && Number(actorMembership.id) !== actorMembershipIdEsperada) {
-    return sinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_MEMBERSHIP_NO_CORRESPONDE", base));
+    return { ok: false, resultado: rechazo(R.NO_AUTORIZADO, "ACTOR_MEMBERSHIP_NO_CORRESPONDE", base) };
   }
   if (Number(actorMembership.activo) !== 1) {
-    return sinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_MEMBERSHIP_INACTIVA", base));
+    return { ok: false, resultado: rechazo(R.NO_AUTORIZADO, "ACTOR_MEMBERSHIP_INACTIVA", base) };
   }
   if (actorMembership.rol !== ROL_ADMIN) {
-    return sinEscritura(rechazo(R.NO_AUTORIZADO, "ACTOR_NO_ADMIN", base));
+    return { ok: false, resultado: rechazo(R.NO_AUTORIZADO, "ACTOR_NO_ADMIN", base) };
   }
 
   // R4: destino de ESTA empresa. Inexistente y ajena se informan igual (sin enumerar otras empresas).
@@ -205,17 +204,36 @@ async function evaluarYAplicarCambioEstado(db, {
     [destinoId]
   );
   if (!destino || Number(destino.empresa_id) !== empresa) {
-    return sinEscritura(rechazo(R.MEMBERSHIP_NO_ENCONTRADA, "MEMBERSHIP_NO_ENCONTRADA", base));
+    return { ok: false, resultado: rechazo(R.MEMBERSHIP_NO_ENCONTRADA, "MEMBERSHIP_NO_ENCONTRADA", base) };
   }
 
   // R5: nunca sobre la propia identidad (ni la propia membership).
   if (Number(destino.usuario_id) === actorId || Number(destino.id) === Number(actorMembership.id)) {
-    return sinEscritura(rechazo(R.AUTOMODIFICACION, "AUTOMODIFICACION", base));
+    return { ok: false, resultado: rechazo(R.AUTOMODIFICACION, "AUTOMODIFICACION", base) };
   }
 
   if (alAutorizar) {
     await alAutorizar();
   }
+  return { ok: true, destino, actorMembership };
+}
+
+// Nucleo compartido por el writer S1a y su variante idempotente S1b1: TODAS las reglas (R1-R7, R10 y
+// la precondicion de version de S1a-R1) sobre una conexion YA dentro de una transaccion BEGIN
+// IMMEDIATE abierta por el caller. Nunca ejecuta BEGIN/COMMIT/ROLLBACK: devuelve el resultado y si
+// escribio, y el caller decide. R1-R5 (y `actorMembershipIdEsperada` / `alAutorizar`) se delegan en
+// validarAutoridadYDestino, en el mismo orden y en el mismo punto que antes.
+async function evaluarYAplicarCambioEstado(db, {
+  actorId, empresa, destinoId, activoNuevo, versionEsperada, actorMembershipIdEsperada = null, alAutorizar = null
+}) {
+  const base = { membershipId: destinoId, empresaId: empresa };
+  const sinEscritura = (resultado) => ({ escribio: false, resultado });
+
+  const autoridad = await validarAutoridadYDestino(db, { actorId, empresa, destinoId, actorMembershipIdEsperada, alAutorizar });
+  if (!autoridad.ok) {
+    return sinEscritura(autoridad.resultado);
+  }
+  const { destino } = autoridad;
 
   // Precondicion de version ANTES de evaluar el no-op: un pedido basado en una generacion distinta
   // de la vigente es siempre conflicto, aunque el estado pedido ya coincida.
@@ -573,5 +591,17 @@ module.exports = {
   contarAdminsEfectivos,
   calcularHuellaEstado,
   cambiarEstadoMembershipCentral,
-  cambiarEstadoMembershipCentralIdempotente
+  cambiarEstadoMembershipCentralIdempotente,
+  // AUTH-SYNC-B2-S2a: helpers internos compartidos EXCLUSIVAMENTE con el writer de rol
+  // (backend/services/membershipRolCentralService.js). No son API publica de negocio.
+  internosCompartidos: Object.freeze({
+    ROL_ADMIN,
+    HTTP_NO_DURABLE,
+    validarAutoridadYDestino,
+    ejecutarEnTransaccionControl,
+    verificarEsquema,
+    verificarEsquemaIdempotencia,
+    normalizarIdempotencyKey,
+    registrarPendienteRolActivo
+  })
 };

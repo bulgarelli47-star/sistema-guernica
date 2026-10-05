@@ -81,6 +81,9 @@ const {
   cambiarEstadoMembershipCentralIdempotente: b2s1b1Idempotente
 } = require("../backend/services/membershipEstadoCentralService");
 const {
+  cambiarRolMembershipCentralIdempotente: b2s2aCambiarRol
+} = require("../backend/services/membershipRolCentralService");
+const {
   procesarPendientePasswordStandalone: p1aProcesarPendientePasswordStandalone,
   verificarSoporteS0Standalone: p1aVerificarSoporteS0Standalone,
   drenarOutboxPassword: p1aDrenarOutboxPassword
@@ -21332,6 +21335,31 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testB2S1b2LegacyShadowYOffIntactos);
   await _run(testB2S1b2PasswordP1SinRegresion);
   await _run(testB2S1b2SinEscriturasEnBasesProtegidas);
+  await _run(testB2S2aAdminCambiaColaboradorAEncargado);
+  await _run(testB2S2aAdminPromueveEncargadoAAdmin);
+  await _run(testB2S2aPromocionDeMembershipInactivaAAdmin);
+  await _run(testB2S2aActoresSinRolAdminRechazados);
+  await _run(testB2S2aActoresInactivosRechazados);
+  await _run(testB2S2aAdminOtraEmpresaYMembershipDeSesionIncorrecta);
+  await _run(testB2S2aAutomodificacionYUltimoAdmin);
+  await _run(testB2S2aCarreraDosAdminsDegradandoseMutuamente);
+  await _run(testB2S2aPrecondicionDeVersionYNoOp);
+  await _run(testB2S2aRolesInvalidosYAliasesRechazados);
+  await _run(testB2S2aDestinoInexistenteOAjeno);
+  await _run(testB2S2aAliasLegacyEnControlSeReemplazaPorCanonico);
+  await _run(testB2S2aRollbackRealYReintento);
+  await _run(testB2S2aTenantInaccesibleCommitCentralValido);
+  await _run(testB2S2aLapidaReaperturaEInconsistencia);
+  await _run(testB2S2aPendientePasswordYP1Intactos);
+  await _run(testB2S2aReplayYRespuestaPerdida);
+  await _run(testB2S2aClaveReutilizadaConOtroContenido);
+  await _run(testB2S2aColisionConClavesDeEstadoYPassword);
+  await _run(testB2S2aConcurrenciaMismaClaveYDosClaves);
+  await _run(testB2S2aCarreraRolVsEstadoMismaVersion);
+  await _run(testB2S2aEstadoLuegoRolProyectaSnapshotG2);
+  await _run(testB2S2aRolLuegoEstadoWorkerRecuperaG2);
+  await _run(testB2S2aIdsLocalesColisionadosEntreEmpresas);
+  await _run(testB2S2aInvariantesEstaticosYWritersDeEstadoIntactos);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -45764,6 +45792,573 @@ async function testB2S1b2SinEscriturasEnBasesProtegidas() {
     }, extraEnvCentral(f));
   });
   assertSame(huella(), antes, "guernica.db y atlas_control.db del repositorio intactos");
+}
+
+// AUTH-SYNC-B2-S2a: writer central-first idempotente de ROL (membershipRolCentralService). Reutiliza las
+// fixtures de S1a/S1b1 (business DB registrada + Control temporal; actor = admin del fixture).
+function b2s2aLlamar(f, { actor = f.actorId, actorMembership = f.membershipId, empresaId = f.empresa.id, usuarioLocalId, rol, expectedVersion, clave }) {
+  return b2s2aCambiarRol({
+    actorUsuarioId: actor, actorMembershipId: actorMembership, empresaId, usuarioLocalId,
+    rol, expectedVersion, idempotencyKey: clave, controlDbPath: f.controlDbPath
+  });
+}
+
+function b2s2aFuenteSinComentarios(archivo) {
+  return fs.readFileSync(path.join(ROOT, "backend", "services", archivo), "utf8")
+    .split(/\r?\n/).filter((linea) => !linea.trim().startsWith("//")).join("\n");
+}
+
+async function testB2S2aAdminCambiaColaboradorAEncargado() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.x");
+    const usuariosAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM usuarios ORDER BY id ASC"));
+    const archivoTenant = b2s0b3aArchivo(f.dbPath);
+    const r = await b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 0, clave: "s2a-k1" });
+    assertSame(JSON.stringify([r.resultado, r.durable, r.replay, r.resultadoHttp]), JSON.stringify([B2S1A_RESULTADOS.CONFIRMADO, true, false, 200]), `confirmado (${JSON.stringify(r)})`);
+    assertSame(JSON.stringify(r.resultadoJson), JSON.stringify({
+      code: "ROL_ACTUALIZADO",
+      message: "Rol actualizado en el control central. La sincronizacion con la sucursal quedo pendiente al confirmar.",
+      usuario_id: x.localId,
+      rol: "encargado",
+      version: 1,
+      operacion: { tipo: "rol_activo", version_objetivo: 1 },
+      sincronizacion_tenant: "pendiente_al_commit"
+    }), "cuerpo durable exacto");
+    assertSame(r.pendiente.accion, "CREADA", "lapida creada");
+    const m = await b2s1aMembership(f, x.membershipId);
+    assertSame(JSON.stringify([m.rol, m.activo, m.version]), JSON.stringify(["encargado", 1, 1]), "solo rol cambia; activo intacto; una generacion");
+    const p = await b2s1aPendienteRolActivo(f, x.membershipId);
+    assertSame(JSON.stringify([p.estado, p.version_objetivo, p.usuario_id, p.empresa_id, p.usuario_local_id]), JSON.stringify(["pendiente", 1, x.centralId, f.empresa.id, x.localId]), "lapida rol_activo con la generacion confirmada");
+    const fila = await b2s1b1Fila(f, "s2a-k1");
+    assertSame(JSON.stringify([fila.estado, fila.endpoint, fila.resultado_http, fila.usuario_id, fila.membership_id]), JSON.stringify(["confirmada", "/usuarios/:id/rol", 200, f.actorId, f.membershipId]), "idempotencia confirmada en el namespace de rol");
+    assertSame(fila.resultado_json, JSON.stringify(r.resultadoJson), "resultado durable = respuesta");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM usuarios ORDER BY id ASC")), usuariosAntes, "identidad global intacta");
+    assertSame(b2s0b3aArchivo(f.dbPath), archivoTenant, "el writer nunca escribe la business DB");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aAdminPromueveEncargadoAAdmin() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const e = await b2s1aMiembro(f, "b2s2a.enc", { rol: "encargado" });
+    const r = await b2s2aLlamar(f, { usuarioLocalId: e.localId, rol: "admin", expectedVersion: 0, clave: "s2a-promo" });
+    assertSame(r.resultado, B2S1A_RESULTADOS.CONFIRMADO, "promocion confirmada");
+    assertSame((await b2s1aMembership(f, e.membershipId)).rol, "admin", "rol admin");
+    assertEqual(await b2s1aAdminsEfectivos(f), 2, "nuevo admin efectivo");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aPromocionDeMembershipInactivaAAdmin() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const y = await b2s1aMiembro(f, "b2s2a.inactivo", { activo: 0 });
+    const r = await b2s2aLlamar(f, { usuarioLocalId: y.localId, rol: "admin", expectedVersion: 0, clave: "s2a-inactivo" });
+    assertSame(r.resultado, B2S1A_RESULTADOS.CONFIRMADO, "promocion de inactiva permitida");
+    const m = await b2s1aMembership(f, y.membershipId);
+    assertSame(JSON.stringify([m.rol, m.activo, m.version]), JSON.stringify(["admin", 0, 1]), "admin inactivo: activo permanece 0");
+    assertSame((await b2s1aPendienteRolActivo(f, y.membershipId)).estado, "pendiente", "lapida normal");
+    assertEqual(await b2s1aAdminsEfectivos(f), 1, "no cuenta como admin efectivo");
+    const comoActor = await b2s2aLlamar(f, { actor: y.centralId, actorMembership: y.membershipId, usuarioLocalId: f.localUserId, rol: "encargado", expectedVersion: 0, clave: "s2a-inactivo-actua" });
+    assertSame(comoActor.motivo, "ACTOR_MEMBERSHIP_INACTIVA", "sin autoridad mientras la membership siga inactiva");
+    const c = await b2s0b3aProcesarPendienteRolActivo({ membershipId: y.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(c.resultado, B2S0B3A_RESULTADOS.CERRADO, "S0b3a proyecta");
+    const local = await b2s0b2Local(f.dbPath, y.localId);
+    assertSame(JSON.stringify([local.rol, local.activo, local.v]), JSON.stringify(["admin", 0, 1]), "tenant con (admin, 0) de la generacion 1");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function b2s2aRechazoActor(etiqueta, preparar, motivoEsperado) {
+  let f;
+  let extra = null;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.objetivo");
+    const ctx = await preparar(f, x);
+    extra = ctx.limpiar || null;
+    const r = await b2s1aSinCambiosControl(f, () => b2s2aLlamar(f, { ...ctx.args, usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 0, clave: `s2a-rechazo-${etiqueta}` }), etiqueta);
+    assertSame(JSON.stringify([r.resultado, r.motivo, r.resultadoHttp, r.durable]), JSON.stringify([B2S1A_RESULTADOS.NO_AUTORIZADO, motivoEsperado, 403, false]), `${etiqueta} (${JSON.stringify(r)})`);
+    assertEqual(await b2s1b1Claves(f), 0, `${etiqueta}: la clave no se consume`);
+  } finally {
+    b2s0b2Limpiar(f);
+    if (extra) extra();
+  }
+}
+
+async function testB2S2aActoresSinRolAdminRechazados() {
+  for (const rol of ["encargado", "colaborador"]) {
+    await b2s2aRechazoActor(`rol-${rol}`, async (f) => {
+      const a = await b2s1aMiembro(f, `b2s2a.actor.${rol}`, { rol });
+      return { args: { actor: a.centralId, actorMembership: a.membershipId } };
+    }, "ACTOR_NO_ADMIN");
+  }
+}
+
+async function testB2S2aActoresInactivosRechazados() {
+  await b2s2aRechazoActor("global-inactivo", async (f) => {
+    const a = await b2s1aMiembro(f, "b2s2a.actor.global", { rol: "admin", centralActivo: 0 });
+    return { args: { actor: a.centralId, actorMembership: a.membershipId } };
+  }, "ACTOR_INACTIVO");
+  await b2s2aRechazoActor("membership-inactiva", async (f) => {
+    const a = await b2s1aMiembro(f, "b2s2a.actor.mem", { rol: "admin", activo: 0 });
+    return { args: { actor: a.centralId, actorMembership: a.membershipId } };
+  }, "ACTOR_MEMBERSHIP_INACTIVA");
+}
+
+async function testB2S2aAdminOtraEmpresaYMembershipDeSesionIncorrecta() {
+  let t;
+  await b2s2aRechazoActor("otra-empresa", async (f) => {
+    t = await b2s0b3aSegundoTenant(f, { rol: "admin", activo: 1, version: 0 });
+    return { args: { actor: t.centralB.id, actorMembership: t.membershipB.id }, limpiar: () => limpiarTenantTestDb(t.dbB) };
+  }, "ACTOR_SIN_MEMBERSHIP");
+  await b2s2aRechazoActor("sesion-incorrecta", async (f) => {
+    const otro = await b2s1aMiembro(f, "b2s2a.otro", { rol: "admin" });
+    return { args: { actorMembership: otro.membershipId } };
+  }, "ACTOR_MEMBERSHIP_NO_CORRESPONDE");
+}
+
+async function testB2S2aAutomodificacionYUltimoAdmin() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const colab = await b2s1aMiembro(f, "b2s2a.colab");
+    const self = await b2s1aSinCambiosControl(f, () => b2s2aLlamar(f, { usuarioLocalId: f.localUserId, rol: "encargado", expectedVersion: 0, clave: "s2a-self" }), "self");
+    assertSame(JSON.stringify([self.resultado, self.resultadoHttp, self.durable]), JSON.stringify([B2S1A_RESULTADOS.AUTOMODIFICACION, 403, false]), "automodificacion prohibida");
+    const porColab = await b2s2aLlamar(f, { actor: colab.centralId, actorMembership: colab.membershipId, usuarioLocalId: f.localUserId, rol: "encargado", expectedVersion: 0, clave: "s2a-colab" });
+    assertSame(porColab.resultado, B2S1A_RESULTADOS.NO_AUTORIZADO, "nadie sin autoridad degrada al ultimo admin");
+    assertEqual(await b2s1aAdminsEfectivos(f), 1, "el ultimo admin efectivo se conserva");
+    // Con dos admins: A degrada a B; despues B (ya encargado) no puede degradar a A.
+    const b = await b2s1aMiembro(f, "b2s2a.adminb", { rol: "admin" });
+    assertSame((await b2s2aLlamar(f, { usuarioLocalId: b.localId, rol: "encargado", expectedVersion: 0, clave: "s2a-a-degrada-b" })).resultado, B2S1A_RESULTADOS.CONFIRMADO, "A degrada a B");
+    const r2 = await b2s2aLlamar(f, { actor: b.centralId, actorMembership: b.membershipId, usuarioLocalId: f.localUserId, rol: "encargado", expectedVersion: 0, clave: "s2a-b-degrada-a" });
+    assertSame(r2.motivo, "ACTOR_NO_ADMIN", "B ya no tiene autoridad");
+    assertEqual(await b2s1aAdminsEfectivos(f), 1, "invariante: al menos un admin efectivo");
+    assertSame((await b2s1aMembership(f, f.membershipId)).rol, "admin", "el ultimo admin conserva su rol");
+    assertEqual(await b2s1b1Claves(f), 1, "solo la operacion confirmada consumio clave");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aCarreraDosAdminsDegradandoseMutuamente() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const b = await b2s1aMiembro(f, "b2s2a.carrera", { rol: "admin" });
+    const [ra, rb] = await Promise.all([
+      b2s2aLlamar(f, { usuarioLocalId: b.localId, rol: "encargado", expectedVersion: 0, clave: "s2a-carrera-a" }),
+      b2s2aLlamar(f, { actor: b.centralId, actorMembership: b.membershipId, usuarioLocalId: f.localUserId, rol: "encargado", expectedVersion: 0, clave: "s2a-carrera-b" })
+    ]);
+    const confirmados = [ra, rb].filter((r) => r.resultado === B2S1A_RESULTADOS.CONFIRMADO);
+    const rechazados = [ra, rb].filter((r) => r.resultado !== B2S1A_RESULTADOS.CONFIRMADO);
+    assertEqual(confirmados.length, 1, `exactamente una degradacion (${JSON.stringify([ra, rb])})`);
+    assertSame(JSON.stringify([rechazados[0].resultado, rechazados[0].motivo]), JSON.stringify([B2S1A_RESULTADOS.NO_AUTORIZADO, "ACTOR_NO_ADMIN"]), "el otro pierde su autoridad dentro de su transaccion");
+    assertEqual(await b2s1aAdminsEfectivos(f), 1, "la empresa conserva un admin efectivo");
+    assertEqual((await allSql(f.controlDbPath, "SELECT COUNT(*) AS n FROM sync_pendiente WHERE tipo_operacion = 'rol_activo'"))[0].n, 1, "una sola lapida");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aPrecondicionDeVersionYNoOp() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.version");
+    assertSame((await b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 0, clave: "s2a-g1" })).resultado, B2S1A_RESULTADOS.CONFIRMADO, "generacion 1");
+    const pendientesG1 = JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente ORDER BY id ASC"));
+    const membershipG1 = JSON.stringify(await b2s1aMembership(f, x.membershipId));
+    for (const [etiqueta, rol, version] of [["obsoleta", "admin", 0], ["futura", "admin", 5], ["coincidente obsoleta", "encargado", 0]]) {
+      const r = await b2s2aLlamar(f, { usuarioLocalId: x.localId, rol, expectedVersion: version, clave: `s2a-v-${etiqueta}` });
+      assertSame(JSON.stringify([r.resultado, r.durable, r.resultadoHttp, r.resultadoJson && r.resultadoJson.version_actual]), JSON.stringify([B2S1A_RESULTADOS.VERSION_CONFLICT, true, 409, 1]), `${etiqueta}: 409 durable (${JSON.stringify(r)})`);
+    }
+    const noop = await b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 1, clave: "s2a-noop" });
+    assertSame(JSON.stringify([noop.resultado, noop.resultadoHttp, noop.durable]), JSON.stringify([B2S1A_RESULTADOS.SIN_CAMBIOS, 200, true]), "no-op con version vigente");
+    assertSame(JSON.stringify(noop.resultadoJson), JSON.stringify({ code: "SIN_CAMBIOS", message: "El usuario ya tenia ese rol.", usuario_id: x.localId, rol: "encargado", version: 1 }), "cuerpo no-op exacto");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente ORDER BY id ASC")), pendientesG1, "ni conflictos ni no-op tocan la lapida");
+    assertSame(JSON.stringify(await b2s1aMembership(f, x.membershipId)), membershipG1, "la generacion 1 no se sustituye");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aRolesInvalidosYAliasesRechazados() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.invalido");
+    const antes = await b2s0b2EstadoControl(f.controlDbPath);
+    const invalidos = ["operador", "caja", "cajero", "Admin", "ADMIN", " admin", "admin ", "", null, undefined, 1, {}, ["admin"], true];
+    for (const rol of invalidos) {
+      const r = await b2s2aLlamar(f, { usuarioLocalId: x.localId, rol, expectedVersion: 0, clave: "s2a-invalido" });
+      assertSame(JSON.stringify([r.resultado, r.motivo, r.resultadoHttp]), JSON.stringify([B2S1A_RESULTADOS.PARAMETROS_INVALIDOS, "ROL_INVALIDO", 400]), `rol invalido rechazado (${JSON.stringify(rol)})`);
+    }
+    assertSame(await b2s0b2EstadoControl(f.controlDbPath), antes, "ningun rechazo abre ni escribe Control");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aDestinoInexistenteOAjeno() {
+  let f;
+  let t;
+  try {
+    f = await b2s1aFixture();
+    t = await b2s0b3aSegundoTenant(f, { rol: "admin", activo: 1, version: 0 });
+    const soloB = 5000;
+    await runSql(t.dbB, "INSERT INTO usuarios (id, nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, ?, 1)", [soloB, "S2a SoloB", "b2s2a.solob", "hash-solob", "colaborador"]);
+    const control = new sqlite3.Database(f.controlDbPath);
+    try {
+      const centralSoloB = await crearUsuarioCentral(control, { nombre: "S2a SoloB", usuarioReferencia: "b2s2a.solob", passwordHash: await bcrypt.hash("SoloB123", 4), activo: 1 });
+      await crearMembership(control, { usuarioId: centralSoloB.id, empresaId: t.empresaB.id, usuarioLocalId: soloB, rol: "colaborador", activo: 1 });
+    } finally {
+      await closeControlDb(control);
+    }
+    for (const [etiqueta, usuarioLocalId] of [["inexistente", 999999], ["de otra empresa", soloB]]) {
+      const r = await b2s1aSinCambiosControl(f, () => b2s2aLlamar(f, { usuarioLocalId, rol: "encargado", expectedVersion: 0, clave: `s2a-dest-${etiqueta}` }), etiqueta);
+      assertSame(JSON.stringify([r.resultado, r.resultadoHttp, r.durable]), JSON.stringify([B2S1A_RESULTADOS.MEMBERSHIP_NO_ENCONTRADA, 404, false]), `${etiqueta} (${JSON.stringify(r)})`);
+    }
+    assertEqual(await b2s1b1Claves(f), 0, "ninguna clave consumida");
+  } finally {
+    b2s0b2Limpiar(f);
+    if (t) limpiarTenantTestDb(t.dbB);
+  }
+}
+
+async function testB2S2aAliasLegacyEnControlSeReemplazaPorCanonico() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.alias");
+    await runSql(f.controlDbPath, "UPDATE usuario_empresas SET rol = 'operador' WHERE id = ?", [x.membershipId]);
+    const r = await b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "colaborador", expectedVersion: 0, clave: "s2a-alias" });
+    assertSame(JSON.stringify([r.resultado, r.resultadoJson.rol]), JSON.stringify([B2S1A_RESULTADOS.CONFIRMADO, "colaborador"]), "un alias legacy en Control no hace no-op del canonico");
+    const m = await b2s1aMembership(f, x.membershipId);
+    assertSame(JSON.stringify([m.rol, m.version]), JSON.stringify(["colaborador", 1]), "alias reemplazado por el rol canonico");
+    const alias = await b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "operador", expectedVersion: 1, clave: "s2a-alias-entrada" });
+    assertSame(alias.motivo, "ROL_INVALIDO", "el alias nunca es entrada valida");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aRollbackRealYReintento() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.rollback");
+    await runSql(f.controlDbPath, "CREATE TRIGGER s2a_falla_ins BEFORE INSERT ON sync_pendiente BEGIN SELECT RAISE(ABORT, 's2a falla outbox'); END");
+    await runSql(f.controlDbPath, "CREATE TRIGGER s2a_falla_upd BEFORE UPDATE ON sync_pendiente BEGIN SELECT RAISE(ABORT, 's2a falla outbox'); END");
+    const args = { usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 0, clave: "s2a-rollback" };
+    const r = await b2s1aSinCambiosControl(f, () => b2s2aLlamar(f, args), "falla entre CAS y lapida");
+    assertSame(JSON.stringify([r.resultado, r.resultadoHttp, r.durable]), JSON.stringify([B2S1A_RESULTADOS.FALLO_TRANSACCIONAL, 503, false]), `rollback integral (${JSON.stringify(r)})`);
+    assertEqual(await b2s1b1Claves(f), 0, "sin reserva huerfana");
+    assertSame(JSON.stringify(await b2s1aMembership(f, x.membershipId)), JSON.stringify({ id: x.membershipId, rol: "colaborador", activo: 1, version: 0 }), "sin rol huerfano");
+    await runSql(f.controlDbPath, "DROP TRIGGER s2a_falla_ins");
+    await runSql(f.controlDbPath, "DROP TRIGGER s2a_falla_upd");
+    const r2 = await b2s2aLlamar(f, args);
+    assertSame(JSON.stringify([r2.resultado, r2.replay]), JSON.stringify([B2S1A_RESULTADOS.CONFIRMADO, false]), "el reintento con la misma clave ejecuta una sola vez");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aTenantInaccesibleCommitCentralValido() {
+  let f;
+  const apartado = () => `${f.dbPath}.s2a-apartado`;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.offline");
+    fs.renameSync(f.dbPath, apartado());
+    const r = await b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 0, clave: "s2a-offline" });
+    assertSame(JSON.stringify([r.resultado, r.resultadoJson.sincronizacion_tenant]), JSON.stringify([B2S1A_RESULTADOS.CONFIRMADO, "pendiente_al_commit"]), "commit central valido sin tenant");
+    assertSame(fs.existsSync(f.dbPath), false, "no materializa la business DB");
+    fs.renameSync(apartado(), f.dbPath);
+    const c = await b2s0b3aProcesarPendienteRolActivo({ membershipId: x.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(c.resultado, B2S0B3A_RESULTADOS.CERRADO, "al volver el tenant, el consumer converge");
+    assertSame((await b2s0b2Local(f.dbPath, x.localId)).rol, "encargado", "rol proyectado");
+  } finally {
+    if (f && fs.existsSync(apartado())) fs.renameSync(apartado(), f.dbPath);
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aLapidaReaperturaEInconsistencia() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.reabre");
+    await b2s0b2InsertarLapida(f.controlDbPath, { usuarioId: x.centralId, empresaId: f.empresa.id, membershipId: x.membershipId, usuarioLocalId: x.localId, tipo: "rol_activo", versionObjetivo: 0, estado: "procesado" });
+    const idAntes = (await b2s1aPendienteRolActivo(f, x.membershipId)).id;
+    const r = await b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 0, clave: "s2a-reabre" });
+    assertSame(r.pendiente.accion, "REABIERTA", "lapida procesada reabierta");
+    const p = await b2s1aPendienteRolActivo(f, x.membershipId);
+    assertSame(JSON.stringify([p.id, p.estado, p.version_objetivo, p.procesado_en]), JSON.stringify([idAntes, "pendiente", 1, null]), "misma fila, generacion nueva");
+    // Asociacion incompatible: rollback integral.
+    const y = await b2s1aMiembro(f, "b2s2a.inconsistente");
+    await b2s0b2InsertarLapida(f.controlDbPath, { usuarioId: x.centralId, empresaId: f.empresa.id, membershipId: y.membershipId, usuarioLocalId: y.localId, tipo: "rol_activo", versionObjetivo: 0, estado: "procesado" });
+    const r2 = await b2s1aSinCambiosControl(f, () => b2s2aLlamar(f, { usuarioLocalId: y.localId, rol: "encargado", expectedVersion: 0, clave: "s2a-inconsistente" }), "inconsistente");
+    assertSame(JSON.stringify([r2.resultado, r2.durable]), JSON.stringify([B2S1A_RESULTADOS.ESTADO_INCONSISTENTE, false]), "rollback ante lapida incompatible");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aPendientePasswordYP1Intactos() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.pwd");
+    await b2s0b2InsertarLapida(f.controlDbPath, { usuarioId: x.centralId, empresaId: f.empresa.id, membershipId: x.membershipId, usuarioLocalId: x.localId, tipo: "password", versionObjetivo: 2, estado: "pendiente" });
+    const pwdAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente WHERE tipo_operacion = 'password'"));
+    const centralAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT id, password_hash, password_version, version, activo FROM usuarios ORDER BY id ASC"));
+    assertSame((await b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 0, clave: "s2a-pwd" })).resultado, B2S1A_RESULTADOS.CONFIRMADO, "rol confirmado");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT * FROM sync_pendiente WHERE tipo_operacion = 'password'")), pwdAntes, "pendiente password intacto");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT id, password_hash, password_version, version, activo FROM usuarios ORDER BY id ASC")), centralAntes, "identidad global intacta");
+    // P1B sigue operando igual despues de un cambio de rol.
+    const p1 = await userControlBridge.actualizarPasswordCentralFirstIdempotente({
+      usuarioCentralId: x.centralId, expectedVersion: 0, passwordHash: await bcrypt.hash("NuevaS2a1234", 4),
+      idempotencyKey: "s2a-p1b-ok", endpointLogico: "/usuarios/:id/password", solicitudHuella: "huella-s2a-p1",
+      actorCentralId: f.actorId, actorMembershipId: f.membershipId, controlDbPath: f.controlDbPath
+    });
+    assertSame(p1.ok, true, "P1B confirma su operacion");
+    assertSame((await b2s1aMembership(f, x.membershipId)).rol, "encargado", "P1B no toca el rol");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aReplayYRespuestaPerdida() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.replay");
+    const args = { usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 0, clave: "s2a-replay" };
+    const r1 = await b2s2aLlamar(f, args); // respuesta "perdida"
+    const r2 = await b2s1aSinCambiosControl(f, () => b2s2aLlamar(f, args), "replay");
+    assertSame(JSON.stringify([r2.replay, r2.resultado]), JSON.stringify([true, B2S1A_RESULTADOS.CONFIRMADO]), "replay del resultado original");
+    assertSame(b2s1b1Respuesta(r2), b2s1b1Respuesta(r1), "respuesta identica");
+    assertEqual((await b2s1aMembership(f, x.membershipId)).version, 1, "sin segunda generacion");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aClaveReutilizadaConOtroContenido() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.reuso1");
+    const y = await b2s1aMiembro(f, "b2s2a.reuso2");
+    await b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 0, clave: "s2a-reuso" });
+    for (const [etiqueta, args] of [
+      ["otro rol", { usuarioLocalId: x.localId, rol: "admin", expectedVersion: 0 }],
+      ["otra version", { usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 1 }],
+      ["otro destino", { usuarioLocalId: y.localId, rol: "encargado", expectedVersion: 0 }]
+    ]) {
+      const r = await b2s1aSinCambiosControl(f, () => b2s2aLlamar(f, { ...args, clave: "s2a-reuso" }), etiqueta);
+      assertSame(JSON.stringify([r.resultado, r.resultadoHttp, r.resultadoJson]), JSON.stringify(["IDEMPOTENCY_KEY_REUSED", 409, undefined]), `${etiqueta}: REUSED sin exponer el original`);
+    }
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aColisionConClavesDeEstadoYPassword() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.colision");
+    // Clave de /estado usada en /rol, y clave de /rol usada en /estado.
+    await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s2a-k-estado" });
+    const r1 = await b2s1aSinCambiosControl(f, () => b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 1, clave: "s2a-k-estado" }), "estado->rol");
+    assertSame(r1.resultado, "IDEMPOTENCY_KEY_REUSED", "clave de /estado no se reutiliza en /rol");
+    await b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 1, clave: "s2a-k-rol" });
+    const r2 = await b2s1aSinCambiosControl(f, () => b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 1, expectedVersion: 2, clave: "s2a-k-rol" }), "rol->estado");
+    assertSame(r2.resultado, "IDEMPOTENCY_KEY_REUSED", "clave de /rol no se reutiliza en /estado");
+    // Clave de P1B usada en /rol, y clave de /rol usada en P1B.
+    const p1 = await userControlBridge.actualizarPasswordCentralFirstIdempotente({
+      usuarioCentralId: x.centralId, expectedVersion: 0, passwordHash: await bcrypt.hash("Colision1234", 4),
+      idempotencyKey: "s2a-k-p1", endpointLogico: "/usuarios/:id/password", solicitudHuella: "huella-s2a",
+      actorCentralId: f.actorId, actorMembershipId: f.membershipId, controlDbPath: f.controlDbPath
+    });
+    assertSame(p1.ok, true, "P1B confirma");
+    const r3 = await b2s1aSinCambiosControl(f, () => b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "admin", expectedVersion: 2, clave: "s2a-k-p1" }), "p1->rol");
+    assertSame(r3.resultado, "IDEMPOTENCY_KEY_REUSED", "clave de P1B no se reutiliza en /rol");
+    const centralAntes = JSON.stringify(await allSql(f.controlDbPath, "SELECT password_hash, password_version, version FROM usuarios WHERE id = ?", [x.centralId]));
+    const p1b = await userControlBridge.actualizarPasswordCentralFirstIdempotente({
+      usuarioCentralId: x.centralId, expectedVersion: 1, passwordHash: await bcrypt.hash("Otra12345", 4),
+      idempotencyKey: "s2a-k-rol", endpointLogico: "/usuarios/:id/password", solicitudHuella: "huella-s2a-2",
+      actorCentralId: f.actorId, actorMembershipId: f.membershipId, controlDbPath: f.controlDbPath
+    });
+    assertSame(p1b.errorCode, "IDEMPOTENCY_KEY_REUSED", "P1B no reproduce una clave de /rol");
+    assertSame(JSON.stringify(await allSql(f.controlDbPath, "SELECT password_hash, password_version, version FROM usuarios WHERE id = ?", [x.centralId])), centralAntes, "credencial intacta");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aConcurrenciaMismaClaveYDosClaves() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.conc1");
+    const y = await b2s1aMiembro(f, "b2s2a.conc2");
+    const args = { usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 0, clave: "s2a-conc" };
+    const [a, b] = await Promise.all([b2s2aLlamar(f, args), b2s2aLlamar(f, args)]);
+    assertSame(JSON.stringify([a.replay, b.replay].sort()), JSON.stringify([false, true]), `una ejecucion y un replay (${JSON.stringify([a, b])})`);
+    assertSame(b2s1b1Respuesta(a), b2s1b1Respuesta(b), "respuestas identicas");
+    assertEqual((await b2s1aMembership(f, x.membershipId)).version, 1, "una sola generacion");
+    const [c, d] = await Promise.all([
+      b2s2aLlamar(f, { usuarioLocalId: y.localId, rol: "encargado", expectedVersion: 0, clave: "s2a-conc-c" }),
+      b2s2aLlamar(f, { usuarioLocalId: y.localId, rol: "admin", expectedVersion: 0, clave: "s2a-conc-d" })
+    ]);
+    assertSame(JSON.stringify([c.resultado, d.resultado].sort()), JSON.stringify([B2S1A_RESULTADOS.CONFIRMADO, B2S1A_RESULTADOS.VERSION_CONFLICT].sort()), `dos claves, misma version: uno confirma (${JSON.stringify([c, d])})`);
+    assertEqual((await b2s1aMembership(f, y.membershipId)).version, 1, "una sola generacion para y");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aCarreraRolVsEstadoMismaVersion() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.rolvsestado");
+    const [estado, rol] = await Promise.all([
+      b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s2a-carrera-estado" }),
+      b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 0, clave: "s2a-carrera-rol" })
+    ]);
+    const tipos = [estado.resultado, rol.resultado].sort();
+    assertSame(JSON.stringify(tipos), JSON.stringify([B2S1A_RESULTADOS.CONFIRMADO, B2S1A_RESULTADOS.VERSION_CONFLICT].sort()), `una confirma y la otra es conflicto (${JSON.stringify([estado, rol])})`);
+    const m = await b2s1aMembership(f, x.membershipId);
+    assertEqual(m.version, 1, "una sola generacion central");
+    const par = JSON.stringify([m.rol, m.activo]);
+    const ganoEstado = estado.resultado === B2S1A_RESULTADOS.CONFIRMADO;
+    assertSame(par, JSON.stringify(ganoEstado ? ["colaborador", 0] : ["encargado", 1]), "rol/activo de UNA sola generacion, nunca combinados");
+    const lapidas = await allSql(f.controlDbPath, "SELECT estado, version_objetivo FROM sync_pendiente WHERE membership_id = ? AND tipo_operacion = 'rol_activo'", [x.membershipId]);
+    assertSame(JSON.stringify(lapidas), JSON.stringify([{ estado: "pendiente", version_objetivo: 1 }]), "una sola lapida con la generacion ganadora");
+    const c = await b2s0b3aProcesarPendienteRolActivo({ membershipId: x.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(c.resultado, B2S0B3A_RESULTADOS.CERRADO, "S0b3a proyecta la generacion ganadora");
+    const local = await b2s0b2Local(f.dbPath, x.localId);
+    assertSame(JSON.stringify([local.rol, local.activo, local.v]), JSON.stringify([m.rol, m.activo, 1]), "tenant = snapshot central completo");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aEstadoLuegoRolProyectaSnapshotG2() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.estadorol");
+    assertSame((await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 0, clave: "s2a-er-1" })).resultado, B2S1A_RESULTADOS.CONFIRMADO, "estado g+1");
+    assertSame((await b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 1, clave: "s2a-er-2" })).resultado, B2S1A_RESULTADOS.CONFIRMADO, "rol g+2");
+    const p = await b2s1aPendienteRolActivo(f, x.membershipId);
+    assertSame(JSON.stringify([p.estado, p.version_objetivo]), JSON.stringify(["pendiente", 2]), "la lapida apunta a g+2");
+    const c = await b2s0b3aProcesarPendienteRolActivo({ membershipId: x.membershipId, controlDbPath: f.controlDbPath });
+    assertSame(c.resultado, B2S0B3A_RESULTADOS.CERRADO, "S0b3a cierra g+2");
+    const local = await b2s0b2Local(f.dbPath, x.localId);
+    assertSame(JSON.stringify([local.rol, local.activo, local.v]), JSON.stringify(["encargado", 0, 2]), "snapshot g+2 completo (rol de g+2, activo de g+1)");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aRolLuegoEstadoWorkerRecuperaG2() {
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.rolestado");
+    assertSame((await b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "admin", expectedVersion: 0, clave: "s2a-re-1" })).resultado, B2S1A_RESULTADOS.CONFIRMADO, "rol g+1");
+    assertSame((await b2s0b3aProcesarPendienteRolActivo({ membershipId: x.membershipId, controlDbPath: f.controlDbPath })).resultado, B2S0B3A_RESULTADOS.CERRADO, "g+1 procesada");
+    assertSame((await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 0, expectedVersion: 1, clave: "s2a-re-2" })).resultado, B2S1A_RESULTADOS.CONFIRMADO, "estado g+2 reabre la lapida");
+    const once = await b2s0b3bEjecutarWorkerOnce({ authMode: "central", tenancyMode: "multi", bridgeMode: "shadow", controlDbPath: f.controlDbPath });
+    assertEqual(once.resumen.cerrados, 1, "el worker recupera g+2");
+    const local = await b2s0b2Local(f.dbPath, x.localId);
+    assertSame(JSON.stringify([local.rol, local.activo, local.v]), JSON.stringify(["admin", 0, 2]), "snapshot g+2 completo");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
+}
+
+async function testB2S2aIdsLocalesColisionadosEntreEmpresas() {
+  let f;
+  let t;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.colisionA");
+    t = await b2s0b3aSegundoTenant(f, { rol: "admin", activo: 1, version: 0 });
+    await runSql(t.dbB, "INSERT INTO usuarios (id, nombre, usuario, password, rol, activo) VALUES (?, ?, ?, ?, ?, 1)", [x.localId, "S2a B", "b2s2a.colisionB", "hash-b", "colaborador"]);
+    let membershipBX;
+    const control = new sqlite3.Database(f.controlDbPath);
+    try {
+      const centralBX = await crearUsuarioCentral(control, { nombre: "S2a B", usuarioReferencia: "b2s2a.colisionB", passwordHash: await bcrypt.hash("ColB123", 4), activo: 1 });
+      membershipBX = await crearMembership(control, { usuarioId: centralBX.id, empresaId: t.empresaB.id, usuarioLocalId: x.localId, rol: "colaborador", activo: 1 });
+    } finally {
+      await closeControlDb(control);
+    }
+    const rB = await b2s2aLlamar(f, { actor: t.centralB.id, actorMembership: t.membershipB.id, empresaId: t.empresaB.id, usuarioLocalId: x.localId, rol: "encargado", expectedVersion: 0, clave: "s2a-colision-b" });
+    assertSame(rB.resultado, B2S1A_RESULTADOS.CONFIRMADO, "admin de B cambia SU membership");
+    assertSame(JSON.stringify([(await b2s1aMembership(f, membershipBX.id)).rol, (await b2s1aMembership(f, x.membershipId)).rol]), JSON.stringify(["encargado", "colaborador"]), "solo B cambia pese a la colision de ID local");
+    const rA = await b2s2aLlamar(f, { usuarioLocalId: x.localId, rol: "admin", expectedVersion: 0, clave: "s2a-colision-a" });
+    assertSame(rA.resultado, B2S1A_RESULTADOS.CONFIRMADO, "admin de A cambia SU membership");
+    assertSame(JSON.stringify([(await b2s1aMembership(f, membershipBX.id)).rol, (await b2s1aMembership(f, x.membershipId)).rol]), JSON.stringify(["encargado", "admin"]), "cada empresa con su propio rol");
+    assertEqual((await b2s1aPendienteRolActivo(f, membershipBX.id)).empresa_id, t.empresaB.id, "lapida de B con empresa B");
+    assertEqual((await b2s1aPendienteRolActivo(f, x.membershipId)).empresa_id, f.empresa.id, "lapida de A con empresa A");
+  } finally {
+    b2s0b2Limpiar(f);
+    if (t) limpiarTenantTestDb(t.dbB);
+  }
+}
+
+async function testB2S2aInvariantesEstaticosYWritersDeEstadoIntactos() {
+  // Servicio de estado: nunca escribe rol (mismas reglas que la asercion historica de S1a/S1b1).
+  const estado = b2s2aFuenteSinComentarios("membershipEstadoCentralService.js");
+  assertSame(JSON.stringify((estado.match(/\bUPDATE\s+\w+/g) || []).sort()), JSON.stringify(["UPDATE operacion_idempotencia", "UPDATE sync_pendiente", "UPDATE usuario_empresas"]), "estado: tablas escritas");
+  assertSame(/SET\s+rol\b|rol\s*=\s*\?,/i.test(estado), false, "estado: nunca escribe rol");
+  assertSame(/membershipRolCentralService/.test(estado), false, "estado: no depende del modulo de rol");
+  // Servicio de rol: nunca escribe activo, identidad global, credenciales ni sesiones.
+  const rol = b2s2aFuenteSinComentarios("membershipRolCentralService.js");
+  assertSame(JSON.stringify((rol.match(/\bUPDATE\s+\w+/g) || []).sort()), JSON.stringify(["UPDATE operacion_idempotencia", "UPDATE usuario_empresas"]), "rol: tablas actualizadas");
+  assertSame(JSON.stringify((rol.match(/\bINSERT\s+INTO\s+\w+/g) || []).sort()), JSON.stringify(["INSERT INTO operacion_idempotencia"]), "rol: solo inserta su reserva de idempotencia (la lapida va por el helper compartido)");
+  assertSame(/\bactivo\s*=\s*\?/i.test(rol), false, "rol: nunca escribe activo");
+  assertSame(/SET\s+rol\s*=\s*\?,\s*version\s*=\s*version\s*\+\s*1/i.test(rol), true, "rol: CAS de rol con una generacion");
+  assertSame(/\bDELETE\s/.test(rol), false, "rol: nunca borra");
+  assertSame(/password|sesiones/i.test(rol), false, "rol: nunca referencia credenciales ni sesiones");
+  assertSame(/tenantDbRegistry|project-membership-rol-activo|process-rol-activo-outbox|run-rol-activo-worker/.test(rol), false, "rol: no proyecta ni dispara el worker");
+
+  // Writers de estado S1a/S1b1: comportamiento observable intacto y sin tocar rol.
+  let f;
+  try {
+    f = await b2s1aFixture();
+    const x = await b2s1aMiembro(f, "b2s2a.estadointacto", { rol: "encargado" });
+    const s1a = await b2s1aCambiar(f, { membershipId: x.membershipId, activo: 0, expectedVersion: 0 });
+    assertSame(JSON.stringify([s1a.resultado, s1a.versionNueva, s1a.pendiente.accion]), JSON.stringify([B2S1A_RESULTADOS.CONFIRMADO, 1, "CREADA"]), "S1a confirma igual");
+    assertSame((await b2s1aMembership(f, x.membershipId)).rol, "encargado", "S1a no escribe rol");
+    const s1b1 = await b2s1b1Llamar(f, { usuarioLocalId: x.localId, activo: 1, expectedVersion: 1, clave: "s2a-s1b1" });
+    assertSame(JSON.stringify(s1b1.resultadoJson), JSON.stringify({
+      code: "ESTADO_ACTUALIZADO",
+      message: "Usuario activado en el control central. La sincronizacion con la sucursal quedo pendiente al confirmar.",
+      usuario_id: x.localId,
+      activo: true,
+      version: 2,
+      operacion: { tipo: "rol_activo", version_objetivo: 2 },
+      sincronizacion_tenant: "pendiente_al_commit"
+    }), "S1b1: cuerpo durable identico al contrato certificado");
+    assertSame((await b2s1aMembership(f, x.membershipId)).rol, "encargado", "S1b1 no escribe rol");
+  } finally {
+    b2s0b2Limpiar(f);
+  }
 }
 
 async function testP1ASRControlSchemaNuevoContienePasswordVersionDefault0() {
