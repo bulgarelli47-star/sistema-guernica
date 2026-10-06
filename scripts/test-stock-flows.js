@@ -21391,6 +21391,28 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testB2S3aUiVistaReducidaSinAutoridad);
   await _run(testB2S3aUiClavesSeparadasDePasswordYCreacionSinRegresion);
   await _run(testB2S3aHttpHeaderModoAutoridadEnGetUsuarios);
+  await _run(testTX1AA1ConexionesDistintasNoSeBloquean);
+  await _run(testTX1AA2BeginAdquiereOwnership);
+  await _run(testTX1AA3OwnerMultiplesSentenciasSinSelfDeadlock);
+  await _run(testTX1AA4OtraOperacionEsperaDuranteTransaccion);
+  await _run(testTX1AA5CommitLiberaFifo);
+  await _run(testTX1AA6RollbackLiberaFifo);
+  await _run(testTX1AA7BeginFallidoLibera);
+  await _run(testTX1AA8CommitFallidoConservaOwnerParaRollback);
+  await _run(testTX1AA9RollbackFallidoIgualLibera);
+  await _run(testTX1AA10AutocommitLeaseHastaCompletarReal);
+  await _run(testTX1AA11LecturasDeOtroOwnerEsperan);
+  await _run(testTX1AA12FifoBDespuesC);
+  await _run(testTX1AA13TimeoutCancelaWaiter);
+  await _run(testTX1AA14WaiterVencidoNuncaEjecutaDespues);
+  await _run(testTX1AA15CarreraTimeoutVsGrant);
+  await _run(testTX1AA16WaiterCanceladoNoBloqueaSiguiente);
+  await _run(testTX1AA17OwnedGatesAltaYBaja);
+  await _run(testTX1AA18RecoveryRollbackYLibera);
+  await _run(testTX1AA19RecoveryIdempotente);
+  await _run(testTX1AA20ContextoAlsPropaga);
+  await _run(testTX1AA21SinContextoPassthrough);
+  await _run(testTX1AA22ClasificacionSql);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -47259,6 +47281,722 @@ async function testB2S3aHttpHeaderModoAutoridadEnGetUsuarios() {
     fs.rmSync(dbShadow, { force: true });
     fs.rmSync(controlInexistente, { force: true });
   }
+}
+
+// ====================================================================================================
+// TX-1A: primitiva backend/tenantWriteCoordinator.js aislada (TX-SAME-TENANT, TX-D0). Conexiones sqlite
+// EFIMERAS en os.tmpdir() para la semantica real; claves opacas + thunks controlados para las carreras
+// puras (timeout vs grant), ordenadas por orden de creacion de timers -- nunca por sleeps. Este bloque
+// NO prueba la correccion end-to-end (eso es TX-1B): solo la primitiva.
+// ====================================================================================================
+function tx1aCoordinador() {
+  return require("../backend/tenantWriteCoordinator");
+}
+
+async function tx1aAbrirDb() {
+  const dbPath = tempDbPath();
+  const db = await new Promise((resolve, reject) => {
+    const conexion = new sqlite3.Database(dbPath, (error) => (error ? reject(error) : resolve(conexion)));
+  });
+  await new Promise((resolve, reject) => db.run("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)", [], (e) => (e ? reject(e) : resolve())));
+  return { db, dbPath };
+}
+
+async function tx1aCerrarDb(h) {
+  await new Promise((resolve) => h.db.close(() => resolve()));
+  for (const sufijo of ["", "-journal", "-wal", "-shm"]) {
+    try { fs.rmSync(h.dbPath + sufijo, { force: true }); } catch {}
+  }
+}
+
+function tx1aRunCrudo(db, sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (error) {
+      if (error) reject(error);
+      else resolve({ lastID: this.lastID, changes: this.changes });
+    });
+  });
+}
+
+function tx1aAllCrudo(db, sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (error, rows) => (error ? reject(error) : resolve(rows)));
+  });
+}
+
+// Sentencia coordinada sobre sqlite real; `registro` (opcional) anota el orden REAL de ejecucion
+// (cuando el driver efectivamente termina) y `contador` cuantas veces se invoco el thunk.
+function tx1aRun(db, sql, params = [], { registro = null, etiqueta = sql, contador = null, timeoutMs } = {}) {
+  const coord = tx1aCoordinador();
+  return coord.coordinarSentencia(db, sql, async () => {
+    if (contador) contador.n += 1;
+    const resultado = await tx1aRunCrudo(db, sql, params);
+    if (registro) registro.push(etiqueta);
+    return resultado;
+  }, { timeoutMs });
+}
+
+function tx1aAll(db, sql, params = [], { contador = null, timeoutMs } = {}) {
+  const coord = tx1aCoordinador();
+  return coord.coordinarSentencia(db, sql, async () => {
+    if (contador) contador.n += 1;
+    return tx1aAllCrudo(db, sql, params);
+  }, { timeoutMs });
+}
+
+function tx1aDiferido() {
+  let resolve;
+  let reject;
+  const promise = new Promise((ok, ko) => { resolve = ok; reject = ko; });
+  return { promise, resolve, reject };
+}
+
+function tx1aSeguir(promise) {
+  const estado = { settled: false, ok: null, valor: undefined, error: null, resoluciones: 0 };
+  promise.then(
+    (valor) => { estado.settled = true; estado.ok = true; estado.valor = valor; estado.resoluciones += 1; },
+    (error) => { estado.settled = true; estado.ok = false; estado.error = error; estado.resoluciones += 1; }
+  );
+  return estado;
+}
+
+// Cede el event loop varias vueltas completas (microtasks + setImmediate): suficiente para que una
+// sentencia NO bloqueada se despache y complete en el driver. No es un sleep de sincronizacion: solo
+// demuestra que algo que deberia estar esperando sigue esperando.
+async function tx1aCeder(vueltas = 20) {
+  for (let i = 0; i < vueltas; i++) await new Promise((resolve) => setImmediate(resolve));
+}
+
+// Corre `fn` dentro de una operacion nueva (contexto ALS real).
+function tx1aEnOp(etiqueta, fn) {
+  const coord = tx1aCoordinador();
+  const op = coord.crearOperacion(etiqueta);
+  return { op, promise: coord.ejecutarEnOperacion(op, () => fn(op)) };
+}
+
+async function testTX1AA1ConexionesDistintasNoSeBloquean() {
+  const coord = tx1aCoordinador();
+  const h1 = await tx1aAbrirDb();
+  const h2 = await tx1aAbrirDb();
+  try {
+    const liberarA = tx1aDiferido();
+    const a = tx1aEnOp("A", async () => {
+      await tx1aRun(h1.db, "BEGIN IMMEDIATE");
+      await tx1aRun(h1.db, "INSERT INTO t (v) VALUES ('A')");
+      await liberarA.promise;
+      await tx1aRun(h1.db, "ROLLBACK");
+    });
+    await tx1aCeder();
+    assertSame(coord.diagnosticoPuerta(h1.db).modo, "tx", "A1: A debe tener la transaccion abierta en la conexion 1");
+    const b = tx1aEnOp("B", () => tx1aRun(h2.db, "INSERT INTO t (v) VALUES ('B')"));
+    let guardia = null;
+    const resultadoB = await Promise.race([
+      b.promise.then(() => "COMPLETO"),
+      new Promise((resolve) => { guardia = setTimeout(() => resolve("BLOQUEADO"), 5000); })
+    ]);
+    clearTimeout(guardia);
+    assertSame(resultadoB, "COMPLETO", "A1: B en OTRA conexion debe completar mientras A sigue abierta");
+    assertSame(coord.diagnosticoPuerta(h1.db).owner, a.op.id, "A1: A sigue siendo duena de la conexion 1");
+    liberarA.resolve();
+    await a.promise;
+    assertSame((await tx1aAllCrudo(h2.db, "SELECT v FROM t")).length, 1, "A1: escritura de B durable en la conexion 2");
+  } finally {
+    await tx1aCerrarDb(h1);
+    await tx1aCerrarDb(h2);
+  }
+}
+
+async function testTX1AA2BeginAdquiereOwnership() {
+  const coord = tx1aCoordinador();
+  const h = await tx1aAbrirDb();
+  try {
+    const { op, promise } = tx1aEnOp("A", async () => {
+      await tx1aRun(h.db, "BEGIN TRANSACTION");
+      const diag = coord.diagnosticoPuerta(h.db);
+      await tx1aRun(h.db, "ROLLBACK");
+      return diag;
+    });
+    const diag = await promise;
+    assertSame(diag.owner, op.id, "A2: tras BEGIN la operacion debe ser duena");
+    assertSame(diag.modo, "tx", "A2: tras BEGIN el modo debe ser tx");
+    assertSame(coord.diagnosticoPuerta(h.db).owner, null, "A2: tras ROLLBACK la puerta queda libre");
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function testTX1AA3OwnerMultiplesSentenciasSinSelfDeadlock() {
+  const h = await tx1aAbrirDb();
+  try {
+    const { promise } = tx1aEnOp("A", async () => {
+      await tx1aRun(h.db, "BEGIN IMMEDIATE");
+      for (let i = 0; i < 5; i++) await tx1aRun(h.db, "INSERT INTO t (v) VALUES (?)", [`s${i}`]);
+      await Promise.all([1, 2, 3].map((i) => tx1aRun(h.db, "INSERT INTO t (v) VALUES (?)", [`p${i}`])));
+      const filas = await tx1aAll(h.db, "SELECT COUNT(*) AS n FROM t");
+      await tx1aRun(h.db, "COMMIT");
+      return filas[0].n;
+    });
+    assertSame(await promise, 8, "A3: la duena ve sus 8 escrituras dentro de su transaccion");
+    assertSame((await tx1aAllCrudo(h.db, "SELECT COUNT(*) AS n FROM t"))[0].n, 8, "A3: 8 filas tras COMMIT sin self-deadlock");
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function testTX1AA4OtraOperacionEsperaDuranteTransaccion() {
+  const coord = tx1aCoordinador();
+  const h = await tx1aAbrirDb();
+  try {
+    const liberarA = tx1aDiferido();
+    const a = tx1aEnOp("A", async () => {
+      await tx1aRun(h.db, "BEGIN IMMEDIATE");
+      await tx1aRun(h.db, "INSERT INTO t (v) VALUES ('A')");
+      await liberarA.promise;
+      await tx1aRun(h.db, "ROLLBACK");
+    });
+    await tx1aCeder();
+    const contadorB = { n: 0 };
+    const b = tx1aEnOp("B", () => tx1aRun(h.db, "INSERT INTO t (v) VALUES ('B')", [], { contador: contadorB }));
+    const estadoB = tx1aSeguir(b.promise);
+    await tx1aCeder();
+    assertSame(estadoB.settled, false, "A4: B no debe completar mientras A tiene la transaccion abierta");
+    assertSame(contadorB.n, 0, "A4: la sentencia de B no debe haberse despachado al driver");
+    assertSame(coord.diagnosticoPuerta(h.db).enCola, 1, "A4: B debe estar en cola");
+    liberarA.resolve();
+    await a.promise;
+    await b.promise;
+    assertSame(contadorB.n, 1, "A4: B se ejecuta exactamente una vez despues de A");
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function tx1aEscenarioFinA(final) {
+  const h = await tx1aAbrirDb();
+  try {
+    const registro = [];
+    const liberarA = tx1aDiferido();
+    const a = tx1aEnOp("A", async () => {
+      await tx1aRun(h.db, "BEGIN IMMEDIATE", [], { registro, etiqueta: "A:BEGIN" });
+      await tx1aRun(h.db, "INSERT INTO t (v) VALUES ('A')", [], { registro, etiqueta: "A:INSERT" });
+      await liberarA.promise;
+      await tx1aRun(h.db, final, [], { registro, etiqueta: `A:${final}` });
+    });
+    await tx1aCeder();
+    const b = tx1aEnOp("B", () => tx1aRun(h.db, "INSERT INTO t (v) VALUES ('B')", [], { registro, etiqueta: "B:INSERT" }));
+    await tx1aCeder();
+    liberarA.resolve();
+    await a.promise;
+    await b.promise;
+    const filas = (await tx1aAllCrudo(h.db, "SELECT v FROM t ORDER BY id")).map((r) => r.v).join(",");
+    return { registro: registro.join(">"), filas };
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function testTX1AA5CommitLiberaFifo() {
+  const r = await tx1aEscenarioFinA("COMMIT");
+  assertSame(r.registro, "A:BEGIN>A:INSERT>A:COMMIT>B:INSERT", "A5: B se ejecuta recien despues del COMMIT de A");
+  assertSame(r.filas, "A,B", "A5: ambas escrituras durables; B NO fue absorbida por la transaccion de A");
+}
+
+async function testTX1AA6RollbackLiberaFifo() {
+  const r = await tx1aEscenarioFinA("ROLLBACK");
+  assertSame(r.registro, "A:BEGIN>A:INSERT>A:ROLLBACK>B:INSERT", "A6: B se ejecuta recien despues del ROLLBACK de A");
+  assertSame(r.filas, "B", "A6: la escritura de B es durable y no se pierde con el ROLLBACK de A");
+}
+
+async function testTX1AA7BeginFallidoLibera() {
+  const coord = tx1aCoordinador();
+  const h = await tx1aAbrirDb();
+  try {
+    // Transaccion cruda abierta FUERA del coordinador: el BEGIN coordinado de A falla de verdad en SQLite.
+    await tx1aRunCrudo(h.db, "BEGIN");
+    const a = tx1aEnOp("A", () => tx1aRun(h.db, "BEGIN IMMEDIATE"));
+    let errorA = null;
+    try { await a.promise; } catch (error) { errorA = error; }
+    assertSame(Boolean(errorA && /within a transaction/.test(errorA.message)), true, "A7: el BEGIN de A debe fallar con el error real de SQLite");
+    assertSame(coord.diagnosticoPuerta(h.db).owner, null, "A7: un BEGIN fallido libera la puerta");
+    assertSame(a.op.ownedGates.size, 0, "A7: un BEGIN fallido no registra ownership");
+    await tx1aRunCrudo(h.db, "ROLLBACK");
+    const b = tx1aEnOp("B", () => tx1aRun(h.db, "INSERT INTO t (v) VALUES ('B')"));
+    await b.promise;
+    assertSame((await tx1aAllCrudo(h.db, "SELECT v FROM t")).length, 1, "A7: la siguiente operacion avanza tras el BEGIN fallido");
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+// Provoca un COMMIT (o ROLLBACK) que falla de verdad: la transaccion sqlite se termina por fuera del
+// coordinador (ROLLBACK crudo) mientras la puerta sigue registrando a A como duena.
+async function tx1aEscenarioFinFallido(segundaSentencia) {
+  const coord = tx1aCoordinador();
+  const h = await tx1aAbrirDb();
+  try {
+    const continuar = tx1aDiferido();
+    const observado = {};
+    const a = tx1aEnOp("A", async (op) => {
+      await tx1aRun(h.db, "BEGIN IMMEDIATE");
+      await tx1aRun(h.db, "INSERT INTO t (v) VALUES ('A')");
+      await tx1aRunCrudo(h.db, "ROLLBACK");
+      try { await tx1aRun(h.db, segundaSentencia); } catch (error) { observado.errorPrimera = error; }
+      observado.ownerTrasPrimera = coord.diagnosticoPuerta(h.db).owner;
+      observado.modoTrasPrimera = coord.diagnosticoPuerta(h.db).modo;
+      observado.ownedTrasPrimera = op.ownedGates.size;
+      await continuar.promise;
+      if (segundaSentencia === "COMMIT") {
+        try { await tx1aRun(h.db, "ROLLBACK"); } catch (error) { observado.errorRollback = error; }
+      }
+    });
+    await tx1aCeder();
+    const contadorB = { n: 0 };
+    const b = tx1aEnOp("B", () => tx1aRun(h.db, "INSERT INTO t (v) VALUES ('B')", [], { contador: contadorB }));
+    const estadoB = tx1aSeguir(b.promise);
+    await tx1aCeder();
+    observado.bAntesDeContinuar = { settled: estadoB.settled, n: contadorB.n };
+    continuar.resolve();
+    await a.promise;
+    await b.promise;
+    observado.ownerFinal = coord.diagnosticoPuerta(h.db).owner;
+    observado.filas = (await tx1aAllCrudo(h.db, "SELECT v FROM t ORDER BY id")).map((r) => r.v).join(",");
+    observado.opId = a.op.id;
+    observado.ownedFinal = a.op.ownedGates.size;
+    return observado;
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function testTX1AA8CommitFallidoConservaOwnerParaRollback() {
+  const o = await tx1aEscenarioFinFallido("COMMIT");
+  assertSame(Boolean(o.errorPrimera && /no transaction is active/.test(o.errorPrimera.message)), true, "A8: el COMMIT debe fallar de verdad");
+  assertSame(o.ownerTrasPrimera, o.opId, "A8: tras COMMIT fallido A conserva la puerta");
+  assertSame(o.modoTrasPrimera, "tx", "A8: tras COMMIT fallido el modo sigue siendo tx");
+  assertSame(o.ownedTrasPrimera, 1, "A8: tras COMMIT fallido ownedGates conserva la puerta");
+  assertSame(o.bAntesDeContinuar.settled || o.bAntesDeContinuar.n > 0, false, "A8: B sigue esperando mientras A conserva la puerta");
+  assertSame(o.ownerFinal, null, "A8: el ROLLBACK posterior de A libera la puerta");
+  assertSame(o.ownedFinal, 0, "A8: ownedGates vacio tras el ROLLBACK");
+  assertSame(o.filas, "B", "A8: B se ejecuta despues y es durable");
+}
+
+async function testTX1AA9RollbackFallidoIgualLibera() {
+  const o = await tx1aEscenarioFinFallido("ROLLBACK");
+  assertSame(Boolean(o.errorPrimera && /no transaction is active/.test(o.errorPrimera.message)), true, "A9: el ROLLBACK debe fallar de verdad");
+  assertSame(o.ownerTrasPrimera === o.opId, false, "A9: un ROLLBACK fallido de la duena igual libera la puerta");
+  assertSame(o.ownedTrasPrimera, 0, "A9: un ROLLBACK fallido limpia ownedGates");
+  assertSame(o.filas, "B", "A9: la cola continua y B es durable");
+}
+
+async function testTX1AA10AutocommitLeaseHastaCompletarReal() {
+  const coord = tx1aCoordinador();
+  const clave = {};
+  const driverB = tx1aDiferido();
+  const registro = [];
+  const b = tx1aEnOp("B", () => coord.coordinarSentencia(clave, "INSERT INTO t VALUES (1)", async () => {
+    registro.push("B:despachada");
+    const r = await driverB.promise;
+    registro.push("B:completada");
+    return r;
+  }));
+  await tx1aCeder();
+  assertSame(coord.diagnosticoPuerta(clave).owner, b.op.id, "A10: la sentencia autocommit de B toma un lease");
+  assertSame(coord.diagnosticoPuerta(clave).modo, "lease", "A10: el modo es lease (no tx)");
+  const c = tx1aEnOp("C", () => coord.coordinarSentencia(clave, "SELECT 1", async () => { registro.push("C:despachada"); return "c"; }));
+  const estadoC = tx1aSeguir(c.promise);
+  await tx1aCeder();
+  assertSame(estadoC.settled, false, "A10: C espera mientras el driver no termino la sentencia de B");
+  assertSame(registro.join(">"), "B:despachada", "A10: C no se despacha antes de que B complete");
+  driverB.resolve({ changes: 1, lastID: 7 });
+  assertSame((await b.promise).lastID, 7, "A10: el resultado del driver (lastID) llega intacto");
+  assertSame(await c.promise, "c", "A10: C se ejecuta al liberarse el lease");
+  assertSame(registro.join(">"), "B:despachada>B:completada>C:despachada", "A10: el lease se libera recien al completar realmente");
+  assertSame(coord.diagnosticoPuerta(clave).owner, null, "A10: puerta libre al final");
+  assertSame(b.op.ownedGates.size, 0, "A10: un lease autocommit nunca entra en ownedGates");
+}
+
+async function testTX1AA11LecturasDeOtroOwnerEsperan() {
+  const h = await tx1aAbrirDb();
+  try {
+    const liberarA = tx1aDiferido();
+    const a = tx1aEnOp("A", async () => {
+      await tx1aRun(h.db, "BEGIN IMMEDIATE");
+      await tx1aRun(h.db, "INSERT INTO t (v) VALUES ('A-no-confirmado')");
+      await liberarA.promise;
+      await tx1aRun(h.db, "ROLLBACK");
+    });
+    await tx1aCeder();
+    const contadorB = { n: 0 };
+    const b = tx1aEnOp("B", () => tx1aAll(h.db, "SELECT v FROM t", [], { contador: contadorB }));
+    const estadoB = tx1aSeguir(b.promise);
+    await tx1aCeder();
+    assertSame(estadoB.settled || contadorB.n > 0, false, "A11: la lectura de otra operacion espera durante la transaccion");
+    liberarA.resolve();
+    await a.promise;
+    const filas = await b.promise;
+    assertSame(filas.length, 0, "A11: la lectura de B nunca observa el estado no confirmado de A");
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function testTX1AA12FifoBDespuesC() {
+  const h = await tx1aAbrirDb();
+  try {
+    const registro = [];
+    const liberarA = tx1aDiferido();
+    const a = tx1aEnOp("A", async () => {
+      await tx1aRun(h.db, "BEGIN IMMEDIATE");
+      await liberarA.promise;
+      await tx1aRun(h.db, "COMMIT", [], { registro, etiqueta: "A:COMMIT" });
+    });
+    await tx1aCeder();
+    const b = tx1aEnOp("B", () => tx1aRun(h.db, "INSERT INTO t (v) VALUES ('B')", [], { registro, etiqueta: "B" }));
+    await tx1aCeder();
+    const c = tx1aEnOp("C", () => tx1aRun(h.db, "INSERT INTO t (v) VALUES ('C')", [], { registro, etiqueta: "C" }));
+    await tx1aCeder();
+    liberarA.resolve();
+    await Promise.all([a.promise, b.promise, c.promise]);
+    assertSame(registro.join(">"), "A:COMMIT>B>C", "A12: orden FIFO estricto A -> B -> C");
+    assertSame((await tx1aAllCrudo(h.db, "SELECT v FROM t ORDER BY id")).map((r) => r.v).join(","), "B,C", "A12: filas en orden de llegada");
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function testTX1AA13TimeoutCancelaWaiter() {
+  const coord = tx1aCoordinador();
+  const eventos = [];
+  coord.configurarObservador((e) => eventos.push(e));
+  const h = await tx1aAbrirDb();
+  try {
+    const liberarA = tx1aDiferido();
+    const a = tx1aEnOp("A", async () => {
+      await tx1aRun(h.db, "BEGIN IMMEDIATE");
+      await liberarA.promise;
+      await tx1aRun(h.db, "ROLLBACK");
+    });
+    await tx1aCeder();
+    const contadorB = { n: 0 };
+    const b = tx1aEnOp("B", () => tx1aRun(h.db, "INSERT INTO t (v) VALUES ('B')", [], { contador: contadorB, timeoutMs: 30 }));
+    let errorB = null;
+    try { await b.promise; } catch (error) { errorB = error; }
+    assertSame(errorB && errorB.code, coord.CODIGO_TIMEOUT, "A13: B rechaza con TENANT_WRITE_GATE_TIMEOUT");
+    assertSame(coord.diagnosticoPuerta(h.db).enCola, 0, "A13: el waiter vencido sale de la cola");
+    assertSame(coord.diagnosticoPuerta(h.db).owner, a.op.id, "A13: el timeout no afecta a la duena");
+    const evento = eventos.find((e) => e.evento === "TX_GATE_WAIT_TIMEOUT");
+    assertSame(Boolean(evento && evento.waiter === b.op.id && evento.owner === a.op.id), true, "A13: observador registra el timeout con ids");
+    assertSame(JSON.stringify(eventos).includes("INSERT"), false, "A13: la observabilidad no expone SQL");
+    liberarA.resolve();
+    await a.promise;
+  } finally {
+    coord.configurarObservador(null);
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function testTX1AA14WaiterVencidoNuncaEjecutaDespues() {
+  const coord = tx1aCoordinador();
+  const h = await tx1aAbrirDb();
+  try {
+    const liberarA = tx1aDiferido();
+    const a = tx1aEnOp("A", async () => {
+      await tx1aRun(h.db, "BEGIN IMMEDIATE");
+      await liberarA.promise;
+      await tx1aRun(h.db, "ROLLBACK");
+    });
+    await tx1aCeder();
+    const contadorB = { n: 0 };
+    const b = tx1aEnOp("B", () => tx1aRun(h.db, "INSERT INTO t (v) VALUES ('B')", [], { contador: contadorB, timeoutMs: 20 }));
+    const estadoB = tx1aSeguir(b.promise);
+    try { await b.promise; } catch {}
+    liberarA.resolve();
+    await a.promise;
+    await tx1aCeder();
+    assertSame(contadorB.n, 0, "A14: el waiter vencido jamas despacha su sentencia");
+    assertSame(estadoB.resoluciones, 1, "A14: B se resuelve exactamente una vez");
+    assertSame((await tx1aAllCrudo(h.db, "SELECT v FROM t")).length, 0, "A14: ninguna fila de B");
+    assertSame(coord.diagnosticoPuerta(h.db).owner, null, "A14: la puerta queda libre, no otorgada al vencido");
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+// Carrera timeout-vs-grant determinista: Node ejecuta timers de igual vencimiento en orden de creacion y
+// drena microtasks entre callbacks. `ganaGrant=true`: el timer que libera a A se crea ANTES del timeout de
+// B; `ganaGrant=false`: despues.
+async function tx1aCarreraTimeoutVsGrant(ganaGrant) {
+  const coord = tx1aCoordinador();
+  const clave = {};
+  const PLAZO = 40;
+  const driverRollbackA = tx1aDiferido();
+  const preparado = tx1aDiferido();
+  const a = tx1aEnOp("A", async () => {
+    await coord.coordinarSentencia(clave, "BEGIN", async () => ({}));
+    preparado.resolve();
+    await coord.coordinarSentencia(clave, "ROLLBACK", () => driverRollbackA.promise);
+  });
+  await preparado.promise;
+  const contadorB = { n: 0 };
+  let timerLiberacion = null;
+  if (ganaGrant) timerLiberacion = setTimeout(() => driverRollbackA.resolve({}), PLAZO);
+  const b = tx1aEnOp("B", () => coord.coordinarSentencia(clave, "INSERT", async () => { contadorB.n += 1; return "b"; }, { timeoutMs: PLAZO }));
+  if (!ganaGrant) timerLiberacion = setTimeout(() => driverRollbackA.resolve({}), PLAZO);
+  const estadoB = tx1aSeguir(b.promise);
+  try { await b.promise; } catch {}
+  await a.promise;
+  await new Promise((resolve) => setTimeout(resolve, PLAZO + 20)); // deja vencer cualquier timer residual
+  await tx1aCeder();
+  clearTimeout(timerLiberacion);
+  return { estadoB, contadorB, diag: coord.diagnosticoPuerta(clave) };
+}
+
+async function testTX1AA15CarreraTimeoutVsGrant() {
+  const coord = tx1aCoordinador();
+  const ganaTimeout = await tx1aCarreraTimeoutVsGrant(false);
+  assertSame(ganaTimeout.estadoB.ok, false, "A15/A: con timeout primero, B rechaza");
+  assertSame(ganaTimeout.estadoB.error && ganaTimeout.estadoB.error.code, coord.CODIGO_TIMEOUT, "A15/A: con codigo de timeout");
+  assertSame(ganaTimeout.contadorB.n, 0, "A15/A: la sentencia de B jamas se ejecuta");
+  assertSame(ganaTimeout.estadoB.resoluciones, 1, "A15/A: resolucion unica");
+  assertSame(ganaTimeout.diag.owner, null, "A15/A: puerta libre");
+
+  const ganaGrant = await tx1aCarreraTimeoutVsGrant(true);
+  assertSame(ganaGrant.estadoB.ok, true, "A15/B: con grant primero, B se ejecuta");
+  assertSame(ganaGrant.contadorB.n, 1, "A15/B: exactamente una ejecucion");
+  assertSame(ganaGrant.estadoB.resoluciones, 1, "A15/B: el timer ya no puede rechazar (resolucion unica)");
+  assertSame(ganaGrant.diag.owner, null, "A15/B: puerta libre al final");
+}
+
+async function testTX1AA16WaiterCanceladoNoBloqueaSiguiente() {
+  const coord = tx1aCoordinador();
+  const h = await tx1aAbrirDb();
+  try {
+    const registro = [];
+    const liberarA = tx1aDiferido();
+    const a = tx1aEnOp("A", async () => {
+      await tx1aRun(h.db, "BEGIN IMMEDIATE");
+      await liberarA.promise;
+      await tx1aRun(h.db, "ROLLBACK", [], { registro, etiqueta: "A:ROLLBACK" });
+    });
+    await tx1aCeder();
+    const contadorB = { n: 0 };
+    const b = tx1aEnOp("B", () => tx1aRun(h.db, "INSERT INTO t (v) VALUES ('B')", [], { registro, etiqueta: "B", contador: contadorB, timeoutMs: 20 }));
+    await tx1aCeder();
+    const c = tx1aEnOp("C", () => tx1aRun(h.db, "INSERT INTO t (v) VALUES ('C')", [], { registro, etiqueta: "C" }));
+    let errorB = null;
+    try { await b.promise; } catch (error) { errorB = error; }
+    assertSame(errorB && errorB.code, coord.CODIGO_TIMEOUT, "A16: B vence");
+    assertSame(coord.diagnosticoPuerta(h.db).enCola, 1, "A16: C sigue en cola");
+    liberarA.resolve();
+    await a.promise;
+    await c.promise;
+    assertSame(registro.join(">"), "A:ROLLBACK>C", "A16: C se ejecuta tras A; B nunca");
+    assertSame(contadorB.n, 0, "A16: B jamas despachada");
+    assertSame((await tx1aAllCrudo(h.db, "SELECT v FROM t")).map((r) => r.v).join(","), "C", "A16: solo C durable");
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function testTX1AA17OwnedGatesAltaYBaja() {
+  const h1 = await tx1aAbrirDb();
+  const h2 = await tx1aAbrirDb();
+  try {
+    const { op, promise } = tx1aEnOp("A", async (opA) => {
+      const tamanos = [opA.ownedGates.size];
+      await tx1aRun(h1.db, "BEGIN IMMEDIATE");
+      tamanos.push(opA.ownedGates.size);
+      await tx1aRun(h2.db, "BEGIN IMMEDIATE");
+      tamanos.push(opA.ownedGates.size);
+      await tx1aRun(h1.db, "COMMIT");
+      tamanos.push(opA.ownedGates.size);
+      await tx1aRun(h2.db, "INSERT INTO t (v) VALUES ('x')");
+      tamanos.push(opA.ownedGates.size);
+      await tx1aRun(h2.db, "ROLLBACK");
+      tamanos.push(opA.ownedGates.size);
+      return tamanos.join(",");
+    });
+    assertSame(await promise, "0,1,2,1,1,0", "A17: ownedGates suma en BEGIN, resta en COMMIT/ROLLBACK, no cambia en sentencias");
+    assertSame(op.ownedGates.size, 0, "A17: ownedGates vacio al final");
+  } finally {
+    await tx1aCerrarDb(h1);
+    await tx1aCerrarDb(h2);
+  }
+}
+
+async function testTX1AA18RecoveryRollbackYLibera() {
+  const coord = tx1aCoordinador();
+  const eventos = [];
+  coord.configurarObservador((e) => eventos.push(e));
+  const h = await tx1aAbrirDb();
+  try {
+    const abierta = tx1aDiferido();
+    const nuncaTermina = tx1aDiferido();
+    const a = tx1aEnOp("A", async () => {
+      await tx1aRun(h.db, "BEGIN IMMEDIATE");
+      await tx1aRun(h.db, "INSERT INTO t (v) VALUES ('A-huerfana')");
+      abierta.resolve();
+      await nuncaTermina.promise; // simula un handler que nunca cierra su transaccion
+    });
+    await abierta.promise;
+    const b = tx1aEnOp("B", () => tx1aRun(h.db, "INSERT INTO t (v) VALUES ('B')"));
+    const estadoB = tx1aSeguir(b.promise);
+    await tx1aCeder();
+    assertSame(estadoB.settled, false, "A18: B espera a la operacion huerfana");
+    const resultado = await coord.recuperarOperacion(a.op, "test_leak");
+    assertSame(JSON.stringify(resultado), JSON.stringify([{ recuperada: true, rollbackOk: true }]), "A18: recuperacion con ROLLBACK exitoso");
+    assertSame(a.op.ownedGates.size, 0, "A18: ownedGates limpio");
+    await b.promise;
+    assertSame((await tx1aAllCrudo(h.db, "SELECT v FROM t")).map((r) => r.v).join(","), "B", "A18: la escritura huerfana se deshizo y B es durable");
+    const evento = eventos.find((e) => e.evento === "TX_GATE_OPERATION_RECOVERED");
+    assertSame(Boolean(evento && evento.operacion === a.op.id && evento.motivo === "test_leak" && evento.rollbackOk === true), true, "A18: evento de recuperacion seguro");
+    nuncaTermina.resolve();
+    await a.promise;
+  } finally {
+    coord.configurarObservador(null);
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function testTX1AA19RecoveryIdempotente() {
+  const coord = tx1aCoordinador();
+  const clave = {};
+  const ejecutadas = [];
+  // ROLLBACK de recuperacion sobre una "conexion" falsa cuyo run falla: debe liberar igual.
+  clave.run = (sql, params, cb) => { ejecutadas.push(sql); setImmediate(() => cb(new Error("rollback falla"))); };
+  const abierta = tx1aDiferido();
+  const nuncaTermina = tx1aDiferido();
+  const a = tx1aEnOp("A", async () => {
+    await coord.coordinarSentencia(clave, "BEGIN", async () => ({}));
+    abierta.resolve();
+    await nuncaTermina.promise;
+  });
+  await abierta.promise;
+  const driverB = tx1aDiferido();
+  const b = tx1aEnOp("B", () => coord.coordinarSentencia(clave, "INSERT", () => driverB.promise));
+  await tx1aCeder();
+  const primera = await coord.recuperarOperacion(a.op, "leak");
+  assertSame(JSON.stringify(primera), JSON.stringify([{ recuperada: true, rollbackOk: false }]), "A19: ROLLBACK fallido igual libera");
+  await tx1aCeder();
+  assertSame(coord.diagnosticoPuerta(clave).owner, b.op.id, "A19: la puerta paso a B (lease)");
+  const segunda = await coord.recuperarOperacion(a.op, "leak-otra-vez");
+  assertSame(JSON.stringify(segunda), "[]", "A19: segunda recuperacion es no-op");
+  assertSame(ejecutadas.join(","), "ROLLBACK", "A19: un solo ROLLBACK de recuperacion");
+  assertSame(coord.diagnosticoPuerta(clave).owner, b.op.id, "A19: la segunda recuperacion no libera el lease de B");
+  // Un COMMIT tardio de A (ya no duena) espera como cualquier otra sentencia: jamas entra en el lease de B.
+  const contadorTardio = { n: 0 };
+  const tardio = coord.ejecutarEnOperacion(a.op, () => coord.coordinarSentencia(clave, "COMMIT", async () => { contadorTardio.n += 1; return "tardio"; }));
+  await tx1aCeder();
+  assertSame(contadorTardio.n, 0, "A19: COMMIT tardio de A espera mientras B tiene el lease");
+  driverB.resolve("b");
+  assertSame(await b.promise, "b", "A19: B completa");
+  assertSame(await tardio, "tardio", "A19: el COMMIT tardio corre despues, fuera de toda transaccion ajena");
+  assertSame(coord.diagnosticoPuerta(clave).owner, null, "A19: cola intacta y puerta libre");
+  nuncaTermina.resolve();
+  await a.promise;
+}
+
+async function testTX1AA20ContextoAlsPropaga() {
+  const coord = tx1aCoordinador();
+  assertSame(coord.obtenerOperacionActual(), null, "A20: sin contexto fuera de una operacion");
+  const h = await tx1aAbrirDb();
+  try {
+    const op = coord.crearOperacion("A20");
+    const otra = coord.crearOperacion("A20-anidada");
+    const vistos = await coord.ejecutarEnOperacion(op, async () => {
+      const r = {};
+      await null;
+      r.await = coord.obtenerOperacionActual() === op;
+      r.then = await Promise.resolve().then(() => coord.obtenerOperacionActual() === op);
+      r.immediate = await new Promise((resolve) => setImmediate(() => resolve(coord.obtenerOperacionActual() === op)));
+      r.timeout = await new Promise((resolve) => setTimeout(() => resolve(coord.obtenerOperacionActual() === op), 1));
+      // El callback crudo del driver sqlite3 NO hereda el contexto ALS (observado en TX-1A); lo que si
+      // se preserva es la continuacion del `await` de una promesa resuelta desde ese callback -- el
+      // patron exacto de backend/db.js (new Promise + await runQuery). El coordinador solo lee el
+      // contexto al entrar a coordinarSentencia, nunca dentro de un callback del driver.
+      await new Promise((resolve, reject) => h.db.all("SELECT 1", [], (e) => (e ? reject(e) : resolve())));
+      r.sqlite = coord.obtenerOperacionActual() === op;
+      r.anidada = await coord.ejecutarEnOperacion(otra, async () => { await null; return coord.obtenerOperacionActual() === otra; });
+      r.restaurada = coord.obtenerOperacionActual() === op;
+      return r;
+    });
+    assertSame(JSON.stringify(vistos), JSON.stringify({ await: true, then: true, immediate: true, timeout: true, sqlite: true, anidada: true, restaurada: true }), "A20: el contexto atraviesa await/promise/callbacks y se restaura");
+    assertSame(coord.obtenerOperacionActual(), null, "A20: sin contexto al salir");
+    assertSame(op.token === otra.token, false, "A20: tokens unicos por operacion");
+    assertSame(Object.isFrozen(op), true, "A20: operacion estructuralmente inmutable");
+    let invalida = null;
+    try { coord.ejecutarEnOperacion({ token: {}, id: "x", ownedGates: new Set() }, () => {}); } catch (error) { invalida = error; }
+    assertSame(invalida && invalida.code, coord.CODIGO_ARGUMENTO_INVALIDO, "A20: operacion no creada por crearOperacion es rechazada");
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function testTX1AA21SinContextoPassthrough() {
+  const coord = tx1aCoordinador();
+  const clave = {};
+  const abierta = tx1aDiferido();
+  const liberarA = tx1aDiferido();
+  const a = tx1aEnOp("A", async () => {
+    await coord.coordinarSentencia(clave, "BEGIN", async () => ({}));
+    abierta.resolve();
+    await liberarA.promise;
+    await coord.coordinarSentencia(clave, "COMMIT", async () => ({}));
+  });
+  await abierta.promise;
+  let invocado = 0;
+  const resultado = await coord.coordinarSentencia(clave, "INSERT", async () => { invocado += 1; return "passthrough"; });
+  assertSame(resultado, "passthrough", "A21: sin contexto el thunk se ejecuta directamente");
+  assertSame(invocado, 1, "A21: passthrough ejecuta exactamente una vez");
+  const diag = coord.diagnosticoPuerta(clave);
+  assertSame(diag.owner === a.op.id && diag.modo === "tx" && diag.enCola === 0, true, "A21: passthrough no toca ni la puerta ni la cola (contrato: sin coordinacion)");
+  liberarA.resolve();
+  await a.promise;
+  let errorThunk = null;
+  try { await coord.coordinarSentencia(clave, "SELECT 1", null); } catch (error) { errorThunk = error; }
+  assertSame(errorThunk && errorThunk.code, coord.CODIGO_ARGUMENTO_INVALIDO, "A21: thunk invalido rechazado");
+}
+
+async function testTX1AA22ClasificacionSql() {
+  const { clasificarSentencia, CLASES_SQL } = tx1aCoordinador();
+  const casos = [
+    ["BEGIN", CLASES_SQL.BEGIN],
+    ["BEGIN TRANSACTION", CLASES_SQL.BEGIN],
+    ["BEGIN IMMEDIATE", CLASES_SQL.BEGIN],
+    ["  \n\tbegin immediate;", CLASES_SQL.BEGIN],
+    ["Begin Deferred Transaction ;", CLASES_SQL.BEGIN],
+    ["BEGIN EXCLUSIVE", CLASES_SQL.BEGIN],
+    ["COMMIT", CLASES_SQL.COMMIT],
+    ["commit;", CLASES_SQL.COMMIT],
+    ["COMMIT TRANSACTION", CLASES_SQL.COMMIT],
+    ["END", CLASES_SQL.COMMIT],
+    ["end transaction;", CLASES_SQL.COMMIT],
+    ["ROLLBACK", CLASES_SQL.ROLLBACK],
+    ["\r\n rollback ;", CLASES_SQL.ROLLBACK],
+    ["ROLLBACK TRANSACTION", CLASES_SQL.ROLLBACK],
+    ["ROLLBACK TO sp1", CLASES_SQL.OTHER],
+    ["ROLLBACK TRANSACTION TO SAVEPOINT sp1", CLASES_SQL.OTHER],
+    ["SAVEPOINT sp1", CLASES_SQL.OTHER],
+    ["RELEASE sp1", CLASES_SQL.OTHER],
+    ["-- comentario\nBEGIN IMMEDIATE", CLASES_SQL.BEGIN],
+    ["/* bloque */ COMMIT", CLASES_SQL.COMMIT],
+    ["/* a */ -- b\n /* c */ ROLLBACK", CLASES_SQL.ROLLBACK],
+    ["INSERT INTO t VALUES ('BEGIN')", CLASES_SQL.OTHER],
+    ["SELECT 'COMMIT'", CLASES_SQL.OTHER],
+    ["UPDATE t SET v = 'ROLLBACK'", CLASES_SQL.OTHER],
+    ["BEGINNING", CLASES_SQL.OTHER],
+    ["COMMITTED", CLASES_SQL.OTHER],
+    ["", CLASES_SQL.OTHER],
+    ["   ", CLASES_SQL.OTHER],
+    ["-- solo comentario", CLASES_SQL.OTHER],
+    ["/* sin cerrar BEGIN", CLASES_SQL.OTHER]
+  ];
+  for (const [sql, esperado] of casos) {
+    assertSame(clasificarSentencia(sql), esperado, `A22: clasificacion de ${JSON.stringify(sql)}`);
+  }
+  let error = null;
+  try { clasificarSentencia(null); } catch (e) { error = e; }
+  assertSame(Boolean(error), true, "A22: sql no-string rechazado");
 }
 
 async function testP1ASRControlSchemaNuevoContienePasswordVersionDefault0() {
