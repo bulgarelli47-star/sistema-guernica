@@ -6,6 +6,7 @@ const fs = require("fs");
 const bcrypt = require("bcrypt");
 const crypto = require("crypto");
 const { runQuery, getQuery, allQuery } = require("./db");
+const tenantWriteCoordinator = require("./tenantWriteCoordinator");
 const userControlBridge = require("./userControlBridge");
 const {
   verificarSoporteS0Standalone: verificarSoporteS0ParaPassword,
@@ -476,6 +477,65 @@ app.use(express.static(path.join(__dirname, "../frontend"), {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   }
 }));
+
+// TX-1B: una OPERACION de escritura por request (owner = la request logica; nunca usuario, sesion,
+// tenant ni URL). Todas las sentencias de la request via backend/db.js comparten su token, asi que
+// mientras ella tenga una transaccion abierta en la conexion del tenant ninguna otra request la usa
+// (TX-SAME-TENANT). Va DESPUES de los estaticos (no tocan la business DB) y ANTES del contexto de
+// tenant, de requireAuth y de todas las rutas.
+// Recuperacion de transacciones fugadas (operation.ownedGates):
+// - 'finish' con ownedGates no vacio: la respuesta ya termino y la request no deberia conservar
+//   ninguna transaccion -> anomalia, se recupera de inmediato.
+// - 'close' sin 'finish' (posible abort del cliente con el handler aun procesando): gracia breve; si
+//   al vencer la operacion sigue duena de alguna puerta, se recupera.
+// Regla: TX_GATE_ABORT_GRACE_MS < TENANT_WRITE_GATE_WAIT_TIMEOUT_MS (backend/db.js, 10000), para que la
+// cola no venza entera antes de la recuperacion.
+const TX_GATE_ABORT_GRACE_MS = 1000;
+
+// Observabilidad segura del coordinador: solo identificadores, motivo y resultado (jamas SQL,
+// parametros ni datos).
+tenantWriteCoordinator.configurarObservador((evento) => {
+  console.warn(`[TX_GATE] ${JSON.stringify(evento)}`);
+});
+
+function crearMiddlewareOperacionEscritura() {
+  return (req, res, next) => {
+    const operacion = tenantWriteCoordinator.crearOperacion(req.method);
+    let finalizada = false;
+    let cierreAtendido = false;
+    let temporizadorGracia = null;
+
+    const recuperarSiPosee = (motivo) => {
+      if (operacion.ownedGates.size === 0) return;
+      tenantWriteCoordinator.recuperarOperacion(operacion, motivo).catch(() => {
+        console.error("[TX_GATE] TX_GATE_RECOVERY_ERROR");
+      });
+    };
+
+    res.once("finish", () => {
+      finalizada = true;
+      if (temporizadorGracia) {
+        clearTimeout(temporizadorGracia);
+        temporizadorGracia = null;
+      }
+      recuperarSiPosee("response_finish_con_transaccion");
+    });
+
+    res.once("close", () => {
+      if (finalizada || cierreAtendido) return;
+      cierreAtendido = true;
+      temporizadorGracia = setTimeout(() => {
+        temporizadorGracia = null;
+        recuperarSiPosee("response_close_sin_finish");
+      }, TX_GATE_ABORT_GRACE_MS);
+      temporizadorGracia.unref();
+    });
+
+    tenantWriteCoordinator.ejecutarEnOperacion(operacion, () => next());
+  };
+}
+
+app.use(crearMiddlewareOperacionEscritura());
 
 const RUTAS_PUBLICAS = new Set(["/", "/login", "/logout", "/tienda/publica", "/tienda/publica/productos", "/tienda/publica/pedidos"]);
 

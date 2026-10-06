@@ -21413,6 +21413,22 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testTX1AA20ContextoAlsPropaga);
   await _run(testTX1AA21SinContextoPassthrough);
   await _run(testTX1AA22ClasificacionSql);
+  await _run(testTX1BB1AutocommitVsRollback);
+  await _run(testTX1BB2AutocommitVsCommit);
+  await _run(testTX1BB3DosTransacciones);
+  await _run(testTX1BB4CrossTenantNoEspera);
+  await _run(testTX1BB5ErrorReleaseOwnedGatesVacio);
+  await _run(testTX1BB6FinishConTransaccionRecuperaInmediato);
+  await _run(testTX1BB7CloseAbortGraciaYRecuperacion);
+  await _run(testTX1BB8TimeoutSinEjecucionTardia);
+  await _run(testTX1BB9VentaRealSinSelfDeadlock);
+  await _run(testTX1BB10ColaDeStockSinDeadlock);
+  await _run(testTX1BB11RunQueryConservaLastID);
+  await _run(testTX1BB12RunQueryConservaChanges);
+  await _run(testTX1BB13GetQueryConservaRow);
+  await _run(testTX1BB14AllQueryConservaRows);
+  await _run(testTX1BB15ErrorSqliteConservado);
+  await _run(testTX1BB16SinOperacionPassthroughIntegrado);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -47997,6 +48013,501 @@ async function testTX1AA22ClasificacionSql() {
   let error = null;
   try { clasificarSentencia(null); } catch (e) { error = e; }
   assertSame(Boolean(error), true, "A22: sql no-string rechazado");
+}
+
+// ====================================================================================================
+// TX-1B: coordinador de escrituras integrado al runtime (backend/db.js + middleware de operacion en
+// backend/server.js). Reproduce como regresiones permanentes los escenarios que CONFIRMARON TX-SAME-TENANT
+// en TX-D0, con flujos HTTP reales sobre bases efimeras. Sincronizacion determinista via la barrera de
+// tests scripts/test-tx-barrier-preload.js (NODE_OPTIONS --require, solo en el hijo del servidor) y
+// long-poll de su servidor de control -- sin sleeps como mecanismo de prueba.
+// ====================================================================================================
+const TX1B_PRELOAD = path.join(ROOT, "scripts", "test-tx-barrier-preload.js");
+
+function tx1bEntornoBarrera(ctrlPort) {
+  return { NODE_OPTIONS: `--require ${TX1B_PRELOAD}`, TX_TEST_BARRIER_ENABLE: "1", TX_TEST_BARRIER_PORT: String(ctrlPort) };
+}
+
+async function tx1bCtrl(ctrlPort, ruta) {
+  const respuesta = await fetch(`http://127.0.0.1:${ctrlPort}${ruta}`);
+  return respuesta.json();
+}
+
+async function tx1bEsperar(ctrl, consulta, mensaje) {
+  const r = await ctrl(`/wait?${consulta}`);
+  if (!r.ok) throw new Error(`${mensaje} (control: ${r.error || "sin detalle"})`);
+}
+
+async function tx1bConServidorLegacy(fn) {
+  const dbPath = bootstrapFreshTestDb();
+  const ctrlPort = await getFreePort();
+  try {
+    await withServer(dbPath, async (baseUrl) => {
+      const token = await login(baseUrl, "admin", "admin123");
+      await fn({ baseUrl, dbPath, token, ctrl: (ruta) => tx1bCtrl(ctrlPort, ruta) });
+    }, tx1bEntornoBarrera(ctrlPort));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+}
+
+function tx1bClienteBody(etiqueta) {
+  return { nombre: `TX1B ${etiqueta}`, dni_cuit: `20${Date.now() % 100000000}${Math.floor(Math.random() * 90 + 10)}`, tipo_persona: "fisica" };
+}
+
+function tx1bNumero(sentencias, predicado) {
+  const s = sentencias.find(predicado);
+  return s ? s.n : null;
+}
+
+function tx1bSinErroresDeTransaccionAnidada(estado, contexto) {
+  const anidadas = estado.sentencias.filter((s) => /within a transaction|no transaction is active/.test(s.resultado));
+  assertSame(anidadas.length, 0, `${contexto}: 0 errores 'within a transaction' / 'no transaction is active'`);
+}
+
+async function tx1bCorrerConGuardia(promesa, ms, mensaje) {
+  let guardia = null;
+  const resultado = await Promise.race([
+    promesa.then((valor) => ({ valor })),
+    new Promise((resolve) => { guardia = setTimeout(() => resolve({ bloqueado: true }), ms); })
+  ]);
+  clearTimeout(guardia);
+  if (resultado.bloqueado) throw new Error(mensaje);
+  return resultado.valor;
+}
+
+// A = PUT /configuracion retenida en su COMMIT; B = POST /clientes del MISMO tenant.
+async function tx1bAutocommitVsFinA(final, n) {
+  await tx1bConServidorLegacy(async ({ baseUrl, dbPath, token, ctrl }) => {
+    const valorA = `TX1B_A_${final}_${n}`;
+    await ctrl("/arm-commit-barrier");
+    const promA = requestJson(baseUrl, "PUT", "/configuracion", { config: { cuenta_local_nombre: valorA } }, token);
+    await tx1bEsperar(ctrl, "for=held", `${final}#${n}: A debe quedar retenida con su transaccion abierta`);
+    const bodyB = tx1bClienteBody(`${final} ${n}`);
+    const promB = requestJson(baseUrl, "POST", "/clientes", bodyB, token);
+    const estadoB = tx1aSeguir(promB);
+    await tx1bEsperar(ctrl, "for=foreign-waiter", `${final}#${n}: B debe entrar al coordinador y esperar`);
+    await tx1aCeder();
+    const antes = await ctrl("/state");
+    assertSame(estadoB.settled, false, `${final}#${n}: B NO completa mientras A tiene la transaccion abierta`);
+    assertSame(antes.sentencias.some((s) => s.sentencia === "INSERT clientes"), false, `${final}#${n}: la escritura de B no se despacho dentro de la transaccion de A`);
+    assertSame((await allSql(dbPath, "SELECT id FROM clientes WHERE nombre = ?", [bodyB.nombre])).length, 0, `${final}#${n}: B invisible antes de terminar A`);
+    await ctrl(`/release?mode=${final === "ROLLBACK" ? "fail" : "commit"}`);
+    const rA = await promA;
+    const rB = await promB;
+    assertEqual(rA.response.status, final === "ROLLBACK" ? 500 : 200, `${final}#${n}: estado de A`);
+    assertEqual(rB.response.status, 200, `${final}#${n}: B responde 200 tras terminar A`);
+    const estado = await ctrl("/state");
+    const opA = estado.opRetenida;
+    const nFinA = final === "ROLLBACK"
+      ? tx1bNumero(estado.sentencias, (s) => s.op === opA && s.sentencia === "ROLLBACK" && s.resultado === "OK")
+      : tx1bNumero(estado.sentencias, (s) => s.op === opA && s.sentencia === "COMMIT" && s.resultado === "OK");
+    const nInsertB = tx1bNumero(estado.sentencias, (s) => s.sentencia === "INSERT clientes" && s.resultado === "OK");
+    assertSame(nFinA !== null && nInsertB !== null && nInsertB > nFinA, true, `${final}#${n}: B se ejecuta DESPUES del ${final} de A (log ${nFinA} < ${nInsertB})`);
+    assertSame(estado.sentencias.find((s) => s.n === nInsertB).op !== opA, true, `${final}#${n}: B pertenece a otra operacion`);
+    tx1bSinErroresDeTransaccionAnidada(estado, `${final}#${n}`);
+    const configA = await allSql(dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'cuenta_local_nombre'");
+    const aDurable = configA.some((r) => String(r.valor).includes(valorA));
+    assertSame(aDurable, final === "COMMIT", `${final}#${n}: A ${final === "COMMIT" ? "durable" : "revertida"}`);
+    assertSame((await allSql(dbPath, "SELECT id FROM clientes WHERE nombre = ?", [bodyB.nombre])).length, 1, `${final}#${n}: cliente B DURABLE`);
+    assertEqual(estado.ownedGates[opA], 0, `${final}#${n}: A termina sin puertas propias`);
+  });
+}
+
+async function testTX1BB1AutocommitVsRollback() {
+  for (let n = 1; n <= 3; n++) await tx1bAutocommitVsFinA("ROLLBACK", n);
+}
+
+async function testTX1BB2AutocommitVsCommit() {
+  for (let n = 1; n <= 3; n++) await tx1bAutocommitVsFinA("COMMIT", n);
+}
+
+async function testTX1BB3DosTransacciones() {
+  for (let n = 1; n <= 3; n++) {
+    await tx1bConServidorLegacy(async ({ baseUrl, dbPath, token, ctrl }) => {
+      const valorA = `TX1B_B3_A_${n}`;
+      await ctrl("/arm-commit-barrier");
+      const promA = requestJson(baseUrl, "PUT", "/configuracion", { config: { cuenta_local_nombre: valorA } }, token);
+      await tx1bEsperar(ctrl, "for=held", `B3#${n}: A retenida`);
+      const promB = requestJson(baseUrl, "PUT", "/configuracion", { config: { cuentas_dias_a_costo: 70 + n } }, token);
+      const estadoB = tx1aSeguir(promB);
+      await tx1bEsperar(ctrl, "for=foreign-waiter", `B3#${n}: B espera`);
+      await tx1aCeder();
+      const antes = await ctrl("/state");
+      const opA = antes.opRetenida;
+      assertSame(estadoB.settled, false, `B3#${n}: B no completa con A abierta`);
+      assertSame(antes.sentencias.filter((s) => s.sentencia === "BEGIN").length, 1, `B3#${n}: B espera ANTES de su BEGIN (solo el BEGIN de A)`);
+      await ctrl("/release?mode=commit");
+      const rA = await promA;
+      const rB = await promB;
+      assertEqual(rA.response.status, 200, `B3#${n}: A 200`);
+      assertEqual(rB.response.status, 200, `B3#${n}: B 200`);
+      const estado = await ctrl("/state");
+      const nCommitA = tx1bNumero(estado.sentencias, (s) => s.op === opA && s.sentencia === "COMMIT" && s.resultado === "OK");
+      const nBeginB = tx1bNumero(estado.sentencias, (s) => s.op !== opA && s.sentencia === "BEGIN");
+      assertSame(nCommitA !== null && nBeginB !== null && nBeginB > nCommitA, true, `B3#${n}: el BEGIN de B ocurre despues del COMMIT de A`);
+      assertSame(estado.sentencias.some((s) => s.sentencia === "ROLLBACK"), false, `B3#${n}: ningun ROLLBACK (ajeno ni propio)`);
+      tx1bSinErroresDeTransaccionAnidada(estado, `B3#${n}`);
+      const filas = await allSql(dbPath, "SELECT clave, valor FROM configuracion_global WHERE clave IN ('cuenta_local_nombre', 'cuentas_dias_a_costo')");
+      const porClave = Object.fromEntries(filas.map((r) => [r.clave, String(r.valor)]));
+      assertSame(String(porClave.cuenta_local_nombre || "").includes(valorA), true, `B3#${n}: configuracion de A durable`);
+      assertSame(porClave.cuentas_dias_a_costo, String(70 + n), `B3#${n}: configuracion de B durable`);
+    });
+  }
+}
+
+// Variante de mt1f4ConEscenario con la barrera de tests en el entorno del servidor multi real.
+async function tx1bConEscenarioMulti(fn) {
+  const escenario = await mt1f1CrearEscenario(["x", "y"]);
+  const decoyPath = tempDbPath();
+  const ctrlPort = await getFreePort();
+  try {
+    const control = await bootstrapControlDb(escenario.controlDbPath, { seed: false });
+    try {
+      for (const tenant of escenario.tenants) {
+        tenant.local = (await allSql(tenant.dbPath, "SELECT * FROM usuarios WHERE usuario = 'admin'"))[0];
+        tenant.password = `CentralTX1B-${tenant.tag}-123`;
+        tenant.central = await crearUsuarioCentral(control, { nombre: `Central ${tenant.tag}`, usuarioReferencia: "admin", passwordHash: await bcrypt.hash(tenant.password, 10) });
+        tenant.membership = await crearMembership(control, { usuarioId: tenant.central.id, empresaId: tenant.empresa.id, usuarioLocalId: tenant.local.id, rol: "admin" });
+      }
+    } finally { await closeControlDb(control); }
+    const [x, y] = escenario.tenants;
+    await mt1f3ConServidor({ ...mt1f3EntornoMulti(escenario, decoyPath), ...tx1bEntornoBarrera(ctrlPort) }, async (servidor) => {
+      const pedir = (tenant, metodo, ruta, cuerpo = null, token = null) => mt1f3Pedir(servidor.port, { host: mt1f3Host(tenant), metodo, ruta, cuerpo, autorizacion: token ? `Bearer ${token}` : null });
+      const loginTenant = async (tenant) => {
+        const respuesta = await pedir(tenant, "POST", "/login", { usuario: "admin", password: tenant.password });
+        assertEqual(respuesta.status, 200, `login ${tenant.tag}: ${respuesta.texto}`);
+        return respuesta.json.token;
+      };
+      await fn({ x, y, pedir, loginTenant, ctrl: (ruta) => tx1bCtrl(ctrlPort, ruta) });
+      assertSame(servidor.salio(), null, "servidor multi permanece vivo");
+    });
+  } finally { await mt1f1Limpiar(escenario); }
+}
+
+async function testTX1BB4CrossTenantNoEspera() {
+  await tx1bConEscenarioMulti(async ({ x, y, pedir, loginTenant, ctrl }) => {
+    const tokenX = await loginTenant(x);
+    const tokenY = await loginTenant(y);
+    await ctrl("/arm-commit-barrier");
+    const promAX = pedir(x, "PUT", "/configuracion", { config: { cuenta_local_nombre: "TX1B_B4_X" } }, tokenX);
+    await tx1bEsperar(ctrl, "for=held", "B4: A/X retenida con transaccion abierta");
+    const bodyY = tx1bClienteBody("B4 Y");
+    const rBY = await tx1bCorrerConGuardia(pedir(y, "POST", "/clientes", bodyY, tokenY), 8000, "B4: B/Y quedo bloqueada por la transaccion de X");
+    assertEqual(rBY.status, 200, `B4: B/Y responde 200 sin esperar a X: ${rBY.texto}`);
+    const mientras = await ctrl("/state");
+    assertSame(mientras.retenido, true, "B4: A/X sigue retenida cuando B/Y ya completo");
+    assertSame((await allSql(y.dbPath, "SELECT id FROM clientes WHERE nombre = ?", [bodyY.nombre])).length, 1, "B4: escritura de Y durable con X abierta");
+    await ctrl("/release?mode=commit");
+    const rAX = await promAX;
+    assertEqual(rAX.status, 200, "B4: A/X confirma despues");
+    assertSame((await allSql(x.dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'cuenta_local_nombre'")).some((r) => String(r.valor).includes("TX1B_B4_X")), true, "B4: X durable en su propia DB");
+    assertSame((await allSql(y.dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'cuenta_local_nombre'")).some((r) => String(r.valor).includes("TX1B_B4_X")), false, "B4: X no contamina Y");
+    assertSame((await allSql(x.dbPath, "SELECT id FROM clientes WHERE nombre = ?", [bodyY.nombre])).length, 0, "B4: Y no contamina X");
+  });
+}
+
+async function testTX1BB5ErrorReleaseOwnedGatesVacio() {
+  await tx1bConServidorLegacy(async ({ baseUrl, dbPath, token, ctrl }) => {
+    await ctrl("/arm-commit-barrier");
+    const promA = requestJson(baseUrl, "PUT", "/configuracion", { config: { cuenta_local_nombre: "TX1B_B5_A" } }, token);
+    await tx1bEsperar(ctrl, "for=held", "B5: A retenida");
+    const bodyB = tx1bClienteBody("B5");
+    const promB = requestJson(baseUrl, "POST", "/clientes", bodyB, token);
+    await tx1bEsperar(ctrl, "for=foreign-waiter", "B5: B espera");
+    await ctrl("/release?mode=fail");
+    assertEqual((await promA).response.status, 500, "B5: A falla y hace ROLLBACK");
+    assertEqual((await promB).response.status, 200, "B5: B continua");
+    const estado = await ctrl("/state");
+    assertEqual(estado.ownedGates[estado.opRetenida], 0, "B5: ownedGates de A vacio al terminar");
+    assertSame(estado.puerta.owner, null, "B5: puerta libre al final");
+    assertSame(estado.puerta.enCola, 0, "B5: cola vacia al final");
+    assertSame((await allSql(dbPath, "SELECT id FROM clientes WHERE nombre = ?", [bodyB.nombre])).length, 1, "B5: B persiste");
+  });
+}
+
+async function testTX1BB6FinishConTransaccionRecuperaInmediato() {
+  await tx1bConServidorLegacy(async ({ baseUrl, dbPath, token, ctrl }) => {
+    await ctrl("/arm-leak");
+    const promA = requestJson(baseUrl, "PUT", "/configuracion", { config: { cuenta_local_nombre: "TX1B_B6_FUGA" } }, token);
+    await tx1bEsperar(ctrl, "for=leak-held", "B6: COMMIT de A interceptado");
+    const bodyB = tx1bClienteBody("B6");
+    const promB = requestJson(baseUrl, "POST", "/clientes", bodyB, token);
+    const estadoB = tx1aSeguir(promB);
+    await tx1aCeder();
+    assertSame(estadoB.settled, false, "B6: B espera a la operacion duena");
+    await ctrl("/release?mode=leak");
+    const rA = await promA;
+    assertEqual(rA.response.status, 200, "B6: A responde una unica vez (su COMMIT fue simulado: fuga)");
+    await tx1bEsperar(ctrl, "for=event&name=TX_GATE_OPERATION_RECOVERED", "B6: recuperacion tras finish");
+    const rB = await tx1bCorrerConGuardia(promB, 5000, "B6: B no continuo tras la recuperacion");
+    assertEqual(rB.response.status, 200, "B6: B continua tras la recuperacion");
+    const estado = await ctrl("/state");
+    const recuperacion = estado.eventos.find((e) => e.evento === "TX_GATE_OPERATION_RECOVERED");
+    const finish = estado.respuestas.find((r) => r.evento === "finish" && r.metodo === "PUT" && r.ruta === "/configuracion");
+    assertSame(recuperacion.motivo, "response_finish_con_transaccion", "B6: motivo finish");
+    assertSame(recuperacion.rollbackOk, true, "B6: ROLLBACK real de la transaccion fugada");
+    assertSame(recuperacion.t - finish.t < 500, true, `B6: recuperacion inmediata tras finish (${recuperacion.t - finish.t}ms)`);
+    assertSame(estado.eventos.filter((e) => e.evento === "TX_GATE_OPERATION_RECOVERED").length, 1, "B6: una sola recuperacion");
+    assertSame(estado.consola.some((c) => c.tipo === "HEADERS_SENT"), false, "B6: sin doble respuesta");
+    assertSame(JSON.stringify(estado.eventos).includes("INSERT") || JSON.stringify(estado.eventos).includes("TX1B_B6"), false, "B6: observabilidad sin SQL ni datos");
+    assertSame((await allSql(dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'cuenta_local_nombre'")).some((r) => String(r.valor).includes("TX1B_B6_FUGA")), false, "B6: la transaccion fugada se revirtio");
+    assertSame((await allSql(dbPath, "SELECT id FROM clientes WHERE nombre = ?", [bodyB.nombre])).length, 1, "B6: B durable");
+  });
+}
+
+function tx1bPedirAbortable(baseUrl, metodo, ruta, cuerpo, token) {
+  const url = new URL(baseUrl);
+  const payload = JSON.stringify(cuerpo);
+  let req = null;
+  const promesa = new Promise((resolve) => {
+    req = http.request({ host: url.hostname, port: url.port, method: metodo, path: ruta, agent: false, headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload), Authorization: `Bearer ${token}` } }, (res) => {
+      res.resume();
+      res.on("end", () => resolve({ status: res.statusCode }));
+    });
+    req.on("error", () => resolve({ abortado: true }));
+    req.write(payload);
+    req.end();
+  });
+  return { promesa, abortar: () => req.destroy() };
+}
+
+async function testTX1BB7CloseAbortGraciaYRecuperacion() {
+  // (a) el handler libera dentro de la gracia: sin recuperacion artificial.
+  await tx1bConServidorLegacy(async ({ baseUrl, dbPath, token, ctrl }) => {
+    await ctrl("/arm-commit-barrier");
+    const a = tx1bPedirAbortable(baseUrl, "PUT", "/configuracion", { config: { cuenta_local_nombre: "TX1B_B7_LIBERA" } }, token);
+    await tx1bEsperar(ctrl, "for=held", "B7a: A retenida");
+    a.abortar();
+    await tx1bEsperar(ctrl, "for=response&name=close&path=/configuracion&method=PUT", "B7a: el servidor observa el close");
+    assertSame((await ctrl("/state")).eventos.some((e) => e.evento === "TX_GATE_OPERATION_RECOVERED"), false, "B7a: NO hay recuperacion instantanea en close");
+    await ctrl("/release?mode=commit");
+    await tx1bEsperar(ctrl, "for=statement&name=COMMIT&result=OK", "B7a: el handler termina su COMMIT dentro de la gracia");
+    const tras = await ctrl("/state");
+    assertEqual(tras.ownedGates[tras.opRetenida], 0, "B7a: la operacion libero sus puertas antes de vencer la gracia");
+    // Ventana de observacion (no sincronizacion): supera la gracia de 1000ms para confirmar que el
+    // temporizador vencido no recupera nada porque la operacion ya no posee puertas.
+    await delay(1500);
+    assertSame((await ctrl("/state")).eventos.some((e) => e.evento === "TX_GATE_OPERATION_RECOVERED"), false, "B7a: sin recuperacion artificial tras la gracia");
+    assertSame((await allSql(dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'cuenta_local_nombre'")).some((r) => String(r.valor).includes("TX1B_B7_LIBERA")), true, "B7a: COMMIT legitimo durable");
+    await a.promesa;
+  });
+  // (b) el handler sigue retenido al vencer la gracia: recuperacion y el waiter continua antes de 10s.
+  await tx1bConServidorLegacy(async ({ baseUrl, dbPath, token, ctrl }) => {
+    await ctrl("/arm-commit-barrier");
+    const a = tx1bPedirAbortable(baseUrl, "PUT", "/configuracion", { config: { cuenta_local_nombre: "TX1B_B7_RETENIDA" } }, token);
+    await tx1bEsperar(ctrl, "for=held", "B7b: A retenida");
+    const bodyB = tx1bClienteBody("B7b");
+    const inicioB = Date.now();
+    const promB = requestJson(baseUrl, "POST", "/clientes", bodyB, token);
+    await tx1bEsperar(ctrl, "for=foreign-waiter", "B7b: B espera");
+    a.abortar();
+    await tx1bEsperar(ctrl, "for=response&name=close&path=/configuracion&method=PUT", "B7b: close observado");
+    assertSame((await ctrl("/state")).eventos.some((e) => e.evento === "TX_GATE_OPERATION_RECOVERED"), false, "B7b: no recupera en el instante del close");
+    await tx1bEsperar(ctrl, "for=event&name=TX_GATE_OPERATION_RECOVERED&timeoutMs=8000", "B7b: recuperacion al vencer la gracia");
+    const rB = await promB;
+    const esperaB = Date.now() - inicioB;
+    assertEqual(rB.response.status, 200, "B7b: B continua tras la recuperacion");
+    assertSame(esperaB < 10000, true, `B7b: B continua antes de su timeout de 10s (${esperaB}ms)`);
+    const estado = await ctrl("/state");
+    const recuperacion = estado.eventos.find((e) => e.evento === "TX_GATE_OPERATION_RECOVERED");
+    const close = estado.respuestas.find((r) => r.evento === "close" && r.ruta === "/configuracion");
+    const demora = recuperacion.t - close.t;
+    assertSame(recuperacion.motivo, "response_close_sin_finish", "B7b: motivo close");
+    assertSame(demora >= 900 && demora < 10000, true, `B7b: recuperacion despues de la gracia (${demora}ms)`);
+    assertSame(estado.respuestas.some((r) => r.evento === "finish" && r.ruta === "/configuracion"), false, "B7b: nunca hubo finish de A");
+    await ctrl("/release?mode=commit");
+    await tx1bEsperar(ctrl, "for=statement&name=COMMIT&result=ERROR SQLITE_ERROR: SQLITE_ERROR: cannot commit - no transaction is active", "B7b: el COMMIT tardio de A no encuentra transaccion");
+    assertSame((await allSql(dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'cuenta_local_nombre'")).some((r) => String(r.valor).includes("TX1B_B7_RETENIDA")), false, "B7b: A revertida por la recuperacion");
+    assertSame((await allSql(dbPath, "SELECT id FROM clientes WHERE nombre = ?", [bodyB.nombre])).length, 1, "B7b: B durable");
+    await a.promesa;
+  });
+}
+
+async function testTX1BB8TimeoutSinEjecucionTardia() {
+  await tx1bConServidorLegacy(async ({ baseUrl, dbPath, token, ctrl }) => {
+    await ctrl("/arm-commit-barrier");
+    const promA = requestJson(baseUrl, "PUT", "/configuracion", { config: { cuenta_local_nombre: "TX1B_B8_A" } }, token);
+    await tx1bEsperar(ctrl, "for=held", "B8: A retenida");
+    const bodyB = tx1bClienteBody("B8");
+    const promB = requestJson(baseUrl, "POST", "/clientes", bodyB, token);
+    await tx1bEsperar(ctrl, "for=event&name=TX_GATE_WAIT_TIMEOUT&timeoutMs=15000", "B8: el waiter vence a los 10s");
+    const rB = await promB;
+    assertSame(rB.response.status >= 400, true, `B8: B recibe error (status=${rB.response.status})`);
+    const vencida = await ctrl("/state");
+    const evento = vencida.eventos.find((e) => e.evento === "TX_GATE_WAIT_TIMEOUT");
+    assertEqual(evento.timeoutMs, 10000, "B8: timeout productivo de 10000ms");
+    assertSame(evento.owner, vencida.opRetenida, "B8: la duena era A");
+    await ctrl("/release?mode=commit");
+    assertEqual((await promA).response.status, 200, "B8: A termina normalmente");
+    await tx1aCeder();
+    const estado = await ctrl("/state");
+    assertSame(estado.sentencias.some((s) => s.sentencia === "INSERT clientes"), false, "B8: la sentencia vencida jamas se ejecuta, tampoco despues de liberar");
+    assertSame((await allSql(dbPath, "SELECT id FROM clientes WHERE nombre = ?", [bodyB.nombre])).length, 0, "B8: ninguna fila de B");
+    assertSame(estado.puerta.enCola, 0, "B8: el waiter vencido no queda en cola");
+  });
+}
+
+async function testTX1BB9VentaRealSinSelfDeadlock() {
+  await tx1bConServidorLegacy(async ({ baseUrl, dbPath, token, ctrl }) => {
+    const categoriaId = await crearCategoria(baseUrl, token, "TX1B B9");
+    const productoId = await crearProducto(baseUrl, token, { nombre: `TX1B B9 ${Date.now()}`, categoria: "TX1B B9", categoria_id: categoriaId, stock: 10 });
+    await abrirCaja(baseUrl, token, 1000);
+    const venta = await tx1bCorrerConGuardia(requestJson(baseUrl, "POST", "/ventas", {
+      usuario: "test",
+      tipo: "normal",
+      tipo_cobro: "efectivo",
+      items: [{ producto_id: productoId, nombre_producto: "TX1B B9", cantidad: 1, precio_unitario: 100 }]
+    }, token), 8000, "B9: POST /ventas se bloqueo (self-deadlock)");
+    assertSame(venta.response.ok, true, `B9: venta creada: ${venta.data?.message || venta.response.status}`);
+    const estado = await ctrl("/state");
+    const insertVenta = estado.sentencias.find((s) => s.sentencia === "INSERT ventas" && s.resultado === "OK");
+    assertSame(Boolean(insertVenta), true, "B9: INSERT ventas registrado");
+    const opVenta = insertVenta.op;
+    const nBegin = tx1bNumero(estado.sentencias, (s) => s.op === opVenta && s.sentencia === "BEGIN");
+    const nCommit = tx1bNumero(estado.sentencias, (s) => s.op === opVenta && s.sentencia === "COMMIT" && s.resultado === "OK");
+    assertSame(nBegin !== null && nCommit !== null && nCommit > nBegin, true, "B9: BEGIN y COMMIT normal de la venta");
+    const dentro = estado.sentencias.filter((s) => s.n > nBegin && s.n < nCommit);
+    assertSame(dentro.length > 1, true, "B9: varias escrituras dentro de la transaccion");
+    assertSame(dentro.every((s) => s.op === opVenta), true, "B9: mismo owner durante todo el flujo");
+    assertSame(estado.eventos.some((e) => e.evento === "TX_GATE_WAIT_TIMEOUT"), false, "B9: sin timeouts");
+    assertEqual((await getProduct(baseUrl, token, productoId)).stock, 9, "B9: stock descontado correctamente");
+    assertSame(estado.puerta.owner, null, "B9: puerta libre al final");
+  });
+}
+
+async function testTX1BB10ColaDeStockSinDeadlock() {
+  await tx1bConServidorLegacy(async ({ baseUrl, dbPath, token, ctrl }) => {
+    const categoriaId = await crearCategoria(baseUrl, token, "TX1B B10");
+    const productoId = await crearProducto(baseUrl, token, { nombre: `TX1B B10 ${Date.now()}`, categoria: "TX1B B10", categoria_id: categoriaId, stock: 0 });
+    await ctrl("/arm-commit-barrier");
+    const mov1 = requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, { tipo_movimiento: "ingreso", cantidad: 5, motivo: "TX1B B10 primero", usuario: "test" }, token);
+    await tx1bEsperar(ctrl, "for=held", "B10: movimiento 1 (cola de stock -> puerta) retenido en su COMMIT");
+    const mov2 = requestJson(baseUrl, "POST", `/productos/${productoId}/movimientos-stock`, { tipo_movimiento: "ingreso", cantidad: 3, motivo: "TX1B B10 segundo", usuario: "test" }, token);
+    const bodyB = tx1bClienteBody("B10");
+    const promB = requestJson(baseUrl, "POST", "/clientes", bodyB, token);
+    await tx1bEsperar(ctrl, "for=foreign-waiter", "B10: las otras requests esperan");
+    const opMov1 = (await ctrl("/state")).opRetenida;
+    await ctrl("/release?mode=commit");
+    const [r1, r2, rB] = await tx1bCorrerConGuardia(Promise.all([mov1, mov2, promB]), 10000, "B10: deadlock entre cola de stock y puerta");
+    assertEqual(r1.response.status, 200, `B10: movimiento 1: ${r1.data?.message || ""}`);
+    assertEqual(r2.response.status, 200, `B10: movimiento 2: ${r2.data?.message || ""}`);
+    assertEqual(rB.response.status, 200, "B10: escritura concurrente del mismo tenant");
+    const estado = await ctrl("/state");
+    const nCommit1 = tx1bNumero(estado.sentencias, (s) => s.op === opMov1 && s.sentencia === "COMMIT" && s.resultado === "OK");
+    const begins = estado.sentencias.filter((s) => s.sentencia === "BEGIN");
+    assertSame(begins.length, 2, "B10: dos transacciones de stock");
+    assertSame(begins[1].n > nCommit1, true, "B10: el segundo ingreso empieza despues del COMMIT del primero");
+    assertSame(estado.sentencias.find((s) => s.sentencia === "INSERT clientes").n > nCommit1, true, "B10: el cliente se escribe despues del COMMIT del primero");
+    tx1bSinErroresDeTransaccionAnidada(estado, "B10");
+    assertEqual((await getProduct(baseUrl, token, productoId)).stock, 8, "B10: stock final consistente (5 + 3)");
+    assertSame((await allSql(dbPath, "SELECT id FROM clientes WHERE nombre = ?", [bodyB.nombre])).length, 1, "B10: cliente durable");
+  });
+}
+
+// B11-B16: contratos de backend/db.js envolviendo el driver, con y sin operacion (in-process, handle de
+// tenant congelado sobre una DB efimera: getDb() resuelve la conexion del handle).
+async function tx1bConHandleEfimero(fn) {
+  const h = await tx1aAbrirDb();
+  await tx1aRunCrudo(h.db, "CREATE TABLE u (id INTEGER PRIMARY KEY, clave TEXT UNIQUE, n INTEGER)");
+  const handle = Object.freeze({ empresaId: 9101, empresaSlug: "tx1b-efimero", canonicalPath: h.dbPath, db: h.db });
+  try {
+    await fn({ handle, db: require("../backend/db"), coord: tx1aCoordinador() });
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function tx1bEnAmbosModos(fn) {
+  await tx1bConHandleEfimero(async (ctx) => {
+    await runWithTenantHandle(ctx.handle, () => fn({ ...ctx, modo: "sin-operacion" }));
+    const op = ctx.coord.crearOperacion("tx1b-contrato");
+    await ctx.coord.ejecutarEnOperacion(op, () => runWithTenantHandle(ctx.handle, () => fn({ ...ctx, modo: "con-operacion" })));
+    assertSame(op.ownedGates.size, 0, "contratos: la operacion no conserva puertas");
+  });
+}
+
+async function testTX1BB11RunQueryConservaLastID() {
+  await tx1bEnAmbosModos(async ({ db, modo }) => {
+    const r1 = await db.runQuery("INSERT INTO u (clave, n) VALUES (?, ?)", [`k1-${modo}`, 1]);
+    const r2 = await db.runQuery("INSERT INTO u (clave, n) VALUES (?, ?)", [`k2-${modo}`, 2]);
+    assertSame(Number.isInteger(r1.lastID) && r2.lastID === r1.lastID + 1, true, `B11 ${modo}: lastID del driver`);
+    assertSame(r1.constructor && r1.constructor.name, "Statement", `B11 ${modo}: resuelve el mismo this (Statement) del callback de run`);
+  });
+}
+
+async function testTX1BB12RunQueryConservaChanges() {
+  await tx1bEnAmbosModos(async ({ db, modo }) => {
+    await db.runQuery("INSERT INTO u (clave, n) VALUES (?, 5), (?, 5)", [`c1-${modo}`, `c2-${modo}`]);
+    const r = await db.runQuery("UPDATE u SET n = 6 WHERE clave IN (?, ?)", [`c1-${modo}`, `c2-${modo}`]);
+    assertEqual(r.changes, 2, `B12 ${modo}: changes del driver`);
+  });
+}
+
+async function testTX1BB13GetQueryConservaRow() {
+  await tx1bEnAmbosModos(async ({ db, modo }) => {
+    await db.runQuery("INSERT INTO u (clave, n) VALUES (?, 41)", [`g-${modo}`]);
+    const fila = await db.getQuery("SELECT clave, n FROM u WHERE clave = ?", [`g-${modo}`]);
+    assertSame(JSON.stringify(fila), JSON.stringify({ clave: `g-${modo}`, n: 41 }), `B13 ${modo}: fila exacta`);
+    assertSame(await db.getQuery("SELECT * FROM u WHERE clave = 'inexistente'"), undefined, `B13 ${modo}: sin fila -> undefined como hoy`);
+  });
+}
+
+async function testTX1BB14AllQueryConservaRows() {
+  await tx1bEnAmbosModos(async ({ db, modo }) => {
+    await db.runQuery("INSERT INTO u (clave, n) VALUES (?, 1), (?, 2)", [`a1-${modo}`, `a2-${modo}`]);
+    const filas = await db.allQuery("SELECT clave, n FROM u WHERE clave LIKE ? ORDER BY n", [`a_-${modo}`]);
+    assertSame(JSON.stringify(filas), JSON.stringify([{ clave: `a1-${modo}`, n: 1 }, { clave: `a2-${modo}`, n: 2 }]), `B14 ${modo}: filas exactas`);
+    const vacio = await db.allQuery("SELECT * FROM u WHERE clave = 'inexistente'");
+    assertSame(Array.isArray(vacio) && vacio.length === 0, true, `B14 ${modo}: sin filas -> [] como hoy`);
+  });
+}
+
+async function testTX1BB15ErrorSqliteConservado() {
+  await tx1bEnAmbosModos(async ({ db, handle, modo }) => {
+    await db.runQuery("INSERT INTO u (clave, n) VALUES (?, 1)", [`e-${modo}`]);
+    let error = null;
+    try { await db.runQuery("INSERT INTO u (clave, n) VALUES (?, 2)", [`e-${modo}`]); } catch (e) { error = e; }
+    let crudo = null;
+    await new Promise((resolve) => handle.db.run("INSERT INTO u (clave, n) VALUES (?, 3)", [`e-${modo}`], (e) => { crudo = e; resolve(); }));
+    assertSame(error instanceof Error, true, `B15 ${modo}: rechaza con Error`);
+    assertSame(error.code, crudo.code, `B15 ${modo}: mismo code que el driver (${crudo.code})`);
+    assertSame(error.errno, crudo.errno, `B15 ${modo}: mismo errno que el driver`);
+    assertSame(error.message, crudo.message, `B15 ${modo}: mismo mensaje que el driver`);
+    let errorGet = null;
+    try { await db.getQuery("SELECT * FROM tabla_inexistente"); } catch (e) { errorGet = e; }
+    assertSame(errorGet && errorGet.code, "SQLITE_ERROR", `B15 ${modo}: getQuery conserva el error`);
+    let errorAll = null;
+    try { await db.allQuery("SELECT * FROM tabla_inexistente"); } catch (e) { errorAll = e; }
+    assertSame(errorAll && errorAll.code, "SQLITE_ERROR", `B15 ${modo}: allQuery conserva el error`);
+  });
+}
+
+async function testTX1BB16SinOperacionPassthroughIntegrado() {
+  await tx1bConHandleEfimero(async ({ handle, db, coord }) => {
+    const op = coord.crearOperacion("tx1b-duena");
+    const abierta = tx1aDiferido();
+    const liberar = tx1aDiferido();
+    const duena = coord.ejecutarEnOperacion(op, () => runWithTenantHandle(handle, async () => {
+      await db.runQuery("BEGIN IMMEDIATE");
+      abierta.resolve();
+      await liberar.promise;
+      await db.runQuery("ROLLBACK");
+    }));
+    await abierta.promise;
+    // Sin operacion: contrato TX-1A (passthrough). Scripts/tests que usan db.js directo no se bloquean de forma nueva.
+    const lectura = await tx1bCorrerConGuardia(
+      runWithTenantHandle(handle, () => db.getQuery("SELECT COUNT(*) AS n FROM u")),
+      5000,
+      "B16: un llamador sin operacion quedo bloqueado"
+    );
+    assertSame(Number.isInteger(lectura.n), true, "B16: passthrough sin operacion completa con la puerta tomada");
+    const diag = coord.diagnosticoPuerta(handle.db);
+    assertSame(diag.owner === op.id && diag.modo === "tx" && diag.enCola === 0, true, "B16: el passthrough no altera la puerta ni la cola");
+    liberar.resolve();
+    await duena;
+    assertSame(coord.diagnosticoPuerta(handle.db).owner, null, "B16: puerta libre al final");
+  });
 }
 
 async function testP1ASRControlSchemaNuevoContienePasswordVersionDefault0() {

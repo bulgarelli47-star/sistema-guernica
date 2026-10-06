@@ -1,8 +1,17 @@
 const sqlite3 = require("sqlite3").verbose();
 const { resolveBusinessDbPath } = require("./resolveBusinessDbPath");
 const { getTenantHandle } = require("./tenantRequestContext");
+// TX-1B: coordinacion de escrituras del MISMO tenant (TX-SAME-TENANT). Se invoca via el objeto del
+// modulo (no desestructurado) en cada llamada.
+const tenantWriteCoordinator = require("./tenantWriteCoordinator");
 
 const dbPath = resolveBusinessDbPath();
+
+// TX-1B: espera maxima en la cola de la conexion del tenant. Una request nunca espera indefinidamente
+// detras de una transaccion fugada: al vencer rechaza con TENANT_WRITE_GATE_TIMEOUT y su sentencia
+// jamas se ejecuta. Debe ser MAYOR que la gracia de recuperacion por abort del middleware de
+// operacion (backend/server.js, TX_GATE_ABORT_GRACE_MS).
+const TENANT_WRITE_GATE_WAIT_TIMEOUT_MS = 10000;
 
 // MT-1D.2B: apertura lazy. require("./db") por si solo NO debe abrir ni crear la business DB --
 // eso permitiria que un proceso en modo central mutara/creara la DB de un tenant antes de que el
@@ -54,9 +63,30 @@ function closeDb() {
   });
 }
 
+// TX-1B: cada helper resuelve la conexion (getDb) en el contexto del LLAMADOR y la entrega al
+// coordinador junto con un thunk que ejecuta la operacion ORIGINAL del driver. La operacion duena se
+// captura al entrar a coordinarSentencia, nunca dentro de un callback de sqlite3 (TX-1A: el callback
+// crudo del driver no hereda el contexto ALS). Contratos intactos: runQuery resuelve el `this` del
+// callback de run (lastID/changes), getQuery la fila, allQuery las filas, y los errores de sqlite se
+// rechazan sin envolver. Un fallo de getDb() sigue siendo un rechazo, nunca un throw sincronico.
+function coordinarSobreConexion(sql, ejecutar) {
+  let db;
+  try {
+    db = getDb();
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  return tenantWriteCoordinator.coordinarSentencia(
+    db,
+    sql,
+    () => new Promise((resolve, reject) => ejecutar(db, resolve, reject)),
+    { timeoutMs: TENANT_WRITE_GATE_WAIT_TIMEOUT_MS }
+  );
+}
+
 function runQuery(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    getDb().run(sql, params, function (err) {
+  return coordinarSobreConexion(sql, (db, resolve, reject) => {
+    db.run(sql, params, function (err) {
       if (err) {
         reject(err);
         return;
@@ -68,8 +98,8 @@ function runQuery(sql, params = []) {
 }
 
 function getQuery(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    getDb().get(sql, params, (err, row) => {
+  return coordinarSobreConexion(sql, (db, resolve, reject) => {
+    db.get(sql, params, (err, row) => {
       if (err) {
         reject(err);
         return;
@@ -81,8 +111,8 @@ function getQuery(sql, params = []) {
 }
 
 function allQuery(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    getDb().all(sql, params, (err, rows) => {
+  return coordinarSobreConexion(sql, (db, resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
       if (err) {
         reject(err);
         return;
