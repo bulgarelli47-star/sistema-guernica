@@ -34,6 +34,8 @@ const { AsyncLocalStorage } = require("async_hooks");
 
 const CODIGO_TIMEOUT = "TENANT_WRITE_GATE_TIMEOUT";
 const CODIGO_ARGUMENTO_INVALIDO = "TENANT_WRITE_COORDINATOR_INVALID_ARGUMENT";
+// TX-1B-R1: una operacion cuya recuperacion ya fue solicitada no puede emitir ninguna sentencia nueva.
+const CODIGO_OPERACION_RECUPERADA = "TENANT_WRITE_OPERATION_RECOVERED";
 
 const CLASES_SQL = Object.freeze({
   BEGIN: "BEGIN",
@@ -49,6 +51,9 @@ const MODOS_PUERTA = Object.freeze({
 
 const almacenOperacion = new AsyncLocalStorage();
 const puertas = new WeakMap();
+// TX-1B-R1: operaciones revocadas (recuperacion solicitada). La operacion es inmutable, asi que la
+// marca vive aca y no en el objeto.
+const operacionesRevocadas = new WeakSet();
 let secuenciaOperacion = 0;
 let observador = () => {};
 
@@ -149,23 +154,40 @@ function clasificarSentencia(sql) {
 
 // ===== Puerta =====
 
+// TX-1B-R1 -- INVARIANTE: una puerta NUNCA cambia de owner mientras una sentencia (thunk) del owner
+// actual sigue en vuelo. `enVuelo` cuenta los thunks despachados y no resueltos; `liberacionPendiente`
+// difiere la transferencia hasta que aterricen; `recuperacion` es una recuperacion solicitada mientras
+// habia sentencias en vuelo (se resuelve al aterrizar: si la duena ya cerro su transaccion, no hay
+// ROLLBACK tardio; si sigue abierta, ROLLBACK real y recien despues transferencia).
 function obtenerPuerta(db) {
   if (db === null || typeof db !== "object") {
     throw crearError(CODIGO_ARGUMENTO_INVALIDO, "coordinarSentencia: db debe ser un objeto conexion");
   }
   let puerta = puertas.get(db);
   if (!puerta) {
-    puerta = { db, owner: null, modo: null, cola: [] };
+    puerta = { db, owner: null, modo: null, cola: [], enVuelo: 0, liberacionPendiente: false, recuperacion: null };
     puertas.set(db, puerta);
   }
   return puerta;
 }
 
+// Libera la puerta, o difiere la liberacion si hay sentencias en vuelo / una recuperacion pendiente. Al
+// diferir, el modo deja de ser TX (la transaccion ya se cerro) para que ni siquiera la duena pase directo.
+function liberarPuerta(puerta) {
+  if (puerta.enVuelo > 0 || puerta.recuperacion) {
+    puerta.liberacionPendiente = true;
+    puerta.modo = MODOS_PUERTA.LEASE;
+    return;
+  }
+  transferirPuerta(puerta);
+}
+
 // Otorga la puerta al siguiente waiter VALIDO (FIFO). Los waiters cancelados se descartan. La
 // transicion waiting -> granted es sincronica, asi que un timer ya no puede rechazarlo despues.
-function liberarPuerta(puerta) {
+function transferirPuerta(puerta) {
   puerta.owner = null;
   puerta.modo = null;
+  puerta.liberacionPendiente = false;
   while (puerta.cola.length > 0) {
     const waiter = puerta.cola.shift();
     if (waiter.estado !== "waiting") continue;
@@ -211,32 +233,60 @@ function adquirirPuerta(puerta, operacion, timeoutMs) {
   });
 }
 
+// Ejecuta el thunk contabilizandolo como "en vuelo" y devuelve { ok, valor, error } sin lanzar. NO
+// decrementa `enVuelo`: el llamador actualiza el estado transaccional y decrementa en el MISMO paso
+// sincronico, de modo que ninguna recuperacion pueda intercalarse entre el aterrizaje real de la
+// sentencia y la actualizacion del estado de la puerta.
+async function ejecutarEnVuelo(puerta, thunk) {
+  puerta.enVuelo += 1;
+  try {
+    return { ok: true, valor: await thunk() };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+// Al aterrizar la ultima sentencia en vuelo: primero la recuperacion pendiente (si la hay), si no la
+// liberacion diferida. Nunca transfiere con sentencias en vuelo.
+async function alAterrizar(puerta) {
+  if (puerta.enVuelo > 0) return;
+  if (puerta.recuperacion) {
+    const recuperacion = puerta.recuperacion;
+    await resolverRecuperacion(puerta, recuperacion);
+    return;
+  }
+  if (puerta.liberacionPendiente) transferirPuerta(puerta);
+}
+
+function errorOperacionRecuperada(operacion) {
+  return crearError(CODIGO_OPERACION_RECUPERADA, `La operacion ${operacion.id} fue recuperada: no puede emitir nuevas sentencias`);
+}
+
 async function ejecutarComoDuena(puerta, clase, thunk) {
-  if (clase === CLASES_SQL.COMMIT) {
-    const resultado = await thunk();
-    cerrarTransaccion(puerta);
-    return resultado;
-  }
-  if (clase === CLASES_SQL.ROLLBACK) {
-    try {
-      return await thunk();
-    } finally {
-      cerrarTransaccion(puerta);
-    }
-  }
+  const r = await ejecutarEnVuelo(puerta, thunk);
+  // Estado transaccional segun el resultado REAL, con la sentencia aun contabilizada en vuelo: la
+  // liberacion queda diferida y la resuelve alAterrizar, que atiende primero una recuperacion pendiente.
+  if (clase === CLASES_SQL.COMMIT && r.ok) cerrarTransaccion(puerta);
+  else if (clase === CLASES_SQL.ROLLBACK) cerrarTransaccion(puerta);
   // OTHER, o BEGIN anidado: SQLite decide (un BEGIN anidado falla igual que hoy). Sin cambio de estado.
-  return thunk();
+  puerta.enVuelo -= 1;
+  await alAterrizar(puerta);
+  if (r.ok) return r.valor;
+  throw r.error;
 }
 
 // API principal. `thunk` debe invocar la operacion ORIGINAL del driver y devolver su resultado (o
 // rechazar con su error). `opciones.timeoutMs` (opcional): espera maxima en cola; sin valor, no hay
-// timeout (TX-1B define el default productivo).
+// timeout (TX-1B define el default productivo). La operacion duena se captura AL ENTRAR, nunca dentro
+// de un callback del driver.
 async function coordinarSentencia(db, sql, thunk, opciones = {}) {
   if (typeof thunk !== "function") {
     throw crearError(CODIGO_ARGUMENTO_INVALIDO, "coordinarSentencia: thunk debe ser una funcion");
   }
   const operacion = obtenerOperacionActual();
   if (!operacion) return thunk();
+  // TX-1B-R1: una operacion revocada jamas despacha SQL nueva (ni como duena ni encolandose).
+  if (operacionesRevocadas.has(operacion)) throw errorOperacionRecuperada(operacion);
 
   const clase = clasificarSentencia(sql);
   const puerta = obtenerPuerta(db);
@@ -247,24 +297,37 @@ async function coordinarSentencia(db, sql, thunk, opciones = {}) {
 
   await adquirirPuerta(puerta, operacion, opciones.timeoutMs);
 
+  if (operacionesRevocadas.has(operacion)) {
+    // Revocada mientras esperaba en cola: no ejecuta y cede la puerta.
+    liberarPuerta(puerta);
+    throw errorOperacionRecuperada(operacion);
+  }
+
   if (clase === CLASES_SQL.BEGIN) {
-    let resultado;
-    try {
-      resultado = await thunk();
-    } catch (error) {
+    const r = await ejecutarEnVuelo(puerta, thunk);
+    if (!r.ok) {
+      puerta.enVuelo -= 1;
       liberarPuerta(puerta);
-      throw error;
+      throw r.error;
     }
     puerta.modo = MODOS_PUERTA.TX;
     operacion.ownedGates.add(puerta);
-    return resultado;
+    puerta.enVuelo -= 1;
+    if (operacionesRevocadas.has(operacion)) {
+      // Revocada con su BEGIN en vuelo: la transaccion recien abierta se recupera antes de transferir.
+      operacion.ownedGates.delete(puerta);
+      puerta.recuperacion = { operacion, motivo: "revocada_durante_begin", diferida: true, resolvers: [] };
+      await alAterrizar(puerta);
+      throw errorOperacionRecuperada(operacion);
+    }
+    return r.valor;
   }
 
-  try {
-    return await thunk();
-  } finally {
-    liberarPuerta(puerta);
-  }
+  const r = await ejecutarEnVuelo(puerta, thunk);
+  puerta.enVuelo -= 1;
+  liberarPuerta(puerta);
+  if (r.ok) return r.valor;
+  throw r.error;
 }
 
 // ===== Recuperacion =====
@@ -279,13 +342,44 @@ function rollbackCrudo(db) {
   });
 }
 
-// Para cada puerta cuya TRANSACCION todavia posee `operacion`: ROLLBACK sobre esa conexion y liberacion
-// incondicional (aunque el ROLLBACK falle). Idempotente: una segunda llamada encuentra ownedGates vacio.
-// Nunca toca una puerta que ya no pertenece a esta operacion (no puede afectar la transaccion de otro).
+// Resuelve una recuperacion cuando ya no hay sentencias en vuelo. Si la duena sigue con la transaccion
+// abierta: ROLLBACK real (contabilizado en vuelo: nadie entra mientras tanto) y transferencia, aunque el
+// ROLLBACK falle. Si la duena ya la cerro (COMMIT exitoso o ROLLBACK propio en vuelo), no hay ROLLBACK
+// tardio: solo se completa la liberacion diferida.
+async function resolverRecuperacion(puerta, recuperacion) {
+  const { operacion } = recuperacion;
+  const motivo = String(recuperacion.motivo).slice(0, 80);
+  let resultado;
+  if (puerta.modo === MODOS_PUERTA.TX && mismaOperacion(puerta.owner, operacion)) {
+    puerta.enVuelo += 1;
+    const error = await rollbackCrudo(puerta.db);
+    puerta.enVuelo -= 1;
+    operacion.ownedGates.delete(puerta);
+    puerta.recuperacion = null;
+    transferirPuerta(puerta);
+    resultado = { recuperada: true, rollbackOk: error === null };
+    observador({ evento: "TX_GATE_OPERATION_RECOVERED", operacion: operacion.id, motivo, rollbackOk: resultado.rollbackOk, diferida: recuperacion.diferida });
+  } else {
+    puerta.recuperacion = null;
+    if (puerta.liberacionPendiente) transferirPuerta(puerta);
+    resultado = { recuperada: false, motivo: "transaccion_cerrada_por_la_duena" };
+    observador({ evento: "TX_GATE_OPERATION_RECOVERY_NOT_NEEDED", operacion: operacion.id, motivo });
+  }
+  recuperacion.resolvers.forEach((resolver) => resolver(resultado));
+  return resultado;
+}
+
+// Revoca la operacion (no podra emitir SQL nueva) y, para cada puerta cuya TRANSACCION todavia posee:
+// - sin sentencias en vuelo: ROLLBACK inmediato y liberacion (aunque el ROLLBACK falle);
+// - con sentencias en vuelo: recuperacion PENDIENTE; la puerta sigue siendo de la operacion (la cola
+//   espera) hasta que esas sentencias aterricen, y recien ahi se resuelve (ver resolverRecuperacion).
+// Idempotente: una segunda llamada encuentra ownedGates vacio. Nunca toca una puerta que ya no pertenece
+// a esta operacion (no puede afectar la transaccion de otro).
 async function recuperarOperacion(operacion, motivo = "sin_motivo") {
   if (!esOperacionValida(operacion)) {
     throw crearError(CODIGO_ARGUMENTO_INVALIDO, "recuperarOperacion: operacion invalida");
   }
+  operacionesRevocadas.add(operacion);
   const resultados = [];
   for (const puerta of Array.from(operacion.ownedGates)) {
     operacion.ownedGates.delete(puerta);
@@ -293,18 +387,16 @@ async function recuperarOperacion(operacion, motivo = "sin_motivo") {
       resultados.push({ recuperada: false, motivo: "puerta_ya_no_pertenece" });
       continue;
     }
-    const error = await rollbackCrudo(puerta.db);
-    if (puerta.modo === MODOS_PUERTA.TX && mismaOperacion(puerta.owner, operacion)) {
-      liberarPuerta(puerta);
+    const diferida = puerta.enVuelo > 0;
+    if (!puerta.recuperacion) puerta.recuperacion = { operacion, motivo, diferida, resolvers: [] };
+    const pendiente = new Promise((resolve) => puerta.recuperacion.resolvers.push(resolve));
+    if (diferida) {
+      observador({ evento: "TX_GATE_OPERATION_RECOVERY_DEFERRED", operacion: operacion.id, motivo: String(motivo).slice(0, 80), enVuelo: puerta.enVuelo });
+    } else {
+      alAterrizar(puerta);
     }
-    const rollbackOk = error === null;
-    resultados.push({ recuperada: true, rollbackOk });
-    observador({
-      evento: "TX_GATE_OPERATION_RECOVERED",
-      operacion: operacion.id,
-      motivo: String(motivo).slice(0, 80),
-      rollbackOk
-    });
+    const resultado = await pendiente;
+    resultados.push(resultado.recuperada ? { recuperada: true, rollbackOk: resultado.rollbackOk } : resultado);
   }
   return resultados;
 }
@@ -314,12 +406,14 @@ async function recuperarOperacion(operacion, motivo = "sin_motivo") {
 // Solo identificadores y contadores: jamas SQL, parametros ni datos.
 function diagnosticoPuerta(db) {
   const puerta = db && typeof db === "object" ? puertas.get(db) : undefined;
-  if (!puerta) return { existe: false, owner: null, modo: null, enCola: 0 };
+  if (!puerta) return { existe: false, owner: null, modo: null, enCola: 0, enVuelo: 0, recuperacionPendiente: false };
   return {
     existe: true,
     owner: puerta.owner ? puerta.owner.id : null,
     modo: puerta.modo,
-    enCola: puerta.cola.filter((w) => w.estado === "waiting").length
+    enCola: puerta.cola.filter((w) => w.estado === "waiting").length,
+    enVuelo: puerta.enVuelo,
+    recuperacionPendiente: Boolean(puerta.recuperacion)
   };
 }
 
@@ -330,6 +424,7 @@ function configurarObservador(fn) {
 module.exports = {
   CODIGO_TIMEOUT,
   CODIGO_ARGUMENTO_INVALIDO,
+  CODIGO_OPERACION_RECUPERADA,
   CLASES_SQL,
   MODOS_PUERTA,
   crearOperacion,

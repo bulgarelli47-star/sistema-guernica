@@ -21429,6 +21429,14 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testTX1BB14AllQueryConservaRows);
   await _run(testTX1BB15ErrorSqliteConservado);
   await _run(testTX1BB16SinOperacionPassthroughIntegrado);
+  await _run(testTX1BR1CommitEnVueloRecuperacionYB);
+  await _run(testTX1BR2CommitEnVueloFallaRollbackAntesDeTransferir);
+  await _run(testTX1BR3SentenciaComunEnVueloLuegoRollback);
+  await _run(testTX1BR4OperacionRevocadaNoEmiteSql);
+  await _run(testTX1BR5ControlTardioNuncaTocaB);
+  await _run(testTX1BR6SinVueloRecuperacionInmediata);
+  await _run(testTX1BR7CloseGraciaConSqlEnVueloEspera);
+  await _run(testTX1BR8RevocadaConBeginEnVuelo);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -47899,15 +47907,44 @@ async function testTX1AA19RecoveryIdempotente() {
   assertSame(JSON.stringify(segunda), "[]", "A19: segunda recuperacion es no-op");
   assertSame(ejecutadas.join(","), "ROLLBACK", "A19: un solo ROLLBACK de recuperacion");
   assertSame(coord.diagnosticoPuerta(clave).owner, b.op.id, "A19: la segunda recuperacion no libera el lease de B");
-  // Un COMMIT tardio de A (ya no duena) espera como cualquier otra sentencia: jamas entra en el lease de B.
+  // TX-1B-R1 (contrato aceptado en TX-1B-R1A): A ya fue recuperada/revocada, asi que su COMMIT tardio se
+  // RECHAZA con TENANT_WRITE_OPERATION_RECOVERED sin llegar al driver, sin tocar la puerta ni el lease de B.
   const contadorTardio = { n: 0 };
-  const tardio = coord.ejecutarEnOperacion(a.op, () => coord.coordinarSentencia(clave, "COMMIT", async () => { contadorTardio.n += 1; return "tardio"; }));
-  await tx1aCeder();
-  assertSame(contadorTardio.n, 0, "A19: COMMIT tardio de A espera mientras B tiene el lease");
+  let errorTardio = null;
+  try {
+    await coord.ejecutarEnOperacion(a.op, () => coord.coordinarSentencia(clave, "COMMIT", async () => { contadorTardio.n += 1; return "tardio"; }));
+  } catch (error) { errorTardio = error; }
+  assertSame(errorTardio && errorTardio.code, coord.CODIGO_OPERACION_RECUPERADA, "A19: COMMIT tardio de la operacion recuperada rechazado");
+  assertSame(contadorTardio.n, 0, "A19: el COMMIT tardio no llega al driver");
+  assertSame(coord.diagnosticoPuerta(clave).owner, b.op.id, "A19: el rechazo no modifica la puerta ni libera el lease de B");
+  assertSame(coord.diagnosticoPuerta(clave).enCola, 0, "A19: el rechazo no deja nada en cola");
   driverB.resolve("b");
   assertSame(await b.promise, "b", "A19: B completa");
-  assertSame(await tardio, "tardio", "A19: el COMMIT tardio corre despues, fuera de toda transaccion ajena");
   assertSame(coord.diagnosticoPuerta(clave).owner, null, "A19: cola intacta y puerta libre");
+  // Una transaccion POSTERIOR (C) tampoco puede ser afectada por un COMMIT/ROLLBACK tardio de A.
+  const cAbierta = tx1aDiferido();
+  const cFinal = tx1aDiferido();
+  const c = tx1aEnOp("C", async () => {
+    await coord.coordinarSentencia(clave, "BEGIN", async () => ({}));
+    cAbierta.resolve();
+    await cFinal.promise;
+    await coord.coordinarSentencia(clave, "COMMIT", async () => ({}));
+  });
+  await cAbierta.promise;
+  for (const sql of ["COMMIT", "ROLLBACK"]) {
+    let error = null;
+    try {
+      await coord.ejecutarEnOperacion(a.op, () => coord.coordinarSentencia(clave, sql, async () => { contadorTardio.n += 1; return null; }));
+    } catch (e) { error = e; }
+    assertSame(error && error.code, coord.CODIGO_OPERACION_RECUPERADA, `A19: ${sql} tardio de A rechazado durante la transaccion de C`);
+  }
+  assertSame(contadorTardio.n, 0, "A19: ninguna sentencia tardia de A llego al driver");
+  assertSame(coord.diagnosticoPuerta(clave).owner === c.op.id && coord.diagnosticoPuerta(clave).modo === "tx", true, "A19: la transaccion posterior de C sigue intacta");
+  cFinal.resolve();
+  await c.promise;
+  assertSame(JSON.stringify(await coord.recuperarOperacion(a.op, "leak-tercera")), "[]", "A19: recuperacion sigue idempotente");
+  assertSame(ejecutadas.join(","), "ROLLBACK", "A19: un unico ROLLBACK de recuperacion en todo el escenario");
+  assertSame(coord.diagnosticoPuerta(clave).owner, null, "A19: puerta libre al final");
   nuncaTermina.resolve();
   await a.promise;
 }
@@ -48292,11 +48329,22 @@ async function testTX1BB7CloseAbortGraciaYRecuperacion() {
     assertSame((await allSql(dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'cuenta_local_nombre'")).some((r) => String(r.valor).includes("TX1B_B7_LIBERA")), true, "B7a: COMMIT legitimo durable");
     await a.promesa;
   });
-  // (b) el handler sigue retenido al vencer la gracia: recuperacion y el waiter continua antes de 10s.
-  await tx1bConServidorLegacy(async ({ baseUrl, dbPath, token, ctrl }) => {
-    await ctrl("/arm-commit-barrier");
+  // (b) el handler sigue retenido al vencer la gracia SIN SQL en vuelo (TX-1B-R1A: retencion via /arm-leak,
+  // antes de que el COMMIT llegue al coordinador; el caso con SQL realmente en vuelo es R7): recuperacion
+  // con ROLLBACK, el waiter continua antes de 10s y la operacion queda revocada. Servidor legacy via
+  // mt1f3ConServidor para leer sus logs (rechazo explicito de las sentencias tardias de A).
+  const dbPathB7b = bootstrapFreshTestDb();
+  const ctrlPortB7b = await getFreePort();
+  try {
+    await mt1f3ConServidor({ GUERNICA_DB_PATH: dbPathB7b, ...tx1bEntornoBarrera(ctrlPortB7b) }, async (servidor) => {
+    const baseUrl = `http://localhost:${servidor.port}`;
+    const dbPath = dbPathB7b;
+    const ctrl = (ruta) => tx1bCtrl(ctrlPortB7b, ruta);
+    const token = await login(baseUrl, "admin", "admin123");
+    await ctrl("/arm-leak");
     const a = tx1bPedirAbortable(baseUrl, "PUT", "/configuracion", { config: { cuenta_local_nombre: "TX1B_B7_RETENIDA" } }, token);
-    await tx1bEsperar(ctrl, "for=held", "B7b: A retenida");
+    await tx1bEsperar(ctrl, "for=leak-held", "B7b: A retenida con su transaccion abierta");
+    assertSame((await ctrl("/state")).puerta.enVuelo, 0, "B7b: A retenida SIN sentencias en vuelo");
     const bodyB = tx1bClienteBody("B7b");
     const inicioB = Date.now();
     const promB = requestJson(baseUrl, "POST", "/clientes", bodyB, token);
@@ -48314,14 +48362,31 @@ async function testTX1BB7CloseAbortGraciaYRecuperacion() {
     const close = estado.respuestas.find((r) => r.evento === "close" && r.ruta === "/configuracion");
     const demora = recuperacion.t - close.t;
     assertSame(recuperacion.motivo, "response_close_sin_finish", "B7b: motivo close");
+    assertSame(recuperacion.rollbackOk === true && recuperacion.diferida === false, true, "B7b: ROLLBACK real e inmediato al vencer la gracia (sin SQL en vuelo)");
     assertSame(demora >= 900 && demora < 10000, true, `B7b: recuperacion despues de la gracia (${demora}ms)`);
     assertSame(estado.respuestas.some((r) => r.evento === "finish" && r.ruta === "/configuracion"), false, "B7b: nunca hubo finish de A");
-    await ctrl("/release?mode=commit");
-    await tx1bEsperar(ctrl, "for=statement&name=COMMIT&result=ERROR SQLITE_ERROR: SQLITE_ERROR: cannot commit - no transaction is active", "B7b: el COMMIT tardio de A no encuentra transaccion");
+    // La continuacion tardia de A (COMMIT simulado -> getConfiguracionGlobal -> catch -> ROLLBACK) intenta
+    // seguir: toda sentencia NUEVA de la operacion revocada se rechaza con TENANT_WRITE_OPERATION_RECOVERED.
+    await ctrl("/release?mode=leak");
+    const bodyC = tx1bClienteBody("B7b C");
+    assertEqual((await requestJson(baseUrl, "POST", "/clientes", bodyC, token)).response.status, 200, "B7b: la puerta queda intacta tras la continuacion tardia de A");
+    let logsRechazo = "";
+    for (let intento = 0; intento < 40 && !logsRechazo.includes("fue recuperada: no puede emitir nuevas sentencias"); intento++) {
+      logsRechazo = servidor.logs();
+      if (!logsRechazo.includes("fue recuperada: no puede emitir nuevas sentencias")) await delay(50); // espera de flush del log del hijo
+    }
+    assertSame(logsRechazo.includes("fue recuperada: no puede emitir nuevas sentencias"), true, "B7b: las sentencias tardias de A se rechazan con TENANT_WRITE_OPERATION_RECOVERED");
+    const final = await ctrl("/state");
+    assertSame(final.sentencias.filter((s) => s.sentencia === "ROLLBACK").length, 1, "B7b: un unico ROLLBACK (el de la recuperacion); el ROLLBACK tardio de A no llego al driver");
+    assertSame(final.sentencias.some((s) => s.sentencia === "COMMIT"), false, "B7b: ningun COMMIT tardio de A llego al driver");
     assertSame((await allSql(dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'cuenta_local_nombre'")).some((r) => String(r.valor).includes("TX1B_B7_RETENIDA")), false, "B7b: A revertida por la recuperacion");
     assertSame((await allSql(dbPath, "SELECT id FROM clientes WHERE nombre = ?", [bodyB.nombre])).length, 1, "B7b: B durable");
+    assertSame((await allSql(dbPath, "SELECT id FROM clientes WHERE nombre = ?", [bodyC.nombre])).length, 1, "B7b: C durable");
     await a.promesa;
-  });
+    });
+  } finally {
+    fs.rmSync(dbPathB7b, { force: true });
+  }
 }
 
 async function testTX1BB8TimeoutSinEjecucionTardia() {
@@ -48508,6 +48573,344 @@ async function testTX1BB16SinOperacionPassthroughIntegrado() {
     await duena;
     assertSame(coord.diagnosticoPuerta(handle.db).owner, null, "B16: puerta libre al final");
   });
+}
+
+// ====================================================================================================
+// TX-1B-R1: cerco de recuperacion frente a sentencias EN VUELO. Invariante: una puerta nunca cambia de
+// owner mientras una sentencia del owner actual sigue despachada; una operacion recuperada no puede
+// emitir SQL nueva. R1-R6/R8 sobre sqlite real con sentencias retenidas por diferidos controlados; un
+// espia sobre db.run registra el orden REAL de despacho/aterrizaje en el driver. R7 por HTTP real.
+// ====================================================================================================
+function tx1br1Espiar(db) {
+  const registro = [];
+  const original = db.run;
+  db.run = function (sql, params, cb) {
+    const nombre = String(sql).trim().split(/\s+/)[0].toUpperCase();
+    registro.push(`run:${nombre}`);
+    return original.call(this, sql, params, function (error) {
+      registro.push(`done:${nombre}${error ? ":ERR" : ""}`);
+      if (cb) cb.apply(this, arguments);
+    });
+  };
+  return registro;
+}
+
+// A: BEGIN + INSERT, y luego una sentencia `final` retenida en vuelo (el thunk espera `retener` antes de
+// tocar el driver, o falla si `fallar`). Devuelve el control para orquestar la recuperacion.
+async function tx1br1PrepararAEnVuelo(h, { final, fallar = false }) {
+  const coord = tx1aCoordinador();
+  const retener = tx1aDiferido();
+  const listo = tx1aDiferido();
+  const contadorThunk = { n: 0 };
+  const a = tx1aEnOp("A", async () => {
+    await tx1aRun(h.db, "BEGIN IMMEDIATE");
+    if (final !== "INSERT") await tx1aRun(h.db, "INSERT INTO t (v) VALUES ('A')");
+    listo.resolve();
+    const sql = final === "INSERT" ? "INSERT INTO t (v) VALUES ('A')" : final;
+    return coord.coordinarSentencia(h.db, sql, async () => {
+      contadorThunk.n += 1;
+      await retener.promise;
+      if (fallar) throw Object.assign(new Error("COMMIT falla (simulado tras quedar en vuelo)"), { code: "SQLITE_BUSY" });
+      return tx1aRunCrudo(h.db, sql);
+    });
+  });
+  await listo.promise;
+  await tx1aCeder();
+  assertSame(contadorThunk.n, 1, `preparacion: la sentencia ${final} de A esta despachada (en vuelo)`);
+  assertSame(coord.diagnosticoPuerta(h.db).enVuelo, 1, "preparacion: enVuelo=1");
+  return { a, retener, estadoA: tx1aSeguir(a.promise) };
+}
+
+function tx1br1OperacionB(h) {
+  const contadorBegin = { n: 0 };
+  const b = tx1aEnOp("B", async () => {
+    await tx1aRun(h.db, "BEGIN IMMEDIATE", [], { contador: contadorBegin });
+    await tx1aRun(h.db, "INSERT INTO t (v) VALUES ('B')");
+    await tx1aRun(h.db, "COMMIT");
+  });
+  return { b, contadorBegin, estadoB: tx1aSeguir(b.promise) };
+}
+
+async function testTX1BR1CommitEnVueloRecuperacionYB() {
+  const coord = tx1aCoordinador();
+  const eventos = [];
+  coord.configurarObservador((e) => eventos.push(e));
+  const h = await tx1aAbrirDb();
+  try {
+    const registro = tx1br1Espiar(h.db);
+    const { a, retener } = await tx1br1PrepararAEnVuelo(h, { final: "COMMIT" });
+    const rec = coord.recuperarOperacion(a.op, "test_r1");
+    const estadoRec = tx1aSeguir(rec);
+    const { b, contadorBegin, estadoB } = tx1br1OperacionB(h);
+    await tx1aCeder();
+    const diag = coord.diagnosticoPuerta(h.db);
+    assertSame(diag.owner, a.op.id, "R1: la puerta sigue siendo de A con su COMMIT en vuelo");
+    assertSame(diag.recuperacionPendiente, true, "R1: recuperacion solicitada queda pendiente");
+    assertSame(contadorBegin.n, 0, "R1: B no obtiene la puerta ni despacha su BEGIN");
+    assertSame(estadoRec.settled || estadoB.settled, false, "R1: ni la recuperacion ni B avanzan");
+    assertSame(registro.includes("run:ROLLBACK"), false, "R1: la recuperacion NO ejecuta ROLLBACK concurrente");
+    assertSame(eventos.some((e) => e.evento === "TX_GATE_OPERATION_RECOVERY_DEFERRED"), true, "R1: evento de recuperacion diferida");
+    retener.resolve();
+    await a.promise;
+    assertSame(JSON.stringify(await rec), JSON.stringify([{ recuperada: false, motivo: "transaccion_cerrada_por_la_duena" }]), "R1: COMMIT exitoso en vuelo -> sin ROLLBACK tardio");
+    await b.promise;
+    const iCommitA = registro.indexOf("done:COMMIT");
+    const iBeginB = registro.lastIndexOf("run:BEGIN");
+    assertSame(iCommitA !== -1 && iBeginB > iCommitA, true, `R1: el BEGIN de B se despacha despues de aterrizar el COMMIT de A (${registro.join(",")})`);
+    assertSame(registro.includes("run:ROLLBACK"), false, "R1: nunca hubo ROLLBACK");
+    assertSame((await tx1aAllCrudo(h.db, "SELECT v FROM t ORDER BY id")).map((r) => r.v).join(","), "A,B", "R1: el COMMIT de A no afecto a B; ambos durables");
+    assertSame(coord.diagnosticoPuerta(h.db).owner, null, "R1: puerta libre al final");
+  } finally {
+    coord.configurarObservador(null);
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function testTX1BR2CommitEnVueloFallaRollbackAntesDeTransferir() {
+  const coord = tx1aCoordinador();
+  const h = await tx1aAbrirDb();
+  try {
+    const registro = tx1br1Espiar(h.db);
+    const { a, retener } = await tx1br1PrepararAEnVuelo(h, { final: "COMMIT", fallar: true });
+    const rec = coord.recuperarOperacion(a.op, "test_r2");
+    const { b, contadorBegin } = tx1br1OperacionB(h);
+    await tx1aCeder();
+    assertSame(contadorBegin.n, 0, "R2: B espera");
+    retener.resolve();
+    let errorA = null;
+    try { await a.promise; } catch (error) { errorA = error; }
+    assertSame(errorA && errorA.code, "SQLITE_BUSY", "R2: el COMMIT de A termina con error");
+    assertSame(JSON.stringify(await rec), JSON.stringify([{ recuperada: true, rollbackOk: true }]), "R2: la recuperacion ejecuta ROLLBACK real");
+    await b.promise;
+    const iRollback = registro.indexOf("run:ROLLBACK");
+    const iRollbackDone = registro.indexOf("done:ROLLBACK");
+    const iBeginB = registro.lastIndexOf("run:BEGIN");
+    assertSame(iRollback !== -1 && iRollbackDone > iRollback && iBeginB > iRollbackDone, true, `R2: COMMIT A falla -> ROLLBACK -> ROLLBACK termina -> recien despues B (${registro.join(",")})`);
+    assertSame((await tx1aAllCrudo(h.db, "SELECT v FROM t ORDER BY id")).map((r) => r.v).join(","), "B", "R2: A revertida, B opera normalmente");
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function testTX1BR3SentenciaComunEnVueloLuegoRollback() {
+  const coord = tx1aCoordinador();
+  const h = await tx1aAbrirDb();
+  try {
+    const registro = tx1br1Espiar(h.db);
+    const { a, retener } = await tx1br1PrepararAEnVuelo(h, { final: "INSERT" });
+    const rec = coord.recuperarOperacion(a.op, "test_r3");
+    const { b, contadorBegin } = tx1br1OperacionB(h);
+    await tx1aCeder();
+    assertSame(contadorBegin.n, 0, "R3: B espera mientras el INSERT de A esta en vuelo");
+    assertSame(registro.includes("run:ROLLBACK"), false, "R3: sin ROLLBACK concurrente con el INSERT en vuelo");
+    retener.resolve();
+    await a.promise;
+    assertSame(JSON.stringify(await rec), JSON.stringify([{ recuperada: true, rollbackOk: true }]), "R3: ROLLBACK tras aterrizar la sentencia comun");
+    await b.promise;
+    const iInsertA = registro.indexOf("done:INSERT");
+    const iRollbackDone = registro.indexOf("done:ROLLBACK");
+    const iBeginB = registro.lastIndexOf("run:BEGIN");
+    assertSame(iInsertA < iRollbackDone && iRollbackDone < iBeginB, true, `R3: INSERT A -> ROLLBACK -> B (${registro.join(",")})`);
+    assertSame((await tx1aAllCrudo(h.db, "SELECT v FROM t ORDER BY id")).map((r) => r.v).join(","), "B", "R3: escritura de A revertida, B durable");
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function testTX1BR4OperacionRevocadaNoEmiteSql() {
+  const coord = tx1aCoordinador();
+  const h = await tx1aAbrirDb();
+  try {
+    const registro = tx1br1Espiar(h.db);
+    const { a, retener } = await tx1br1PrepararAEnVuelo(h, { final: "INSERT" });
+    const rec = coord.recuperarOperacion(a.op, "test_r4");
+    const { b, contadorBegin } = tx1br1OperacionB(h);
+    await tx1aCeder();
+    const enColaAntes = coord.diagnosticoPuerta(h.db).enCola;
+    const contadorNueva = { n: 0 };
+    let errorDurante = null;
+    try {
+      await coord.ejecutarEnOperacion(a.op, () => coord.coordinarSentencia(h.db, "INSERT INTO t (v) VALUES ('A-nueva')", async () => { contadorNueva.n += 1; return tx1aRunCrudo(h.db, "INSERT INTO t (v) VALUES ('A-nueva')"); }));
+    } catch (error) { errorDurante = error; }
+    assertSame(errorDurante && errorDurante.code, coord.CODIGO_OPERACION_RECUPERADA, "R4: rechazo explicito con la recuperacion pendiente");
+    assertSame(contadorNueva.n, 0, "R4: la SQL nueva jamas se despacha");
+    assertSame(coord.diagnosticoPuerta(h.db).enCola, enColaAntes, "R4: no reaparece en la cola");
+    retener.resolve();
+    await a.promise;
+    await rec;
+    await b.promise;
+    let errorDespues = null;
+    try {
+      await coord.ejecutarEnOperacion(a.op, () => coord.coordinarSentencia(h.db, "INSERT INTO t (v) VALUES ('A-tardia')", async () => { contadorNueva.n += 1; return null; }));
+    } catch (error) { errorDespues = error; }
+    assertSame(errorDespues && errorDespues.code, coord.CODIGO_OPERACION_RECUPERADA, "R4: rechazo explicito tambien despues de la recuperacion");
+    assertSame(contadorNueva.n, 0, "R4: ninguna SQL de la operacion revocada se despacho");
+    assertSame(contadorBegin.n, 1, "R4: B no se ve afectada");
+    assertSame((await tx1aAllCrudo(h.db, "SELECT v FROM t ORDER BY id")).map((r) => r.v).join(","), "B", "R4: solo B durable");
+    assertSame(registro.filter((x) => x === "run:INSERT").length, 2, "R4: solo el INSERT en vuelo de A y el de B llegaron al driver");
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function tx1br1LateControlContraB(finalB) {
+  const coord = tx1aCoordinador();
+  const h = await tx1aAbrirDb();
+  try {
+    const abierta = tx1aDiferido();
+    const nuncaTermina = tx1aDiferido();
+    const a = tx1aEnOp("A", async () => {
+      await tx1aRun(h.db, "BEGIN IMMEDIATE");
+      await tx1aRun(h.db, "INSERT INTO t (v) VALUES ('A')");
+      abierta.resolve();
+      await nuncaTermina.promise;
+    });
+    await abierta.promise;
+    await coord.recuperarOperacion(a.op, "test_r5");
+    const bAbierta = tx1aDiferido();
+    const bFinal = tx1aDiferido();
+    const b = tx1aEnOp("B", async () => {
+      await tx1aRun(h.db, "BEGIN IMMEDIATE");
+      await tx1aRun(h.db, "INSERT INTO t (v) VALUES ('B')");
+      bAbierta.resolve();
+      await bFinal.promise;
+      await tx1aRun(h.db, finalB);
+    });
+    await bAbierta.promise;
+    assertSame(coord.diagnosticoPuerta(h.db).owner, b.op.id, "R5: B posee la transaccion");
+    const intentos = [];
+    for (const sql of ["COMMIT", "ROLLBACK"]) {
+      const contador = { n: 0 };
+      let error = null;
+      try {
+        await coord.ejecutarEnOperacion(a.op, () => coord.coordinarSentencia(h.db, sql, async () => { contador.n += 1; return tx1aRunCrudo(h.db, sql); }));
+      } catch (e) { error = e; }
+      intentos.push({ sql, code: error && error.code, ejecutado: contador.n });
+    }
+    const diag = coord.diagnosticoPuerta(h.db);
+    bFinal.resolve();
+    await b.promise;
+    nuncaTermina.resolve();
+    await a.promise;
+    return { intentos, diag, opB: b.op.id, filas: (await tx1aAllCrudo(h.db, "SELECT v FROM t ORDER BY id")).map((r) => r.v).join(","), codigo: coord.CODIGO_OPERACION_RECUPERADA };
+  } finally {
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function testTX1BR5ControlTardioNuncaTocaB() {
+  // B termina en ROLLBACK: si el COMMIT tardio de A hubiera confirmado la transaccion de B, la fila de B persistiria.
+  const conRollback = await tx1br1LateControlContraB("ROLLBACK");
+  for (const intento of conRollback.intentos) {
+    assertSame(intento.code, conRollback.codigo, `R5: ${intento.sql} tardio de A rechazado`);
+    assertSame(intento.ejecutado, 0, `R5: ${intento.sql} tardio de A jamas llega al driver`);
+  }
+  assertSame(conRollback.diag.owner === conRollback.opB && conRollback.diag.modo === "tx", true, "R5: B conserva su transaccion tras los intentos de A");
+  assertSame(conRollback.filas, "", "R5: A no pudo hacer COMMIT de la transaccion de B (B la revirtio)");
+  // B termina en COMMIT: si el ROLLBACK tardio de A hubiera revertido la transaccion de B, la fila no existiria.
+  const conCommit = await tx1br1LateControlContraB("COMMIT");
+  assertSame(conCommit.intentos.every((i) => i.code === conCommit.codigo && i.ejecutado === 0), true, "R5: COMMIT/ROLLBACK tardios de A rechazados");
+  assertSame(conCommit.filas, "B", "R5: A no pudo hacer ROLLBACK de la transaccion de B (B la confirmo)");
+}
+
+async function testTX1BR6SinVueloRecuperacionInmediata() {
+  const coord = tx1aCoordinador();
+  const eventos = [];
+  coord.configurarObservador((e) => eventos.push(e));
+  const h = await tx1aAbrirDb();
+  try {
+    const abierta = tx1aDiferido();
+    const nuncaTermina = tx1aDiferido();
+    const a = tx1aEnOp("A", async () => {
+      await tx1aRun(h.db, "BEGIN IMMEDIATE");
+      await tx1aRun(h.db, "INSERT INTO t (v) VALUES ('A')");
+      abierta.resolve();
+      await nuncaTermina.promise;
+    });
+    await abierta.promise;
+    const { b } = tx1br1OperacionB(h);
+    await tx1aCeder();
+    assertSame(coord.diagnosticoPuerta(h.db).enVuelo, 0, "R6: sin sentencias en vuelo");
+    assertSame(JSON.stringify(await coord.recuperarOperacion(a.op, "test_r6")), JSON.stringify([{ recuperada: true, rollbackOk: true }]), "R6: ROLLBACK inmediato");
+    assertSame(eventos.some((e) => e.evento === "TX_GATE_OPERATION_RECOVERY_DEFERRED"), false, "R6: no se difiere sin sentencias en vuelo");
+    const recuperado = eventos.find((e) => e.evento === "TX_GATE_OPERATION_RECOVERED");
+    assertSame(recuperado.diferida, false, "R6: evento de recuperacion no diferida");
+    await b.promise;
+    assertSame((await tx1aAllCrudo(h.db, "SELECT v FROM t ORDER BY id")).map((r) => r.v).join(","), "B", "R6: A revertida y B durable");
+    nuncaTermina.resolve();
+    await a.promise;
+  } finally {
+    coord.configurarObservador(null);
+    await tx1aCerrarDb(h);
+  }
+}
+
+async function testTX1BR7CloseGraciaConSqlEnVueloEspera() {
+  await tx1bConServidorLegacy(async ({ baseUrl, dbPath, token, ctrl }) => {
+    await ctrl("/arm-commit-barrier");
+    const a = tx1bPedirAbortable(baseUrl, "PUT", "/configuracion", { config: { cuenta_local_nombre: "TX1B_R7_EN_VUELO" } }, token);
+    await tx1bEsperar(ctrl, "for=held", "R7: COMMIT de A despachado y retenido en el driver (en vuelo)");
+    const bodyB = tx1bClienteBody("R7");
+    const promB = requestJson(baseUrl, "POST", "/clientes", bodyB, token);
+    const estadoB = tx1aSeguir(promB);
+    await tx1bEsperar(ctrl, "for=foreign-waiter", "R7: B espera");
+    a.abortar();
+    await tx1bEsperar(ctrl, "for=response&name=close&path=/configuracion&method=PUT", "R7: close observado");
+    await tx1bEsperar(ctrl, "for=event&name=TX_GATE_OPERATION_RECOVERY_DEFERRED&timeoutMs=8000", "R7: al vencer la gracia la recuperacion se solicita y queda diferida");
+    await tx1aCeder();
+    const durante = await ctrl("/state");
+    const close = durante.respuestas.find((r) => r.evento === "close" && r.ruta === "/configuracion");
+    const diferida = durante.eventos.find((e) => e.evento === "TX_GATE_OPERATION_RECOVERY_DEFERRED");
+    assertSame(diferida.t - close.t >= 900, true, `R7: la recuperacion se solicita tras la gracia (${diferida.t - close.t}ms)`);
+    assertSame(estadoB.settled, false, "R7: B NO recibe la puerta con el COMMIT de A en vuelo");
+    assertSame(durante.sentencias.some((s) => s.sentencia === "INSERT clientes" || s.sentencia === "ROLLBACK"), false, "R7: ni INSERT de B ni ROLLBACK concurrente");
+    assertSame(durante.puerta.owner, durante.opRetenida, "R7: la puerta sigue siendo de A");
+    await ctrl("/release?mode=commit");
+    await tx1bEsperar(ctrl, "for=event&name=TX_GATE_OPERATION_RECOVERY_NOT_NEEDED", "R7: el COMMIT en vuelo cerro la transaccion; sin ROLLBACK tardio");
+    const rB = await promB;
+    assertEqual(rB.response.status, 200, "R7: B continua tras aterrizar el COMMIT de A");
+    const estado = await ctrl("/state");
+    const nCommitA = tx1bNumero(estado.sentencias, (s) => s.op === estado.opRetenida && s.sentencia === "COMMIT" && s.resultado === "OK");
+    const nInsertB = tx1bNumero(estado.sentencias, (s) => s.sentencia === "INSERT clientes" && s.resultado === "OK");
+    assertSame(nCommitA !== null && nInsertB > nCommitA, true, "R7: B se ejecuta despues del COMMIT de A");
+    assertSame(estado.sentencias.some((s) => s.sentencia === "ROLLBACK"), false, "R7: ningun ROLLBACK");
+    assertSame(estado.eventos.some((e) => e.evento === "TX_GATE_OPERATION_RECOVERED"), false, "R7: no hubo recuperacion con ROLLBACK");
+    assertSame((await allSql(dbPath, "SELECT valor FROM configuracion_global WHERE clave = 'cuenta_local_nombre'")).some((r) => String(r.valor).includes("TX1B_R7_EN_VUELO")), true, "R7: el COMMIT legitimo en vuelo es durable");
+    assertSame((await allSql(dbPath, "SELECT id FROM clientes WHERE nombre = ?", [bodyB.nombre])).length, 1, "R7: B durable");
+    await a.promesa;
+  });
+}
+
+async function testTX1BR8RevocadaConBeginEnVuelo() {
+  const coord = tx1aCoordinador();
+  const h = await tx1aAbrirDb();
+  try {
+    const registro = tx1br1Espiar(h.db);
+    const retener = tx1aDiferido();
+    const despachado = tx1aDiferido();
+    const a = tx1aEnOp("A", () => coord.coordinarSentencia(h.db, "BEGIN IMMEDIATE", async () => {
+      despachado.resolve();
+      await retener.promise;
+      return tx1aRunCrudo(h.db, "BEGIN IMMEDIATE");
+    }));
+    await despachado.promise;
+    assertSame(JSON.stringify(await coord.recuperarOperacion(a.op, "test_r8")), "[]", "R8: sin transaccion propia todavia (BEGIN en vuelo)");
+    const { b, contadorBegin } = tx1br1OperacionB(h);
+    await tx1aCeder();
+    assertSame(contadorBegin.n, 0, "R8: B espera al BEGIN en vuelo de A");
+    retener.resolve();
+    let errorA = null;
+    try { await a.promise; } catch (error) { errorA = error; }
+    assertSame(errorA && errorA.code, coord.CODIGO_OPERACION_RECUPERADA, "R8: la operacion revocada no conserva la transaccion recien abierta");
+    await b.promise;
+    const iRollbackDone = registro.indexOf("done:ROLLBACK");
+    const iBeginB = registro.lastIndexOf("run:BEGIN");
+    assertSame(iRollbackDone !== -1 && iBeginB > iRollbackDone, true, `R8: ROLLBACK de la transaccion revocada antes de B (${registro.join(",")})`);
+    assertSame(a.op.ownedGates.size, 0, "R8: ownedGates vacio");
+    assertSame((await tx1aAllCrudo(h.db, "SELECT v FROM t ORDER BY id")).map((r) => r.v).join(","), "B", "R8: B durable");
+  } finally {
+    await tx1aCerrarDb(h);
+  }
 }
 
 async function testP1ASRControlSchemaNuevoContienePasswordVersionDefault0() {
