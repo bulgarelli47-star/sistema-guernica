@@ -47404,13 +47404,21 @@ async function testTX1AA1ConexionesDistintasNoSeBloquean() {
   const h2 = await tx1aAbrirDb();
   try {
     const liberarA = tx1aDiferido();
+    // TX-1C-R1: progreso explicito (no turnos fijos del event loop): A avisa cuando su BEGIN + INSERT
+    // reales ya terminaron.
+    const abierta = tx1aDiferido();
     const a = tx1aEnOp("A", async () => {
       await tx1aRun(h1.db, "BEGIN IMMEDIATE");
       await tx1aRun(h1.db, "INSERT INTO t (v) VALUES ('A')");
+      abierta.resolve();
       await liberarA.promise;
       await tx1aRun(h1.db, "ROLLBACK");
     });
-    await tx1aCeder();
+    // Observador preventivo: si una asercion falla antes del `await a.promise` final, el rechazo de A
+    // durante el unwind (conexiones ya cerradas por el finally) no escapa como unhandledRejection y _run
+    // reporta el [TEST FAIL]. La ruta exitosa sigue haciendo `await a.promise` (sus errores se propagan).
+    a.promise.catch(() => {});
+    await abierta.promise;
     assertSame(coord.diagnosticoPuerta(h1.db).modo, "tx", "A1: A debe tener la transaccion abierta en la conexion 1");
     const b = tx1aEnOp("B", () => tx1aRun(h2.db, "INSERT INTO t (v) VALUES ('B')"));
     let guardia = null;
