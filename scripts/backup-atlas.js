@@ -14,7 +14,8 @@
 // (PM2) antes de correr este script. Las tenants se enumeran desde la COPIA de Control del snapshot.
 //
 // FAIL CLOSED: cualquier empresa que deba incluirse con path invalido/fuera del root permitido, symlink,
-// archivo ausente (empresa activa), SQLite invalido o identity distinta hace fallar el snapshot COMPLETO:
+// archivo ausente (cualquier empresa registrada, activa o no), SQLite invalido o identity distinta hace
+// fallar el snapshot COMPLETO:
 // el directorio temporal se elimina, no se publica nada y no se aplica retencion.
 //
 // SECRETOS: el snapshot contiene las business DB tal cual, incluidas las credenciales de integraciones
@@ -233,8 +234,10 @@ async function construirMulti(cfg, tmpDir) {
     await lib.cerrar(control);
   }
 
+  // BACKUP-1A-R1: TODA fila de `empresas` del Control snapshot es backup-owned. `activa` es solo
+  // metadata (habilitacion operativa), nunca un filtro de inclusion: una empresa registrada sin su
+  // business DB hace fallar el snapshot completo, este activa o no.
   const tenants = [];
-  const omitidos = [];
   const pathsVistos = new Map();
   for (const empresa of empresas) {
     const slug = String(empresa.slug || "");
@@ -244,11 +247,7 @@ async function construirMulti(cfg, tmpDir) {
     const clave = process.platform === "win32" ? resuelto.toLowerCase() : resuelto;
     if (pathsVistos.has(clave)) throw crearError("TENANT_DB_PATH_DUPLICADO", `db_path compartido entre empresas ${pathsVistos.get(clave)} y ${empresa.id}`);
     pathsVistos.set(clave, empresa.id);
-    if (!fs.existsSync(resuelto)) {
-      if (activa) throw crearError("TENANT_DB_AUSENTE", `Business DB ausente para la empresa activa ${slug}`);
-      omitidos.push({ empresa_id: empresa.id, slug, motivo: "inactiva_sin_db" });
-      continue;
-    }
+    if (!fs.existsSync(resuelto)) throw crearError("TENANT_DB_AUSENTE", `Business DB ausente para la empresa registrada ${slug} (activa=${activa ? 1 : 0})`);
     const rel = `tenants/${slug}/business.db`;
     const copia = await copiarSqlite(resuelto, path.join(tmpDir, "tenants", slug, "business.db"), "TENANT_DB_AUSENTE");
     let meta;
@@ -266,7 +265,6 @@ async function construirMulti(cfg, tmpDir) {
   return {
     control: { relative_path: "control/atlas_control.db", schema: { tablas: tablasControl, s0: tablasControl.includes("sync_pendiente") && tablasControl.includes("operacion_idempotencia") } },
     tenants,
-    omitidos,
     uploadsOpciones: { incluirLegacy: tenants.some((t) => t.slug === LEGACY_TENANT_SLUG), empresaIds: tenants.map((t) => t.empresa_id) }
   };
 }
@@ -328,7 +326,6 @@ async function construirSingle(cfg, tmpDir) {
       relative_path: `tenants/${slug}/business.db`,
       ...meta
     }],
-    omitidos: [],
     uploadsOpciones: { incluirLegacy: true, empresaIds: [] }
   };
 }
@@ -401,7 +398,6 @@ async function crearSnapshot(env = process.env, argv = process.argv.slice(2)) {
       },
       control: parte.control ? conHash({ ...parte.control, integrity: "ok" }) : null,
       tenants: parte.tenants.map((t) => conHash({ ...t, integrity: "ok" })),
-      tenants_omitidos: parte.omitidos,
       uploads: copiarUploads(cfg, tmpDir, parte.uploadsOpciones),
       secretos: {
         incluidos: false,

@@ -49047,9 +49047,11 @@ async function testBK1SnapshotSingleValido() {
 }
 
 async function testBK2SnapshotMultiControlYDosTenants() {
-  await bk1ConMulti(async ({ a, b, backup, uploads, correrBackup }) => {
+  await bk1ConMulti(async ({ escenario, a, b, backup, uploads, restore, correrBackup }) => {
     bk1Escribir(uploads, `tenants/${a.empresa.id}/productos/a.png`, "A");
     bk1Escribir(uploads, `tenants/${b.empresa.id}/clientes/b.png`, "B");
+    // BACKUP-1A-R1: `activa` es metadata, no filtro. B inactiva con business DB valida se respalda igual.
+    await runSql(escenario.controlDbPath, "UPDATE empresas SET activa = 0 WHERE id = ?", [b.empresa.id]);
     const r = correrBackup();
     assertEqual(r.status, 0, `BK2: backup multi exit 0: ${JSON.stringify(r.json)}`);
     const m = bk1Manifest(path.join(backup, bk1Snapshots(backup)[0]));
@@ -49064,23 +49066,46 @@ async function testBK2SnapshotMultiControlYDosTenants() {
       assertSame(e.schema.estado, "CURRENT", `BK2: schema CURRENT ${t.tag}`);
       assertSame(typeof e.schema.ultima_migracion === "string" && e.schema.ultima_migracion.length > 0, true, `BK2: ultima migracion ${t.tag}`);
       assertSame(e.db_path_registrado, path.basename(t.dbPath), `BK2: db_path registrado ${t.tag}`);
+      assertSame(e.activa, t === a, `BK2: activa registrada como metadata (${t.tag})`);
+      assertSame(fs.existsSync(path.join(backup, bk1Snapshots(backup)[0], ...e.relative_path.split("/"))), true, `BK2: business DB fisicamente presente (${t.tag})`);
     }
+    assertSame("tenants_omitidos" in m, false, "BK2: no existe exclusion de empresas registradas");
     assertEqual(m.uploads.archivos, 2, "BK2: uploads de ambos tenants");
+    const destino = path.join(restore, "bk2-restaurado");
+    const rr = bk1Correr(BK1_RESTORE, ["--snapshot", path.join(backup, bk1Snapshots(backup)[0]), "--target", destino]);
+    assertEqual(rr.status, 0, `BK2: restore con empresa inactiva: ${JSON.stringify(rr.json)}`);
+    const empresas = await allSql(path.join(destino, "control", "atlas_control.db"), "SELECT id, activa FROM empresas ORDER BY id");
+    assertSame(empresas.find((e) => e.id === b.empresa.id).activa, 0, "BK2: Control restaurado conserva B inactiva");
+    for (const t of [a, b]) {
+      const identity = (await allSql(path.join(destino, "tenants", t.slug, "business.db"), "SELECT empresa_control_id FROM tenant_identity WHERE id = 1"))[0];
+      assertEqual(identity.empresa_control_id, t.empresa.id, `BK2: business DB restaurada y valida (${t.tag})`);
+    }
   });
 }
 
 async function testBK3TenantFaltanteFailClosed() {
-  await bk1ConMulti(async ({ b, backup, correrBackup }) => {
-    assertEqual(correrBackup().status, 0, "BK3: snapshot previo valido");
-    const previo = bk1Snapshots(backup);
-    const hashPrevio = bk1Sha(path.join(backup, previo[0], "manifest.json"));
+  await bk1ConMulti(async ({ escenario, b, backup, correrBackup }) => {
+    for (let i = 0; i < 2; i++) assertEqual(correrBackup().status, 0, `BK3: snapshot previo valido ${i + 1}`);
+    const previos = bk1Snapshots(backup);
+    const hashesPrevios = previos.map((id) => bk1Sha(path.join(backup, id, "manifest.json")));
+    const verificarSinCambios = (caso) => {
+      assertSame(JSON.stringify(bk1Snapshots(backup)), JSON.stringify(previos), `BK3 (${caso}): no se publica snapshot parcial y la retencion no corre`);
+      assertSame(JSON.stringify(previos.map((id) => bk1Sha(path.join(backup, id, "manifest.json")))), JSON.stringify(hashesPrevios), `BK3 (${caso}): snapshots previos intactos`);
+      bk1SinTemporales(backup, `BK3 (${caso})`);
+    };
+    // Caso 1 (BACKUP-1A-R1): empresa registrada INACTIVA cuyo db_path registrado no existe -> fail closed.
+    await mt1f1RegistrarEmpresaExtra(escenario.controlDbPath, { slug: `bk3-inactiva-${Date.now()}`, dbPath: `tenant-bk3-inexistente-${Date.now()}.db`, activa: 0 });
+    const rInactiva = correrBackup(["--keep", "1"]);
+    assertEqual(rInactiva.status, 1, "BK3: falla con empresa inactiva sin DB");
+    assertSame(rInactiva.json.errorCode, "TENANT_DB_AUSENTE", "BK3: TENANT_DB_AUSENTE (inactiva)");
+    verificarSinCambios("inactiva sin DB");
+    // Caso 2: empresa ACTIVA cuya business DB desaparece -> fail closed.
+    await runSql(escenario.controlDbPath, "DELETE FROM empresas WHERE slug LIKE 'bk3-inactiva-%'");
     fs.rmSync(b.dbPath, { force: true });
-    const r = correrBackup();
-    assertEqual(r.status, 1, "BK3: el snapshot falla");
-    assertSame(r.json.errorCode, "TENANT_DB_AUSENTE", "BK3: codigo TENANT_DB_AUSENTE");
-    assertSame(JSON.stringify(bk1Snapshots(backup)), JSON.stringify(previo), "BK3: no se publica snapshot parcial");
-    assertSame(bk1Sha(path.join(backup, previo[0], "manifest.json")), hashPrevio, "BK3: snapshot previo intacto");
-    bk1SinTemporales(backup, "BK3");
+    const rActiva = correrBackup(["--keep", "1"]);
+    assertEqual(rActiva.status, 1, "BK3: falla con empresa activa sin DB");
+    assertSame(rActiva.json.errorCode, "TENANT_DB_AUSENTE", "BK3: TENANT_DB_AUSENTE (activa)");
+    verificarSinCambios("activa sin DB");
   });
 }
 
