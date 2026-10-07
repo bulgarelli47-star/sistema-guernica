@@ -21467,6 +21467,24 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testWORKEROPSW13RolActivoWatchConservaContratos);
   await _run(testWORKEROPSW14SeparacionPorTipoDeOutbox);
   await _run(testWORKEROPSW15ShutdownDeAmbosWorkersParaBackup);
+  await _run(testONBOARDO1EmpresaNuevaCompleta);
+  await _run(testONBOARDO2PasswordConvergenteSinPlaintext);
+  await _run(testONBOARDO3RetryExactoNoDuplica);
+  await _run(testONBOARDO4RetryTrasProvisionSinAdmin);
+  await _run(testONBOARDO5RetryTrasAdminLocalAntesDeControl);
+  await _run(testONBOARDO6FallaEnControlHaceRollback);
+  await _run(testONBOARDO7AdminLocalDistintoFallaCerrado);
+  await _run(testONBOARDO8MembershipIncoherenteFallaCerrado);
+  await _run(testONBOARDO9ConcurrenciaConvergeEnUnaEmpresa);
+  await _run(testONBOARDO10ColisionesConservanProvisioner);
+  await _run(testONBOARDO11ControlInexistenteNoSeCrea);
+  await _run(testONBOARDO12SinAdminPorDefecto);
+  await _run(testONBOARDO13RuntimeRegistryResuelve);
+  await _run(testONBOARDO14PrimerLoginCentralComoAdmin);
+  await _run(testONBOARDO15EmpresaBNoUsaBindingDeA);
+  await _run(testONBOARDO16ConfigMinimaUsable);
+  await _run(testONBOARDO17ResultadoSinSecretos);
+  await _run(testONBOARDO18CliPasswordSoloPorStdin);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -49852,6 +49870,375 @@ async function testWORKEROPSW15ShutdownDeAmbosWorkersParaBackup() {
   } finally {
     wo1Limpiar(e);
   }
+}
+
+// ====================================================================================================
+// ONBOARD-1: alta operador-only de empresa nueva + primer admin (scripts/onboard-tenant.js). Control
+// temporal + Business DB nueva registrada bajo database/ (tenant-test-onb-*.db, se limpia). Saga e
+// idempotencia via API (fallas inyectadas por ganchos); concurrencia y STDIN via CLI real; primer login,
+// aislamiento y configuracion minima por HTTP real en multi+central con routing por Host.
+// ====================================================================================================
+const ONB_CLI = path.join(ROOT, "scripts", "onboard-tenant.js");
+
+function onbTool() {
+  return require("./onboard-tenant");
+}
+
+async function onbCrearControl() {
+  const controlDbPath = tempDbPath();
+  const db = await bootstrapControlDb(controlDbPath, { seed: false });
+  await closeControlDb(db);
+  return controlDbPath;
+}
+
+function onbNuevo(controlDbPath, extra = {}) {
+  const sufijo = crypto.randomBytes(4).toString("hex");
+  const dbName = `tenant-test-onb-${Date.now()}-${sufijo}.db`;
+  return {
+    controlDbPath,
+    dbName,
+    dbPath: path.join(ROOT, "database", dbName),
+    opciones: {
+      controlDbPath,
+      empresa: { slug: `onb-${sufijo}`, nombre: `Comercio ONB ${sufijo}`, businessDbPath: dbName },
+      admin: { nombre: "Duenio Inicial", usuario: "duenio", password: `Inicial-${sufijo}-Pass`, email: "duenio@example.test", telefono: null },
+      ...extra
+    }
+  };
+}
+
+function onbLimpiar(...casos) {
+  for (const c of casos) {
+    if (!c) continue;
+    for (const sufijo of ["", "-journal", "-wal", "-shm"]) fs.rmSync(c.dbPath + sufijo, { force: true });
+  }
+}
+
+async function onbConControl(fn) {
+  const controlDbPath = await onbCrearControl();
+  const casos = [];
+  try {
+    await fn({ controlDbPath, nuevo: (extra) => { const c = onbNuevo(controlDbPath, extra); casos.push(c); return c; } });
+  } finally {
+    onbLimpiar(...casos);
+    fs.rmSync(controlDbPath, { force: true });
+  }
+}
+
+async function onbEsperarError(promesa, codigo, mensaje) {
+  let error = null;
+  try { await promesa; } catch (e) { error = e; }
+  assertSame(Boolean(error) && error.code === codigo, true, `${mensaje} (esperado ${codigo}, obtenido ${error && error.code}: ${error && error.message})`);
+  return error;
+}
+
+async function onbConteos(c) {
+  const slug = c.opciones.empresa.slug;
+  const empresas = await allSql(c.controlDbPath, "SELECT id, activa FROM empresas WHERE slug = ?", [slug]);
+  const empresaId = empresas[0] ? empresas[0].id : -1;
+  return {
+    empresas: empresas.length,
+    centrales: (await allSql(c.controlDbPath, "SELECT COUNT(*) AS n FROM usuarios"))[0].n,
+    memberships: (await allSql(c.controlDbPath, "SELECT COUNT(*) AS n FROM usuario_empresas WHERE empresa_id = ?", [empresaId]))[0].n,
+    locales: fs.existsSync(c.dbPath) ? (await allSql(c.dbPath, "SELECT COUNT(*) AS n FROM usuarios WHERE usuario = ?", [c.opciones.admin.usuario]))[0].n : 0
+  };
+}
+
+function onbCliAsync(args, password) {
+  return new Promise((resolve) => {
+    const env = { ...process.env };
+    for (const clave of Object.keys(env)) if (clave.startsWith("ATLAS_")) delete env[clave];
+    const hijo = spawn(process.execPath, [ONB_CLI, ...args], { cwd: ROOT, env, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    hijo.stdout.on("data", (d) => { stdout += d; });
+    hijo.stderr.on("data", (d) => { stderr += d; });
+    hijo.on("close", (status) => {
+      let json = null;
+      try { json = JSON.parse(stdout.trim().split(/\r?\n/).pop()); } catch { json = null; }
+      resolve({ status, stdout, stderr, json });
+    });
+    if (password !== undefined) hijo.stdin.write(`${password}\n`);
+    hijo.stdin.end();
+  });
+}
+
+function onbArgs(c) {
+  const o = c.opciones;
+  return ["--control-db", o.controlDbPath, "--slug", o.empresa.slug, "--nombre", o.empresa.nombre, "--db-path", o.empresa.businessDbPath,
+    "--admin-nombre", o.admin.nombre, "--admin-usuario", o.admin.usuario, "--admin-email", o.admin.email, "--admin-password-stdin"];
+}
+
+async function onbConServidor(controlDbPath, fn) {
+  const decoyPath = tempDbPath();
+  await mt1f3ConServidor(mt1f3EntornoMulti({ controlDbPath }, decoyPath), async (servidor) => {
+    const pedir = (slug, metodo, ruta, cuerpo = null, token = null) => mt1f3Pedir(servidor.port, { host: `${slug}.${MT1F3_DOMINIO}`, metodo, ruta, cuerpo, autorizacion: token ? `Bearer ${token}` : null });
+    await fn({ pedir });
+  });
+  assertSame(fs.existsSync(decoyPath), false, "ONB: el singleton legacy nunca se crea en multi");
+}
+
+async function testONBOARDO1EmpresaNuevaCompleta() {
+  await onbConControl(async ({ controlDbPath, nuevo }) => {
+    const c = nuevo();
+    const r = await onbTool().onboardTenant(c.opciones);
+    assertSame(r.status, "ONBOARDED", "O1: status ONBOARDED");
+    assertSame(JSON.stringify(r.fases), JSON.stringify({ provision: "PROVISIONED", adminLocal: "CREATED", control: "CREATED" }), "O1: fases de la saga");
+    const empresa = (await allSql(controlDbPath, "SELECT * FROM empresas WHERE id = ?", [r.empresa.id]))[0];
+    assertSame(empresa.slug === c.opciones.empresa.slug && Number(empresa.activa) === 1 && empresa.db_path === c.dbName, true, "O1: empresa activa con db_path registrado");
+    const estado = await verificarBusinessSchemaVersion(c.dbPath);
+    assertSame(estado.state, "CURRENT", "O1: Business CURRENT");
+    const identity = (await allSql(c.dbPath, "SELECT empresa_control_id, tenant_slug FROM tenant_identity WHERE id = 1"))[0];
+    assertSame(identity.empresa_control_id === r.empresa.id && identity.tenant_slug === c.opciones.empresa.slug, true, "O1: tenant_identity exacta");
+    const local = (await allSql(c.dbPath, "SELECT * FROM usuarios WHERE id = ?", [r.admin.usuarioLocalId]))[0];
+    assertSame(local.usuario === "duenio" && local.rol === "admin" && Number(local.activo) === 1 && local.nombre === "Duenio Inicial", true, "O1: primer admin local");
+    const membership = (await allSql(controlDbPath, "SELECT * FROM usuario_empresas WHERE id = ?", [r.admin.membershipId]))[0];
+    assertSame(membership.empresa_id === r.empresa.id && membership.usuario_local_id === local.id && membership.rol === "admin" && Number(membership.activo) === 1, true, "O1: membership admin ligada al binding");
+    const central = (await allSql(controlDbPath, "SELECT * FROM usuarios WHERE id = ?", [membership.usuario_id]))[0];
+    assertSame(central.id === r.admin.usuarioCentralId && central.usuario_referencia === "duenio" && Number(central.activo) === 1, true, "O1: usuario global");
+    assertSame(r.readiness.runtime === true && r.readiness.hostRequired === `${c.opciones.empresa.slug}.atlasos.com.ar`, true, "O1: readiness runtime + host requerido");
+  });
+}
+
+async function testONBOARDO2PasswordConvergenteSinPlaintext() {
+  await onbConControl(async ({ controlDbPath, nuevo }) => {
+    const c = nuevo();
+    const r = await onbTool().onboardTenant(c.opciones);
+    const local = (await allSql(c.dbPath, "SELECT password FROM usuarios WHERE id = ?", [r.admin.usuarioLocalId]))[0];
+    const central = (await allSql(controlDbPath, "SELECT password_hash, version, password_version FROM usuarios WHERE id = ?", [r.admin.usuarioCentralId]))[0];
+    assertSame(local.password, central.password_hash, "O2: local y central nacen con el MISMO hash");
+    assertSame(await bcrypt.compare(c.opciones.admin.password, local.password), true, "O2: el hash corresponde a la password");
+    assertSame(local.password === c.opciones.admin.password, false, "O2: nunca plaintext");
+    assertSame(Number(central.version) === 0 && Number(central.password_version) === 0, true, "O2: versiones iniciales del schema");
+    assertEqual((await allSql(controlDbPath, "SELECT version FROM usuario_empresas WHERE id = ?", [r.admin.membershipId]))[0].version, 0, "O2: version inicial de membership");
+    assertEqual((await allSql(controlDbPath, "SELECT COUNT(*) AS n FROM sync_pendiente"))[0].n, 0, "O2: sin outbox al nacer convergido");
+    for (const archivo of [c.dbPath, controlDbPath]) {
+      assertSame(fs.readFileSync(archivo).includes(Buffer.from(c.opciones.admin.password)), false, `O2: plaintext ausente en ${path.basename(archivo)}`);
+    }
+  });
+}
+
+async function testONBOARDO3RetryExactoNoDuplica() {
+  await onbConControl(async ({ nuevo }) => {
+    const c = nuevo();
+    const primero = await onbTool().onboardTenant(c.opciones);
+    const antes = await onbConteos(c);
+    const segundo = await onbTool().onboardTenant(c.opciones);
+    assertSame(segundo.status, "ALREADY_ONBOARDED", "O3: retry exacto -> ALREADY_ONBOARDED");
+    assertSame(JSON.stringify(segundo.fases), JSON.stringify({ provision: "ALREADY_PROVISIONED", adminLocal: "REUSED", control: "REUSED" }), "O3: nada se recrea");
+    assertSame(JSON.stringify(segundo.admin), JSON.stringify(primero.admin), "O3: mismos ids");
+    assertSame(JSON.stringify(await onbConteos(c)), JSON.stringify(antes), "O3: conteos sin cambios");
+    assertSame(JSON.stringify(antes), JSON.stringify({ empresas: 1, centrales: 1, memberships: 1, locales: 1 }), "O3: exactamente una de cada cosa");
+  });
+}
+
+async function testONBOARDO4RetryTrasProvisionSinAdmin() {
+  await onbConControl(async ({ controlDbPath, nuevo }) => {
+    const c = nuevo();
+    const p = await provisionarTenantDb({ controlDbPath, empresaSlug: c.opciones.empresa.slug, empresaNombre: c.opciones.empresa.nombre, businessDbPath: c.dbName });
+    assertSame(p.status, "PROVISIONED", "O4: tenant provisionada sin admin");
+    assertEqual((await allSql(c.dbPath, "SELECT COUNT(*) AS n FROM usuarios"))[0].n, 0, "O4: la Business fresca no trae usuarios");
+    const r = await onbTool().onboardTenant(c.opciones);
+    assertSame(r.status === "ONBOARDED" && JSON.stringify(r.fases) === JSON.stringify({ provision: "ALREADY_PROVISIONED", adminLocal: "CREATED", control: "CREATED" }), true, `O4: el retry completa admin y Control (${JSON.stringify(r.fases)})`);
+  });
+}
+
+async function testONBOARDO5RetryTrasAdminLocalAntesDeControl() {
+  await onbConControl(async ({ controlDbPath, nuevo }) => {
+    const c = nuevo();
+    await onbEsperarError(onbTool().onboardTenant(c.opciones, { ganchos: { antesDeControl: () => { throw Object.assign(new Error("caida simulada"), { code: "SIMULADO" }); } } }), "SIMULADO", "O5: falla tras el admin local");
+    const tras = await onbConteos(c);
+    assertSame(tras.locales === 1 && tras.centrales === 0 && tras.memberships === 0, true, `O5: admin local creado, Control intacto (${JSON.stringify(tras)})`);
+    const identityAntes = JSON.stringify(await allSql(c.dbPath, "SELECT * FROM tenant_identity"));
+    const localAntes = (await allSql(c.dbPath, "SELECT id, password FROM usuarios WHERE usuario = 'duenio'"))[0];
+    const r = await onbTool().onboardTenant(c.opciones);
+    assertSame(r.fases.adminLocal === "REUSED" && r.fases.control === "CREATED" && r.status === "ONBOARDED", true, "O5: el retry reutiliza el local y completa Control");
+    assertSame(r.admin.usuarioLocalId, localAntes.id, "O5: mismo usuario local");
+    assertSame(JSON.stringify(await allSql(c.dbPath, "SELECT * FROM tenant_identity")), identityAntes, "O5: la Business DB no se recreo");
+    assertSame((await allSql(controlDbPath, "SELECT password_hash FROM usuarios WHERE id = ?", [r.admin.usuarioCentralId]))[0].password_hash, localAntes.password, "O5: central nace con el hash local existente");
+  });
+}
+
+async function testONBOARDO6FallaEnControlHaceRollback() {
+  await onbConControl(async ({ nuevo }) => {
+    const c = nuevo();
+    await onbEsperarError(onbTool().onboardTenant(c.opciones, { ganchos: { entreUsuarioYMembership: () => { throw Object.assign(new Error("caida entre usuario y membership"), { code: "SIMULADO" }); } } }), "SIMULADO", "O6: falla dentro de la transaccion de Control");
+    const tras = await onbConteos(c);
+    assertSame(tras.centrales === 0 && tras.memberships === 0, true, `O6: ROLLBACK completo, sin usuario global huerfano (${JSON.stringify(tras)})`);
+    assertEqual(tras.locales, 1, "O6: el admin local no se borra");
+    const r = await onbTool().onboardTenant(c.opciones);
+    assertSame(r.status === "ONBOARDED" && r.fases.control === "CREATED", true, "O6: el retry reanuda");
+    assertSame(JSON.stringify(await onbConteos(c)), JSON.stringify({ empresas: 1, centrales: 1, memberships: 1, locales: 1 }), "O6: un solo global y una sola membership");
+  });
+}
+
+async function testONBOARDO7AdminLocalDistintoFallaCerrado() {
+  await onbConControl(async ({ controlDbPath, nuevo }) => {
+    const c = nuevo();
+    await provisionarTenantDb({ controlDbPath, empresaSlug: c.opciones.empresa.slug, empresaNombre: c.opciones.empresa.nombre, businessDbPath: c.dbName });
+    await runSql(c.dbPath, "INSERT INTO usuarios (nombre, usuario, password, rol, activo) VALUES ('Otra Persona', 'duenio', ?, 'admin', 1)", [await bcrypt.hash(c.opciones.admin.password, 10)]);
+    await onbEsperarError(onbTool().onboardTenant(c.opciones), "LOCAL_ADMIN_MISMATCH", "O7: nombre distinto");
+    await runSql(c.dbPath, "UPDATE usuarios SET nombre = 'Duenio Inicial' WHERE usuario = 'duenio'");
+    const hashAntes = (await allSql(c.dbPath, "SELECT password FROM usuarios WHERE usuario = 'duenio'"))[0].password;
+    await onbEsperarError(onbTool().onboardTenant({ ...c.opciones, admin: { ...c.opciones.admin, password: "OtraPassword-123" } }), "LOCAL_ADMIN_MISMATCH", "O7: password distinta");
+    assertSame((await allSql(c.dbPath, "SELECT password FROM usuarios WHERE usuario = 'duenio'"))[0].password, hashAntes, "O7: el usuario existente jamas se sobrescribe");
+    assertEqual((await allSql(controlDbPath, "SELECT COUNT(*) AS n FROM usuarios"))[0].n, 0, "O7: no se toca Control");
+  });
+}
+
+async function testONBOARDO8MembershipIncoherenteFallaCerrado() {
+  await onbConControl(async ({ controlDbPath, nuevo }) => {
+    const c = nuevo();
+    const r = await onbTool().onboardTenant(c.opciones);
+    await runSql(controlDbPath, "UPDATE usuario_empresas SET rol = 'colaborador' WHERE id = ?", [r.admin.membershipId]);
+    await onbEsperarError(onbTool().onboardTenant(c.opciones), "MEMBERSHIP_MISMATCH", "O8: membership con otro rol");
+    await runSql(controlDbPath, "UPDATE usuario_empresas SET rol = 'admin' WHERE id = ?", [r.admin.membershipId]);
+    await runSql(controlDbPath, "UPDATE usuarios SET nombre = 'Otro Global' WHERE id = ?", [r.admin.usuarioCentralId]);
+    await onbEsperarError(onbTool().onboardTenant(c.opciones), "MEMBERSHIP_MISMATCH", "O8: membership asociada a otro perfil global");
+    assertEqual((await allSql(controlDbPath, "SELECT COUNT(*) AS n FROM usuarios"))[0].n, 1, "O8: nunca se crea un segundo usuario global");
+  });
+}
+
+async function testONBOARDO9ConcurrenciaConvergeEnUnaEmpresa() {
+  await onbConControl(async ({ nuevo }) => {
+    const c = nuevo();
+    const [r1, r2] = await Promise.all([onbCliAsync(onbArgs(c), c.opciones.admin.password), onbCliAsync(onbArgs(c), c.opciones.admin.password)]);
+    for (const r of [r1, r2]) {
+      assertSame(r.json !== null && (r.status === 0 || r.status === 1), true, `O9: salida controlada (status=${r.status}) ${r.stdout}${r.stderr}`);
+      assertSame(/Unhandled|at .*\.js:\d+/.test(r.stderr), false, `O9: sin excepcion no manejada: ${r.stderr}`);
+    }
+    const final = await onbTool().onboardTenant(c.opciones);
+    assertSame(final.status, "ALREADY_ONBOARDED", "O9: convergio (un retry posterior no crea nada)");
+    assertSame(JSON.stringify(await onbConteos(c)), JSON.stringify({ empresas: 1, centrales: 1, memberships: 1, locales: 1 }), "O9: una sola empresa, admin local, usuario global y membership");
+  });
+}
+
+async function testONBOARDO10ColisionesConservanProvisioner() {
+  await onbConControl(async ({ controlDbPath, nuevo }) => {
+    const a = nuevo();
+    await onbTool().onboardTenant(a.opciones);
+    await onbEsperarError(onbTool().onboardTenant({ ...a.opciones, empresa: { ...a.opciones.empresa, nombre: "Otro Nombre" } }), "COMPANY_RESERVATION_MISMATCH", "O10: mismo slug, otro nombre");
+    await onbEsperarError(onbTool().onboardTenant({ ...a.opciones, empresa: { ...a.opciones.empresa, businessDbPath: `tenant-test-onb-otra-${Date.now()}.db` } }), "BUSINESS_DB_PATH_MISMATCH", "O10: mismo slug, otro db_path");
+    const b = nuevo();
+    let error = null;
+    try { await onbTool().onboardTenant({ ...b.opciones, empresa: { ...b.opciones.empresa, businessDbPath: a.dbName } }); } catch (e) { error = e; }
+    assertSame(Boolean(error && error.code), true, `O10: otro slug sobre una Business ajena falla cerrado (${error && error.code})`);
+    assertEqual((await allSql(controlDbPath, "SELECT COUNT(*) AS n FROM empresas WHERE slug = ? AND activa = 1", [b.opciones.empresa.slug]))[0].n, 0, "O10: la empresa colisionada no queda activa");
+    assertEqual((await allSql(controlDbPath, "SELECT COUNT(*) AS n FROM usuario_empresas"))[0].n, 1, "O10: ninguna membership extra");
+  });
+}
+
+async function testONBOARDO11ControlInexistenteNoSeCrea() {
+  const inexistente = path.join(os.tmpdir(), `onb-control-inexistente-${Date.now()}.db`);
+  const c = onbNuevo(inexistente);
+  try {
+    await onbEsperarError(onbTool().onboardTenant(c.opciones), "CONTROL_DB_NOT_FOUND", "O11: Control inexistente");
+    assertSame(fs.existsSync(inexistente) || fs.existsSync(c.dbPath), false, "O11: no se crea Control ni Business");
+    await onbEsperarError(onbTool().onboardTenant({ ...c.opciones, controlDbPath: "relativa.db" }), "INVALID_ARGUMENT", "O11: Control relativa rechazada");
+  } finally {
+    onbLimpiar(c);
+  }
+}
+
+async function testONBOARDO12SinAdminPorDefecto() {
+  await onbConControl(async ({ nuevo }) => {
+    const c = nuevo();
+    await onbTool().onboardTenant(c.opciones);
+    const usuarios = await allSql(c.dbPath, "SELECT usuario, password FROM usuarios");
+    assertSame(JSON.stringify(usuarios.map((u) => u.usuario)), JSON.stringify(["duenio"]), "O12: solo el admin pedido, nunca 'admin' por defecto");
+    for (const u of usuarios) assertSame(await bcrypt.compare("admin123", u.password), false, "O12: ninguna password fija admin123");
+    await onbEsperarError(onbTool().onboardTenant({ ...c.opciones, admin: { ...c.opciones.admin, password: "corta" } }), "INVALID_ARGUMENT", "O12: password debil rechazada");
+    const fuente = fs.readFileSync(ONB_CLI, "utf8");
+    assertSame(/init-db/.test(fuente.replace(/\/\/.*$/gm, "")) || fuente.includes("admin123"), false, "O12: la herramienta no usa init-db ni seeds fijos");
+  });
+}
+
+async function testONBOARDO13RuntimeRegistryResuelve() {
+  await onbConControl(async ({ controlDbPath, nuevo }) => {
+    const c = nuevo();
+    const r = await onbTool().onboardTenant(c.opciones);
+    const { resolveTenantHandle, closeTenantHandle } = require("../backend/runtimeTenantRegistry");
+    const h = await resolveTenantHandle({ empresaSlug: c.opciones.empresa.slug, controlDbPath });
+    assertSame(h.ok === true && h.handle.empresaId === r.empresa.id && h.handle.empresaSlug === c.opciones.empresa.slug, true, `O13: el runtime real resuelve la tenant (${h.errorCode || "ok"})`);
+    await closeTenantHandle(h.handle);
+  });
+}
+
+async function testONBOARDO14PrimerLoginCentralComoAdmin() {
+  await onbConControl(async ({ controlDbPath, nuevo }) => {
+    const c = nuevo();
+    const r = await onbTool().onboardTenant(c.opciones);
+    await onbConServidor(controlDbPath, async ({ pedir }) => {
+      const login = await pedir(c.opciones.empresa.slug, "POST", "/login", { usuario: "duenio", password: c.opciones.admin.password });
+      assertEqual(login.status, 200, `O14: primer login central: ${login.texto}`);
+      assertSame(login.json.user.rol === "admin" && login.json.user.id === r.admin.usuarioLocalId, true, "O14: rol efectivo admin sobre el usuario local correcto");
+      const sesion = (await allSql(c.dbPath, "SELECT * FROM sesiones WHERE token = ?", [login.json.token]))[0];
+      assertSame(sesion.auth_mode === "central" && sesion.empresa_id === r.empresa.id && sesion.membership_id === r.admin.membershipId && sesion.central_id === r.admin.usuarioCentralId, true, "O14: sesion ligada a la empresa, membership e identidad global");
+      assertEqual((await pedir(c.opciones.empresa.slug, "POST", "/login", { usuario: "duenio", password: "PasswordIncorrecta-1" })).status, 401, "O14: password incorrecta rechazada");
+    });
+  });
+}
+
+async function testONBOARDO15EmpresaBNoUsaBindingDeA() {
+  await onbConControl(async ({ controlDbPath, nuevo }) => {
+    const a = nuevo();
+    const b = nuevo();
+    await onbTool().onboardTenant(a.opciones);
+    await onbTool().onboardTenant(b.opciones);
+    await onbConServidor(controlDbPath, async ({ pedir }) => {
+      const loginA = await pedir(a.opciones.empresa.slug, "POST", "/login", { usuario: "duenio", password: a.opciones.admin.password });
+      assertEqual(loginA.status, 200, "O15: A entra en A");
+      assertEqual((await pedir(b.opciones.empresa.slug, "POST", "/login", { usuario: "duenio", password: a.opciones.admin.password })).status, 401, "O15: credenciales de A no autentican en B");
+      assertEqual((await pedir(b.opciones.empresa.slug, "GET", "/configuracion", null, loginA.json.token)).status, 401, "O15: el token de A no opera en B");
+      assertEqual((await pedir(b.opciones.empresa.slug, "POST", "/login", { usuario: "duenio", password: b.opciones.admin.password })).status, 200, "O15: B entra con sus propias credenciales");
+    });
+  });
+}
+
+async function testONBOARDO16ConfigMinimaUsable() {
+  await onbConControl(async ({ controlDbPath, nuevo }) => {
+    const c = nuevo();
+    await onbTool().onboardTenant(c.opciones);
+    await onbConServidor(controlDbPath, async ({ pedir }) => {
+      const token = (await pedir(c.opciones.empresa.slug, "POST", "/login", { usuario: "duenio", password: c.opciones.admin.password })).json.token;
+      for (const ruta of ["/configuracion", "/caja/apertura", "/productos", "/ventas", "/stock/ajustes-pendientes", "/tipos_pago"]) {
+        const r = await pedir(c.opciones.empresa.slug, "GET", ruta, null, token);
+        assertEqual(r.status, 200, `O16: ${ruta} usable en la empresa nueva (${r.texto && r.texto.slice(0, 120)})`);
+      }
+      const tipos = await pedir(c.opciones.empresa.slug, "GET", "/tipos_pago", null, token);
+      assertSame(Array.isArray(tipos.json) && tipos.json.length > 0, true, "O16: tipos de pago base presentes (baseline)");
+    });
+  });
+}
+
+async function testONBOARDO17ResultadoSinSecretos() {
+  await onbConControl(async ({ controlDbPath, nuevo }) => {
+    const c = nuevo();
+    const r = await onbTool().onboardTenant(c.opciones);
+    const hash = (await allSql(controlDbPath, "SELECT password_hash FROM usuarios WHERE id = ?", [r.admin.usuarioCentralId]))[0].password_hash;
+    const texto = JSON.stringify(r);
+    assertSame(texto.includes(c.opciones.admin.password) || texto.includes(hash) || /\$2[aby]\$/.test(texto), false, "O17: el resultado no contiene password ni hash");
+    assertSame(texto.includes(ROOT) || texto.includes(controlDbPath), false, "O17: el resultado no expone rutas absolutas");
+    const c2 = nuevo();
+    const cli = await onbCliAsync(onbArgs(c2), c2.opciones.admin.password);
+    const salida = cli.stdout + cli.stderr;
+    assertSame(cli.status === 0 && salida.includes(c2.opciones.admin.password) === false && !/\$2[aby]\$/.test(salida), true, "O17: la CLI no imprime password ni hashes");
+  });
+}
+
+async function testONBOARDO18CliPasswordSoloPorStdin() {
+  await onbConControl(async ({ controlDbPath, nuevo }) => {
+    const c = nuevo();
+    const conArgv = await onbCliAsync([...onbArgs(c).filter((a) => a !== "--admin-password-stdin"), `--admin-password=${c.opciones.admin.password}`], undefined);
+    assertSame(conArgv.status === 2 && conArgv.json.errorCode === "PASSWORD_EN_ARGV_RECHAZADA", true, "O18: password en argv rechazada");
+    const sinStdin = await onbCliAsync(onbArgs(c).filter((a) => a !== "--admin-password-stdin"), undefined);
+    assertSame(sinStdin.status === 2 && sinStdin.json.errorCode === "INVALID_ARGUMENT", true, "O18: sin --admin-password-stdin rechaza");
+    assertEqual((await allSql(controlDbPath, "SELECT COUNT(*) AS n FROM empresas"))[0].n, 0, "O18: nada se provisiona con una invocacion rechazada");
+    const ok = await onbCliAsync(onbArgs(c), c.opciones.admin.password);
+    assertSame(ok.status === 0 && ok.json.status === "ONBOARDED", true, `O18: password por STDIN funciona: ${ok.stdout}`);
+    assertSame(onbArgs(c).some((a) => a.includes(c.opciones.admin.password)), false, "O18: la password nunca viaja en argv");
+    assertSame(await bcrypt.compare(c.opciones.admin.password, (await allSql(c.dbPath, "SELECT password FROM usuarios WHERE usuario = 'duenio'"))[0].password), true, "O18: la password de STDIN es la registrada");
+  });
 }
 
 async function testP1ASRControlSchemaNuevoContienePasswordVersionDefault0() {
