@@ -21437,6 +21437,21 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testTX1BR6SinVueloRecuperacionInmediata);
   await _run(testTX1BR7CloseGraciaConSqlEnVueloEspera);
   await _run(testTX1BR8RevocadaConBeginEnVuelo);
+  await _run(testBK1SnapshotSingleValido);
+  await _run(testBK2SnapshotMultiControlYDosTenants);
+  await _run(testBK3TenantFaltanteFailClosed);
+  await _run(testBK4IdentityInvalidaFailClosed);
+  await _run(testBK5PathFueraDelRootFailClosed);
+  await _run(testBK6SymlinkPeligrosoFailClosed);
+  await _run(testBK7UploadsAisladosPorTenant);
+  await _run(testBK8ManifestHashesExactos);
+  await _run(testBK9SecretoCifradoYMasterKeyAusente);
+  await _run(testBK10RestoreAisladoControlYDosTenants);
+  await _run(testBK11HashAlteradoRestoreRechazado);
+  await _run(testBK12SnapshotFallidoNoAplicaRetencion);
+  await _run(testBK13SnapshotValidoAplicaRetencionControlada);
+  await _run(testBK14RestoreNuncaPisaLive);
+  await _run(testBK15GuernicaSingleCompatible);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -48919,6 +48934,425 @@ async function testTX1BR8RevocadaConBeginEnVuelo() {
   } finally {
     await tx1aCerrarDb(h);
   }
+}
+
+// ====================================================================================================
+// BACKUP-1: snapshot multi-tenant (scripts/backup-atlas.js) + restore aislado (scripts/restore-atlas.js).
+// Fixtures efimeras: Control/tenants del harness MT-1F1 (database/tenant-test-*.db registradas) y
+// directorios temporales para backup, uploads y destinos de restore. Los scripts corren como procesos
+// hijos con un entorno hermetico (sin ATLAS_* ni GUERNICA_DB_PATH heredados).
+// ====================================================================================================
+const BK1_BACKUP = path.join(ROOT, "scripts", "backup-atlas.js");
+const BK1_RESTORE = path.join(ROOT, "scripts", "restore-atlas.js");
+
+function bk1Env(extra = {}) {
+  const env = { ...process.env };
+  for (const clave of Object.keys(env)) {
+    if (clave.startsWith("ATLAS_") || clave === "GUERNICA_DB_PATH") delete env[clave];
+  }
+  return { ...env, ...extra };
+}
+
+function bk1Correr(script, args, env = {}) {
+  const r = spawnSync(process.execPath, [script, ...args], { cwd: ROOT, env: bk1Env(env), encoding: "utf8" });
+  const lineas = String(r.stdout || "").trim().split(/\r?\n/).filter(Boolean);
+  let json = null;
+  try { json = JSON.parse(lineas[lineas.length - 1]); } catch { json = null; }
+  return { status: r.status, json, stderr: String(r.stderr || "") };
+}
+
+function bk1Tmp(prefijo) {
+  return fs.mkdtempSync(path.join(os.tmpdir(), `bk1-${prefijo}-`));
+}
+
+function bk1Limpiar(...dirs) {
+  for (const dir of dirs) if (dir) fs.rmSync(dir, { recursive: true, force: true });
+}
+
+function bk1Escribir(raiz, rel, contenido) {
+  const ruta = path.join(raiz, ...rel.split("/"));
+  fs.mkdirSync(path.dirname(ruta), { recursive: true });
+  fs.writeFileSync(ruta, contenido);
+  return ruta;
+}
+
+function bk1Sha(ruta) {
+  return crypto.createHash("sha256").update(fs.readFileSync(ruta)).digest("hex");
+}
+
+function bk1Snapshots(backupDir) {
+  return fs.readdirSync(backupDir).filter((n) => /^atlas-\d{8}T\d{9}Z-[0-9a-f]{6}$/.test(n)).sort();
+}
+
+function bk1Manifest(snapshotDir) {
+  return JSON.parse(fs.readFileSync(path.join(snapshotDir, "manifest.json"), "utf8"));
+}
+
+function bk1ArchivosRecursivos(dir) {
+  const salida = [];
+  for (const nombre of fs.readdirSync(dir)) {
+    const ruta = path.join(dir, nombre);
+    if (fs.statSync(ruta).isDirectory()) salida.push(...bk1ArchivosRecursivos(ruta));
+    else salida.push(ruta);
+  }
+  return salida;
+}
+
+async function bk1ConMulti(fn) {
+  const escenario = await mt1f1CrearEscenario(["a", "b"]);
+  const backup = bk1Tmp("bak");
+  const uploads = bk1Tmp("up");
+  const restore = bk1Tmp("rst");
+  const [a, b] = escenario.tenants;
+  const env = { ATLAS_TENANCY_MODE: "multi", ATLAS_AUTH_MODE: "central", ATLAS_CONTROL_DB_PATH: escenario.controlDbPath };
+  const correrBackup = (extraArgs = []) => bk1Correr(BK1_BACKUP, ["--backup-dir", backup, "--uploads-root", uploads, ...extraArgs], env);
+  try {
+    await fn({ escenario, a, b, backup, uploads, restore, env, correrBackup });
+  } finally {
+    await mt1f1Limpiar(escenario);
+    bk1Limpiar(backup, uploads, restore);
+  }
+}
+
+function bk1SinTemporales(backupDir, mensaje) {
+  assertSame(fs.readdirSync(backupDir).some((n) => n.startsWith(".tmp-")), false, `${mensaje}: no quedan temporales`);
+}
+
+async function testBK1SnapshotSingleValido() {
+  const dbPath = bootstrapFreshTestDb();
+  const backup = bk1Tmp("bak");
+  const uploads = bk1Tmp("up");
+  try {
+    bk1Escribir(uploads, "productos/p1.png", "imagen-p1");
+    const r = bk1Correr(BK1_BACKUP, ["--backup-dir", backup, "--uploads-root", uploads], {
+      GUERNICA_DB_PATH: dbPath,
+      ATLAS_CONTROL_DB_PATH: path.join(backup, "..", `inexistente-${Date.now()}.db`)
+    });
+    assertEqual(r.status, 0, `BK1: backup single exit 0: ${JSON.stringify(r.json)}`);
+    assertSame(r.json.ok, true, "BK1: ok");
+    const snaps = bk1Snapshots(backup);
+    assertEqual(snaps.length, 1, "BK1: un snapshot publicado");
+    const m = bk1Manifest(path.join(backup, snaps[0]));
+    assertSame(m.snapshot.tenancy_mode, "single", "BK1: modo single");
+    assertSame(m.control, null, "BK1: sin Control en single legacy sin Control DB");
+    assertEqual(m.tenants.length, 1, "BK1: una business DB");
+    assertSame(m.tenants[0].relative_path, `tenants/${m.tenants[0].slug}/business.db`, "BK1: ruta de tenant");
+    assertSame(m.tenants[0].integrity, "ok", "BK1: integrity ok");
+    assertSame(JSON.stringify(m.uploads.inventario.map((x) => x.path)), JSON.stringify(["uploads/productos/p1.png"]), "BK1: upload legacy incluido");
+    bk1SinTemporales(backup, "BK1");
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+    bk1Limpiar(backup, uploads);
+  }
+}
+
+async function testBK2SnapshotMultiControlYDosTenants() {
+  await bk1ConMulti(async ({ a, b, backup, uploads, correrBackup }) => {
+    bk1Escribir(uploads, `tenants/${a.empresa.id}/productos/a.png`, "A");
+    bk1Escribir(uploads, `tenants/${b.empresa.id}/clientes/b.png`, "B");
+    const r = correrBackup();
+    assertEqual(r.status, 0, `BK2: backup multi exit 0: ${JSON.stringify(r.json)}`);
+    const m = bk1Manifest(path.join(backup, bk1Snapshots(backup)[0]));
+    assertSame(m.control.relative_path, "control/atlas_control.db", "BK2: Control incluido");
+    assertSame(m.control.schema.tablas.includes("empresas"), true, "BK2: metadata de Control");
+    assertEqual(m.tenants.length, 2, "BK2: dos tenants");
+    for (const t of [a, b]) {
+      const e = m.tenants.find((x) => x.empresa_id === t.empresa.id);
+      assertSame(Boolean(e), true, `BK2: tenant ${t.tag} presente`);
+      assertSame(e.slug, t.slug, `BK2: slug ${t.tag}`);
+      assertSame(JSON.stringify(e.identity), JSON.stringify({ empresa_id: t.empresa.id, slug: t.slug }), `BK2: identity ${t.tag}`);
+      assertSame(e.schema.estado, "CURRENT", `BK2: schema CURRENT ${t.tag}`);
+      assertSame(typeof e.schema.ultima_migracion === "string" && e.schema.ultima_migracion.length > 0, true, `BK2: ultima migracion ${t.tag}`);
+      assertSame(e.db_path_registrado, path.basename(t.dbPath), `BK2: db_path registrado ${t.tag}`);
+    }
+    assertEqual(m.uploads.archivos, 2, "BK2: uploads de ambos tenants");
+  });
+}
+
+async function testBK3TenantFaltanteFailClosed() {
+  await bk1ConMulti(async ({ b, backup, correrBackup }) => {
+    assertEqual(correrBackup().status, 0, "BK3: snapshot previo valido");
+    const previo = bk1Snapshots(backup);
+    const hashPrevio = bk1Sha(path.join(backup, previo[0], "manifest.json"));
+    fs.rmSync(b.dbPath, { force: true });
+    const r = correrBackup();
+    assertEqual(r.status, 1, "BK3: el snapshot falla");
+    assertSame(r.json.errorCode, "TENANT_DB_AUSENTE", "BK3: codigo TENANT_DB_AUSENTE");
+    assertSame(JSON.stringify(bk1Snapshots(backup)), JSON.stringify(previo), "BK3: no se publica snapshot parcial");
+    assertSame(bk1Sha(path.join(backup, previo[0], "manifest.json")), hashPrevio, "BK3: snapshot previo intacto");
+    bk1SinTemporales(backup, "BK3");
+  });
+}
+
+async function testBK4IdentityInvalidaFailClosed() {
+  await bk1ConMulti(async ({ b, backup, correrBackup }) => {
+    await runSql(b.dbPath, "UPDATE tenant_identity SET tenant_slug = 'otra-identidad' WHERE id = 1");
+    const r = correrBackup();
+    assertEqual(r.status, 1, "BK4: falla");
+    assertSame(r.json.errorCode, "TENANT_DB_IDENTITY_MISMATCH", "BK4: identity mismatch");
+    assertEqual(bk1Snapshots(backup).length, 0, "BK4: sin snapshot");
+    bk1SinTemporales(backup, "BK4");
+  });
+}
+
+async function testBK5PathFueraDelRootFailClosed() {
+  await bk1ConMulti(async ({ escenario, b, backup, correrBackup }) => {
+    for (const dbPathMalo of ["..\\..\\fuera-del-root.db", path.join(os.tmpdir(), "absoluto-fuera.db")]) {
+      await runSql(escenario.controlDbPath, "UPDATE empresas SET db_path = ? WHERE id = ?", [dbPathMalo, b.empresa.id]);
+      const r = correrBackup();
+      assertEqual(r.status, 1, `BK5: falla con db_path ${dbPathMalo}`);
+      assertSame(r.json.errorCode, "TENANT_DB_PATH_INVALID", `BK5: TENANT_DB_PATH_INVALID (${dbPathMalo})`);
+    }
+    assertEqual(bk1Snapshots(backup).length, 0, "BK5: sin snapshot");
+    bk1SinTemporales(backup, "BK5");
+  });
+}
+
+async function testBK6SymlinkPeligrosoFailClosed() {
+  await bk1ConMulti(async ({ a, backup, uploads, correrBackup }) => {
+    const afuera = bk1Tmp("afuera");
+    try {
+      bk1Escribir(afuera, "secreto.txt", "fuera-del-root");
+      fs.mkdirSync(path.join(uploads, "tenants", String(a.empresa.id)), { recursive: true });
+      fs.symlinkSync(afuera, path.join(uploads, "tenants", String(a.empresa.id), "productos"), "junction");
+      const r = correrBackup();
+      assertEqual(r.status, 1, "BK6: falla");
+      assertSame(r.json.errorCode, "SNAPSHOT_SYMLINK_RECHAZADO", "BK6: junction rechazado");
+      assertEqual(bk1Snapshots(backup).length, 0, "BK6: sin snapshot");
+      bk1SinTemporales(backup, "BK6");
+    } finally {
+      fs.rmSync(path.join(uploads, "tenants", String(a.empresa.id), "productos"), { force: true, recursive: false });
+      bk1Limpiar(afuera);
+    }
+  });
+}
+
+async function testBK7UploadsAisladosPorTenant() {
+  await bk1ConMulti(async ({ a, b, backup, uploads, correrBackup }) => {
+    bk1Escribir(uploads, `tenants/${a.empresa.id}/productos/a.png`, "contenido-A");
+    bk1Escribir(uploads, `tenants/${b.empresa.id}/clientes/b.png`, "contenido-B");
+    bk1Escribir(uploads, "tenants/999999/productos/huerfano.png", "huerfano");
+    bk1Escribir(uploads, "productos/legacy.png", "legacy");
+    bk1Escribir(uploads, "otra-carpeta/x.txt", "x");
+    assertEqual(correrBackup().status, 0, "BK7: backup ok");
+    const dir = path.join(backup, bk1Snapshots(backup)[0]);
+    const m = bk1Manifest(dir);
+    assertSame(JSON.stringify(m.uploads.inventario.map((x) => x.path).sort()), JSON.stringify([`uploads/tenants/${a.empresa.id}/productos/a.png`, `uploads/tenants/${b.empresa.id}/clientes/b.png`].sort()), "BK7: solo uploads de tenants incluidos");
+    assertSame(m.uploads.incluye_legacy, false, "BK7: legacy no incluido sin tenant guernica");
+    for (const esperado of ["uploads/tenants/999999", "uploads/productos", "uploads/otra-carpeta"]) {
+      assertSame(m.uploads.no_incluidos.includes(esperado), true, `BK7: no_incluidos registra ${esperado}`);
+    }
+    assertSame(fs.readFileSync(path.join(dir, "uploads", "tenants", String(a.empresa.id), "productos", "a.png"), "utf8"), "contenido-A", "BK7: archivo A bajo A");
+    assertSame(fs.readFileSync(path.join(dir, "uploads", "tenants", String(b.empresa.id), "clientes", "b.png"), "utf8"), "contenido-B", "BK7: archivo B bajo B");
+    assertSame(fs.existsSync(path.join(dir, "uploads", "tenants", "999999")), false, "BK7: huerfano ausente");
+    assertSame(fs.existsSync(path.join(dir, "uploads", "productos")), false, "BK7: legacy ausente");
+  });
+}
+
+async function testBK8ManifestHashesExactos() {
+  await bk1ConMulti(async ({ a, backup, uploads, correrBackup }) => {
+    bk1Escribir(uploads, `tenants/${a.empresa.id}/productos/a.png`, "A8");
+    assertEqual(correrBackup().status, 0, "BK8: backup ok");
+    const dir = path.join(backup, bk1Snapshots(backup)[0]);
+    const texto = fs.readFileSync(path.join(dir, "manifest.json"), "utf8");
+    assertSame(fs.readFileSync(path.join(dir, "manifest.json.sha256"), "utf8").trim(), crypto.createHash("sha256").update(texto, "utf8").digest("hex"), "BK8: checksum del manifest");
+    const m = JSON.parse(texto);
+    const componentes = [m.control, ...m.tenants, ...m.uploads.inventario.map((x) => ({ relative_path: x.path, size: x.size, sha256: x.sha256 }))];
+    for (const c of componentes) {
+      const ruta = path.join(dir, ...c.relative_path.split("/"));
+      assertEqual(fs.statSync(ruta).size, c.size, `BK8: size exacto ${c.relative_path}`);
+      assertSame(bk1Sha(ruta), c.sha256, `BK8: sha256 exacto ${c.relative_path}`);
+    }
+    const declarados = new Set(["manifest.json", "manifest.json.sha256", ...componentes.map((c) => c.relative_path)]);
+    const enDisco = bk1ArchivosRecursivos(dir).map((r) => path.relative(dir, r).split(path.sep).join("/"));
+    assertSame(enDisco.every((r) => declarados.has(r)) && enDisco.length === declarados.size, true, "BK8: el snapshot contiene exactamente lo declarado");
+    const usuariosOrigen = (await allSql(a.dbPath, "SELECT COUNT(*) AS n FROM usuarios"))[0].n;
+    const ta = m.tenants.find((t) => t.empresa_id === a.empresa.id);
+    assertEqual((await allSql(path.join(dir, ...ta.relative_path.split("/")), "SELECT COUNT(*) AS n FROM usuarios"))[0].n, usuariosOrigen, "BK8: contenido logico de la copia");
+  });
+}
+
+async function testBK9SecretoCifradoYMasterKeyAusente() {
+  await bk1ConMulti(async ({ a, backup, correrBackup }) => {
+    const VAR = "ATLAS_INTEGRATION_MASTER_KEY_B64";
+    const previa = process.env[VAR];
+    const clave = crypto.randomBytes(32).toString("base64");
+    const plaintext = `BK9-PLAINTEXT-${crypto.randomBytes(8).toString("hex")}`;
+    let cifrado;
+    process.env[VAR] = clave;
+    try {
+      cifrado = require("../backend/integrationSecretCrypto").encriptarSecreto(plaintext);
+    } finally {
+      if (previa === undefined) delete process.env[VAR]; else process.env[VAR] = previa;
+    }
+    const ahora = new Date().toISOString();
+    const integracion = await runSql(a.dbPath, "INSERT INTO integraciones_tenant (provider, enabled, config_json, created_at, updated_at) VALUES ('mercadopago_point', 1, '{}', ?, ?)", [ahora, ahora]);
+    await runSql(a.dbPath, "INSERT INTO integraciones_tenant_secretos (integracion_id, secret_encrypted, secret_meta_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", [integracion.lastID, cifrado.secret_encrypted, cifrado.secret_meta_json, ahora, ahora]);
+    assertEqual(correrBackup().status, 0, "BK9: backup ok (sin master key en el entorno)");
+    const dir = path.join(backup, bk1Snapshots(backup)[0]);
+    for (const archivo of bk1ArchivosRecursivos(dir)) {
+      const bytes = fs.readFileSync(archivo);
+      assertSame(bytes.includes(Buffer.from(clave)), false, `BK9: master key ausente en ${path.relative(dir, archivo)}`);
+      assertSame(bytes.includes(Buffer.from(plaintext)), false, `BK9: plaintext ausente en ${path.relative(dir, archivo)}`);
+    }
+    const m = bk1Manifest(dir);
+    assertSame(m.secretos.incluidos, false, "BK9: el manifest declara secretos no incluidos");
+    const ta = m.tenants.find((t) => t.empresa_id === a.empresa.id);
+    const fila = (await allSql(path.join(dir, ...ta.relative_path.split("/")), "SELECT secret_encrypted, secret_meta_json FROM integraciones_tenant_secretos"))[0];
+    assertSame(fila.secret_encrypted, cifrado.secret_encrypted, "BK9: el secreto permanece cifrado e identico");
+    assertSame(fila.secret_meta_json, cifrado.secret_meta_json, "BK9: metadata del cifrado preservada");
+  });
+}
+
+async function testBK10RestoreAisladoControlYDosTenants() {
+  await bk1ConMulti(async ({ escenario, a, b, backup, uploads, restore, correrBackup }) => {
+    bk1Escribir(uploads, `tenants/${a.empresa.id}/productos/a.png`, "R-A");
+    bk1Escribir(uploads, `tenants/${b.empresa.id}/clientes/b.png`, "R-B");
+    assertEqual(correrBackup().status, 0, "BK10: backup ok");
+    const dir = path.join(backup, bk1Snapshots(backup)[0]);
+    const destino = path.join(restore, "restaurado");
+    const r = bk1Correr(BK1_RESTORE, ["--snapshot", dir, "--target", destino]);
+    assertEqual(r.status, 0, `BK10: restore exit 0: ${JSON.stringify(r.json)}`);
+    const m = bk1Manifest(dir);
+    for (const c of [m.control, ...m.tenants]) {
+      assertSame(bk1Sha(path.join(destino, ...c.relative_path.split("/"))), c.sha256, `BK10: hash restaurado ${c.relative_path}`);
+    }
+    const empresas = await allSql(path.join(destino, "control", "atlas_control.db"), "SELECT id, slug, db_path FROM empresas ORDER BY id");
+    for (const t of [a, b]) {
+      const e = empresas.find((x) => x.id === t.empresa.id);
+      assertSame(Boolean(e) && e.slug === t.slug && e.db_path === path.basename(t.dbPath), true, `BK10: Control -> empresa ${t.tag}`);
+      const identity = (await allSql(path.join(destino, "tenants", t.slug, "business.db"), "SELECT empresa_control_id, tenant_slug FROM tenant_identity WHERE id = 1"))[0];
+      assertSame(identity.empresa_control_id === t.empresa.id && identity.tenant_slug === t.slug, true, `BK10: identity restaurada ${t.tag}`);
+      const migraciones = await allSql(path.join(destino, "tenants", t.slug, "business.db"), "SELECT migration_id FROM atlas_schema_migrations ORDER BY sequence DESC LIMIT 1");
+      assertSame(migraciones[0].migration_id, m.tenants.find((x) => x.empresa_id === t.empresa.id).schema.ultima_migracion, `BK10: schema restaurado ${t.tag}`);
+    }
+    assertSame(fs.readFileSync(path.join(destino, "uploads", "tenants", String(a.empresa.id), "productos", "a.png"), "utf8"), "R-A", "BK10: upload A restaurado");
+    assertSame(fs.readFileSync(path.join(destino, "uploads", "tenants", String(b.empresa.id), "clientes", "b.png"), "utf8"), "R-B", "BK10: upload B restaurado");
+    const reporte = JSON.parse(fs.readFileSync(path.join(destino, "restore-report.json"), "utf8"));
+    assertEqual(reporte.tenants.length, 2, "BK10: reporte con el mapa de ambos tenants");
+    assertSame(fs.readdirSync(restore).some((n) => n.startsWith(".tmp-restore-")), false, "BK10: sin temporales de restore");
+    assertSame(fs.existsSync(escenario.controlDbPath), true, "BK10: el origen sigue intacto");
+  });
+}
+
+async function testBK11HashAlteradoRestoreRechazado() {
+  await bk1ConMulti(async ({ b, backup, restore, correrBackup }) => {
+    assertEqual(correrBackup().status, 0, "BK11: backup ok");
+    const original = path.join(backup, bk1Snapshots(backup)[0]);
+    const casos = [
+      ["RESTORE_HASH_MISMATCH", (dir) => fs.appendFileSync(path.join(dir, "tenants", b.slug, "business.db"), Buffer.from([0]))],
+      ["RESTORE_MANIFEST_CHECKSUM", (dir) => fs.appendFileSync(path.join(dir, "manifest.json"), " ")],
+      ["RESTORE_ARCHIVO_INESPERADO", (dir) => fs.writeFileSync(path.join(dir, "intruso.txt"), "x")]
+    ];
+    for (const [codigo, alterar] of casos) {
+      const copia = path.join(restore, `snap-${codigo}`);
+      fs.cpSync(original, copia, { recursive: true });
+      alterar(copia);
+      const destino = path.join(restore, `destino-${codigo}`);
+      const r = bk1Correr(BK1_RESTORE, ["--snapshot", copia, "--target", destino]);
+      assertEqual(r.status, 1, `BK11: restore rechazado (${codigo})`);
+      assertSame(r.json.errorCode, codigo, `BK11: codigo ${codigo}`);
+      assertSame(fs.existsSync(destino), false, `BK11: nada escrito en el destino (${codigo})`);
+    }
+    assertSame(fs.readdirSync(restore).some((n) => n.startsWith(".tmp-restore-")), false, "BK11: sin temporales de restore");
+  });
+}
+
+async function testBK12SnapshotFallidoNoAplicaRetencion() {
+  await bk1ConMulti(async ({ b, backup, correrBackup }) => {
+    for (let i = 0; i < 3; i++) assertEqual(correrBackup().status, 0, `BK12: snapshot valido ${i + 1}`);
+    const previos = bk1Snapshots(backup);
+    assertEqual(previos.length, 3, "BK12: tres snapshots previos");
+    fs.rmSync(b.dbPath, { force: true });
+    const r = correrBackup(["--keep", "1"]);
+    assertEqual(r.status, 1, "BK12: el nuevo snapshot falla");
+    assertSame(JSON.stringify(bk1Snapshots(backup)), JSON.stringify(previos), "BK12: un snapshot fallido no dispara retencion");
+    bk1SinTemporales(backup, "BK12");
+  });
+}
+
+async function testBK13SnapshotValidoAplicaRetencionControlada() {
+  await bk1ConMulti(async ({ backup, correrBackup }) => {
+    for (let i = 0; i < 3; i++) assertEqual(correrBackup().status, 0, `BK13: snapshot ${i + 1}`);
+    const previos = bk1Snapshots(backup);
+    fs.mkdirSync(path.join(backup, ".tmp-atlas-viejo"));
+    fs.mkdirSync(path.join(backup, "otra-cosa"));
+    fs.writeFileSync(path.join(backup, "nota.txt"), "no tocar");
+    const r = correrBackup(["--keep", "2"]);
+    assertEqual(r.status, 0, "BK13: snapshot nuevo ok");
+    const despues = bk1Snapshots(backup);
+    assertSame(JSON.stringify(despues), JSON.stringify([previos[2], r.json.snapshot_id]), "BK13: quedan los 2 mas nuevos (incluido el actual)");
+    assertSame(JSON.stringify(r.json.retencion.eliminados), JSON.stringify(previos.slice(0, 2)), "BK13: se eliminan exactamente los 2 mas viejos");
+    for (const ajeno of [".tmp-atlas-viejo", "otra-cosa", "nota.txt"]) {
+      assertSame(fs.existsSync(path.join(backup, ajeno)), true, `BK13: la retencion no toca ${ajeno}`);
+    }
+  });
+}
+
+async function testBK14RestoreNuncaPisaLive() {
+  const fixtures = ["guernica.db", "atlas_control.db"].map((n) => path.join(ROOT, "database", n)).filter((p) => fs.existsSync(p));
+  const antes = fixtures.map(bk1Sha);
+  await bk1ConMulti(async ({ backup, uploads, restore, env, correrBackup }) => {
+    assertEqual(correrBackup().status, 0, "BK14: backup ok");
+    const dir = path.join(backup, bk1Snapshots(backup)[0]);
+    for (const destinoLive of [path.join(ROOT, "database", "restore-intento"), path.join(ROOT, "uploads", "restore-intento"), path.join(ROOT, "restore-intento")]) {
+      const r = bk1Correr(BK1_RESTORE, ["--snapshot", dir, "--target", destinoLive]);
+      assertEqual(r.status, 1, `BK14: rechaza destino live ${destinoLive}`);
+      assertSame(r.json.errorCode, "RESTORE_TARGET_LIVE_RECHAZADO", "BK14: codigo de destino live");
+      assertSame(fs.existsSync(destinoLive), false, "BK14: nada creado en live");
+    }
+    const existente = path.join(restore, "ya-existe");
+    bk1Escribir(existente, "marca.txt", "intacto");
+    const r2 = bk1Correr(BK1_RESTORE, ["--snapshot", dir, "--target", existente]);
+    assertSame(r2.status === 1 && r2.json.errorCode === "RESTORE_TARGET_EXISTE", true, "BK14: nunca sobrescribe un destino existente");
+    assertSame(JSON.stringify(fs.readdirSync(existente)), JSON.stringify(["marca.txt"]), "BK14: destino existente intacto");
+    const r3 = bk1Correr(BK1_BACKUP, ["--backup-dir", path.join(ROOT, "backups-bk14"), "--uploads-root", uploads], env);
+    assertSame(r3.status === 1 && r3.json.errorCode === "BACKUP_DIR_INVALIDO", true, "BK14: backup dir dentro del repo rechazado");
+    assertSame(fs.existsSync(path.join(ROOT, "backups-bk14")), false, "BK14: no crea el directorio rechazado");
+  });
+  assertSame(JSON.stringify(fixtures.map(bk1Sha)), JSON.stringify(antes), "BK14: bases del worktree intactas");
+}
+
+async function testBK15GuernicaSingleCompatible() {
+  const src = path.join(ROOT, "database", "guernica.db");
+  const srcControl = path.join(ROOT, "database", "atlas_control.db");
+  const antes = [bk1Sha(src), bk1Sha(srcControl)];
+  const trabajo = bk1Tmp("guernica");
+  const backup = bk1Tmp("bak");
+  const uploads = bk1Tmp("up");
+  try {
+    const copiaDb = path.join(trabajo, "guernica.db");
+    const copiaControl = path.join(trabajo, "atlas_control.db");
+    fs.copyFileSync(src, copiaDb);
+    fs.copyFileSync(srcControl, copiaControl);
+    bk1Escribir(uploads, "configuracion/logo.png", "logo-guernica");
+    const r = bk1Correr(BK1_BACKUP, ["--backup-dir", backup, "--uploads-root", uploads], { GUERNICA_DB_PATH: copiaDb, ATLAS_CONTROL_DB_PATH: copiaControl });
+    assertEqual(r.status, 0, `BK15: backup single legacy de Guernica: ${JSON.stringify(r.json)}`);
+    const dir = path.join(backup, bk1Snapshots(backup)[0]);
+    const m = bk1Manifest(dir);
+    const t = m.tenants[0];
+    assertSame(t.slug === "guernica" && t.empresa_id === 1 && t.db_path_registrado === "guernica.db", true, "BK15: identidad y registro de Guernica");
+    assertSame(typeof t.schema.estado, "string", "BK15: estado de schema registrado (sin exigir CURRENT)");
+    assertSame(m.control.relative_path, "control/atlas_control.db", "BK15: Control incluida en single");
+    assertSame(JSON.stringify(m.uploads.inventario.map((x) => x.path)), JSON.stringify(["uploads/configuracion/logo.png"]), "BK15: uploads legacy de Guernica");
+    const destino = path.join(trabajo, "restaurado");
+    const rr = bk1Correr(BK1_RESTORE, ["--snapshot", dir, "--target", destino]);
+    assertEqual(rr.status, 0, `BK15: restore de Guernica: ${JSON.stringify(rr.json)}`);
+    assertEqual((await allSql(path.join(destino, "tenants", "guernica", "business.db"), "SELECT COUNT(*) AS n FROM ventas"))[0].n, (await allSql(copiaDb, "SELECT COUNT(*) AS n FROM ventas"))[0].n, "BK15: ventas restauradas");
+    // Single + central: lee las fixtures del worktree SOLO en lectura (Online Backup desde OPEN_READONLY).
+    const backup2 = bk1Tmp("bak2");
+    try {
+      const rc = bk1Correr(BK1_BACKUP, ["--backup-dir", backup2, "--uploads-root", uploads], { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: "guernica", GUERNICA_DB_PATH: src, ATLAS_CONTROL_DB_PATH: srcControl });
+      assertEqual(rc.status, 0, `BK15: single central con registry+identity: ${JSON.stringify(rc.json)}`);
+    } finally {
+      bk1Limpiar(backup2);
+    }
+    assertSame(fs.existsSync(path.join(ROOT, "scripts", "backup-db.js")), true, "BK15: backup-db.js legacy se conserva");
+    assertSame(JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).scripts.prestart, "node scripts/backup-db.js --if-exists", "BK15: prestart sin cambios");
+  } finally {
+    bk1Limpiar(trabajo, backup, uploads);
+  }
+  assertSame(JSON.stringify([bk1Sha(src), bk1Sha(srcControl)]), JSON.stringify(antes), "BK15: fixtures de Guernica intactas");
 }
 
 async function testP1ASRControlSchemaNuevoContienePasswordVersionDefault0() {
