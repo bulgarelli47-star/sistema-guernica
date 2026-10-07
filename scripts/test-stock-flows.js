@@ -21452,6 +21452,21 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testBK13SnapshotValidoAplicaRetencionControlada);
   await _run(testBK14RestoreNuncaPisaLive);
   await _run(testBK15GuernicaSingleCompatible);
+  await _run(testWORKEROPSW1PasswordOnceDrenaYTermina);
+  await _run(testWORKEROPSW2WatchSinOverlap);
+  await _run(testWORKEROPSW3ErrorGlobalBackoffAcotado);
+  await _run(testWORKEROPSW4SigtermAntesDelSiguienteCiclo);
+  await _run(testWORKEROPSW5SigtermDuranteCicloEsperaYNoReinicia);
+  await _run(testWORKEROPSW6ConfigInvalidaFallaCerrado);
+  await _run(testWORKEROPSW7ControlInexistenteNoCreaArchivo);
+  await _run(testWORKEROPSW8DosDrenajesConcurrentesConvergen);
+  await _run(testWORKEROPSW9GeneracionNuevaPermanecePendiente);
+  await _run(testWORKEROPSW10Pm2UnaInstanciaPorWorker);
+  await _run(testWORKEROPSW11Pm2AtlasOsSinCambios);
+  await _run(testWORKEROPSW12SinSecretosEnConfigNiLogs);
+  await _run(testWORKEROPSW13RolActivoWatchConservaContratos);
+  await _run(testWORKEROPSW14SeparacionPorTipoDeOutbox);
+  await _run(testWORKEROPSW15ShutdownDeAmbosWorkersParaBackup);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -49378,6 +49393,465 @@ async function testBK15GuernicaSingleCompatible() {
     bk1Limpiar(trabajo, backup, uploads);
   }
   assertSame(JSON.stringify([bk1Sha(src), bk1Sha(srcControl)]), JSON.stringify(antes), "BK15: fixtures de Guernica intactas");
+}
+
+// ====================================================================================================
+// WORKER-OPS-1: operacion supervisada del outbox central. database/run-password-worker.js (ONCE/WATCH
+// sobre drenarOutboxPassword, sin copiar su logica) + ecosystem.config.js (PM2, 1 instancia por worker,
+// habilitado solo con ATLAS_WORKERS_ENABLED=1). Bases efimeras (tenants registrados bajo database/ +
+// Control temporal). WATCH/backoff/shutdown en proceso con programador y senales inyectados
+// (deterministas); CLIs y concurrencia con procesos hijos reales.
+// ====================================================================================================
+const { EventEmitter: WO1EventEmitter } = require("events");
+const WO1_PASSWORD_WORKER = path.join(ROOT, "database", "run-password-worker.js");
+const WO1_ROL_WORKER = path.join(ROOT, "database", "run-rol-activo-worker.js");
+
+function wo1Worker() {
+  return require("../database/run-password-worker");
+}
+
+function wo1EnvMulti(controlDbPath, extra = {}) {
+  return { ATLAS_AUTH_MODE: "central", ATLAS_TENANCY_MODE: "multi", ATLAS_USER_BRIDGE_MODE: "shadow", ATLAS_CONTROL_DB_PATH: controlDbPath, ...extra };
+}
+
+function wo1EnvHermetico(extra = {}) {
+  const env = { ...process.env };
+  for (const clave of Object.keys(env)) if (clave.startsWith("ATLAS_") || clave === "GUERNICA_DB_PATH") delete env[clave];
+  return { ...env, ...extra };
+}
+
+function wo1Cli(script, args, env) {
+  const r = spawnSync(process.execPath, [script, ...args], { cwd: ROOT, env: wo1EnvHermetico(env), encoding: "utf8", timeout: 60000 });
+  return { status: r.status, stdout: String(r.stdout || ""), stderr: String(r.stderr || "") };
+}
+
+function wo1CliAsync(script, args, env) {
+  return new Promise((resolve) => {
+    const hijo = spawn(process.execPath, [script, ...args], { cwd: ROOT, env: wo1EnvHermetico(env), stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    hijo.stdout.on("data", (d) => { stdout += d; });
+    hijo.stderr.on("data", (d) => { stderr += d; });
+    hijo.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+// Control S0 + N tenants registrados (business DB bajo database/), un usuario central con hash nuevo,
+// una membership por tenant y una fila 'password' pendiente por membership.
+async function wo1Escenario(cantidadTenants = 1) {
+  const tenants = [];
+  const controlDbPath = tempDbPath();
+  for (let i = 0; i < cantidadTenants; i++) tenants.push({ dbPath: bootstrapFreshRegisteredTenantDb() });
+  const hash = await bcrypt.hash(`WorkerOps-${crypto.randomBytes(4).toString("hex")}`, 10);
+  const controlDb = await bootstrapControlDb(controlDbPath, { seed: false });
+  try {
+    const central = await crearUsuarioCentral(controlDb, { nombre: "WO1 central", usuarioReferencia: "wo1", passwordHash: hash, activo: 1 });
+    for (const [i, t] of tenants.entries()) {
+      t.localId = (await allSql(t.dbPath, "SELECT id FROM usuarios WHERE usuario = 'admin'"))[0].id;
+      t.empresa = await registrarEmpresa(controlDb, { slug: `wo1-${i}-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`, nombre: `WO1 ${i}`, dbPath: path.basename(t.dbPath), activa: 1 });
+      t.membership = await crearMembership(controlDb, { usuarioId: central.id, empresaId: t.empresa.id, usuarioLocalId: t.localId, rol: "admin", activo: 1 });
+      await runControlQuery(controlDb,
+        `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+         VALUES (?, ?, ?, ?, 'password', 1, 'pendiente')`,
+        [central.id, t.empresa.id, t.membership.id, t.localId]);
+    }
+    return { controlDbPath, tenants, hash, central };
+  } finally {
+    await closeControlDb(controlDb);
+  }
+}
+
+function wo1Limpiar(escenario) {
+  if (!escenario) return;
+  for (const t of escenario.tenants) fs.rmSync(t.dbPath, { force: true });
+  fs.rmSync(escenario.controlDbPath, { force: true });
+}
+
+async function wo1Filas(controlDbPath, tipo) {
+  return allSql(controlDbPath, "SELECT id, membership_id, tipo_operacion, version_objetivo, estado, procesado_en FROM sync_pendiente WHERE tipo_operacion = ? ORDER BY id", [tipo]);
+}
+
+// Programador manual: guarda el proximo callback y su demora; `correr()` lo dispara.
+function wo1ProgramadorManual() {
+  const pr = { pendiente: null, demoras: [], cancelados: 0 };
+  pr.programar = (fn, ms) => { pr.demoras.push(ms); const t = { fn }; pr.pendiente = t; return t; };
+  pr.cancelar = (t) => { if (pr.pendiente === t) pr.pendiente = null; pr.cancelados += 1; };
+  pr.correr = async () => { const t = pr.pendiente; pr.pendiente = null; if (t) await t.fn(); };
+  return pr;
+}
+
+async function testWORKEROPSW1PasswordOnceDrenaYTermina() {
+  let e;
+  try {
+    e = await wo1Escenario(1);
+    const r = wo1Cli(WO1_PASSWORD_WORKER, ["--once"], wo1EnvMulti(e.controlDbPath));
+    assertEqual(r.status, 0, `W1: --once exit 0: ${r.stdout} ${r.stderr}`);
+    assertSame(/password worker ONCE: ciclo=1 ok=true evaluados=1 procesados=1/.test(r.stdout), true, `W1: resumen de ciclo: ${r.stdout}`);
+    const filas = await wo1Filas(e.controlDbPath, "password");
+    assertSame(filas.every((f) => f.estado === "procesado"), true, "W1: pendiente cerrado");
+    assertSame((await allSql(e.tenants[0].dbPath, "SELECT password FROM usuarios WHERE id = ?", [e.tenants[0].localId]))[0].password, e.hash, "W1: espejo local actualizado con el hash central");
+  } finally {
+    wo1Limpiar(e);
+  }
+}
+
+async function testWORKEROPSW2WatchSinOverlap() {
+  const { crearWorkerPassword } = wo1Worker();
+  let e;
+  try {
+    e = await wo1Escenario(1);
+    let enVuelo = 0;
+    let maxEnVuelo = 0;
+    const tramos = [];
+    const drenar = async () => {
+      enVuelo += 1;
+      maxEnVuelo = Math.max(maxEnVuelo, enVuelo);
+      const inicio = tramos.length;
+      tramos.push({ inicio: process.hrtime.bigint(), fin: null });
+      await new Promise((resolve) => setImmediate(resolve));
+      tramos[inicio].fin = process.hrtime.bigint();
+      enVuelo -= 1;
+      return { ok: true, total: 0, resultados: [] };
+    };
+    const pr = wo1ProgramadorManual();
+    const w = crearWorkerPassword({ ...wo1EnvParaConfig(e.controlDbPath), intervaloMs: 1000 }, { drenar, programar: pr.programar, cancelar: pr.cancelar });
+    assertSame(w.ok, true, "W2: worker creado");
+    const fin = w.iniciarWatch({ instalarManejadores: false });
+    for (let i = 0; i < 3; i++) await pr.correr();
+    const concurrente = await Promise.all([w.ejecutarCiclo(), w.ejecutarCiclo()]);
+    assertSame(concurrente.some((x) => x.omitido === true && x.motivo === "CICLO_EN_CURSO"), true, "W2: un pedido concurrente se omite (CICLO_EN_CURSO)");
+    await w.detener({ senal: "TEST" });
+    await fin;
+    assertEqual(maxEnVuelo, 1, "W2: nunca dos ciclos simultaneos");
+    for (let i = 1; i < tramos.length; i++) assertSame(tramos[i].inicio > tramos[i - 1].fin, true, `W2: el ciclo ${i + 1} empieza despues de terminar el anterior`);
+    assertSame(JSON.stringify(pr.demoras.slice(0, 4)), JSON.stringify([0, 1000, 1000, 1000]), "W2: siguiente ciclo programado solo al terminar el anterior, al intervalo");
+  } finally {
+    wo1Limpiar(e);
+  }
+}
+
+function wo1EnvParaConfig(controlDbPath) {
+  return { authMode: "central", tenancyMode: "multi", bridgeMode: "shadow", controlDbPath };
+}
+
+async function testWORKEROPSW3ErrorGlobalBackoffAcotado() {
+  const { crearWorkerPassword } = wo1Worker();
+  let e;
+  try {
+    e = await wo1Escenario(1);
+    const guion = [
+      { ok: false, errorCode: "CONTROL_DB_INACCESIBLE" },
+      "THROW",
+      { ok: false, errorCode: "SCHEMA_S0_INCOMPATIBLE" },
+      { ok: true, total: 1, resultados: [{ membershipId: 1, resultado: "SKIP_BUSINESS_DB_AUSENTE" }] }
+    ];
+    let llamada = 0;
+    const drenar = async () => {
+      const paso = guion[Math.min(llamada++, guion.length - 1)];
+      if (paso === "THROW") throw Object.assign(new Error("busy"), { code: "SQLITE_BUSY" });
+      return paso;
+    };
+    const pr = wo1ProgramadorManual();
+    const ciclos = [];
+    const w = crearWorkerPassword({ ...wo1EnvParaConfig(e.controlDbPath), intervaloMs: 1000, backoffMaxMs: 3000 }, { drenar, programar: pr.programar, cancelar: pr.cancelar });
+    w.eventos.on("ciclo", (c) => ciclos.push(c));
+    const fin = w.iniciarWatch({ instalarManejadores: false });
+    for (let i = 0; i < 5; i++) await pr.correr();
+    await w.detener({ senal: "TEST" });
+    await fin;
+    assertSame(JSON.stringify(pr.demoras.slice(0, 6)), JSON.stringify([0, 2000, 3000, 3000, 1000, 1000]), `W3: backoff exponencial acotado y reset tras exito (${pr.demoras})`);
+    assertSame(pr.demoras.slice(1).every((d) => d >= 1000), true, "W3: nunca por debajo de 1s (sin busy-loop)");
+    assertSame(ciclos[1].excepcion === true && ciclos[1].errorCode === "SQLITE_BUSY", true, "W3: una excepcion del drenaje no mata el worker y se informa con su codigo");
+    assertSame(ciclos[3].ok === true && ciclos[3].omitidos === 1, true, "W3: resultados por fila no cuentan como falla global");
+  } finally {
+    wo1Limpiar(e);
+  }
+}
+
+async function testWORKEROPSW4SigtermAntesDelSiguienteCiclo() {
+  const { crearWorkerPassword } = wo1Worker();
+  let e;
+  try {
+    e = await wo1Escenario(1);
+    let llamadas = 0;
+    const pr = wo1ProgramadorManual();
+    const senales = new WO1EventEmitter();
+    const w = crearWorkerPassword(wo1EnvParaConfig(e.controlDbPath), { drenar: async () => { llamadas += 1; return { ok: true, total: 0, resultados: [] }; }, programar: pr.programar, cancelar: pr.cancelar });
+    const fin = w.iniciarWatch({ senales });
+    await pr.correr();
+    assertSame(Boolean(pr.pendiente), true, "W4: proximo ciclo programado");
+    senales.emit("SIGTERM");
+    const estado = await fin;
+    assertSame(estado.senal === "SIGTERM" && estado.ciclos === 1, true, "W4: WATCH termina por SIGTERM tras 1 ciclo");
+    assertSame(pr.pendiente === null && pr.cancelados >= 1, true, "W4: el temporizador pendiente se cancela");
+    assertEqual(llamadas, 1, "W4: no se ejecuta ningun ciclo nuevo");
+    assertEqual(senales.listenerCount("SIGTERM") + senales.listenerCount("SIGINT"), 0, "W4: manejadores de senal desinstalados");
+  } finally {
+    wo1Limpiar(e);
+  }
+}
+
+async function testWORKEROPSW5SigtermDuranteCicloEsperaYNoReinicia() {
+  const { crearWorkerPassword } = wo1Worker();
+  let e;
+  try {
+    e = await wo1Escenario(1);
+    let llamadas = 0;
+    let liberarDrenaje;
+    const drenajeRetenido = new Promise((resolve) => { liberarDrenaje = resolve; });
+    let avisarInicio;
+    const inicioCiclo = new Promise((resolve) => { avisarInicio = resolve; });
+    const pr = wo1ProgramadorManual();
+    const senales = new WO1EventEmitter();
+    const w = crearWorkerPassword(wo1EnvParaConfig(e.controlDbPath), {
+      drenar: async () => { llamadas += 1; avisarInicio(); await drenajeRetenido; return { ok: true, total: 0, resultados: [] }; },
+      programar: pr.programar,
+      cancelar: pr.cancelar
+    });
+    const fin = w.iniciarWatch({ senales });
+    const corriendo = pr.correr();
+    await inicioCiclo;
+    assertSame(w.estado().cicloEnCurso, true, "W5: ciclo en curso");
+    senales.emit("SIGTERM");
+    let resuelto = false;
+    fin.then(() => { resuelto = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assertSame(resuelto, false, "W5: el WATCH espera el ciclo en curso antes de terminar");
+    liberarDrenaje();
+    await corriendo;
+    const estado = await fin;
+    assertSame(estado.senal === "SIGTERM" && estado.ciclos === 1, true, "W5: termina tras completar el ciclo en curso");
+    assertEqual(llamadas, 1, "W5: no empieza otro ciclo");
+    assertSame(pr.pendiente, null, "W5: nada programado despues de la senal");
+  } finally {
+    wo1Limpiar(e);
+  }
+}
+
+async function testWORKEROPSW6ConfigInvalidaFallaCerrado() {
+  const { validarConfiguracionPasswordWorker, crearWorkerPassword } = wo1Worker();
+  let e;
+  try {
+    e = await wo1Escenario(1);
+    const base = wo1EnvMulti(e.controlDbPath);
+    const casos = [
+      [{ ...base, ATLAS_AUTH_MODE: "legacy" }, "MODO_NO_CENTRAL"],
+      [{ ...base, ATLAS_TENANCY_MODE: "single" }, "MODO_NO_MULTI"],
+      [{ ...base, ATLAS_USER_BRIDGE_MODE: "off" }, "BRIDGE_NO_SHADOW"],
+      [{ ...base, ATLAS_CONTROL_DB_PATH: "relativa.db" }, "CONTROL_DB_RUTA_RELATIVA"],
+      [{ ...base, ATLAS_PASSWORD_WORKER_INTERVALO_MS: "500" }, "CONFIG_FUERA_DE_RANGO"]
+    ];
+    const antes = (await wo1Filas(e.controlDbPath, "password")).map((f) => f.estado).join(",");
+    for (const [env, codigo] of casos) {
+      const r = wo1Cli(WO1_PASSWORD_WORKER, ["--once"], env);
+      assertEqual(r.status, 2, `W6: exit 2 (${codigo})`);
+      assertSame(r.stderr.includes(`[${codigo}]`), true, `W6: codigo ${codigo}: ${r.stderr}`);
+    }
+    assertSame((await wo1Filas(e.controlDbPath, "password")).map((f) => f.estado).join(","), antes, "W6: ninguna base tocada");
+    assertSame(validarConfiguracionPasswordWorker({ ...wo1EnvParaConfig(e.controlDbPath), businessDbPath: e.tenants[0].dbPath }).errorCode, "RUTA_BUSINESS_NO_ADMITIDA", "W6: no acepta rutas de business DB");
+    let llamado = false;
+    const w = crearWorkerPassword({ ...wo1EnvParaConfig(e.controlDbPath), tenancyMode: "single" }, { drenar: async () => { llamado = true; } });
+    assertSame(w.ok === false && llamado === false, true, "W6: falla antes de invocar el drenaje");
+    const sinModo = wo1Cli(WO1_PASSWORD_WORKER, [], base);
+    assertEqual(sinModo.status, 2, "W6: sin --once/--watch -> exit 2");
+  } finally {
+    wo1Limpiar(e);
+  }
+}
+
+async function testWORKEROPSW7ControlInexistenteNoCreaArchivo() {
+  const inexistente = path.join(os.tmpdir(), `wo1-control-inexistente-${Date.now()}.db`);
+  for (const modo of ["--once", "--watch"]) {
+    const r = wo1Cli(WO1_PASSWORD_WORKER, [modo], wo1EnvMulti(inexistente));
+    assertEqual(r.status, 2, `W7: exit 2 (${modo})`);
+    assertSame(r.stderr.includes("[CONTROL_DB_AUSENTE]"), true, `W7: CONTROL_DB_AUSENTE (${modo})`);
+  }
+  assertSame(fs.existsSync(inexistente), false, "W7: nunca crea la Control DB");
+}
+
+async function testWORKEROPSW8DosDrenajesConcurrentesConvergen() {
+  let e;
+  try {
+    e = await wo1Escenario(3);
+    for (let ronda = 0; ronda < 3; ronda++) {
+      if (ronda > 0) await runSql(e.controlDbPath, "UPDATE sync_pendiente SET estado = 'pendiente', procesado_en = NULL WHERE tipo_operacion = 'password'");
+      const env = wo1EnvMulti(e.controlDbPath);
+      const [r1, r2] = await Promise.all([wo1CliAsync(WO1_PASSWORD_WORKER, ["--once"], env), wo1CliAsync(WO1_PASSWORD_WORKER, ["--once"], env)]);
+      for (const r of [r1, r2]) {
+        assertSame(r.status === 0 || r.status === 1, true, `W8 ronda ${ronda}: salida operacional controlada (status=${r.status})`);
+        assertSame(/Unhandled|UnhandledPromiseRejection|at .*\.js:\d+/.test(r.stderr), false, `W8 ronda ${ronda}: sin excepcion no manejada: ${r.stderr}`);
+      }
+      let filas = await wo1Filas(e.controlDbPath, "password");
+      if (filas.some((f) => f.estado !== "procesado")) {
+        const convergencia = wo1Cli(WO1_PASSWORD_WORKER, ["--once"], env);
+        assertEqual(convergencia.status, 0, `W8 ronda ${ronda}: un ciclo posterior converge`);
+        filas = await wo1Filas(e.controlDbPath, "password");
+      }
+      assertEqual(filas.length, 3, `W8 ronda ${ronda}: ninguna fila duplicada ni perdida`);
+      assertSame(filas.every((f) => f.estado === "procesado" && f.version_objetivo === 1), true, `W8 ronda ${ronda}: cierre correcto de la generacion`);
+      for (const t of e.tenants) {
+        assertSame((await allSql(t.dbPath, "SELECT password FROM usuarios WHERE id = ?", [t.localId]))[0].password, e.hash, `W8 ronda ${ronda}: espejo local correcto`);
+      }
+    }
+  } finally {
+    wo1Limpiar(e);
+  }
+}
+
+async function testWORKEROPSW9GeneracionNuevaPermanecePendiente() {
+  let e;
+  try {
+    e = await wo1Escenario(1);
+    const t = e.tenants[0];
+    // El drenaje paso version_objetivo=1 (lo que leyo); mientras procesaba llego la generacion 2.
+    await runSql(e.controlDbPath, "UPDATE sync_pendiente SET version_objetivo = 2 WHERE membership_id = ? AND tipo_operacion = 'password'", [t.membership.id]);
+    const r = await p1aProcesarPendientePasswordStandalone(
+      { usuarioId: e.central.id, empresaId: t.empresa.id, membershipId: t.membership.id, usuarioLocalId: t.localId, versionObjetivo: 1 },
+      { controlDbPath: e.controlDbPath }
+    );
+    assertSame(r.resultado, "PENDING_GENERACION_MAS_NUEVA", "W9: el cierre CAS de la generacion vieja no aplica");
+    let filas = await wo1Filas(e.controlDbPath, "password");
+    assertSame(filas[0].estado === "pendiente" && filas[0].version_objetivo === 2, true, "W9: la generacion nueva permanece pendiente");
+    const ciclo = wo1Cli(WO1_PASSWORD_WORKER, ["--once"], wo1EnvMulti(e.controlDbPath));
+    assertEqual(ciclo.status, 0, "W9: el ciclo siguiente del worker la procesa");
+    filas = await wo1Filas(e.controlDbPath, "password");
+    assertSame(filas[0].estado === "procesado" && filas[0].version_objetivo === 2, true, "W9: cerrada con su propia generacion");
+  } finally {
+    wo1Limpiar(e);
+  }
+}
+
+function wo1Ecosystem(flag) {
+  const r = spawnSync(process.execPath, ["-e", "process.stdout.write(JSON.stringify(require('./ecosystem.config.js')))"], { cwd: ROOT, env: wo1EnvHermetico(flag === undefined ? {} : { ATLAS_WORKERS_ENABLED: flag }), encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`ecosystem.config.js no carga: ${r.stderr}`);
+  return JSON.parse(r.stdout);
+}
+
+async function testWORKEROPSW10Pm2UnaInstanciaPorWorker() {
+  const cfg = wo1Ecosystem("1");
+  assertSame(JSON.stringify(cfg.apps.map((a) => a.name)), JSON.stringify(["atlas-os", "atlas-rol-activo-worker", "atlas-password-worker"]), "W10: tres procesos con el flag");
+  const scripts = { "atlas-rol-activo-worker": "database/run-rol-activo-worker.js", "atlas-password-worker": "database/run-password-worker.js" };
+  for (const app of cfg.apps.slice(1)) {
+    assertSame(app.instances === 1 && app.exec_mode === "fork", true, `W10: ${app.name} una instancia, fork`);
+    assertSame(app.autorestart === true && app.watch === false, true, `W10: ${app.name} autorestart sin watch`);
+    assertSame(app.script === scripts[app.name] && app.args === "--watch", true, `W10: ${app.name} script --watch`);
+    assertSame(JSON.stringify(app.stop_exit_codes), "[2]", `W10: ${app.name} no reintenta config invalida (exit 2)`);
+    assertSame(app.kill_timeout >= 10000, true, `W10: ${app.name} kill_timeout permite terminar el ciclo`);
+    assertSame(fs.existsSync(path.join(ROOT, app.script)), true, `W10: ${app.name} script existe`);
+  }
+  const logs = cfg.apps.flatMap((a) => [a.out_file, a.error_file]);
+  assertEqual(new Set(logs).size, 6, "W10: logs separados por proceso");
+  assertSame(JSON.stringify(wo1Ecosystem().apps.map((a) => a.name)), JSON.stringify(["atlas-os"]), "W10: sin flag solo atlas-os");
+  assertSame(JSON.stringify(wo1Ecosystem("0").apps.map((a) => a.name)), JSON.stringify(["atlas-os"]), "W10: flag distinto de 1 no habilita workers");
+}
+
+async function testWORKEROPSW11Pm2AtlasOsSinCambios() {
+  const original = {
+    name: "atlas-os",
+    script: "backend/server.js",
+    instances: 1,
+    autorestart: true,
+    watch: false,
+    max_memory_restart: "500M",
+    env: { NODE_ENV: "production", PORT: 3000 },
+    out_file: "/var/log/atlas-os/out.log",
+    error_file: "/var/log/atlas-os/error.log",
+    log_date_format: "YYYY-MM-DD HH:mm:ss",
+    merge_logs: true
+  };
+  assertSame(JSON.stringify(wo1Ecosystem().apps[0]), JSON.stringify(original), "W11: atlas-os identico sin flag");
+  assertSame(JSON.stringify(wo1Ecosystem("1").apps[0]), JSON.stringify(original), "W11: atlas-os identico con flag");
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  assertSame(pkg.scripts.start === "node backend/server.js" && pkg.scripts.prestart === "node scripts/backup-db.js --if-exists", true, "W11: npm start/prestart sin cambios");
+}
+
+async function testWORKEROPSW12SinSecretosEnConfigNiLogs() {
+  // Se inspecciona lo que PM2 inyectaria como entorno (claves y valores de `env`), no los nombres de
+  // proceso: "atlas-password-worker" nombra el outbox, no contiene un secreto.
+  for (const app of wo1Ecosystem("1").apps) {
+    const env = app.env || {};
+    assertSame(Object.keys(env).some((k) => /TOKEN|SECRET|PASSWORD|MASTER|KEY|CREDENTIAL/i.test(k)), false, `W12: ${app.name} sin variables sensibles en env`);
+    assertSame(Object.values(env).some((v) => typeof v === "string" && v.length >= 20), false, `W12: ${app.name} sin valores tipo secreto en env`);
+  }
+  let e;
+  try {
+    e = await wo1Escenario(1);
+    const once = wo1Cli(WO1_PASSWORD_WORKER, ["--once"], wo1EnvMulti(e.controlDbPath));
+    const watch = wo1Cli(WO1_PASSWORD_WORKER, ["--watch", "--max-ciclos=1"], wo1EnvMulti(e.controlDbPath, { ATLAS_PASSWORD_WORKER_INTERVALO_MS: "1000" }));
+    assertEqual(watch.status, 0, `W12: WATCH termina limpio con --max-ciclos: ${watch.stderr}`);
+    const salida = once.stdout + once.stderr + watch.stdout + watch.stderr;
+    assertSame(salida.includes(e.hash) || /\$2[aby]\$/.test(salida) || salida.includes("password_hash"), false, "W12: logs sin hashes");
+    assertSame(salida.includes(e.controlDbPath), false, "W12: logs sin rutas de bases");
+    assertSame(/WATCH iniciado: intervaloMs=1000/.test(watch.stdout) && /WATCH detenido \(MAX_CICLOS\) tras 1 ciclos/.test(watch.stdout), true, `W12: observabilidad de arranque y detencion: ${watch.stdout}`);
+  } finally {
+    wo1Limpiar(e);
+  }
+}
+
+async function testWORKEROPSW13RolActivoWatchConservaContratos() {
+  let e;
+  try {
+    e = await wo1Escenario(1);
+    const r = wo1Cli(WO1_ROL_WORKER, ["--watch", "--max-ciclos=2"], wo1EnvMulti(e.controlDbPath, { ATLAS_ROL_ACTIVO_WORKER_INTERVALO_MS: "1000" }));
+    assertEqual(r.status, 0, `W13: rol_activo WATCH termina limpio: ${r.stderr}`);
+    assertSame(/rol_activo worker WATCH: ciclo=1 /.test(r.stdout) && /rol_activo worker WATCH: ciclo=2 /.test(r.stdout), true, "W13: ciclos secuenciales informados");
+    assertSame(/WATCH detenido \(MAX_CICLOS\) tras 2 ciclos/.test(r.stdout), true, "W13: detencion ordenada");
+    const invalido = wo1Cli(WO1_ROL_WORKER, ["--once"], { ...wo1EnvMulti(e.controlDbPath), ATLAS_TENANCY_MODE: "single" });
+    assertSame(invalido.status === 2 && invalido.stderr.includes("[MODO_NO_MULTI]"), true, "W13: rol_activo sigue fallando cerrado");
+  } finally {
+    wo1Limpiar(e);
+  }
+}
+
+async function testWORKEROPSW14SeparacionPorTipoDeOutbox() {
+  let e;
+  try {
+    e = await wo1Escenario(1);
+    const t = e.tenants[0];
+    await runSql(e.controlDbPath,
+      `INSERT INTO sync_pendiente (usuario_id, empresa_id, membership_id, usuario_local_id, tipo_operacion, version_objetivo, estado)
+       VALUES (?, ?, ?, ?, 'rol_activo', 1, 'pendiente')`,
+      [e.central.id, t.empresa.id, t.membership.id, t.localId]);
+    const passwordAntes = JSON.stringify(await wo1Filas(e.controlDbPath, "password"));
+    const rRol = wo1Cli(WO1_ROL_WORKER, ["--once"], wo1EnvMulti(e.controlDbPath));
+    assertSame(rRol.status === 0 || rRol.status === 1, true, "W14: rol_activo ONCE ejecuta");
+    assertSame(JSON.stringify(await wo1Filas(e.controlDbPath, "password")), passwordAntes, "W14: el worker rol_activo no toca filas password");
+    const rolTrasRol = JSON.stringify(await wo1Filas(e.controlDbPath, "rol_activo"));
+    const rPass = wo1Cli(WO1_PASSWORD_WORKER, ["--once"], wo1EnvMulti(e.controlDbPath));
+    assertEqual(rPass.status, 0, "W14: password ONCE ejecuta");
+    assertSame(JSON.stringify(await wo1Filas(e.controlDbPath, "rol_activo")), rolTrasRol, "W14: el worker password no toca filas rol_activo");
+    assertSame((await wo1Filas(e.controlDbPath, "password")).every((f) => f.estado === "procesado"), true, "W14: el worker password procesa las suyas");
+  } finally {
+    wo1Limpiar(e);
+  }
+}
+
+async function testWORKEROPSW15ShutdownDeAmbosWorkersParaBackup() {
+  const { crearWorkerPassword } = wo1Worker();
+  let e;
+  try {
+    e = await wo1Escenario(1);
+    const senales = new WO1EventEmitter();
+    const prPass = wo1ProgramadorManual();
+    const prRol = wo1ProgramadorManual();
+    const pass = crearWorkerPassword(wo1EnvParaConfig(e.controlDbPath), { programar: prPass.programar, cancelar: prPass.cancelar });
+    const rol = b2s0b3bCrearWorkerRolActivo(wo1EnvParaConfig(e.controlDbPath), { programar: prRol.programar, cancelar: prRol.cancelar });
+    assertSame(pass.ok && rol.ok, true, "W15: ambos workers creados con la config multi");
+    const finPass = pass.iniciarWatch({ senales });
+    const finRol = rol.iniciarWatch({ senales });
+    await prPass.correr();
+    await prRol.correr();
+    senales.emit("SIGINT"); // pm2 stop envia SIGINT
+    const [ePass, eRol] = await Promise.all([finPass, finRol]);
+    assertSame(ePass.senal === "SIGINT" && eRol.senal === "SIGINT", true, "W15: ambos terminan ante SIGINT (pm2 stop)");
+    assertSame(prPass.pendiente === null && prRol.pendiente === null, true, "W15: ningun ciclo queda programado");
+    assertSame(pass.estado().cicloEnCurso === false && rol.estado().cicloEnCurso === false, true, "W15: sin escrituras en curso al terminar");
+    assertSame((await wo1Filas(e.controlDbPath, "password")).every((f) => f.estado === "procesado"), true, "W15: el ciclo real del worker password completo antes de detenerse");
+    const cfg = wo1Ecosystem("1");
+    assertSame(cfg.apps.slice(1).every((a) => a.kill_timeout >= 10000), true, "W15: PM2 espera el cierre ordenado antes de forzar");
+  } finally {
+    wo1Limpiar(e);
+  }
 }
 
 async function testP1ASRControlSchemaNuevoContienePasswordVersionDefault0() {
