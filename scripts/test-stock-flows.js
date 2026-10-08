@@ -35598,28 +35598,56 @@ async function testMT1E5DSameBusinessTransactionAuthority() {
 }
 
 async function testMT1E5DModuleSinSideEffects() {
-  const tmpDir = os.tmpdir();
-  const script = [
-    `const before = require('fs').readdirSync(${JSON.stringify(tmpDir)}).length;`,
-    `const mod = require(${JSON.stringify(PROVISION_TENANT_DB_PATH)});`,
-    `const after = require('fs').readdirSync(${JSON.stringify(tmpDir)}).length;`,
-    "console.log(JSON.stringify({ exportKeys: Object.keys(mod), exportType: typeof mod.provisionarTenantDb, tmpDirDelta: after - before }));"
-  ].join("\n");
-  const resultado = await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["-e", script]);
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (d) => { out += d.toString(); });
-    child.stderr.on("data", (d) => { err += d.toString(); });
-    child.on("exit", (code) => {
-      if (code !== 0) { reject(new Error(`worker fallo (code=${code}): ${err}`)); return; }
-      resolve(JSON.parse(out.trim()));
+  // ONBOARD-1B-R2: el tmpdir GLOBAL del host es compartido -- otro proceso puede crear/borrar ahi
+  // durante la ventana (delta -1 sin side effect del modulo). El child corre con un tmpdir PRIVADO
+  // (TMP/TEMP/TMPDIR) con un sentinel, y se compara el inventario EXACTO (path, tipo, size,
+  // sha256) antes y despues del require: creacion, borrado, rename o modificacion fallan.
+  const privateDir = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-mt1e5d-module-"));
+  try {
+    const sentinelContenido = "ATLAS MT1E5D module side-effect sentinel v1\n";
+    fs.writeFileSync(path.join(privateDir, "sentinel.txt"), sentinelContenido);
+    const sentinelEsperado = `sentinel.txt|file|${Buffer.byteLength(sentinelContenido)}|${crypto.createHash("sha256").update(sentinelContenido).digest("hex")}`;
+    const script = [
+      "const fs = require('fs'); const os = require('os'); const path = require('path'); const crypto = require('crypto');",
+      `const root = ${JSON.stringify(privateDir)};`,
+      "function inventario(dir, rel) {",
+      "  const entradas = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));",
+      "  return entradas.flatMap((e) => {",
+      "    const abs = path.join(dir, e.name); const r = rel ? rel + '/' + e.name : e.name;",
+      "    if (e.isDirectory()) return [r + '|dir'].concat(inventario(abs, r));",
+      "    if (e.isFile()) { const buf = fs.readFileSync(abs); return [r + '|file|' + buf.length + '|' + crypto.createHash('sha256').update(buf).digest('hex')]; }",
+      "    return [r + '|other'];",
+      "  });",
+      "}",
+      "const childTmpdir = os.tmpdir();",
+      "const before = inventario(root, '');",
+      `const mod = require(${JSON.stringify(PROVISION_TENANT_DB_PATH)});`,
+      "const after = inventario(root, '');",
+      "console.log(JSON.stringify({ exportKeys: Object.keys(mod), exportType: typeof mod.provisionarTenantDb, childTmpdir, before, after }));"
+    ].join("\n");
+    const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !["TMP", "TEMP", "TMPDIR"].includes(k.toUpperCase())));
+    Object.assign(env, { TMP: privateDir, TEMP: privateDir, TMPDIR: privateDir });
+    const resultado = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ["-e", script], { env });
+      let out = "";
+      let err = "";
+      child.stdout.on("data", (d) => { out += d.toString(); });
+      child.stderr.on("data", (d) => { err += d.toString(); });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        if (code !== 0) { reject(new Error(`worker fallo (code=${code}): ${err}`)); return; }
+        resolve(JSON.parse(out.trim()));
+      });
     });
-  });
 
-  assertSame(JSON.stringify(resultado.exportKeys), JSON.stringify(["provisionarTenantDb"]), "el modulo debe exportar exactamente una funcion: provisionarTenantDb");
-  assertSame(resultado.exportType, "function", "provisionarTenantDb debe ser una funcion");
-  assertEqual(resultado.tmpDirDelta, 0, "solo requerir el modulo no debe crear ningun archivo en tmpdir");
+    assertSame(JSON.stringify(resultado.exportKeys), JSON.stringify(["provisionarTenantDb"]), "el modulo debe exportar exactamente una funcion: provisionarTenantDb");
+    assertSame(resultado.exportType, "function", "provisionarTenantDb debe ser una funcion");
+    assertSame(path.resolve(resultado.childTmpdir).toLowerCase(), path.resolve(privateDir).toLowerCase(), "el os.tmpdir() del child debe ser el tmpdir privado del test");
+    assertSame(JSON.stringify(resultado.before), JSON.stringify([sentinelEsperado]), "el inventario previo debe contener exactamente el sentinel intacto");
+    assertSame(JSON.stringify(resultado.after), JSON.stringify(resultado.before), "solo requerir el modulo no debe crear, borrar, renombrar ni modificar nada en tmpdir");
+  } finally {
+    fs.rmSync(privateDir, { recursive: true, force: true });
+  }
 }
 
 async function testMT1E5DUnsupportedFutureCatalogRejected() {
