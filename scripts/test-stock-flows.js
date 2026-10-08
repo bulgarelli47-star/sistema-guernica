@@ -21486,6 +21486,18 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testONBOARDO16ConfigMinimaUsable);
   await _run(testONBOARDO17ResultadoSinSecretos);
   await _run(testONBOARDO18CliPasswordSoloPorStdin);
+  await _run(testSECXSSSX1EscapeBasico);
+  await _run(testSECXSSSX2ClienteNombreImgQuedaTexto);
+  await _run(testSECXSSSX3ObservacionGeneralSvgQuedaTexto);
+  await _run(testSECXSSSX4ObservacionItemScriptQuedaTexto);
+  await _run(testSECXSSSX5TextoLegitimoConservaRepresentacion);
+  await _run(testSECXSSSX6ListaSinMarkupAtacante);
+  await _run(testSECXSSSX7DetalleSinMarkupAtacante);
+  await _run(testSECXSSSX8EndpointPublicoPersisteTextoOriginal);
+  await _run(testSECXSSSX9StoredXssEndToEnd);
+  await _run(testSECXSSSX10EstructuraYAccionesDelModal);
+  await _run(testSECXSSSX11RenderNoAlteraTotalesEstadoItems);
+  await _run(testSECXSSSX12PayloadTenantANoApareceEnB);
   await closeBackendDb();
   console.log("OK stock, ventas, caja y permisos basicos");
 })().catch((error) => {
@@ -50371,6 +50383,286 @@ async function testONBOARDO18CliPasswordSoloPorStdin() {
     assertSame(ok.status === 0 && ok.json.status === "ONBOARDED", true, `O18: password por STDIN funciona: ${ok.stdout}`);
     assertSame(onbArgs(c).some((a) => a.includes(c.opciones.admin.password)), false, "O18: la password nunca viaja en argv");
     assertSame(await bcrypt.compare(c.opciones.admin.password, (await allSql(c.dbPath, "SELECT password FROM usuarios WHERE usuario = 'duenio'"))[0].password), true, "O18: la password de STDIN es la registrada");
+  });
+}
+
+// SEC-XSS-1: PUBLIC ORDER -> PRIVILEGED DOM. Los renderers de pedidos del Dashboard se extraen del
+// frontend/dashboard.html REAL (extraccion controlada: mismas funciones, sin cargar la pagina
+// entera) y se evaluan en un vm aislado. La DB conserva el texto original; el sink lo codifica.
+const SECXSS_PAYLOADS = {
+  X1: "<img src=x onerror=alert(1)>",
+  X2: "<svg onload=alert(1)>",
+  X3: "</small><script>alert(1)</script>",
+  X4: "Juan & \"Manu\" <3"
+};
+const SECXSS_PROHIBIDOS = ["<script", "<img", "<svg", "onerror=", "onload="];
+
+function secxssExtraerDeclaracion(script, nombre) {
+  const marca = `function ${nombre}(`;
+  if (script.split(marca).length === 2) {
+    const inicio = script.indexOf(marca);
+    const llave = script.indexOf("{", script.indexOf(")", inicio));
+    let profundidad = 0;
+    for (let j = llave; j < script.length; j += 1) {
+      if (script[j] === "{") profundidad += 1;
+      else if (script[j] === "}" && --profundidad === 0) return script.slice(inicio, j + 1);
+    }
+    throw new Error(`dashboard.html: function ${nombre} sin cierre`);
+  }
+  const coincidencias = script.match(new RegExp(`const ${nombre}=[^;]*;`, "g"));
+  if (!coincidencias || coincidencias.length !== 1) throw new Error(`dashboard.html: declaracion de ${nombre} ausente o no unica`);
+  return coincidencias[0];
+}
+
+function secxssCargarRenderers() {
+  const html = fs.readFileSync(path.join(ROOT, "frontend", "dashboard.html"), "utf8");
+  const match = html.match(/<script>([\s\S]*?)<\/script>/);
+  if (!match) throw new Error("No se encontro <script> inline en dashboard.html");
+  const nombres = ["money", "n", "escapeHtml", "estadoTiendaBadge", "renderTiendaPedidosList", "renderAccionesPedido", "renderOpcionesPedidoItem", "renderDetallePedido"];
+  const contexto = vm.createContext({});
+  vm.runInContext(nombres.map((nombre) => secxssExtraerDeclaracion(match[1], nombre)).join("\n"), contexto);
+  return vm.runInContext("({ escapeHtml, estadoTiendaBadge, renderTiendaPedidosList, renderOpcionesPedidoItem, renderDetallePedido })", contexto);
+}
+
+function secxssAssertSinMarkup(html, etiqueta) {
+  const minusculas = html.toLowerCase();
+  for (const prohibido of SECXSS_PROHIBIDOS) {
+    assertSame(minusculas.includes(prohibido), false, `${etiqueta}: el HTML privilegiado no debe contener '${prohibido}' del payload`);
+  }
+}
+
+function secxssDecodificar(texto) {
+  return texto.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&#039;/g, "'").replace(/&#61;/g, "=").replace(/&amp;/g, "&");
+}
+
+function secxssPedido(overrides = {}) {
+  return {
+    id: 7, codigo_publico: "PED-SECXSS", cliente_nombre: "Cliente", cliente_telefono: "", observacion: "",
+    estado: "recibido", total_estimado: 1200, creado_en: "2026-10-08T12:34:56.000Z", items_count: 1,
+    tomado_por_nombre: null, motivo_rechazo: null,
+    items: [{ id: 1, producto_nombre_snapshot: "Producto", cantidad: 1, subtotal_snapshot: 1200, observacion: "", modificadores: [], ingredientes: [] }],
+    ...overrides
+  };
+}
+
+// Pedido creado por el endpoint PUBLICO real sobre una DB efimera (sin bypass).
+async function secxssConPedidoPublico(cuerpoPedido, fn) {
+  await withFreshTestDb(async (baseUrl, dbPath) => {
+    const adminToken = await login(baseUrl, "admin", "admin123");
+    const categoriaId = await crearCategoria(baseUrl, adminToken, "SECXSS Tienda");
+    const productoId = await crearProducto(baseUrl, adminToken, { nombre: "Producto SECXSS", categoria: "SECXSS Tienda", categoria_id: categoriaId, precio_venta: 600, stock: 50, maneja_stock: true });
+    const { response, data } = await requestJson(baseUrl, "POST", "/tienda/publica/pedidos", cuerpoPedido(productoId));
+    assertEqual(response.status, 201, `POST publico debe aceptar el pedido: ${data && data.message}`);
+    const { data: lista } = await requestJson(baseUrl, "GET", "/tienda/pedidos", null, adminToken);
+    const pedidoLista = lista.find((p) => p.codigo_publico === data.codigo_publico);
+    if (!pedidoLista) throw new Error("el pedido publico debe aparecer en GET /tienda/pedidos");
+    await fn({ baseUrl, dbPath, adminToken, productoId, creado: data, lista, pedidoLista });
+  });
+}
+
+function secxssCuerpoAtaque(productoId) {
+  return {
+    cliente_nombre: SECXSS_PAYLOADS.X1,
+    cliente_telefono: SECXSS_PAYLOADS.X3,
+    observacion: SECXSS_PAYLOADS.X2,
+    items: [{ producto_id: productoId, cantidad: 2, observacion: SECXSS_PAYLOADS.X3, modificadores: [], ingredientes: [] }]
+  };
+}
+
+async function testSECXSSSX1EscapeBasico() {
+  const { escapeHtml } = secxssCargarRenderers();
+  assertSame(escapeHtml("& < > \" '"), "&amp; &lt; &gt; &quot; &#039;", "escape de & < > \" '");
+  assertSame(escapeHtml("a=b"), "a&#61;b", "'=' tambien se codifica (atributos inyectados no sobreviven como texto 'x=')");
+  assertSame(escapeHtml("&lt;"), "&amp;lt;", "un & preexistente se codifica: el texto no se reinterpreta como entidad");
+  assertSame(escapeHtml(null), "", "null -> vacio");
+  assertSame(escapeHtml(undefined), "", "undefined -> vacio");
+  assertSame(escapeHtml(42), "42", "numero -> texto");
+  assertSame(escapeHtml("Juan Perez 11-5555"), "Juan Perez 11-5555", "texto comun queda identico");
+}
+
+async function testSECXSSSX2ClienteNombreImgQuedaTexto() {
+  const { renderTiendaPedidosList } = secxssCargarRenderers();
+  const html = renderTiendaPedidosList([secxssPedido({ cliente_nombre: SECXSS_PAYLOADS.X1 })]);
+  secxssAssertSinMarkup(html, "SX2 lista");
+  assertSame(html.includes("&lt;img src&#61;x onerror&#61;alert(1)&gt;"), true, "cliente_nombre debe aparecer como texto codificado");
+}
+
+async function testSECXSSSX3ObservacionGeneralSvgQuedaTexto() {
+  const { renderDetallePedido } = secxssCargarRenderers();
+  const html = renderDetallePedido(secxssPedido({ observacion: SECXSS_PAYLOADS.X2 }));
+  secxssAssertSinMarkup(html, "SX3 detalle");
+  assertSame(html.includes("Obs. general: <em>\"&lt;svg onload&#61;alert(1)&gt;\"</em>"), true, "observacion general como texto codificado dentro de su <em>");
+}
+
+async function testSECXSSSX4ObservacionItemScriptQuedaTexto() {
+  const { renderDetallePedido } = secxssCargarRenderers();
+  const pedido = secxssPedido();
+  pedido.items[0].observacion = SECXSS_PAYLOADS.X3;
+  const html = renderDetallePedido(pedido);
+  secxssAssertSinMarkup(html, "SX4 detalle");
+  assertSame(html.includes("<small style=\"font-style:italic\">\"&lt;/small&gt;&lt;script&gt;alert(1)&lt;/script&gt;\"</small>"), true, "observacion de item no cierra el <small> ni abre <script>");
+  assertSame((html.match(/<\/small>/g) || []).length, (html.match(/<small/g) || []).length, "los <small> siguen balanceados: el payload no cerro ninguno");
+}
+
+async function testSECXSSSX5TextoLegitimoConservaRepresentacion() {
+  const { renderTiendaPedidosList, renderDetallePedido } = secxssCargarRenderers();
+  const pedido = secxssPedido({ cliente_nombre: SECXSS_PAYLOADS.X4, observacion: SECXSS_PAYLOADS.X4 });
+  pedido.items[0].observacion = SECXSS_PAYLOADS.X4;
+  const lista = renderTiendaPedidosList([pedido]);
+  const detalle = renderDetallePedido(pedido);
+  const codificado = "Juan &amp; &quot;Manu&quot; &lt;3";
+  assertSame(lista.includes(`<small>${codificado} · 12:34</small>`), true, "lista: el nombre legitimo se codifica una sola vez");
+  assertSame(detalle.includes(`<em>"${codificado}"</em>`), true, "detalle: observacion general legitima codificada");
+  assertSame(secxssDecodificar(codificado), SECXSS_PAYLOADS.X4, "lo que ve el humano es exactamente el texto original");
+  assertSame(lista.includes("&amp;amp;"), false, "sin doble codificacion");
+}
+
+async function testSECXSSSX6ListaSinMarkupAtacante() {
+  const { renderTiendaPedidosList } = secxssCargarRenderers();
+  const pedidos = [
+    secxssPedido({ id: 1, cliente_nombre: SECXSS_PAYLOADS.X1, cliente_telefono: SECXSS_PAYLOADS.X2 }),
+    secxssPedido({ id: 2, cliente_nombre: SECXSS_PAYLOADS.X3, cliente_telefono: SECXSS_PAYLOADS.X1, estado: "rechazado" }),
+    secxssPedido({ id: 3, codigo_publico: SECXSS_PAYLOADS.X2, estado: SECXSS_PAYLOADS.X3, creado_en: `2026-10-08T${SECXSS_PAYLOADS.X1}` })
+  ];
+  const html = renderTiendaPedidosList(pedidos);
+  secxssAssertSinMarkup(html, "SX6 lista");
+  assertEqual((html.match(/data-tienda-detalle="/g) || []).length, 3, "las 3 filas siguen presentes con su boton de detalle");
+}
+
+async function testSECXSSSX7DetalleSinMarkupAtacante() {
+  const { renderDetallePedido } = secxssCargarRenderers();
+  const pedido = secxssPedido({
+    estado: "rechazado", observacion: SECXSS_PAYLOADS.X2, tomado_por_nombre: SECXSS_PAYLOADS.X1, motivo_rechazo: SECXSS_PAYLOADS.X3,
+    items: [{
+      id: 1, producto_nombre_snapshot: SECXSS_PAYLOADS.X1, cantidad: 1, subtotal_snapshot: 100, observacion: SECXSS_PAYLOADS.X3,
+      modificadores: [
+        { nombre: SECXSS_PAYLOADS.X1, tipo: "extra", precio_extra: 10 },
+        { nombre: SECXSS_PAYLOADS.X2, tipo: "observacion", precio_extra: 0 },
+        { nombre: SECXSS_PAYLOADS.X3, tipo: "quitar", precio_extra: 0 }
+      ],
+      ingredientes: [{ nombre: SECXSS_PAYLOADS.X2, tipo: "quitar" }]
+    }]
+  });
+  const html = renderDetallePedido(pedido);
+  secxssAssertSinMarkup(html, "SX7 detalle");
+  for (const fragmento of ["Tomado por &lt;img", "Motivo rechazo: \"&lt;/small&gt;&lt;script&gt;", "+ &lt;img", "Opción: &lt;svg", "- Sin &lt;/small&gt;", "- Sin &lt;svg", "× &lt;img"]) {
+    assertSame(html.includes(fragmento), true, `SX7: falta el texto codificado '${fragmento}'`);
+  }
+  const { renderOpcionesPedidoItem } = secxssCargarRenderers();
+  secxssAssertSinMarkup(renderOpcionesPedidoItem(pedido.items[0]), "SX7 opciones");
+}
+
+async function testSECXSSSX8EndpointPublicoPersisteTextoOriginal() {
+  await secxssConPedidoPublico(secxssCuerpoAtaque, async ({ baseUrl, dbPath, adminToken, pedidoLista }) => {
+    const fila = (await allSql(dbPath, "SELECT cliente_nombre, cliente_telefono, observacion FROM tienda_pedidos WHERE id = ?", [pedidoLista.id]))[0];
+    assertSame(fila.cliente_nombre, SECXSS_PAYLOADS.X1, "DB conserva cliente_nombre exacto (sin sanitizado destructivo)");
+    assertSame(fila.cliente_telefono, SECXSS_PAYLOADS.X3, "DB conserva cliente_telefono exacto");
+    assertSame(fila.observacion, SECXSS_PAYLOADS.X2, "DB conserva observacion exacta");
+    const item = (await allSql(dbPath, "SELECT observacion FROM tienda_pedido_items WHERE pedido_id = ?", [pedidoLista.id]))[0];
+    assertSame(item.observacion, SECXSS_PAYLOADS.X3, "DB conserva observacion de item exacta");
+    const { data: detalle } = await requestJson(baseUrl, "GET", `/tienda/pedidos/${pedidoLista.id}`, null, adminToken);
+    assertSame(detalle.cliente_nombre, SECXSS_PAYLOADS.X1, "la API devuelve el texto crudo (JSON), no HTML pre-renderizado");
+    assertSame(detalle.items[0].observacion, SECXSS_PAYLOADS.X3, "la API devuelve la observacion de item cruda");
+    assertSame(pedidoLista.cliente_nombre, SECXSS_PAYLOADS.X1, "la lista devuelve el nombre crudo");
+  });
+}
+
+async function testSECXSSSX9StoredXssEndToEnd() {
+  await secxssConPedidoPublico(secxssCuerpoAtaque, async ({ baseUrl, dbPath, adminToken, lista, pedidoLista }) => {
+    const { renderTiendaPedidosList, renderDetallePedido } = secxssCargarRenderers();
+    assertSame((await allSql(dbPath, "SELECT cliente_nombre FROM tienda_pedidos WHERE id = ?", [pedidoLista.id]))[0].cliente_nombre, SECXSS_PAYLOADS.X1, "payload almacenado");
+    const htmlLista = renderTiendaPedidosList(lista);
+    secxssAssertSinMarkup(htmlLista, "SX9 lista (GET autenticado real)");
+    assertSame(htmlLista.includes("&lt;img src&#61;x onerror&#61;alert(1)&gt;"), true, "SX9 lista: texto codificado presente");
+    const { response, data: detalle } = await requestJson(baseUrl, "GET", `/tienda/pedidos/${pedidoLista.id}`, null, adminToken);
+    assertEqual(response.status, 200, "GET detalle autenticado");
+    const htmlDetalle = renderDetallePedido(detalle);
+    secxssAssertSinMarkup(htmlDetalle, "SX9 detalle (GET autenticado real)");
+    assertSame(htmlDetalle.includes("&lt;svg onload&#61;alert(1)&gt;"), true, "SX9 detalle: observacion general codificada");
+    assertSame(htmlDetalle.includes("&lt;/small&gt;&lt;script&gt;alert(1)&lt;/script&gt;"), true, "SX9 detalle: observacion de item codificada");
+
+    // motivo_rechazo (texto interno) y tomado_por recorren la misma cadena hasta el mismo sink.
+    assertEqual((await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedidoLista.id}/aceptar`, {}, adminToken)).response.status, 200, "aceptar");
+    assertEqual((await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedidoLista.id}/rechazar`, { motivo: SECXSS_PAYLOADS.X1 }, adminToken)).response.status, 200, "rechazar con motivo hostil");
+    const { data: rechazado } = await requestJson(baseUrl, "GET", `/tienda/pedidos/${pedidoLista.id}`, null, adminToken);
+    assertSame(rechazado.motivo_rechazo, SECXSS_PAYLOADS.X1, "motivo persistido crudo");
+    const htmlRechazado = renderDetallePedido(rechazado);
+    secxssAssertSinMarkup(htmlRechazado, "SX9 detalle rechazado");
+    assertSame(htmlRechazado.includes("Motivo rechazo: \"&lt;img"), true, "motivo codificado");
+  });
+}
+
+async function testSECXSSSX10EstructuraYAccionesDelModal() {
+  const { renderDetallePedido, renderTiendaPedidosList, estadoTiendaBadge } = secxssCargarRenderers();
+  const acciones = {
+    recibido: ["data-tienda-rechazar=\"7\"", "data-tienda-aceptar=\"7\""],
+    aceptado: ["data-tienda-rechazar=\"7\"", "data-tienda-listo=\"7\""],
+    preparando: ["data-tienda-listo=\"7\""],
+    listo: ["data-tienda-convertir=\"7\""]
+  };
+  for (const [estado, botones] of Object.entries(acciones)) {
+    const html = renderDetallePedido(secxssPedido({ estado, cliente_nombre: SECXSS_PAYLOADS.X1, observacion: SECXSS_PAYLOADS.X2 }));
+    for (const boton of botones) assertSame(html.includes(boton), true, `SX10 ${estado}: falta ${boton}`);
+    assertSame(html.includes("id=\"volverListaPedidos\""), true, `SX10 ${estado}: boton volver presente`);
+    assertSame(html.includes("<div class=\"dialog-actions\">"), true, `SX10 ${estado}: acciones presentes`);
+    assertSame(html.includes("Total estimado</span><strong>$1200.00</strong>"), true, `SX10 ${estado}: total intacto`);
+  }
+  const convertido = renderDetallePedido(secxssPedido({ estado: "convertido_venta" }));
+  assertSame(convertido.includes("href=\"/ventas.html\""), true, "SX10: link a Ventas en convertido");
+  assertSame(estadoTiendaBadge("listo").includes(">Listo</span>"), true, "SX10: badge con label normal");
+  assertSame(estadoTiendaBadge("<b>x</b>").includes("&lt;b&gt;x&lt;/b&gt;"), true, "SX10: estado desconocido cae a texto codificado");
+  const lista = renderTiendaPedidosList([secxssPedido(), secxssPedido({ id: 8, estado: "rechazado" })]);
+  assertSame(lista.includes("Activos (1)") && lista.includes("Finalizados/Rechazados (1)"), true, "SX10: secciones de la lista intactas");
+  assertSame(renderTiendaPedidosList([]).includes("Sin pedidos registrados."), true, "SX10: lista vacia intacta");
+}
+
+async function testSECXSSSX11RenderNoAlteraTotalesEstadoItems() {
+  await secxssConPedidoPublico(secxssCuerpoAtaque, async ({ baseUrl, dbPath, adminToken, creado, pedidoLista }) => {
+    const { renderTiendaPedidosList, renderDetallePedido } = secxssCargarRenderers();
+    const { data: detalle } = await requestJson(baseUrl, "GET", `/tienda/pedidos/${pedidoLista.id}`, null, adminToken);
+    const antes = JSON.stringify(detalle);
+    renderDetallePedido(detalle);
+    renderTiendaPedidosList([pedidoLista]);
+    assertSame(JSON.stringify(detalle), antes, "renderizar no muta el objeto pedido");
+    assertEqual(detalle.total_estimado, 1200, "total del pedido = 2 x 600 (sin cambios)");
+    assertEqual(creado.total_estimado, 1200, "total devuelto al publico intacto");
+    assertSame(detalle.estado, "recibido", "estado inicial intacto");
+    assertEqual(detalle.items.length, 1, "items intactos");
+    assertEqual(detalle.items[0].cantidad, 2, "cantidad intacta");
+    assertEqual(detalle.items[0].subtotal_snapshot, 1200, "subtotal intacto");
+    assertEqual((await requestJson(baseUrl, "POST", `/tienda/pedidos/${pedidoLista.id}/aceptar`, {}, adminToken)).response.status, 200, "workflow aceptar intacto");
+    const { data: aceptado } = await requestJson(baseUrl, "GET", `/tienda/pedidos/${pedidoLista.id}`, null, adminToken);
+    assertSame(aceptado.estado, "aceptado", "estado avanza normalmente");
+    assertEqual(aceptado.total_estimado, 1200, "total sigue intacto tras aceptar");
+    const fila = (await allSql(dbPath, "SELECT total_estimado, estado FROM tienda_pedidos WHERE id = ?", [pedidoLista.id]))[0];
+    assertEqual(fila.total_estimado, 1200, "DB: total intacto");
+    assertSame(fila.estado, "aceptado", "DB: estado coherente");
+  });
+}
+
+async function testSECXSSSX12PayloadTenantANoApareceEnB() {
+  await mt1f4ConEscenario(async ({ a, b, pedir, loginTenant }) => {
+    for (const tenant of [a, b]) {
+      tenant.productoSecxss = (await runSql(tenant.dbPath, "INSERT INTO productos (nombre, precio_venta, stock, maneja_stock, activo) VALUES (?, 100, 0, 0, 1)", [`Producto SECXSS ${tenant.tag}`])).lastID;
+    }
+    const creado = await pedir(a, "POST", "/tienda/publica/pedidos", { cliente_nombre: SECXSS_PAYLOADS.X1, observacion: SECXSS_PAYLOADS.X2, items: [{ producto_id: a.productoSecxss, cantidad: 1, observacion: SECXSS_PAYLOADS.X3 }] });
+    assertEqual(creado.status, 201, `pedido publico en tenant A: ${creado.texto}`);
+    const tokenA = await loginTenant(a);
+    const tokenB = await loginTenant(b);
+    const listaA = await pedir(a, "GET", "/tienda/pedidos", null, tokenA);
+    const listaB = await pedir(b, "GET", "/tienda/pedidos", null, tokenB);
+    assertEqual(listaA.status, 200, "lista A");
+    assertEqual(listaB.status, 200, "lista B");
+    assertSame(listaA.json.some((p) => p.cliente_nombre === SECXSS_PAYLOADS.X1), true, "el payload pertenece a A");
+    assertEqual(listaB.json.length, 0, "B no ve pedidos de A");
+    assertSame(listaB.texto.includes("onerror"), false, "el payload de A no aparece en ninguna respuesta de B");
+    const idA = listaA.json[0].id;
+    assertEqual((await pedir(b, "GET", `/tienda/pedidos/${idA}`, null, tokenB)).status, 404, "el detalle de A no existe en B");
+    assertEqual((await allSql(b.dbPath, "SELECT COUNT(*) AS c FROM tienda_pedidos"))[0].c, 0, "DB de B sin pedidos");
+    const { renderTiendaPedidosList, renderDetallePedido } = secxssCargarRenderers();
+    assertSame(renderTiendaPedidosList(listaB.json).includes("Sin pedidos registrados."), true, "Dashboard de B vacio");
+    const detalleA = await pedir(a, "GET", `/tienda/pedidos/${idA}`, null, tokenA);
+    secxssAssertSinMarkup(renderDetallePedido(detalleA.json) + renderTiendaPedidosList(listaA.json), "SX12 Dashboard de A");
   });
 }
 
