@@ -20932,6 +20932,7 @@ async function testRecetaSnapshotGuardadoEnVenta() {
   await _run(testMT1E7A4GuernicaCurrentReady278SinMutacion);
   await _run(testMT1E7BCurrentTenantBootsSinSchemaMutation);
   await _run(testMT1E7BCurrentTenantBootsSinBusinessRepair);
+  await _run(testMT1E7BHarnessStartupFallidoEventDriven);
   await _run(testMT1E7BCajaRequestNoEnsureSchema);
   await _run(testMT1E7BOtroModuloRequestNoEnsureSchema);
   await _run(testMT1E7BMissingRequiredTableFailsClosed);
@@ -26946,12 +26947,97 @@ function extraEnvCentral(fixture) {
   return { ATLAS_AUTH_MODE: "central", ATLAS_EMPRESA_SLUG: fixture.empresaSlug, ATLAS_CONTROL_DB_PATH: fixture.controlDbPath, ATLAS_USER_BRIDGE_MODE: "shadow" };
 }
 
-// Deteccion deterministica de "el servidor no debe quedar operativo" (config invalida). No
-// reutiliza waitForServer (que espera hasta 12s asumiendo que el server DEBERIA arrancar) --
-// aca el contrato es el opuesto: process.exit(1) sincrono ANTES de app.listen(), asi que el
-// proceso hijo debe terminar casi de inmediato. Un timeout esperando el exit es en si mismo la
-// senal de que el fail-closed NO ocurrio.
-async function esperarStartupFallido(dbPath, extraEnv, timeoutMs = 8000) {
+// ONBOARD-1B-R1: deteccion EVENT-DRIVEN de startup fallido. Separa dos preguntas que el timeout
+// fijo de 8s mezclaba: (1) cuanto tarda el boot gate en llegar a su resultado -- variable bajo una
+// suite cargada, acotado solo por un watchdog anti-hang holgado -- y (2) si el child realmente
+// termina tras emitir el fatal -- gracia corta y separada. "Servidor corriendo" es FAIL inmediato.
+const STARTUP_WATCHDOG_MS = 30000;
+const STARTUP_FATAL_EXIT_GRACE_MS = 3000;
+const STARTUP_CLEANUP_TIMEOUT_MS = 10000;
+const STARTUP_FATAL_PATTERN = /\[FATAL\]|Error al preparar la base de datos/;
+const STARTUP_READY_PATTERN = /Servidor corriendo/;
+
+function errorStartup(code, mensaje, logs) {
+  const error = new Error(`${code}: ${mensaje}\n${logs}`);
+  error.code = code;
+  return error;
+}
+
+function hijoTerminado(child) {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+async function observarStartupFallido(child, opciones = {}) {
+  const watchdogMs = opciones.watchdogMs || STARTUP_WATCHDOG_MS;
+  const exitGraceMs = opciones.exitGraceMs || STARTUP_FATAL_EXIT_GRACE_MS;
+  const timers = [];
+  let logs = "";
+  let salida = null;
+  let cerrado = false;
+  let errorSpawn = null;
+  let evaluar = () => {};
+  let alCerrar = null;
+  const onData = (chunk) => { logs += chunk.toString(); evaluar(); };
+  const onExit = (code, signal) => { salida = { code, signal }; evaluar(); };
+  const onClose = () => { cerrado = true; if (alCerrar) alCerrar(); };
+  const onError = (error) => { errorSpawn = error; evaluar(); };
+  child.stdout.on("data", onData);
+  child.stderr.on("data", onData);
+  child.on("exit", onExit);
+  child.on("close", onClose);
+  child.on("error", onError);
+  const esperarCierre = (ms) => new Promise((resolve) => {
+    if (cerrado) return resolve(true);
+    const timer = setTimeout(() => resolve(false), ms);
+    timers.push(timer);
+    alCerrar = () => { clearTimeout(timer); resolve(true); };
+  });
+
+  try {
+    await new Promise((resolve, reject) => {
+      let graciaArmada = false;
+      timers.push(setTimeout(() => reject(errorStartup("STARTUP_RESULT_TIMEOUT", `sin fatal, exit ni server-ready tras ${watchdogMs}ms (watchdog anti-hang).`, logs)), watchdogMs));
+      evaluar = () => {
+        if (errorSpawn) return reject(errorSpawn);
+        if (STARTUP_READY_PATTERN.test(logs)) {
+          return reject(errorStartup("STARTUP_UNEXPECTED_SUCCESS", "el servidor anuncio 'Servidor corriendo' pero se esperaba fail-closed.", logs));
+        }
+        if (salida) {
+          if (salida.code === 0) return reject(errorStartup("STARTUP_EXIT_ZERO", "el servidor deberia fallar el startup con exit code != 0, salio con 0 (no fail-closed).", logs));
+          return resolve();
+        }
+        if (!graciaArmada && STARTUP_FATAL_PATTERN.test(logs)) {
+          graciaArmada = true;
+          timers.push(setTimeout(() => reject(errorStartup("STARTUP_FATAL_CHILD_DID_NOT_EXIT", `el child emitio el fatal de startup pero sigue vivo tras ${exitGraceMs}ms de gracia.`, logs)), exitGraceMs));
+        }
+      };
+      evaluar();
+    });
+    // Exit no-cero confirmado: drenar stdio para que los callers validen el log completo.
+    await esperarCierre(exitGraceMs);
+    if (STARTUP_READY_PATTERN.test(logs)) {
+      throw errorStartup("STARTUP_UNEXPECTED_SUCCESS", "el servidor anuncio 'Servidor corriendo' pero se esperaba fail-closed.", logs);
+    }
+    return { code: salida.code, logs };
+  } finally {
+    evaluar = () => {};
+    // Solo rutas de FAIL llegan aca con el child vivo: el kill limpia, nunca convierte en PASS.
+    const lanzado = child.pid !== undefined;
+    if (lanzado && !hijoTerminado(child)) child.kill("SIGKILL");
+    const limpio = lanzado ? await esperarCierre(STARTUP_CLEANUP_TIMEOUT_MS) : true;
+    for (const timer of timers) clearTimeout(timer);
+    child.stdout.off("data", onData);
+    child.stderr.off("data", onData);
+    child.off("exit", onExit);
+    child.off("close", onClose);
+    child.off("error", onError);
+    if (!limpio && !hijoTerminado(child)) {
+      throw errorStartup("STARTUP_CHILD_CLEANUP_TIMEOUT", `el child sigue vivo ${STARTUP_CLEANUP_TIMEOUT_MS}ms despues del kill.`, logs);
+    }
+  }
+}
+
+async function esperarStartupFallido(dbPath, extraEnv, opciones = {}) {
   // Mismo criterio hermetico que withServer: no heredar ATLAS_* del proceso padre por defecto.
   const baseEnv = { ...process.env };
   delete baseEnv.ATLAS_AUTH_MODE;
@@ -26964,26 +27050,7 @@ async function esperarStartupFallido(dbPath, extraEnv, timeoutMs = 8000) {
     env: { ...baseEnv, GUERNICA_DB_PATH: dbPath, ...extraEnv },
     stdio: ["ignore", "pipe", "pipe"]
   });
-  let logs = "";
-  child.stdout.on("data", (chunk) => { logs += chunk.toString(); });
-  child.stderr.on("data", (chunk) => { logs += chunk.toString(); });
-
-  const salida = await new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(null), timeoutMs);
-    child.once("exit", (code) => {
-      clearTimeout(timer);
-      resolve({ code });
-    });
-  });
-
-  if (!salida) {
-    if (!child.killed) child.kill("SIGKILL");
-    throw new Error(`El servidor deberia haber fallado el startup (fail-closed) pero sigue vivo tras ${timeoutMs}ms.\n${logs}`);
-  }
-  if (salida.code === 0) {
-    throw new Error(`El servidor deberia fallar el startup con exit code != 0, salio con 0 (no fail-closed).\n${logs}`);
-  }
-  return { code: salida.code, logs };
+  return observarStartupFallido(child, opciones);
 }
 
 async function testMT1C2B2BLegacyDefaultSigueIdentico() {
@@ -35980,6 +36047,44 @@ async function testMT1E7BCurrentTenantBootsSinBusinessRepair() {
   } finally {
     fs.rmSync(dbPath, { force: true });
   }
+}
+
+// ONBOARD-1B-R1: cobertura del helper event-driven con childs sinteticos (sin server real).
+async function testMT1E7BHarnessStartupFallidoEventDriven() {
+  const lanzarSintetico = (codigo) => spawn(process.execPath, ["-e", codigo], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
+  const esperarRechazo = async (child, opciones, codigoEsperado) => {
+    const inicio = Date.now();
+    try {
+      await observarStartupFallido(child, opciones);
+    } catch (error) {
+      assertSame(error.code, codigoEsperado, `el helper debe fallar con ${codigoEsperado}: ${error.message}`);
+      assertSame(hijoTerminado(child), true, `${codigoEsperado}: el helper no debe dejar el child vivo`);
+      return Date.now() - inicio;
+    }
+    throw new Error(`el helper debia fallar con ${codigoEsperado} pero resolvio`);
+  };
+
+  // H1: startup fallido rapido -> exit no-cero detectado por evento, log completo.
+  const h1 = await observarStartupFallido(lanzarSintetico("console.error('[FATAL] h1 rapido'); process.exit(1);"));
+  assertEqual(h1.code, 1, "H1: exit no-cero detectado");
+  assertSame(h1.logs.includes("[FATAL] h1 rapido"), true, "H1: el log del fatal llega completo al caller");
+
+  // H2: startup fallido lento (>8s, < watchdog) -> PASS; el viejo timeout fijo de 8s lo rechazaba.
+  const inicioH2 = Date.now();
+  const h2 = await observarStartupFallido(lanzarSintetico("setTimeout(() => { console.error('[FATAL] h2 lento'); process.exit(1); }, 9000);"));
+  assertEqual(h2.code, 1, "H2: startup lento con fallo igual se detecta como fail-closed");
+  assertSame(Date.now() - inicioH2 >= 8000, true, "H2: el resultado llego despues de los 8s del timeout anterior");
+
+  // H3: fatal emitido pero el child NO sale -> FAIL explicito tras la gracia corta.
+  await esperarRechazo(lanzarSintetico("console.error('[FATAL] h3 colgado'); setInterval(() => {}, 1000);"), {}, "STARTUP_FATAL_CHILD_DID_NOT_EXIT");
+
+  // H4: 'Servidor corriendo' cuando se esperaba fallo -> FAIL inmediato, sin esperar el watchdog.
+  const msH4 = await esperarRechazo(lanzarSintetico("console.log('Servidor corriendo en http://localhost:0'); setInterval(() => {}, 1000);"), {}, "STARTUP_UNEXPECTED_SUCCESS");
+  assertSame(msH4 < STARTUP_WATCHDOG_MS / 2, true, `H4: el FAIL debe ser inmediato, no al watchdog (tardo ${msH4}ms)`);
+
+  // Watchdog anti-hang (sin fatal, exit ni ready) y exit 0 siguen siendo FAIL.
+  await esperarRechazo(lanzarSintetico("setInterval(() => {}, 1000);"), { watchdogMs: 1500 }, "STARTUP_RESULT_TIMEOUT");
+  await esperarRechazo(lanzarSintetico("process.exit(0);"), {}, "STARTUP_EXIT_ZERO");
 }
 
 async function testMT1E7BCajaRequestNoEnsureSchema() {
