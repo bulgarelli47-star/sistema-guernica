@@ -177,24 +177,55 @@ async function procesarPendientePassword(controlDb, { usuarioId, empresaId, memb
     return { membershipId, resultado: "SKIP_BUSINESS_DB_INACCESIBLE", error: error.message };
   }
 
+  // Serialize on the destination BEFORE reading the central hash. A later projector
+  // cannot commit a newer hash and then be overwritten by this captured read.
+  // No Control transaction is held while waiting for this tenant-local write lock.
+  let transactionStarted = false;
+  let operationError = null;
   try {
+    await runQuery(businessDb, "PRAGMA busy_timeout = 5000");
+    await runQuery(businessDb, "BEGIN IMMEDIATE");
+    transactionStarted = true;
     const usuarioLocal = await getQuery(businessDb, "SELECT id FROM usuarios WHERE id = ?", [usuarioLocalId]);
     if (!usuarioLocal) {
-      return { membershipId, resultado: "SKIP_USUARIO_LOCAL_INEXISTENTE" };
+      throw Object.assign(new Error("USUARIO_LOCAL_INEXISTENTE"), { syncResultado: "SKIP_USUARIO_LOCAL_INEXISTENTE" });
     }
 
-    // Releido FRESCO en cada intento -- nunca se usa un hash capturado en un momento anterior.
-    // sync_pendiente nunca almacena el hash (confirmado: la tabla no tiene columna para eso).
+    // Read only after obtaining the destination lock; never reuse a pre-lock hash.
     const central = await getQuery(controlDb, "SELECT password_hash FROM usuarios WHERE id = ?", [usuarioId]);
     if (!central) {
-      return { membershipId, resultado: "SKIP_CENTRAL_INEXISTENTE" };
+      throw Object.assign(new Error("CENTRAL_INEXISTENTE"), { syncResultado: "SKIP_CENTRAL_INEXISTENTE" });
     }
 
-    await runQuery(businessDb, "UPDATE usuarios SET password = ? WHERE id = ?", [central.password_hash, usuarioLocalId]);
+    const escritura = await runQuery(businessDb, "UPDATE usuarios SET password = ? WHERE id = ?", [central.password_hash, usuarioLocalId]);
+    if (escritura.changes !== 1) {
+      throw new Error("ESCRITURA_PASSWORD_NO_APLICADA");
+    }
+    await runQuery(businessDb, "COMMIT");
+    transactionStarted = false;
   } catch (error) {
+    operationError = error;
+    if (transactionStarted) {
+      try {
+        await runQuery(businessDb, "ROLLBACK");
+        transactionStarted = false;
+      } catch (rollbackError) {
+        error.rollbackError = rollbackError;
+        throw error; // Do not report a safely skipped write when rollback is uncertain.
+      }
+    }
+    if (error.syncResultado) return { membershipId, resultado: error.syncResultado };
     return { membershipId, resultado: "SKIP_ERROR_ESCRITURA_LOCAL", error: error.message };
   } finally {
-    await closeDb(businessDb);
+    try {
+      await closeDb(businessDb);
+    } catch (closeError) {
+      if (operationError) {
+        operationError.closeError = closeError;
+        throw operationError;
+      }
+      throw closeError;
+    }
   }
 
   // Cierre CAS: si version_objetivo ya no coincide (una generacion mas nueva llego mientras se
