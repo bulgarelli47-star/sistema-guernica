@@ -430,7 +430,7 @@ async function guardarSnapshotsModificadoresVenta(detalles = []) {
   }
 }
 
-async function aplicarStockComponentesSnapshot(detalles = [], signo = 1) {
+async function aplicarStockComponentesSnapshot(detalles = [], signo = 1, movimiento = null) {
   for (const detalle of detalles) {
     const componentes = await getComponentesSnapshotDetalle(detalle.detalle_venta_id ?? detalle.id);
     for (const componente of componentes) {
@@ -439,7 +439,7 @@ async function aplicarStockComponentesSnapshot(detalles = [], signo = 1) {
       if (!productoId || cantidad <= 0) continue;
       // "quitar" invierte el efecto: al vender restaura stock, al anular lo descuenta de vuelta
       const efectividad = componente.operacion === "quitar" ? -1 : 1;
-      await applyStockChange(productoId, signo * efectividad * cantidad, { comoComponente: true });
+      await applyStockChange(productoId, signo * efectividad * cantidad, { comoComponente: true, movimiento });
     }
   }
 }
@@ -459,7 +459,7 @@ async function getComponentesSnapshotVenta(ventaId) {
   );
 }
 
-async function aplicarStockDiffComponentesExtra(oldComponentes = [], newComponentes = []) {
+async function aplicarStockDiffComponentesExtra(oldComponentes = [], newComponentes = [], movimiento = null) {
   const deltaByProduct = new Map();
   // "quitar" tiene efecto negativo sobre el stock (restaura en lugar de consumir)
   const efectivoCantidad = (c) => c.operacion === "quitar" ? -Number(c.cantidad || 0) : Number(c.cantidad || 0);
@@ -479,7 +479,7 @@ async function aplicarStockDiffComponentesExtra(oldComponentes = [], newComponen
   }
 
   for (const [productoId, delta] of deltaByProduct.entries()) {
-    await applyStockChange(productoId, delta, { comoComponente: true });
+    await applyStockChange(productoId, delta, { comoComponente: true, movimiento });
   }
 }
 

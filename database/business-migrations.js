@@ -71,6 +71,44 @@ async function up004UsuariosCentralRolActivoVersion(db) {
   await runQuery(db, "ALTER TABLE usuarios ADD COLUMN central_rol_activo_version INTEGER");
 }
 
+// The catalog caller owns the transaction. Never open a connection or commit here.
+async function up005CcOperacionesCobro(db) {
+  await runQuery(db, `CREATE TABLE cc_operaciones_cobro (
+    operacion_id TEXT PRIMARY KEY NOT NULL CHECK(length(operacion_id) BETWEEN 16 AND 128),
+    tipo TEXT NOT NULL CHECK(tipo IN ('VENTA', 'CLIENTE')),
+    objetivo_id INTEGER NOT NULL CHECK(typeof(objetivo_id) = 'integer' AND objetivo_id > 0),
+    contrato_version INTEGER NOT NULL CHECK(contrato_version = 1),
+    peticion_json TEXT NOT NULL CHECK(json_valid(peticion_json)),
+    huella TEXT NOT NULL CHECK(length(huella) = 64 AND huella NOT GLOB '*[^0-9a-f]*'),
+    estado TEXT NOT NULL CHECK(estado IN ('RESERVADA', 'CONFIRMADA')),
+    actor_id INTEGER NOT NULL CHECK(typeof(actor_id) = 'integer' AND actor_id > 0),
+    reservada_en TEXT NOT NULL,
+    confirmada_en TEXT,
+    respuesta_codigo INTEGER,
+    resultado_json TEXT CHECK(resultado_json IS NULL OR json_valid(resultado_json)),
+    pago_legacy_id INTEGER UNIQUE REFERENCES pagos_cuenta_corriente(id),
+    group_id TEXT UNIQUE,
+    CHECK ((estado = 'RESERVADA' AND confirmada_en IS NULL AND respuesta_codigo IS NULL
+      AND resultado_json IS NULL AND pago_legacy_id IS NULL AND group_id IS NULL)
+    OR (estado = 'CONFIRMADA' AND confirmada_en IS NOT NULL
+      AND respuesta_codigo IS NOT NULL AND typeof(respuesta_codigo) = 'integer'
+      AND respuesta_codigo BETWEEN 200 AND 299 AND resultado_json IS NOT NULL
+      AND ((tipo = 'VENTA' AND typeof(pago_legacy_id) = 'integer' AND pago_legacy_id > 0 AND group_id IS NULL)
+        OR (tipo = 'CLIENTE' AND pago_legacy_id IS NULL AND group_id IS NOT NULL AND length(group_id) > 0))))
+  )`);
+  await runQuery(db, `CREATE TRIGGER cc_operaciones_cobro_inmutable
+    BEFORE UPDATE ON cc_operaciones_cobro
+    WHEN OLD.estado = 'CONFIRMADA' OR NEW.operacion_id IS NOT OLD.operacion_id
+      OR NEW.tipo IS NOT OLD.tipo OR NEW.objetivo_id IS NOT OLD.objetivo_id
+      OR NEW.contrato_version IS NOT OLD.contrato_version OR NEW.huella IS NOT OLD.huella
+      OR NEW.peticion_json IS NOT OLD.peticion_json OR NEW.actor_id IS NOT OLD.actor_id
+      OR NEW.reservada_en IS NOT OLD.reservada_en
+    BEGIN SELECT RAISE(ABORT, 'CC_OPERATION_IMMUTABLE'); END`);
+  await runQuery(db, `CREATE TRIGGER cc_operaciones_cobro_no_delete
+    BEFORE DELETE ON cc_operaciones_cobro
+    BEGIN SELECT RAISE(ABORT, 'CC_OPERATION_HISTORY_REQUIRED'); END`);
+}
+
 const BUSINESS_MIGRATIONS = Object.freeze([
   Object.freeze({
     sequence: 1,
@@ -94,6 +132,12 @@ const BUSINESS_MIGRATIONS = Object.freeze([
     migrationId: "004_usuarios_central_rol_activo_version",
     kind: "MIGRATION",
     up: up004UsuariosCentralRolActivoVersion
+  }),
+  Object.freeze({
+    sequence: 5,
+    migrationId: "005_cc_operaciones_cobro",
+    kind: "MIGRATION",
+    up: up005CcOperacionesCobro
   })
 ]);
 

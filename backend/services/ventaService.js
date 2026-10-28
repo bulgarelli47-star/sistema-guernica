@@ -1,4 +1,6 @@
 const { allQuery, getQuery, runQuery } = require("../db");
+const { getTenantHandle } = require("../tenantRequestContext");
+const { createCcPriceReader } = require("./ccPriceData");
 
 const IVA_VENTA_TRATAMIENTOS_SNAPSHOT = new Set(["gravado", "exento", "no_gravado"]);
 
@@ -293,6 +295,7 @@ async function getPagoCuentaCorrienteTotal(ventaId) {
 }
 
 async function getVentaCuentaCorrienteSnapshot(ventaId) {
+  const readPrice = createCcPriceReader(getTenantHandle(), getTenantHandle);
   const venta = await getQuery(
     `SELECT v.*, cc.nombre AS cuenta_cobro_nombre
      FROM ventas v
@@ -315,13 +318,19 @@ async function getVentaCuentaCorrienteSnapshot(ventaId) {
     [ventaId]
   );
 
+  if (venta.estado !== "cuenta_corriente_pendiente" || Number(venta.es_cuenta_corriente) !== 1) {
+    return { venta, items: [], total_actual: null, total_pagado: null, saldo_actual: venta.saldo_pendiente, price_status: "NOT_APPLICABLE" };
+  }
+  if (items.length === 0) return { venta, items: [], total_actual: null, total_pagado: null, saldo_actual: venta.saldo_pendiente, price_status: "INDETERMINATE", price_issues: [{reason:"NO_SALE_DETAILS"}] };
+  const prices = new Map();
+  for (const item of items) if (!prices.has(item.producto_id)) prices.set(item.producto_id, await readPrice(item.producto_id));
+  const unresolved = [...prices].filter(([, result]) => result.status !== "RESOLVED");
+  if (unresolved.length) return { venta, items: [], total_actual: null, total_pagado: null, saldo_actual: venta.saldo_pendiente, price_status: "INDETERMINATE", price_issues: unresolved.map(([producto_id, result]) => ({producto_id, reason:result.reason})) };
   const itemsCalculados = items.map((item) => {
     const cantidad = Number(item.cantidad || 0);
     const precioHistorico = Number(item.precio_unitario || 0);
-    const productoSigueVigente = item.producto_actual_id && Number(item.producto_activo) === 1;
-    const precioAplicado = productoSigueVigente
-      ? Number(item.precio_actual || 0)
-      : precioHistorico;
+    const productoSigueVigente = prices.get(item.producto_id).source === "CURRENT_PRODUCT";
+    const precioAplicado = prices.get(item.producto_id).price;
 
     return {
       producto_id: item.producto_id,
@@ -345,6 +354,7 @@ async function getVentaCuentaCorrienteSnapshot(ventaId) {
     items: itemsCalculados,
     total_actual: totalActual,
     total_pagado: totalPagado,
+    price_status: "RESOLVED",
     saldo_actual: saldoActual
   };
 }
@@ -352,17 +362,17 @@ async function getVentaCuentaCorrienteSnapshot(ventaId) {
 async function refreshCuentaCorrienteSaldo(ventaId) {
   const snapshot = await getVentaCuentaCorrienteSnapshot(ventaId);
 
-  if (!snapshot) {
-    return null;
+  if (!snapshot || snapshot.price_status !== "RESOLVED") {
+    return snapshot;
   }
 
   await runQuery(
     `UPDATE ventas
      SET saldo_pendiente = ?, estado = ?
-     WHERE id = ?`,
+     WHERE id = ? AND estado = 'cuenta_corriente_pendiente' AND es_cuenta_corriente = 1`,
     [
       snapshot.saldo_actual,
-      snapshot.saldo_actual === 0 ? "cobrada" : "cuenta_corriente_pendiente",
+      snapshot.venta.estado,
       ventaId
     ]
   );

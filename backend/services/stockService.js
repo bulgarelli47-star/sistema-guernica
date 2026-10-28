@@ -264,7 +264,27 @@ async function calcularCostoProductoCompuestoPayload(componentes = [], costosExt
   return Number((costoComponentes + extrasPorPorcion).toFixed(2));
 }
 
-async function descontarStockFisicoProducto(productoId, producto, deltaCantidad, comoComponente = false) {
+// Normaliza el contexto de operación de un movimiento de stock.
+// Sin contexto (movimiento == null) conserva el comportamiento legacy:
+// tipo_movimiento='venta', motivo='Descuento por venta', origen_tipo/origen_id = NULL.
+// origen_id solo se registra cuando es un identificador verificable (entero > 0).
+function resolverMovimientoMeta(movimiento) {
+  const meta = movimiento && typeof movimiento === "object" ? movimiento : {};
+  const tipo = typeof meta.tipo_movimiento === "string" && meta.tipo_movimiento.trim()
+    ? meta.tipo_movimiento.trim()
+    : "venta";
+  const motivo = typeof meta.motivo === "string" && meta.motivo.trim()
+    ? meta.motivo.trim()
+    : "Descuento por venta";
+  const origenTipo = typeof meta.origen_tipo === "string" && meta.origen_tipo.trim()
+    ? meta.origen_tipo.trim()
+    : null;
+  const origenIdNum = Number(meta.origen_id);
+  const origenId = Number.isSafeInteger(origenIdNum) && origenIdNum > 0 ? origenIdNum : null;
+  return { tipo, motivo, origenTipo, origenId };
+}
+
+async function descontarStockFisicoProducto(productoId, producto, deltaCantidad, comoComponente = false, movimiento = null) {
   if (Number(producto.maneja_stock) !== 1) {
     return;
   }
@@ -305,15 +325,18 @@ async function descontarStockFisicoProducto(productoId, producto, deltaCantidad,
   }
 
   const { fecha, hora } = getNowParts();
+  const movimientoMeta = resolverMovimientoMeta(movimiento);
+  // Se conservan cantidad, signo, stock_anterior y stock_nuevo sin alteración.
+  // movimiento_stock_reversa_id queda NULL: no se establecen vínculos heurísticos.
   await runQuery(
-    `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora)
-     VALUES (?, 'venta', ?, ?, ?, 'Descuento por venta', 'admin', ?, ?)`,
-    [productoId, cantidadDescontar, stockAnterior, stockNuevo, fecha, hora]
+    `INSERT INTO movimientos_stock (producto_id, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, motivo, usuario, fecha, hora, origen_tipo, origen_id)
+     VALUES (?, ?, ?, ?, ?, ?, 'admin', ?, ?, ?, ?)`,
+    [productoId, movimientoMeta.tipo, cantidadDescontar, stockAnterior, stockNuevo, movimientoMeta.motivo, fecha, hora, movimientoMeta.origenTipo, movimientoMeta.origenId]
   );
 }
 
-async function descontarStockPropioProducto(productoId, producto, deltaCantidad, comoComponente = false) {
-  return descontarStockFisicoProducto(productoId, producto, deltaCantidad, comoComponente);
+async function descontarStockPropioProducto(productoId, producto, deltaCantidad, comoComponente = false, movimiento = null) {
+  return descontarStockFisicoProducto(productoId, producto, deltaCantidad, comoComponente, movimiento);
 }
 
 async function applyStockChange(productoId, deltaCantidad, options = {}) {
@@ -340,7 +363,7 @@ async function applyStockChange(productoId, deltaCantidad, options = {}) {
   if (esProductoReceta(producto)) {
     // Modo pre-armado: tiene stock propio → descuenta de sí mismo como producto simple
     if (Number(producto.maneja_stock) === 1) {
-      await descontarStockFisicoProducto(productoId, producto, deltaCantidad, options.comoComponente || false);
+      await descontarStockFisicoProducto(productoId, producto, deltaCantidad, options.comoComponente || false, options.movimiento || null);
       return;
     }
 
@@ -349,16 +372,16 @@ async function applyStockChange(productoId, deltaCantidad, options = {}) {
     return;
   }
 
-  await descontarStockFisicoProducto(productoId, producto, deltaCantidad, options.comoComponente || false);
+  await descontarStockFisicoProducto(productoId, producto, deltaCantidad, options.comoComponente || false, options.movimiento || null);
 }
 
-async function applyStockForNewItems(items) {
+async function applyStockForNewItems(items, options = {}) {
   for (const item of items) {
-    await applyStockChange(item.producto_id, item.cantidad);
+    await applyStockChange(item.producto_id, item.cantidad, options);
   }
 }
 
-async function applyStockDiff(oldItems, newItems) {
+async function applyStockDiff(oldItems, newItems, options = {}) {
   const deltaByProduct = new Map();
 
   for (const item of oldItems) {
@@ -380,7 +403,7 @@ async function applyStockDiff(oldItems, newItems) {
   }
 
   for (const [productoId, delta] of deltaByProduct.entries()) {
-    await applyStockChange(productoId, delta);
+    await applyStockChange(productoId, delta, options);
   }
 }
 

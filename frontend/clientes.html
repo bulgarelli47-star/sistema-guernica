@@ -252,8 +252,130 @@ function renderClientes(){renderKpis();renderQuickFilters();renderAlertas();cons
     async function cargarVentasPendientesPago(clienteId){const lista=$("pagoVentasManualLista");if(!lista)return;lista.innerHTML='<p style="font-size:12px;color:var(--muted)">Cargando...</p>';try{const res=await fetch(`/clientes/${clienteId}/cuenta-corriente`);const data=await res.json();if(!res.ok)throw new Error(data.message||"Error al cargar deudas");pagoVentasPendientes=(data.ventas_pendientes||[]).filter(v=>n(v.saldo_pendiente)>0);renderPagoVentasManual();actualizarPagoManualUI()}catch(e){lista.innerHTML=`<p style="font-size:12px;color:var(--danger)">${e.message||"No se pudieron cargar las deudas."}</p>`}}
     function renderPagoVentasManual(){const lista=$("pagoVentasManualLista");if(!lista)return;if(!pagoVentasPendientes.length){lista.innerHTML='<p style="font-size:12px;color:var(--muted)">Sin deudas pendientes.</p>';return}const diasVenc=Number(clienteSeleccionado?.dias_vencimiento||30);const ventasOrd=ordenarVentasPorPrioridad(pagoVentasPendientes,diasVenc);lista.innerHTML=ventasOrd.map(v=>{const p=prioridadVenta(v,diasVenc);return `<div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)"><div><div style="font-weight:700;font-size:13px;color:${p.color}">${p.dot} Venta #${v.id}</div><div style="font-size:11px;color:var(--muted)">${v.fecha||"-"} · ${p.label}${p.detalle?" · "+p.detalle:""}</div></div><div style="font-size:12px;color:var(--muted)">Saldo: <strong>${money(v.saldo_pendiente)}</strong></div><input class="field pago-manual-monto" type="number" step="0.01" min="0" max="${n(v.saldo_pendiente)}" placeholder="0.00" data-venta-id="${v.id}" data-saldo="${n(v.saldo_pendiente)}" style="width:100px;padding:6px 8px"></div>`}).join("");lista.querySelectorAll(".pago-manual-monto").forEach(inp=>inp.oninput=actualizarPagoManualUI)}
     function actualizarPagoManualUI(){const resumen=$("pagoManualResumen");if(!resumen)return;if(!pagoManualActivo){resumen.innerHTML="";return}const inputs=document.querySelectorAll(".pago-manual-monto");const sumaVentas=Number(Array.from(inputs).reduce((s,inp)=>s+n(inp.value),0).toFixed(2));const monto=n($("pagoMonto")?.value);const ok=monto>0&&Math.abs(sumaVentas-monto)<=0.01;const color=ok?"var(--success)":"var(--danger)";const label=ok?"✓ Cuadra":monto>0?`Revisar (${money(Math.abs(monto-sumaVentas))} pendiente)`:"Ingresá el monto a cobrar";resumen.innerHTML=`<span style="font-size:12px;font-weight:700;color:var(--muted)">Asignado:</span> <strong style="color:${color}">${money(sumaVentas)}</strong> / Total cobro: <strong>${money(monto)}</strong> <span style="font-size:11px;font-weight:800;color:${color}">${label}</span>`}
-    async function abrirPago(c){clienteSeleccionado=c;$("pagoClienteNombre").innerText=c.nombre;$("pagoCCMensaje").innerText="";$("pagoMonto").value="";pagoManualActivo=false;pagoVentasPendientes=[];const _cbM=$("pagoAplicacionManual");if(_cbM)_cbM.checked=false;const _boxM=$("pagoVentasManualBox");if(_boxM)_boxM.style.display="none";const _resM=$("pagoManualResumen");if(_resM)_resM.innerHTML="";const _listaM=$("pagoVentasManualLista");if(_listaM)_listaM.innerHTML="";if($("pagoObservacion"))$("pagoObservacion").value="";cobrosCC=[];cuentasCobroCCMap={};await cargarTiposPagoCC();cobrosCC=[{tipo_cobro:tiposPagoCC[0]?.codigo||"efectivo",cuenta_cobro_id:null,monto:0}];await renderCobrosCC();actualizarPagoUI();cerrarModal($("modalDetalle"));abrirModal($("modalPago"))}
-    async function confirmarPago(){if(!clienteSeleccionado)return;const monto=n($("pagoMonto").value);const deuda=n(clienteSeleccionado.deuda_actual);const msgEl=$("pagoCCMensaje");const setErr=t=>{msgEl.innerText=t;msgEl.style.color="var(--danger)"};if(monto<=0){setErr("El monto debe ser mayor a 0");return}if(monto>deuda+0.01){setErr(`El monto supera la deuda (${money(deuda)})`);return}if(!cobrosCC.length){setErr("Agregá al menos un medio de pago");return}const totalCC=Number(cobrosCC.reduce((s,c)=>s+c.monto,0).toFixed(2));if(Math.abs(totalCC-monto)>0.01){setErr(`La suma (${money(totalCC)}) debe coincidir con el monto (${money(monto)})`);return}for(const c of cobrosCC){if(c.tipo_cobro!=="efectivo"&&!c.cuenta_cobro_id){setErr(`Seleccioná terminal para ${c.tipo_cobro}`);return}}let ventasParaFetch=undefined;if(pagoManualActivo){const ventas=Array.from(document.querySelectorAll(".pago-manual-monto")).filter(inp=>n(inp.value)>0).map(inp=>({venta_id:Number(inp.dataset.ventaId),monto:n(inp.value),saldo:n(inp.dataset.saldo)}));if(!ventas.length){setErr("Seleccioná al menos una venta para aplicar el pago");return}const sumaVentas=Number(ventas.reduce((s,v)=>s+v.monto,0).toFixed(2));if(Math.abs(sumaVentas-monto)>0.01){setErr(`La suma asignada (${money(sumaVentas)}) no coincide con el monto a cobrar (${money(monto)})`);return}for(const v of ventas){if(v.monto>v.saldo+0.01){setErr(`El monto para venta #${v.venta_id} supera su saldo (${money(v.saldo)})`);return}}ventasParaFetch=ventas.map(v=>({venta_id:v.venta_id,monto:v.monto}))}try{const cobros=cobrosCC.map(c=>({tipo_cobro:c.tipo_cobro,...(c.cuenta_cobro_id?{cuenta_cobro_id:c.cuenta_cobro_id}:{}),monto:c.monto}));const observacion=($("pagoObservacion")?.value||"").trim()||null;const res=await fetch(`/clientes/${clienteSeleccionado.id}/cobrar-deuda`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cobros,observacion,...(ventasParaFetch?{ventas:ventasParaFetch}:{})})});const data=await res.json();if(!res.ok){setErr(data.message||"Error al registrar pago");return}cerrarModal($("modalPago"));const _comp=data.numero_comprobante?` Comprobante: ${data.numero_comprobante}.`:"";mostrarMensaje(`Pago registrado.${_comp} Deuda restante: ${money(data.deuda_restante)}`);await cargarTodo();localStorage.setItem('atlas_caja_refresh', Date.now().toString())}catch(e){setErr(e.message||"Error al registrar pago")}}
+    async function abrirPago(c){if(!prepararAperturaPagoCC(c))return;clienteSeleccionado=c;if(pagoPendienteCC()){$("pagoClienteNombre").innerText=c.nombre;await restaurarPagoPendienteCC();cerrarModal($("modalDetalle"));abrirModal($("modalPago"));return;}$("pagoClienteNombre").innerText=c.nombre;$("pagoCCMensaje").innerText="";$("pagoMonto").value="";pagoManualActivo=false;pagoVentasPendientes=[];const _cbM=$("pagoAplicacionManual");if(_cbM)_cbM.checked=false;const _boxM=$("pagoVentasManualBox");if(_boxM)_boxM.style.display="none";const _resM=$("pagoManualResumen");if(_resM)_resM.innerHTML="";const _listaM=$("pagoVentasManualLista");if(_listaM)_listaM.innerHTML="";if($("pagoObservacion"))$("pagoObservacion").value="";cobrosCC=[];cuentasCobroCCMap={};await cargarTiposPagoCC();cobrosCC=[{tipo_cobro:tiposPagoCC[0]?.codigo||"efectivo",cuenta_cobro_id:null,monto:0}];await renderCobrosCC();actualizarPagoUI();await restaurarPagoPendienteCC();cerrarModal($("modalDetalle"));abrirModal($("modalPago"))}
+    // CC-IDEMPOTENCY-UI-04-BEGIN
+    let pagoIntencionCC = null, pagoSolicitudCC = false, pagoPersistenciaBloqueadaCC = false;
+    const pagoBloqueoControlesCC = new WeakMap();
+    const pagoStorageKeyCC = 'atlas.cc.collection.v1:' + location.origin;
+    function mensajeIntencionCC(texto) { const el=$('pagoCCMensaje'); el.innerText=texto; el.style.color='var(--danger)'; }
+    function pagoPendienteCC() { return pagoIntencionCC && ['EN_CURSO','INCIERTA'].includes(pagoIntencionCC.fase); }
+    function actualizarIntencionCC() {
+      const bloqueado=Boolean(pagoSolicitudCC || pagoPendienteCC() || pagoPersistenciaBloqueadaCC);
+      $('modalPago').querySelectorAll('input,select,textarea,button').forEach(el=>{
+        if(el.id!=='cerrarPago' && el.id!=='confirmarPago') {
+          if(bloqueado){if(!pagoBloqueoControlesCC.has(el))pagoBloqueoControlesCC.set(el,el.disabled);el.disabled=true;}
+          else if(pagoBloqueoControlesCC.has(el)){el.disabled=pagoBloqueoControlesCC.get(el);pagoBloqueoControlesCC.delete(el);}
+        }
+      });
+      const boton=$('confirmarPago');
+      boton.disabled=pagoSolicitudCC || pagoPersistenciaBloqueadaCC || pagoIntencionCC?.fase==='CONFIRMADA';
+      boton.title=pagoPendienteCC()?'Recuperar la misma confirmación':'Registrar pago';
+      boton.setAttribute('aria-label',boton.title);
+    }
+    function guardarIntencionCC() {
+      try { const texto=JSON.stringify(pagoIntencionCC); sessionStorage.setItem(pagoStorageKeyCC,texto); if(sessionStorage.getItem(pagoStorageKeyCC)!==texto)throw Error(); }
+      catch { pagoPersistenciaBloqueadaCC=true; throw Error('No se puede conservar la confirmación. No inicie otro cobro; revise el almacenamiento de esta pestaña.'); }
+    }
+    function borrarIntencionCC() {
+      try { sessionStorage.removeItem(pagoStorageKeyCC); if(sessionStorage.getItem(pagoStorageKeyCC)!==null)throw Error(); pagoIntencionCC=null; }
+      catch { pagoPersistenciaBloqueadaCC=true; throw Error('No se pudo liberar la intención anterior. No se enviará otro cobro.'); }
+    }
+    function cargarIntencionCC() {
+      if(pagoIntencionCC || pagoPersistenciaBloqueadaCC)return;
+      try {
+        const texto=sessionStorage.getItem(pagoStorageKeyCC); if(texto===null)return;
+        if(texto.length>32768)throw Error();
+        const p=JSON.parse(texto);
+        if(p.version!==1 || p.origen!==location.origin || !Number.isSafeInteger(p.clienteId) || p.clienteId<=0 ||
+          typeof p.key!=='string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/.test(p.key) ||
+          !['PREPARADA','EN_CURSO','INCIERTA','RECHAZADA','CONFIRMADA'].includes(p.fase) || typeof p.body!=='string')throw Error();
+        const b=JSON.parse(p.body);
+        if(!Array.isArray(b.cobros)||!b.cobros.length||b.cobros.some(c=>typeof c.tipo_cobro!=='string'||typeof c.monto!=='number'||!Number.isFinite(c.monto)||c.monto<=0)||
+          (b.ventas!==undefined&&(!Array.isArray(b.ventas)||!b.ventas.length||b.ventas.some(v=>!Number.isSafeInteger(v.venta_id)||v.venta_id<=0||typeof v.monto!=='number'||!Number.isFinite(v.monto)||v.monto<=0))))throw Error();
+        pagoIntencionCC={version:1,origen:p.origen,clienteId:p.clienteId,key:p.key,body:p.body,fase:p.fase};
+        if(['PREPARADA','EN_CURSO'].includes(p.fase))pagoIntencionCC.fase='INCIERTA';
+      } catch { pagoPersistenciaBloqueadaCC=true; mensajeIntencionCC('No se pudo verificar una confirmación guardada. Revise el cobro pendiente antes de continuar.'); }
+    }
+    function nuevaClavePagoCC() {
+      if(typeof crypto.randomUUID==='function')return crypto.randomUUID();
+      if(typeof crypto.getRandomValues!=='function')throw Error('El navegador no dispone de un generador seguro de claves.');
+      return Array.from(crypto.getRandomValues(new Uint8Array(16)),v=>v.toString(16).padStart(2,'0')).join('');
+    }
+    function prepararAperturaPagoCC(cliente) {
+      cargarIntencionCC();
+      if(pagoPersistenciaBloqueadaCC){mostrarMensaje('No se puede verificar la confirmación guardada. Revise el cobro pendiente.',true);return false;}
+      if(pagoSolicitudCC){mostrarMensaje('Hay una confirmación en curso. Espere su resultado.',true);return false;}
+      if(pagoPendienteCC() && pagoIntencionCC.clienteId!==Number(cliente.id)){
+        mostrarMensaje('Hay un cobro pendiente del cliente #'+pagoIntencionCC.clienteId+'. Ábralo para recuperar la misma confirmación.',true);return false;
+      }
+      if(pagoIntencionCC && !pagoPendienteCC()){
+        try{borrarIntencionCC();}catch(e){mostrarMensaje(e.message,true);return false;}
+      }
+      return true;
+    }
+    async function restaurarPagoPendienteCC() {
+      if(pagoPendienteCC()){
+        const b=JSON.parse(pagoIntencionCC.body),monto=b.cobros.reduce((s,c)=>s+c.monto,0);
+        $('pagoMonto').value=Number(monto.toFixed(2)); $('pagoObservacion').value=b.observacion||'';
+        cobrosCC=b.cobros.map(c=>({...c})); pagoManualActivo=Boolean(b.ventas); $('pagoAplicacionManual').checked=pagoManualActivo;
+        $('cobrosCC_lista').textContent=b.cobros.map(c=>c.tipo_cobro+': '+money(c.monto)+(c.cuenta_cobro_id?' · Cuenta #'+c.cuenta_cobro_id:'')).join(' · ');
+        if(b.ventas)$('pagoVentasManualLista').textContent=b.ventas.map(v=>'Venta #'+v.venta_id+': '+money(v.monto)).join(' · ');
+        $('pagoVentasManualBox').style.display=b.ventas?'block':'none';
+        mensajeIntencionCC('Resultado pendiente para '+money(monto)+'. Reintente la misma confirmación; no se enviará un cobro nuevo.');
+      }
+      actualizarIntencionCC();
+    }
+    function instalarIntencionCC() {
+      cargarIntencionCC();
+      if(pagoPendienteCC())mostrarMensaje('Hay una confirmación pendiente del cliente #'+pagoIntencionCC.clienteId+'. Abra Registrar pago para recuperarla.',true);
+      if(pagoPersistenciaBloqueadaCC)mostrarMensaje('Hay una confirmación guardada que requiere revisión. Los cobros están bloqueados.',true);
+      const cambio=event=>{
+        const el=event.target;
+        if(!el.matches('input,select,textarea') && el.id!=='agregarCobroCC' && !el.closest('#cobrosCC_lista'))return;
+        if(pagoSolicitudCC||pagoPendienteCC()||pagoPersistenciaBloqueadaCC){event.preventDefault();event.stopImmediatePropagation();mensajeIntencionCC('Primero recupere el resultado de la confirmación pendiente.');return;}
+        if(pagoIntencionCC && pagoIntencionCC.fase!=='CONFIRMADA')try{borrarIntencionCC();}catch(e){mensajeIntencionCC(e.message);actualizarIntencionCC();}
+      };
+      for(const tipo of ['input','change','click'])$('modalPago').addEventListener(tipo,cambio,true);
+      actualizarIntencionCC();
+    }
+    async function confirmarPago(){
+      if(pagoSolicitudCC)return;
+      cargarIntencionCC();
+      if(pagoPersistenciaBloqueadaCC){mensajeIntencionCC('No se puede conservar o verificar la confirmación pendiente. No se enviará el cobro.');return;}
+      if(pagoIntencionCC?.fase==='CONFIRMADA')return;
+      const recuperando=Boolean(pagoPendienteCC());
+      try{
+        if(!recuperando){
+          const payload=prepararPagoCC();if(!payload)return;
+          const body=JSON.stringify(payload),clienteId=Number(clienteSeleccionado.id);
+          if(!pagoIntencionCC||pagoIntencionCC.body!==body||pagoIntencionCC.clienteId!==clienteId)
+            pagoIntencionCC={version:1,origen:location.origin,clienteId,key:nuevaClavePagoCC(),body,fase:'PREPARADA'};
+        }
+        pagoSolicitudCC=true;pagoIntencionCC.fase='EN_CURSO';guardarIntencionCC();actualizarIntencionCC();
+        $('pagoCCMensaje').innerText=recuperando?'Recuperando la misma confirmación...':'Confirmando el cobro...';$('pagoCCMensaje').style.color='var(--muted)';
+        const res=await fetch('/clientes/'+pagoIntencionCC.clienteId+'/cobrar-deuda',{
+          method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':pagoIntencionCC.key},body:pagoIntencionCC.body
+        });
+        const data=await res.json();
+        if(!res.ok){
+          const definitivo=!recuperando && [400,401,403,404,409,422].includes(res.status) && typeof data?.message==='string' && data.code!=='CC_IDEMPOTENCY_CONFLICT';
+          pagoIntencionCC.fase=definitivo?'RECHAZADA':'INCIERTA';guardarIntencionCC();
+          mensajeIntencionCC((data?.code?data.code+': ':'')+(data?.message||'No se pudo conocer el resultado del cobro')+(definitivo?'':' · La confirmación sigue pendiente; conserve la misma clave.'));return;
+        }
+        const enviado=JSON.parse(pagoIntencionCC.body),monto=Number(enviado.cobros.reduce((s,c)=>s+c.monto,0).toFixed(2));
+        if(!data || data.cliente_id!==pagoIntencionCC.clienteId || data.monto_pagado!==monto || typeof data.group_id!=='string' || !/^[a-f0-9]{32}$/.test(data.group_id))throw Error('La respuesta no acredita la confirmación enviada.');
+        pagoIntencionCC.fase='CONFIRMADA';guardarIntencionCC();
+        cerrarModal($('modalPago'));
+        mostrarMensaje('Pago confirmado. Comprobante: '+(data.numero_comprobante||data.group_id)+'.');
+        try{await cargarTodo();localStorage.setItem('atlas_caja_refresh',Date.now().toString());}
+        catch{mostrarMensaje('Pago confirmado. No se pudo actualizar el listado; actualícelo antes de otro cobro.',true);}
+      }catch(e){
+        if(pagoSolicitudCC && pagoIntencionCC){pagoIntencionCC.fase='INCIERTA';try{guardarIntencionCC();}catch{}}
+        mensajeIntencionCC((e.message||'No se recibió la respuesta')+(pagoIntencionCC?.fase==='INCIERTA'?' · Resultado pendiente: reintente la misma confirmación.':''));
+      }finally{pagoSolicitudCC=false;actualizarIntencionCC();}
+    }
+    function prepararPagoCC(){if(!clienteSeleccionado)return;const monto=n($("pagoMonto").value);const deuda=n(clienteSeleccionado.deuda_actual);const msgEl=$("pagoCCMensaje");const setErr=t=>{msgEl.innerText=t;msgEl.style.color="var(--danger)"};if(monto<=0){setErr("El monto debe ser mayor a 0");return}if(monto>deuda+0.01){setErr(`El monto supera la deuda (${money(deuda)})`);return}if(!cobrosCC.length){setErr("Agregá al menos un medio de pago");return}const totalCC=Number(cobrosCC.reduce((s,c)=>s+c.monto,0).toFixed(2));if(Math.abs(totalCC-monto)>0.01){setErr(`La suma (${money(totalCC)}) debe coincidir con el monto (${money(monto)})`);return}for(const c of cobrosCC){if(c.tipo_cobro!=="efectivo"&&!c.cuenta_cobro_id){setErr(`Seleccioná terminal para ${c.tipo_cobro}`);return}}let ventasParaFetch=undefined;if(pagoManualActivo){const ventas=Array.from(document.querySelectorAll(".pago-manual-monto")).filter(inp=>n(inp.value)>0).map(inp=>({venta_id:Number(inp.dataset.ventaId),monto:n(inp.value),saldo:n(inp.dataset.saldo)}));if(!ventas.length){setErr("Seleccioná al menos una venta para aplicar el pago");return}const sumaVentas=Number(ventas.reduce((s,v)=>s+v.monto,0).toFixed(2));if(Math.abs(sumaVentas-monto)>0.01){setErr(`La suma asignada (${money(sumaVentas)}) no coincide con el monto a cobrar (${money(monto)})`);return}for(const v of ventas){if(v.monto>v.saldo+0.01){setErr(`El monto para venta #${v.venta_id} supera su saldo (${money(v.saldo)})`);return}}ventasParaFetch=ventas.map(v=>({venta_id:v.venta_id,monto:v.monto}))}const cobros=cobrosCC.map(c=>({tipo_cobro:c.tipo_cobro,...(c.cuenta_cobro_id?{cuenta_cobro_id:c.cuenta_cobro_id}:{}),monto:c.monto}));const observacion=($("pagoObservacion")?.value||"").trim()||null;return {cobros,observacion,...(ventasParaFetch?{ventas:ventasParaFetch}:{})};}
+    // CC-IDEMPOTENCY-UI-04-END
     function evaluarBloqueosVentaCuenta(){const c=clienteSeleccionado;if(!c)return{bloqueado:false,aviso:""};const rol=rolActual();const puedeAutorizar=["admin","encargado"].includes(rol);const imp=n($("ventaImporte").value);const usaPersonalizada=n(c.usa_reglas_personalizadas)===1;let aviso="";let bloqueado=false;if(n(c.suspendido)===1){aviso="Cliente suspendido: solo se permiten cobros.";bloqueado=true}else if(n(c.habilita_cuenta_corriente)!==1){aviso="El cliente no tiene cuenta corriente habilitada.";bloqueado=true}else if(usaPersonalizada&&n(c.requiere_autorizacion)===1&&!puedeAutorizar){aviso="Esta cuenta requiere autorización de encargado o admin.";bloqueado=true}else if(imp>0&&n(c.limite_fiado)>0&&(n(c.deuda_actual)+imp)>n(c.limite_fiado)){const permiteExc=usaPersonalizada?n(c.permite_excedente)===1:false;if(!permiteExc&&!puedeAutorizar){aviso="La venta excede el límite disponible.";bloqueado=true}}const avisoEl=$("ventaCuentaAviso");const btnEl=$("confirmarVentaCuenta");if(avisoEl){avisoEl.textContent=aviso;avisoEl.style.display=aviso?"":"none"}if(btnEl){btnEl.disabled=false;btnEl.dataset.bloqueado=bloqueado?"1":"0";btnEl.title=bloqueado?aviso:"Registrar venta"}return{bloqueado,aviso}}
     function abrirVentaCuenta(c){clienteSeleccionado=c;$("ventaClienteNombre").innerText=c.nombre;$("ventaConcepto").value="Venta a cuenta";$("ventaImporte").value="";$("ventaAutorizar").checked=false;const puedeAutorizar=["admin","encargado"].includes(rolActual());const ventaAutorizarRow=$("ventaAutorizar")?.closest(".switch-row");if(ventaAutorizarRow)ventaAutorizarRow.classList.toggle("hidden",!puedeAutorizar);actualizarVentaUI();abrirModal($("modalVentaCuenta"))}
     function actualizarVentaUI(){const imp=n($("ventaImporte").value);$("ventaDeuda").innerText=money(clienteSeleccionado?.deuda_actual);$("ventaDisponible").innerText=money(disponible(clienteSeleccionado||{}));$("ventaDisponibleLuego").innerText=money(disponible(clienteSeleccionado||{})-imp);evaluarBloqueosVentaCuenta()}
@@ -308,7 +430,7 @@ function renderClientes(){renderKpis();renderQuickFilters();renderAlertas();cons
     function seleccionarTabClientes(tab){if(esVistaReducida()&&["historial","reportes"].includes(tab))tab="clientes";document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===tab));["Clientes","Pagos","Historial","Reportes"].forEach(n=>$("tab"+n).classList.toggle("hidden",tab!==n.toLowerCase()))}document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>seleccionarTabClientes(b.dataset.tab));document.querySelectorAll(".subtab").forEach(b=>b.onclick=()=>{document.querySelectorAll(".subtab").forEach(x=>x.classList.remove("active"));b.classList.add("active");["Deuda","Cobros","Movimientos","Productos","Resumen","Datos","Notas"].forEach(n=>$("sub"+n).classList.toggle("hidden",b.dataset.subtab!==n.toLowerCase()))});
     $("abrirCliente").onclick=()=>{limpiarCliente();abrirModal($("modalCliente"));$("nombre").focus()};$("cerrarCliente").onclick=()=>cerrarModal($("modalCliente"));$("limpiarCliente").onclick=limpiarCliente;$("guardarCliente").onclick=guardarCliente;$("actualizar").onclick=cargarTodo;function cargarFotoCliente(file){if(!file)return;if(!file.type.startsWith("image/")){mostrarMensaje("La foto debe ser una imagen",true);$("cliente_foto_file").value="";return}if(file.size>5*1024*1024){mostrarMensaje("La foto no puede superar 5 MB",true);$("cliente_foto_file").value="";return}const reader=new FileReader();reader.onload=()=>{clienteFotoDataUrl=reader.result;$("foto_url").value="";actualizarPreviewFotoCliente(reader.result)};reader.onerror=()=>mostrarMensaje("No se pudo leer la foto",true);reader.readAsDataURL(file)}$("cliente_foto_file").onchange=e=>cargarFotoCliente(e.target.files?.[0]);$("clienteFotoDrop").onclick=e=>{if(e.target.id!=="quitarFotoCliente"&&e.target.id!=="cliente_foto_file")$("cliente_foto_file").click()};$("quitarFotoCliente").onclick=()=>{clienteFotoDataUrl="";$("foto_url").value="";$("cliente_foto_file").value="";actualizarPreviewFotoCliente("")};$("cerrarPago").onclick=()=>cerrarModal($("modalPago"));$("confirmarPago").onclick=confirmarPago;$("pagoAplicacionManual").onchange=()=>{pagoManualActivo=$("pagoAplicacionManual").checked;const box=$("pagoVentasManualBox");if(box)box.style.display=pagoManualActivo?"block":"none";if(pagoManualActivo&&clienteSeleccionado)cargarVentasPendientesPago(clienteSeleccionado.id);else{pagoVentasPendientes=[];const lista=$("pagoVentasManualLista");if(lista)lista.innerHTML="";actualizarPagoManualUI()}};$("agregarCobroCC").onclick=agregarCobroCC;$("pagoMonto").oninput=()=>{const monto=n($("pagoMonto").value);if(cobrosCC.length===1){cobrosCC[0].monto=monto;const inp=$("cobrosCC_lista").querySelector(".cobro-cc-monto");if(inp)inp.value=monto||""}actualizarPagoUI();actualizarPagoManualUI()};$("cerrarVentaCuenta").onclick=()=>cerrarModal($("modalVentaCuenta"));$("confirmarVentaCuenta").onclick=confirmarVentaCuenta;$("ventaImporte").oninput=actualizarVentaUI;$("cerrarDetalle").onclick=()=>cerrarModal($("modalDetalle"));$("abrirRecalculoDeuda").onclick=abrirRecalculoDeuda;$("cerrarRecalculoDeuda").onclick=()=>cerrarModal($("modalRecalculoDeuda"));$("confirmarRecalculoDeuda").onclick=confirmarRecalculoDeuda;$("cerrarReversaCobro").onclick=()=>cerrarModal($("modalReversaCobro"));$("cancelarReversaCobro").onclick=()=>cerrarModal($("modalReversaCobro"));$("confirmarReversaCobro").onclick=confirmarReversaCobro;$("cerrarAnularCC").onclick=()=>cerrarModal($("modalAnularCC"));$("cancelarAnularCC").onclick=()=>cerrarModal($("modalAnularCC"));$("confirmarAnularCC").onclick=ejecutarAnularCC;$("detallePago").onclick=()=>abrirPago(clienteSeleccionado);$("detalleVenta").onclick=()=>abrirVentaCuenta(clienteSeleccionado);$("detalleRecordatorio").onclick=()=>mostrarMensaje(`Recordatorio preparado para ${clienteSeleccionado?.nombre||"cliente"}`);$("detalleEstadoCuenta").onclick=imprimirEstadoCuenta;["busqueda","ordenListado","limiteListado"].forEach(id=>{$(id).addEventListener("input",()=>{paginaActual=1;renderClientes()});$(id).addEventListener("change",()=>{paginaActual=1;renderClientes()})});$("paginaAnterior").onclick=()=>{if(paginaActual>1){paginaActual--;renderClientes()}};$("paginaSiguiente").onclick=()=>{if(paginaActual<totalPaginasCli){paginaActual++;renderClientes()}};$("ordenListado").addEventListener("change",()=>{ordenCampo=$("ordenListado").value;ordenDir="asc"});document.querySelectorAll("th.sortable").forEach(th=>th.addEventListener("click",()=>{const campo=th.dataset.sort;if(ordenCampo===campo)ordenDir=ordenDir==="asc"?"desc":"asc";else{ordenCampo=campo;ordenDir="asc"}document.querySelectorAll("th.sortable").forEach(h=>h.classList.toggle("active",h.dataset.sort===ordenCampo));document.querySelectorAll("th.sortable").forEach(h=>h.classList.toggle("desc",h.dataset.sort===ordenCampo&&ordenDir==="desc"));renderClientes()}));toggleNotificaciones.onclick=e=>{e.stopPropagation();notificacionesDropdown.classList.toggle("open")};document.addEventListener("click",e=>{document.querySelectorAll(".actions-popup.open").forEach(m=>{if(!m.contains(e.target))m.classList.remove("open")});if(!notificacionesDropdown.contains(e.target)&&e.target!==toggleNotificaciones)notificacionesDropdown.classList.remove("open")});document.addEventListener("keydown",e=>{if(e.key==="Escape")["modalCliente","modalPago","modalVentaCuenta","modalDetalle","modalRecalculoDeuda","modalReversaCobro","modalAnularCC"].forEach(id=>cerrarModal($(id)))});
     $("usa_reglas_personalizadas").onchange=syncReglasHint;$("permite_excedente").onchange=()=>sincronizarReglasExcluyentes("excedente");$("requiere_autorizacion").onchange=()=>sincronizarReglasExcluyentes("autorizacion");
-    limpiarCliente();cargarTodo();
+    limpiarCliente();instalarIntencionCC();cargarTodo();
   </script>
   <script src="/nav-permissions.js?v=6" defer></script>
   <script src="/mobile-nav.js?v=1"></script>

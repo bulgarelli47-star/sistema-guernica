@@ -565,6 +565,27 @@ async function registrarMovimientoStockAprobado({
   };
 }
 
+// The caller owns the existing tenant transaction; this helper neither opens nor commits it.
+async function registrarPublicacionPrecioStock(productoId, precioAnterior, usuario, motivoPublicacion) {
+  const precioPublicado = await getQuery("SELECT precio_venta FROM productos WHERE id = ?", [productoId]);
+    if (!precioAnterior || !precioPublicado ||
+        typeof precioAnterior.precio_venta !== "number" || !Number.isFinite(precioAnterior.precio_venta) ||
+        typeof precioPublicado.precio_venta !== "number" || !Number.isFinite(precioPublicado.precio_venta)) {
+      throw crearError("No se pudo verificar el precio publicado del ajuste de stock", 500);
+    }
+    if (precioAnterior.precio_venta !== precioPublicado.precio_venta) {
+      const { fecha, hora } = getNowParts();
+      await runQuery(
+        `INSERT INTO historial_productos
+         (producto_id, campo_modificado, valor_anterior, valor_nuevo, usuario, fecha, hora, motivo)
+         VALUES (?, 'precio_venta', ?, ?, ?, ?, ?, ?)`,
+        [productoId, String(precioAnterior.precio_venta), String(precioPublicado.precio_venta),
+          normalizarTexto(usuario) || "admin", fecha, hora, motivoPublicacion]
+      );
+    }
+
+}
+
 async function aprobarAjustePendiente(id, {
   usuario,
   cantidad_aprobada,
@@ -614,6 +635,7 @@ async function aprobarAjustePendiente(id, {
         throw error;
       }
     }
+    const precioAnterior = await getQuery("SELECT precio_venta FROM productos WHERE id = ?", [Number(ajuste.producto_id)]);
     const movimiento = await registrarMovimientoStockAprobado({
       productoId: Number(ajuste.producto_id),
       tipoMovimiento: tipoAprobado,
@@ -624,6 +646,8 @@ async function aprobarAjustePendiente(id, {
       origenTipo: tipoAprobado === "ingreso" ? "ajuste_informado" : null,
       origenId: tipoAprobado === "ingreso" ? Number(id) : null
     });
+
+    await registrarPublicacionPrecioStock(Number(ajuste.producto_id), precioAnterior, usuario, `Publicacion por aprobacion de ajuste pendiente #${Number(id)}: ${motivo}`);
 
     await runQuery(
       `UPDATE stock_ajustes_pendientes
@@ -846,6 +870,7 @@ async function resolverAjustePendienteConCuentaLocal(id, {
       ajuste.motivo,
       observacionNormalizada
     ].map(normalizarTexto).filter(Boolean).join(" | ");
+    const precioAnterior = await getQuery("SELECT precio_venta FROM productos WHERE id = ?", [Number(ajuste.producto_id)]);
     const movimiento = await registrarMovimientoStockAprobado({
       productoId: Number(ajuste.producto_id),
       tipoMovimiento: "egreso",
@@ -854,6 +879,7 @@ async function resolverAjustePendienteConCuentaLocal(id, {
       proveedorId: normalizarId(ajuste.proveedor_id),
       usuario: usuarioNormalizado
     });
+    await registrarPublicacionPrecioStock(Number(ajuste.producto_id), precioAnterior, usuarioNormalizado, `Publicacion por Cuenta Local ajuste #${ajusteId}: ${motivo}`);
     const costoEstimado = await calcularCostoEstimadoCuentaLocal(Number(ajuste.producto_id), cantidad);
     const { fecha, hora } = getNowParts();
 

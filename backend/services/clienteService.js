@@ -1,4 +1,6 @@
 const { allQuery, getQuery, runQuery } = require("../db");
+const { getTenantHandle } = require("../tenantRequestContext");
+const { createCcPriceReader } = require("./ccPriceData");
 const TIPOS_CUENTA_CORRIENTE_PERMITIDOS = new Set(["normal", "empleado", "empresa"]);
 const PERFILES_CLIENTE_PERMITIDOS = new Set(["normal", "empleado", "empresa"]);
 
@@ -127,6 +129,7 @@ function roundMoney(value) {
 }
 
 async function calcularDeudaActualizadaCliente(clienteId) {
+  const readPrice = createCcPriceReader(getTenantHandle(), getTenantHandle);
   const rows = await allQuery(
     `SELECT v.id AS venta_id,
             COALESCE(v.total_venta_original, v.total) AS venta_total,
@@ -150,7 +153,8 @@ async function calcularDeudaActualizadaCliente(clienteId) {
      ) pagos ON pagos.venta_id = v.id
      WHERE v.cliente_id = ?
        AND v.es_cuenta_corriente = 1
-       AND COALESCE(v.saldo_pendiente, 0) > 0
+       AND COALESCE(v.saldo_pendiente, 0) >= 0
+       AND v.estado = 'cuenta_corriente_pendiente'
        AND COALESCE(v.estado, '') != 'anulado'
        AND COALESCE(v.tipo, '') != 'test_modificadores'`,
     [clienteId]
@@ -161,15 +165,20 @@ async function calcularDeudaActualizadaCliente(clienteId) {
   let deudaHistorica = 0;
   let deudaActualizada = 0;
 
+  const prices = new Map();
+  for (const row of rows) if (!prices.has(row.producto_id)) prices.set(row.producto_id, await readPrice(row.producto_id));
+  const unresolved = [...prices].filter(([, result]) => result.status !== "RESOLVED");
+  if (unresolved.length) {
+    const balances = new Map(rows.map(row => [row.venta_id, row.saldo_pendiente]));
+    return { price_status: "INDETERMINATE", price_issues: unresolved.map(([producto_id, result]) => ({producto_id, reason:result.reason})), deuda_actualizada: roundMoney([...balances.values()].reduce((sum, value) => sum + Number(value), 0)), diferencia: null, productos_afectados: [], ventas: [] };
+  }
   rows.forEach((row) => {
     const ventaTotal = Number(row.venta_total) || 0;
     const saldoPendiente = Number(row.saldo_pendiente) || 0;
     const totalPagado = Number(row.total_pagado) || 0;
     const cantidad = Number(row.cantidad) || 0;
     const subtotalHistorico = Number(row.subtotal) || (cantidad * (Number(row.precio_unitario) || 0));
-    const precioParaRecalculo = Number(row.producto_activo) === 1
-      ? Number(row.precio_actual) || Number(row.precio_unitario) || 0
-      : Number(row.precio_unitario) || 0;
+    const precioParaRecalculo = prices.get(row.producto_id).price;
     const key = row.producto_id == null ? `sin_producto:${row.nombre_producto}` : String(row.producto_id);
 
     if (!ventasMap.has(row.venta_id)) {
@@ -261,6 +270,7 @@ async function calcularDeudaActualizadaCliente(clienteId) {
   }));
 
   return {
+    price_status: "RESOLVED",
     deuda_historica: roundMoney(deudaHistorica),
     deuda_actualizada: roundMoney(deudaActualizada),
     diferencia: roundMoney(deudaActualizada - deudaHistorica),
@@ -277,6 +287,7 @@ async function getDeudaActualizadaCliente(clienteId) {
 
 async function aplicarRecalculoDeudaCliente(clienteId, { usuario, motivo } = {}) {
   const calculo = await calcularDeudaActualizadaCliente(clienteId);
+  if (calculo.price_status === "INDETERMINATE") return { ...calculo, aplicado: false, message: "Precio CC requiere revision; no se modificaron saldos" };
 
   if (Math.abs(Number(calculo.diferencia || 0)) <= 0.009) {
     return {
@@ -306,12 +317,13 @@ async function aplicarRecalculoDeudaCliente(clienteId, { usuario, motivo } = {})
              estado = ?
          WHERE id = ?
            AND es_cuenta_corriente = 1
-           AND COALESCE(saldo_pendiente, 0) > 0
+           AND COALESCE(saldo_pendiente, 0) >= 0
+           AND estado = 'cuenta_corriente_pendiente'
            AND COALESCE(estado, '') != 'anulado'
            AND COALESCE(tipo, '') != 'test_modificadores'`,
         [
           venta.saldo_actualizado,
-          venta.saldo_actualizado === 0 ? "cobrada" : "cuenta_corriente_pendiente",
+          venta.estado_anterior,
           venta.venta_id
         ]
       );

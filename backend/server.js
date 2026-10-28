@@ -98,6 +98,7 @@ const {
 const {
   getVentaConDetalle,
   getVentaDetalleRows,
+  getVentaCuentaCorrienteSnapshot,
   refreshCuentaCorrienteSaldo,
   replaceVentaDetalle,
   resolveCobroData
@@ -695,7 +696,7 @@ async function requireAuth(req, res, next) {
     if (ATLAS_AUTH_MODE === "central") {
       try {
         sesion = await getQuery(
-          "SELECT usuario_id, nombre, rol, auth_mode, central_id, membership_id, empresa_id, password_version FROM sesiones WHERE token = ? AND expira > datetime('now')",
+          "SELECT usuario_id, nombre, rol, auth_mode, central_id, membership_id, empresa_id, password_version FROM sesiones WHERE token = ? AND julianday(expira) > julianday('now')",
           [token]
         );
       } catch (error) {
@@ -707,7 +708,7 @@ async function requireAuth(req, res, next) {
       }
     } else {
       sesion = await getQuery(
-        "SELECT usuario_id, nombre, rol, auth_mode, central_id, membership_id, empresa_id FROM sesiones WHERE token = ? AND expira > datetime('now')",
+        "SELECT usuario_id, nombre, rol, auth_mode, central_id, membership_id, empresa_id FROM sesiones WHERE token = ? AND julianday(expira) > julianday('now')",
         [token]
       );
     }
@@ -2222,7 +2223,7 @@ app.post("/login", rateLimitLogin, async (req, res) => {
       "INSERT OR REPLACE INTO sesiones (token, usuario_id, nombre, rol, expira) VALUES (?, ?, ?, ?, ?)",
       [token, user.id, user.nombre, rolSesion, expiraISO]
     );
-    await runQuery("DELETE FROM sesiones WHERE expira < datetime('now')");
+    await runQuery("DELETE FROM sesiones WHERE julianday(expira) IS NULL OR julianday(expira) <= julianday('now')");
 
     return res.json({
       message: "Login correcto",
@@ -2302,7 +2303,7 @@ async function loginCentral(req, res, { usuario, password, remember }) {
       logError("Business DB sin sesiones.password_version -- Session Revocation no disponible, login central rechazado", error);
       return res.status(503).json({ message: CENTRAL_AUTH_UNAVAILABLE_MESSAGE });
     }
-    await runQuery("DELETE FROM sesiones WHERE expira < datetime('now')");
+    await runQuery("DELETE FROM sesiones WHERE julianday(expira) IS NULL OR julianday(expira) <= julianday('now')");
 
     return res.json({
       message: "Login correcto",
@@ -3316,11 +3317,16 @@ app.post("/productos", async (req, res) => {
     return res.status(400).json({ message: "Los precios no pueden ser negativos" });
   }
 
+  let transactionOpen = false;
   try {
+    await runQuery("BEGIN TRANSACTION");
+    transactionOpen = true;
     const categoriaData = categoria_id
       ? await getQuery("SELECT margen_porcentaje, maneja_stock, usa_costos_varios FROM categorias WHERE id = ?", [Number(categoria_id)])
       : null;
     if (!categoriaData) {
+      await runQuery("ROLLBACK");
+      transactionOpen = false;
       return res.status(400).json({ message: "La categoria seleccionada no existe" });
     }
     const tipoProducto = normalizarTipoProducto(tipo);
@@ -3421,6 +3427,8 @@ app.post("/productos", async (req, res) => {
         [codigoFinal]
       );
       if (codDuplicado) {
+        await runQuery("ROLLBACK");
+        transactionOpen = false;
         return res.status(409).json({ message: `Ya existe un producto con el código "${codigoFinal}"` });
       }
       result = await insertarProducto(codigoFinal);
@@ -3436,8 +3444,8 @@ app.post("/productos", async (req, res) => {
       // pueden calcular el mismo codigo antes de que cualquiera complete su INSERT). Nunca reintenta
       // un error SQLite ajeno a esta colision especifica (se relanza tal cual), ni repite el INSERT
       // una vez que ya tuvo exito. La restriccion UNIQUE de SQLite sigue siendo la autoridad
-      // definitiva de unicidad: este mecanismo solo reacciona a ella, no la reemplaza ni la
-      // anticipa con una transaccion propia sobre la conexion compartida del tenant.
+      // definitiva de unicidad: este mecanismo reacciona a ella, no la reemplaza.
+      // El alta y su historial comparten una unica transaccion coordinada.
       const MAX_INTENTOS_CODIGO_AUTOMATICO = 5;
       let intento = 0;
       for (;;) {
@@ -3478,12 +3486,17 @@ app.post("/productos", async (req, res) => {
 
     const nuevo = await getQuery("SELECT * FROM productos WHERE id = ?", [result.lastID]);
     await registrarCambiosProducto(result.lastID, null, nuevo, usuario || "admin", "creacion");
+    await runQuery("COMMIT");
+    transactionOpen = false;
 
     return res.json({
       message: "Producto guardado correctamente",
       id: result.lastID
     });
   } catch (err) {
+    if (transactionOpen) {
+      try { await runQuery("ROLLBACK"); } catch (rollbackError) { logError("Rollback alta producto", rollbackError); }
+    }
     if (err.statusCode) return res.status(err.statusCode).json({ message: err.message });
     logError("Error al guardar producto:", err);
     return res.status(500).json({ message: "Error al guardar producto" });
@@ -3737,15 +3750,18 @@ app.put("/productos/:id", async (req, res) => {
     return res.status(400).json({ message: "Los precios no pueden ser negativos" });
   }
 
+  let transactionOpen = false;
   try {
+    await runQuery("BEGIN TRANSACTION");
+    transactionOpen = true;
     const existente = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
 
     if (!existente) {
-      return res.status(404).json({ message: "Producto no encontrado" });
+      throw Object.assign(new Error("Producto no encontrado"), { statusCode: 404 });
     }
 
     if (Number(existente.eliminado) === 1) {
-      return res.status(400).json({ message: "No se puede editar un producto archivado. Restauralo primero." });
+      throw Object.assign(new Error("No se puede editar un producto archivado. Restauralo primero."), { statusCode: 400 });
     }
 
     const codigoEditado = String(codigo || "").trim();
@@ -3755,7 +3771,7 @@ app.put("/productos/:id", async (req, res) => {
         [codigoEditado, productoId]
       );
       if (codDuplicado) {
-        return res.status(409).json({ message: `Ya existe un producto con el código "${codigoEditado}"` });
+        throw Object.assign(new Error(`Ya existe un producto con el código "${codigoEditado}"`), { statusCode: 409 });
       }
     }
 
@@ -3763,7 +3779,7 @@ app.put("/productos/:id", async (req, res) => {
       ? await getQuery("SELECT margen_porcentaje, maneja_stock, usa_costos_varios FROM categorias WHERE id = ?", [Number(categoria_id)])
       : null;
     if (!categoriaData) {
-      return res.status(400).json({ message: "La categoria seleccionada no existe" });
+      throw Object.assign(new Error("La categoria seleccionada no existe"), { statusCode: 400 });
     }
     const tipoProducto = normalizarTipoProducto(tipo);
     const usaCostos = tipoProducto === "simple" && (usa_costos_varios || categoriaData?.usa_costos_varios);
@@ -3789,8 +3805,6 @@ app.put("/productos/:id", async (req, res) => {
           categoriaData?.margen_porcentaje || 0,
           redondeo
         );
-
-    await runQuery("BEGIN TRANSACTION");
 
     await runQuery(
       `UPDATE productos
@@ -3902,14 +3916,16 @@ app.put("/productos/:id", async (req, res) => {
       }
     }
 
-    await runQuery("COMMIT");
-
     const actualizado = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
     await registrarCambiosProducto(productoId, existente, actualizado, usuario || "admin", "edicion");
+    await runQuery("COMMIT");
+    transactionOpen = false;
 
     return res.json({ message: "Producto actualizado correctamente" });
   } catch (error) {
-    try { await runQuery("ROLLBACK"); } catch {}
+    if (transactionOpen) {
+      try { await runQuery("ROLLBACK"); } catch (rollbackError) { logError("Rollback edicion producto", rollbackError); }
+    }
     if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
     logError("Error al actualizar producto", error, "id: " + productoId);
     return res.status(500).json({ message: "Error al actualizar producto" });
@@ -3922,18 +3938,28 @@ app.patch("/productos/:id/inactivar", async (req, res) => {
 
   const productoId = Number(req.params.id);
 
+  let transactionOpen = false;
   try {
-    const existente = await getQuery("SELECT id FROM productos WHERE id = ?", [productoId]);
+    await runQuery("BEGIN TRANSACTION");
+    transactionOpen = true;
+    const existente = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
 
     if (!existente) {
+      await runQuery("ROLLBACK");
+      transactionOpen = false;
       return res.status(404).json({ message: "Producto no encontrado" });
     }
 
     await runQuery("UPDATE productos SET activo = 0 WHERE id = ?", [productoId]);
     const actualizado = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
     await registrarCambiosProducto(productoId, existente, actualizado, "admin", "inactivacion");
+    await runQuery("COMMIT");
+    transactionOpen = false;
     return res.json({ message: "Producto inactivado correctamente" });
   } catch (error) {
+    if (transactionOpen) {
+      try { await runQuery("ROLLBACK"); } catch (rollbackError) { logError("Rollback estado producto", rollbackError); }
+    }
     logError("Error al inactivar producto:", error);
     return res.status(500).json({ message: "Error al inactivar producto" });
   }
@@ -4221,6 +4247,7 @@ app.patch("/productos/aumento-masivo", async (req, res) => {
     return res.status(400).json({ message: "Campo de aumento invalido" });
   }
 
+  let transactionOpen = false;
   try {
     const where = ["activo = 1", "COALESCE(eliminado, 0) = 0"];
     const params = [];
@@ -4235,17 +4262,23 @@ app.patch("/productos/aumento-masivo", async (req, res) => {
       params.push(categoriaId);
     }
 
+    await runQuery("BEGIN TRANSACTION");
+    transactionOpen = true;
     const productos = await allQuery(
       `SELECT * FROM productos WHERE ${where.join(" AND ")}`,
       params
     );
 
     if (!productos.length) {
+      await runQuery("ROLLBACK");
+      transactionOpen = false;
       return res.status(404).json({ message: "No hay productos que cumplan la condicion" });
     }
 
     const incluyeNormalizados = productos.some((producto) => producto.modelo_fiscal === "normalizado");
     if (incluyeNormalizados) {
+      await runQuery("ROLLBACK");
+      transactionOpen = false;
       return res.status(409).json({
         message: "El aumento incluye productos con calculo fiscal normalizado. Ajustalos individualmente por ahora."
       });
@@ -4272,8 +4305,13 @@ app.patch("/productos/aumento-masivo", async (req, res) => {
       await registrarCambiosProducto(producto.id, producto, actualizado, "admin", "aumento masivo");
     }
 
+    await runQuery("COMMIT");
+    transactionOpen = false;
     return res.json({ message: `Aumento aplicado a ${productos.length} producto(s)`, cantidad: productos.length });
   } catch (error) {
+    if (transactionOpen) {
+      try { await runQuery("ROLLBACK"); } catch (rollbackError) { logError("Rollback aumento masivo", rollbackError); }
+    }
     logError("Error al aplicar aumento masivo:", error);
     return res.status(500).json({ message: "Error al aplicar aumento masivo" });
   }
@@ -4285,22 +4323,34 @@ app.patch("/productos/:id/reactivar", async (req, res) => {
 
   const productoId = Number(req.params.id);
 
+  let transactionOpen = false;
   try {
-    const existente = await getQuery("SELECT id, COALESCE(eliminado, 0) AS eliminado FROM productos WHERE id = ?", [productoId]);
+    await runQuery("BEGIN TRANSACTION");
+    transactionOpen = true;
+    const existente = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
 
     if (!existente) {
+      await runQuery("ROLLBACK");
+      transactionOpen = false;
       return res.status(404).json({ message: "Producto no encontrado" });
     }
 
     if (Number(existente.eliminado) === 1) {
+      await runQuery("ROLLBACK");
+      transactionOpen = false;
       return res.status(400).json({ message: "El producto está archivado. Usá la acción Restaurar." });
     }
 
     await runQuery("UPDATE productos SET activo = 1 WHERE id = ?", [productoId]);
     const actualizado = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
     await registrarCambiosProducto(productoId, existente, actualizado, "admin", "reactivacion");
+    await runQuery("COMMIT");
+    transactionOpen = false;
     return res.json({ message: "Producto reactivado correctamente" });
   } catch (error) {
+    if (transactionOpen) {
+      try { await runQuery("ROLLBACK"); } catch (rollbackError) { logError("Rollback estado producto", rollbackError); }
+    }
     logError("Error al reactivar producto:", error);
     return res.status(500).json({ message: "Error al reactivar producto" });
   }
@@ -4312,14 +4362,21 @@ app.patch("/productos/:id/restaurar", async (req, res) => {
 
   const productoId = Number(req.params.id);
 
+  let transactionOpen = false;
   try {
+    await runQuery("BEGIN TRANSACTION");
+    transactionOpen = true;
     const existente = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
 
     if (!existente) {
+      await runQuery("ROLLBACK");
+      transactionOpen = false;
       return res.status(404).json({ message: "Producto no encontrado" });
     }
 
     if (Number(existente.eliminado) !== 1) {
+      await runQuery("ROLLBACK");
+      transactionOpen = false;
       return res.status(400).json({ message: "El producto no está archivado" });
     }
 
@@ -4329,6 +4386,8 @@ app.patch("/productos/:id/restaurar", async (req, res) => {
         [existente.codigo, productoId]
       );
       if (conflicto) {
+        await runQuery("ROLLBACK");
+        transactionOpen = false;
         return res.status(409).json({ message: "No se puede restaurar: existe otro producto con el mismo código" });
       }
     }
@@ -4336,8 +4395,13 @@ app.patch("/productos/:id/restaurar", async (req, res) => {
     await runQuery("UPDATE productos SET activo = 1, eliminado = 0 WHERE id = ?", [productoId]);
     const actualizado = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
     await registrarCambiosProducto(productoId, existente, actualizado, "admin", "restauracion");
+    await runQuery("COMMIT");
+    transactionOpen = false;
     return res.json({ message: "Producto restaurado correctamente." });
   } catch (error) {
+    if (transactionOpen) {
+      try { await runQuery("ROLLBACK"); } catch (rollbackError) { logError("Rollback restaurar/archivar producto", rollbackError); }
+    }
     logError("Error al restaurar producto:", error);
     return res.status(500).json({ message: "Error al restaurar producto" });
   }
@@ -4350,6 +4414,7 @@ app.delete("/productos/:id", async (req, res) => {
   const productoId = Number(req.params.id);
   const clave = String(req.body?.clave || req.body?.authorization_code || "").trim();
 
+  let transactionOpen = false;
   try {
     const claveActual = await getClaveAutorizacion();
     if (!requerirClaveConfigurada(claveActual, res)) return;
@@ -4357,12 +4422,16 @@ app.delete("/productos/:id", async (req, res) => {
       return res.status(403).json({ message: "Clave maestra incorrecta" });
     }
 
+    await runQuery("BEGIN TRANSACTION");
+    transactionOpen = true;
     const producto = await getQuery(
       "SELECT id, nombre FROM productos WHERE id = ?",
       [productoId]
     );
 
     if (!producto) {
+      await runQuery("ROLLBACK");
+      transactionOpen = false;
       return res.status(404).json({ message: "Producto no encontrado" });
     }
 
@@ -4374,6 +4443,8 @@ app.delete("/productos/:id", async (req, res) => {
     const esIngrediente = Number(esComponente?.total || 0) > 0;
 
     if (esIngrediente) {
+      await runQuery("ROLLBACK");
+      transactionOpen = false;
       return res.status(409).json({ message: "No se puede archivar: este producto es componente de una o más recetas activas" });
     }
 
@@ -4384,12 +4455,17 @@ app.delete("/productos/:id", async (req, res) => {
     );
     const actualizado = await getQuery("SELECT * FROM productos WHERE id = ?", [productoId]);
     await registrarCambiosProducto(productoId, anterior, actualizado, "admin", "archivado");
+    await runQuery("COMMIT");
+    transactionOpen = false;
 
     return res.json({
       message: "Producto archivado correctamente.",
       archivado: true
     });
   } catch (error) {
+    if (transactionOpen) {
+      try { await runQuery("ROLLBACK"); } catch (rollbackError) { logError("Rollback restaurar/archivar producto", rollbackError); }
+    }
     logError("Error al archivar producto:", error);
     return res.status(500).json({ message: "Error al archivar producto" });
   }
@@ -4967,6 +5043,14 @@ app.post("/productos/:id/movimientos-stock", async (req, res) => {
          WHERE id = ?`,
         [costoCompuesto, costoCompuesto, sigueSugerido ? sugeridoNuevo : precioActual, productoId]
       );
+      const publicado = await getQuery("SELECT precio_venta FROM productos WHERE id = ?", [productoId]);
+      if (!publicado || typeof publicado.precio_venta !== "number" || !Number.isFinite(publicado.precio_venta)) {
+        throw new Error("No se pudo verificar el precio publicado del producto compuesto");
+      }
+      if (publicado.precio_venta !== precioActual) {
+        await logHistorialProducto(productoId, "precio_venta", precioActual, publicado.precio_venta,
+          `Recalculo por movimiento manual de stock: ${motivo || tipoMovimiento}`, usuario);
+      }
     }
     await logHistorialProducto(productoId, "stock", stockAnterior, stockNuevo, motivo || tipoMovimiento, usuario);
     await runQuery("COMMIT");
@@ -8392,7 +8476,8 @@ app.post("/ventas", async (req, res) => {
     if (hayModificadores) {
       await guardarSnapshotsModificadoresVenta(detalles);
     }
-    await applyStockForNewItems(itemsVenta);
+    const movimientoVenta = { tipo_movimiento: "venta", motivo: "Descuento por venta", origen_tipo: "venta", origen_id: venta.lastID };
+    await applyStockForNewItems(itemsVenta, { movimiento: movimientoVenta });
     try {
       const prodIdsVenta = [...new Set(itemsVenta.map((i) => Number(i.producto_id)).filter(Boolean))];
       for (const pid of prodIdsVenta) {
@@ -8418,7 +8503,7 @@ app.post("/ventas", async (req, res) => {
     });
     await guardarRecetaSnapshotVenta(venta.lastID, detalles);
     if (hayModificadores) {
-      await aplicarStockComponentesSnapshot(await filtrarDetallesConStockFisico(detalles), 1);
+      await aplicarStockComponentesSnapshot(await filtrarDetallesConStockFisico(detalles), 1, movimientoVenta);
     }
     if (tipoVenta === "normal" && !esCuentaCorriente && (cobrosV2Normalizados || cobro?.tipo_cobro)) {
       await registrarVentaCobros(venta.lastID, cobro, cuentaCobroVenta.cuenta_cobro_id, `${fecha} ${hora}`, cobrosV2Normalizados);
@@ -8467,7 +8552,8 @@ app.get("/clientes/:id/cuenta-corriente", async (req, res) => {
     const ventasPendientesBase = await allQuery(
       `SELECT id, fecha, COALESCE(total_venta_original, total) AS total_historico, saldo_pendiente
        FROM ventas
-       WHERE cliente_id = ? AND es_cuenta_corriente = 1 AND saldo_pendiente > 0
+       WHERE cliente_id = ? AND es_cuenta_corriente = 1
+         AND (saldo_pendiente > 0 OR (saldo_pendiente = 0 AND estado = 'cuenta_corriente_pendiente'))
        ORDER BY id DESC`,
       [clienteId]
     );
@@ -8475,9 +8561,9 @@ app.get("/clientes/:id/cuenta-corriente", async (req, res) => {
     const ventasPendientes = [];
 
     for (const venta of ventasPendientesBase) {
-      const snapshot = await refreshCuentaCorrienteSaldo(venta.id);
+      const snapshot = await getVentaCuentaCorrienteSnapshot(venta.id);
 
-      if (!snapshot || snapshot.saldo_actual <= 0) {
+      if (!snapshot) {
         continue;
       }
 
@@ -8487,8 +8573,11 @@ app.get("/clientes/:id/cuenta-corriente", async (req, res) => {
         total_historico: Number(snapshot.venta.total_venta_original ?? snapshot.venta.total ?? venta.total_historico ?? 0),
         total_actual: snapshot.total_actual,
         total_pagado: snapshot.total_pagado,
-        saldo_pendiente: snapshot.saldo_actual,
-        items: snapshot.items
+        saldo_pendiente: snapshot.price_status === "INDETERMINATE" ? snapshot.venta.saldo_pendiente : snapshot.saldo_actual,
+        items: snapshot.items,
+        price_status: snapshot.price_status,
+        price_issues: snapshot.price_issues || [],
+        saldo_verificado: snapshot.price_status === "RESOLVED"
       });
     }
 
@@ -8497,6 +8586,7 @@ app.get("/clientes/:id/cuenta-corriente", async (req, res) => {
     return res.json({
       cliente,
       saldo_pendiente: saldo,
+      price_status: ventasPendientes.some(venta => venta.price_status === "INDETERMINATE") ? "INDETERMINATE" : "RESOLVED",
       ventas_pendientes: ventasPendientes
     });
   } catch (error) {
@@ -9357,7 +9447,7 @@ app.post("/clientes/:id/venta-cuenta", async (req, res) => {
       ]
     );
     const detalles = await replaceVentaDetalle(result.lastID, items);
-    await applyStockForNewItems(items);
+    await applyStockForNewItems(items, { movimiento: { tipo_movimiento: "venta", motivo: "Descuento por venta", origen_tipo: "venta", origen_id: result.lastID } });
     await crearAjustesPendientesVentaReceta({
       ventaId: result.lastID,
       detalles,
@@ -9386,22 +9476,57 @@ app.post("/ventas/:id/pagar-cuenta-corriente", async (req, res) => {
   const ventaId = Number(req.params.id);
   const montoPagado = Number(req.body.monto_pagado) || 0;
   const tipoCobro = req.body.tipo_cobro;
+  let transactionStarted = false;
 
   try {
-    const snapshot = await refreshCuentaCorrienteSaldo(ventaId);
+    // Authentication/permissions are rechecked even when returning a stored response.
+    if (!req.usuario) return res.status(401).json({ message: "Sesion requerida" });
+    const { createCcPaymentIdempotency } = require("./services/ccPaymentIdempotencyService");
+    const idempotency = createCcPaymentIdempotency(getTenantContext()?.tenantHandle);
+    if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para registrar pagos"))) return;
+    const payload = { monto_pagado: req.body.monto_pagado, tipo_cobro: tipoCobro };
+    for (const field of ["monto_efectivo", "monto_debito"]) {
+      if (Object.prototype.hasOwnProperty.call(req.body, field)) payload[field] = req.body[field];
+    }
+    const intent = { key: req.get("Idempotency-Key"), type: "VENTA", targetId: ventaId, version: 1, payload };
+    const reserved = await idempotency.reserve(intent, req.usuario.id);
+    if (reserved.state === "CONFIRMADA") return res.status(reserved.response.status).json(reserved.response.body);
+
+    await runQuery("BEGIN IMMEDIATE");
+    transactionStarted = true;
+    const current = await idempotency.beforeEffects(intent);
+    if (current.state === "CONFIRMADA") {
+      await runQuery("ROLLBACK"); transactionStarted = false;
+      return res.status(current.response.status).json(current.response.body);
+    }
+    // Valuation, cash-box and balance are read inside the same transaction as the payment.
+    const rejectPayment = async (status, body) => {
+      await runQuery("ROLLBACK"); transactionStarted = false;
+      return res.status(status).json(body);
+    };
+    const snapshot = await getVentaCuentaCorrienteSnapshot(ventaId);
     const venta = snapshot?.venta;
+    if (snapshot?.price_status === "INDETERMINATE") {
+      return await rejectPayment(409, {
+        code: "CC_PRICE_INDETERMINATE",
+        message: "No se puede determinar el importe de la deuda. Requiere revision antes de cobrar.",
+        price_status: snapshot.price_status,
+        price_issues: snapshot.price_issues || [],
+        saldo_pendiente: venta.saldo_pendiente
+      });
+    }
     const cajaActiva = await getCajaAbiertaActual();
 
-    if (!venta || Number(venta.es_cuenta_corriente) !== 1 || Number(snapshot.saldo_actual) <= 0) {
-      return res.status(404).json({ message: "Venta de cuenta corriente no encontrada" });
+    if (!venta || Number(venta.es_cuenta_corriente) !== 1 || snapshot.price_status !== "RESOLVED" || Number(snapshot.saldo_actual) <= 0) {
+      return await rejectPayment(404, { message: "Venta de cuenta corriente no encontrada" });
     }
 
     if (!cajaActiva) {
-      return res.status(400).json({ message: "No hay una caja abierta para registrar el cobro" });
+      return await rejectPayment(400, { message: "No hay una caja abierta para registrar el cobro" });
     }
 
     if (montoPagado <= 0 || montoPagado > Number(snapshot.saldo_actual)) {
-      return res.status(400).json({ message: "Monto de pago invalido" });
+      return await rejectPayment(400, { message: "Monto de pago invalido" });
     }
 
     const cobro = resolveCobroData(
@@ -9412,25 +9537,25 @@ app.post("/ventas/:id/pagar-cuenta-corriente", async (req, res) => {
     );
 
     if (!cobro) {
-      return res.status(400).json({ message: "Datos de cobro invalidos" });
+      return await rejectPayment(400, { message: "Datos de cobro invalidos" });
     }
 
     const { fecha, hora } = getNowParts();
 
-    await runQuery("BEGIN TRANSACTION");
-
     const ventaDb = await getQuery(
       `SELECT saldo_pendiente FROM ventas
-       WHERE id = ? AND estado = 'cuenta_corriente_pendiente' AND saldo_pendiente > 0`,
+       WHERE id = ? AND estado = 'cuenta_corriente_pendiente' AND saldo_pendiente >= 0`,
       [ventaId]
     );
 
-    if (!ventaDb || Number(ventaDb.saldo_pendiente) <= 0) {
-      await runQuery("ROLLBACK");
-      return res.status(409).json({ message: "La venta ya fue pagada o no tiene saldo pendiente." });
+    if (!ventaDb || Number(ventaDb.saldo_pendiente) < 0) {
+      return await rejectPayment(409, { message: "La venta ya fue pagada o no tiene saldo pendiente." });
     }
 
-    const saldoActualDb = Number(ventaDb.saldo_pendiente);
+    if (Number(ventaDb.saldo_pendiente) !== Number(venta.saldo_pendiente)) {
+      return await rejectPayment(409, { message: "El saldo de la venta cambio. Consulte nuevamente antes de cobrar." });
+    }
+    const saldoActualDb = Number(snapshot.saldo_actual);
     const nuevoSaldo = Number(Math.max(0, saldoActualDb - montoPagado).toFixed(2));
 
     const resultPago = await runQuery(
@@ -9445,16 +9570,15 @@ app.post("/ventas/:id/pagar-cuenta-corriente", async (req, res) => {
         cobro.monto_efectivo,
         cobro.monto_debito,
         ventaId,
-        saldoActualDb
+        Number(ventaDb.saldo_pendiente)
       ]
     );
 
     if (resultPago.changes === 0) {
-      await runQuery("ROLLBACK");
-      return res.status(409).json({ message: "La venta ya fue pagada o no tiene saldo pendiente." });
+      return await rejectPayment(409, { message: "La venta ya fue pagada o no tiene saldo pendiente." });
     }
 
-    await runQuery(
+    const persistedPayment = await runQuery(
       `INSERT INTO pagos_cuenta_corriente
       (venta_id, cliente_id, fecha, hora, monto_pagado, tipo_cobro, monto_efectivo, monto_debito, caja_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -9471,19 +9595,23 @@ app.post("/ventas/:id/pagar-cuenta-corriente", async (req, res) => {
       ]
     );
 
-    await runQuery("COMMIT");
-
-    return res.json({
+    const response = {
       message: nuevoSaldo === 0 ? "Cuenta corriente saldada" : "Pago registrado",
       saldo_pendiente: nuevoSaldo
-    });
+    };
+    await idempotency.confirm(intent, { status: 200, body: response, paymentId: persistedPayment.lastID });
+    await runQuery("COMMIT"); transactionStarted = false;
+    return res.status(200).json(response);
   } catch (error) {
-    try {
+    if (transactionStarted) try {
       await runQuery("ROLLBACK");
     } catch (rollbackError) {
       logError("Rollback pago cuenta corriente", rollbackError);
     }
 
+    if (error.code === "CC_IDEMPOTENCY_CONFLICT") return res.status(409).json({ code: error.code, message: "La clave identifica otra operacion de cobro" });
+    if (error.code?.startsWith("CC_OPERATION_INVALID_")) return res.status(400).json({ code: error.code, message: "Clave o datos de operacion invalidos" });
+    if (error.code === "CC_TENANT_REQUIRED") return res.status(403).json({ code: error.code, message: "Contexto de empresa invalido" });
     logError("Error al pagar cuenta corriente:", error);
     return res.status(500).json({ message: "Error al pagar cuenta corriente" });
   }
@@ -11017,10 +11145,24 @@ app.post("/clientes/:id/recalcular-deuda", async (req, res) => {
 app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
   const clienteId = Number(req.params.id);
   try {
+    if (!req.usuario) return res.status(401).json({ message: "Sesion requerida" });
+    const { createCcPaymentIdempotency } = require("./services/ccPaymentIdempotencyService");
+    const idempotency = createCcPaymentIdempotency(getTenantContext()?.tenantHandle);
+    if (!(await requirePermiso(req, res, "pagos_crear", "No tenes permisos para registrar pagos"))) return;
     const cliente = await getQuery("SELECT id FROM clientes WHERE id = ?", [clienteId]);
     if (!cliente) {
       return res.status(404).json({ message: "Cliente no encontrado" });
     }
+
+    // Fingerprint the complete supported request before rounding, resolving accounts,
+    // reading balances or generating a new receipt/group. No monetary coercion here.
+    const payload = { cobros: req.body.cobros };
+    for (const field of ["ventas", "observacion"]) {
+      if (Object.prototype.hasOwnProperty.call(req.body, field)) payload[field] = req.body[field];
+    }
+    const intent = { key: req.get("Idempotency-Key"), type: "CLIENTE", targetId: clienteId, version: 1, payload };
+    const reserved = await idempotency.reserve(intent, req.usuario.id);
+    if (reserved.state === "CONFIRMADA") return res.status(reserved.response.status).json(reserved.response.body);
 
     const cajaActiva = await getCajaAbiertaActual();
     if (!cajaActiva) {
@@ -11075,42 +11217,77 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
       }
     }
 
-    const resumen = await buildClienteCuentaResumen(clienteId);
-    const deudaAnterior = resumen.deuda_actual;
-    if (deudaAnterior <= 0) {
-      return res.status(400).json({ message: "El cliente no tiene deuda pendiente" });
-    }
-    if (montoTotal > deudaAnterior + 0.01) {
-      return res.status(400).json({
-        message: `El monto (${montoTotal}) supera la deuda actual (${deudaAnterior})`
-      });
-    }
+    let deudaAnterior;
 
-    let ventasPendientes = [];
-    if (!ventasManual) {
-      ventasPendientes = await allQuery(
+    const { fecha, hora } = getNowParts();
+    let groupId;
+    let numeroComprobante;
+    const usuarioId = req.usuario?.id ?? null;
+    const usuarioNombre = req.usuario?.nombre ?? null;
+    const tipoCc = cobrosNormalizados.length === 1 ? cobrosNormalizados[0].tipo_cobro : "mixto";
+    let restante = montoTotal;
+    const ventasAfectadas = [];
+    let response;
+
+    await runQuery("BEGIN TRANSACTION");
+    try {
+      const current = await idempotency.beforeEffects(intent);
+      if (current.state === "CONFIRMADA") {
+        await runQuery("ROLLBACK");
+        return res.status(current.response.status).json(current.response.body);
+      }
+      groupId = crypto.randomBytes(16).toString("hex");
+      numeroComprobante = `CC-${fecha.replace(/-/g, "")}-${groupId.slice(0, 8)}`;
+      const resumen = await buildClienteCuentaResumen(clienteId);
+      deudaAnterior = resumen.deuda_actual;
+      if (deudaAnterior <= 0 || montoTotal > deudaAnterior + 0.01) {
+        await runQuery("ROLLBACK");
+        return res.status(400).json({ message: deudaAnterior <= 0
+          ? "El cliente no tiene deuda pendiente"
+          : `El monto (${montoTotal}) supera la deuda actual (${deudaAnterior})` });
+      }
+      const ventasPendientes = ventasManual ? [] : await allQuery(
         `SELECT id, saldo_pendiente
          FROM ventas
          WHERE cliente_id = ? AND es_cuenta_corriente = 1 AND saldo_pendiente > 0
          ORDER BY fecha ASC, hora ASC, id ASC`,
         [clienteId]
       );
-      if (!ventasPendientes.length) {
+      if (!ventasManual && !ventasPendientes.length) {
+        await runQuery("ROLLBACK");
         return res.status(400).json({ message: "No hay ventas pendientes para este cliente" });
       }
-    }
 
-    const { fecha, hora } = getNowParts();
-    const groupId = crypto.randomBytes(16).toString("hex");
-    const numeroComprobante = `CC-${fecha.replace(/-/g, "")}-${groupId.slice(0, 8)}`;
-    const usuarioId = req.usuario?.id ?? null;
-    const usuarioNombre = req.usuario?.nombre ?? null;
-    const tipoCc = cobrosNormalizados.length === 1 ? cobrosNormalizados[0].tipo_cobro : "mixto";
-    let restante = montoTotal;
-    const ventasAfectadas = [];
+      // Validate the entire affected set before any financial write, in the same
+      // tenant transaction as allocation. Manual payments do not price other sales.
+      let porVerificar = montoTotal;
+      const saldosVerificados = new Map();
+      const ventasAVerificar = ventasManual || ventasPendientes.map(venta => ({ venta_id: venta.id }));
+      for (const item of ventasAVerificar) {
+        if (!ventasManual && porVerificar <= 0) break;
+        const snapshot = await getVentaCuentaCorrienteSnapshot(Number(item.venta_id));
+        const venta = snapshot?.venta;
+        if (!venta || Number(venta.cliente_id) !== clienteId || Number(venta.es_cuenta_corriente) !== 1) {
+          await runQuery("ROLLBACK");
+          return res.status(400).json({ message: `Venta #${item.venta_id} no encontrada para esta cuenta corriente` });
+        }
+        if (!ventasManual && (venta.estado !== "cuenta_corriente_pendiente" || Number(venta.saldo_pendiente) <= 0)) continue;
+        if (snapshot.price_status === "INDETERMINATE") {
+          await runQuery("ROLLBACK");
+          return res.status(409).json({ code: "CC_PRICE_INDETERMINATE",
+            message: "No se puede determinar el importe de la deuda. Requiere revision antes de cobrar.",
+            venta_id: venta.id, price_status: snapshot.price_status,
+            price_issues: snapshot.price_issues || [], saldo_pendiente: venta.saldo_pendiente });
+        }
+        if (snapshot.price_status !== "RESOLVED" || snapshot.saldo_actual !== Number(venta.saldo_pendiente)) {
+          await runQuery("ROLLBACK");
+          return res.status(409).json({ code: "CC_BALANCE_REVIEW_REQUIRED",
+            message: "El saldo registrado requiere revision antes de cobrar.", venta_id: venta.id });
+        }
+        saldosVerificados.set(venta.id, Number(venta.saldo_pendiente));
+        if (!ventasManual) porVerificar = Number((porVerificar - Math.min(porVerificar, Number(venta.saldo_pendiente))).toFixed(2));
+      }
 
-    await runQuery("BEGIN TRANSACTION");
-    try {
       if (ventasManual) {
         for (const item of ventasManual) {
           const ventaId = Number(item.venta_id);
@@ -11133,6 +11310,10 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
             return res.status(400).json({ message: `Venta #${ventaId} está anulada` });
           }
           const saldoActual = Number(ventaRt.saldo_pendiente);
+          if (saldosVerificados.get(ventaId) !== saldoActual) {
+            await runQuery("ROLLBACK");
+            return res.status(409).json({ code: "CC_BALANCE_CHANGED", message: "El saldo cambio antes de confirmar el cobro." });
+          }
           if (saldoActual <= 0) {
             await runQuery("ROLLBACK");
             return res.status(400).json({ message: `Venta #${ventaId} no tiene saldo pendiente` });
@@ -11162,7 +11343,10 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
              WHERE id = ? AND estado = 'cuenta_corriente_pendiente' AND saldo_pendiente > 0`,
             [venta.id]
           );
-          if (!ventaActual || Number(ventaActual.saldo_pendiente) <= 0) continue;
+          if (!ventaActual || saldosVerificados.get(venta.id) !== Number(ventaActual.saldo_pendiente)) {
+            await runQuery("ROLLBACK");
+            return res.status(409).json({ code: "CC_BALANCE_CHANGED", message: "El saldo cambio antes de confirmar el cobro." });
+          }
           const saldoVenta = Number(ventaActual.saldo_pendiente);
           const montoPago = Number(Math.min(restante, saldoVenta).toFixed(2));
           if (montoPago <= 0) continue;
@@ -11183,7 +11367,7 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
           ventasAfectadas.push({ venta_id: venta.id, monto_pagado: montoPago, saldo_restante: nuevoSaldo });
           restante = Number((restante - montoPago).toFixed(2));
         }
-        if (ventasAfectadas.length === 0) {
+        if (ventasAfectadas.length === 0 || restante > 0) {
           await runQuery("ROLLBACK");
           return res.status(409).json({ message: "La deuda ya fue cobrada o no hay saldo pendiente." });
         }
@@ -11207,27 +11391,32 @@ app.post("/clientes/:id/cobrar-deuda", async (req, res) => {
         );
       }
 
+      const deudaRestante = Math.max(0, Number((deudaAnterior - montoTotal).toFixed(2)));
+      response = {
+        message: "Pago de cuenta corriente registrado",
+        cliente_id: clienteId,
+        group_id: groupId,
+        numero_comprobante: numeroComprobante,
+        observacion,
+        monto_pagado: montoTotal,
+        deuda_anterior: deudaAnterior,
+        deuda_restante: deudaRestante,
+        ventas_afectadas: ventasAfectadas,
+        cobros: cobrosNormalizados,
+        aplicacion: ventasManual ? "manual" : "fifo"
+      };
+      await idempotency.confirm(intent, { status: 200, body: response, groupId });
       await runQuery("COMMIT");
     } catch (txError) {
-      try { await runQuery("ROLLBACK"); } catch (_) {}
+      try { await runQuery("ROLLBACK"); } catch (rollbackError) { logError("Rollback cobro global CC", rollbackError); }
       throw txError;
     }
 
-    const deudaRestante = Math.max(0, Number((deudaAnterior - montoTotal).toFixed(2)));
-    return res.json({
-      message: "Pago de cuenta corriente registrado",
-      cliente_id: clienteId,
-      group_id: groupId,
-      numero_comprobante: numeroComprobante,
-      observacion,
-      monto_pagado: montoTotal,
-      deuda_anterior: deudaAnterior,
-      deuda_restante: deudaRestante,
-      ventas_afectadas: ventasAfectadas,
-      cobros: cobrosNormalizados,
-      aplicacion: ventasManual ? "manual" : "fifo"
-    });
+    return res.status(200).json(response);
   } catch (error) {
+    if (error.code === "CC_IDEMPOTENCY_CONFLICT") return res.status(409).json({ code: error.code, message: "La clave identifica otra operacion de cobro" });
+    if (error.code?.startsWith("CC_OPERATION_INVALID_")) return res.status(400).json({ code: error.code, message: "Clave o datos de operacion invalidos" });
+    if (error.code === "CC_TENANT_REQUIRED") return res.status(403).json({ code: error.code, message: "Contexto de empresa invalido" });
     logError("Error al cobrar deuda del cliente:", error);
     return res.status(500).json({ message: "Error al cobrar deuda del cliente" });
   }
@@ -11589,8 +11778,9 @@ app.put("/ventas/:id/pendiente", async (req, res) => {
     const total = calculateTotal(itemsVenta);
 
     await runQuery("BEGIN TRANSACTION");
-    await applyStockDiff(oldItems, itemsVenta);
-    await aplicarStockDiffComponentesExtra(oldComponentesExtraStockFisico, newComponentesExtraStockFisico);
+    const movimientoEdicion = { tipo_movimiento: "edicion", motivo: "Ajuste por edición de ticket pendiente", origen_tipo: "edicion_pendiente", origen_id: ventaId };
+    await applyStockDiff(oldItems, itemsVenta, { movimiento: movimientoEdicion });
+    await aplicarStockDiffComponentesExtra(oldComponentesExtraStockFisico, newComponentesExtraStockFisico, movimientoEdicion);
     await cancelarAjustesPendientesVentaReceta(ventaId, {
       usuario: getUsuarioAuditoria(req),
       observaciones_admin: "Cancelado por edicion de ticket pendiente"
@@ -11773,14 +11963,15 @@ app.post("/ventas/:id/anular", async (req, res) => {
       return res.status(409).json({ message: "La venta ya fue anulada o no está pendiente." });
     }
 
+    const movimientoAnulPendiente = { tipo_movimiento: "anulacion", motivo: "Reposición por anulación de ticket pendiente", origen_tipo: "anulacion_pendiente", origen_id: ventaId };
     for (const item of items) {
       if (!item.producto_id) {
         continue;
       }
 
-      await applyStockChange(item.producto_id, -Number(item.cantidad || 0));
+      await applyStockChange(item.producto_id, -Number(item.cantidad || 0), { movimiento: movimientoAnulPendiente });
     }
-    await aplicarStockComponentesSnapshot(await filtrarDetallesConStockFisico(items), -1);
+    await aplicarStockComponentesSnapshot(await filtrarDetallesConStockFisico(items), -1, movimientoAnulPendiente);
     await cancelarAjustesPendientesVentaReceta(ventaId, {
       usuario: getUsuarioAuditoria(req),
       observaciones_admin: "Cancelado por anulacion de ticket pendiente"
@@ -11929,12 +12120,13 @@ app.post("/ventas/:id/anular-cobrada", async (req, res) => {
       return res.status(409).json({ message: "La venta ya fue anulada o no está cobrada." });
     }
 
+    const movimientoAnulCobrada = { tipo_movimiento: "anulacion", motivo: "Reposición por anulación de venta cobrada", origen_tipo: "anulacion_cobrada", origen_id: ventaId };
     for (const item of items) {
       if (item.producto_id) {
-        await applyStockChange(item.producto_id, -Number(item.cantidad || 0));
+        await applyStockChange(item.producto_id, -Number(item.cantidad || 0), { movimiento: movimientoAnulCobrada });
       }
     }
-    await aplicarStockComponentesSnapshot(await filtrarDetallesConStockFisico(items), -1);
+    await aplicarStockComponentesSnapshot(await filtrarDetallesConStockFisico(items), -1, movimientoAnulCobrada);
     await cancelarAjustesPendientesVentaReceta(ventaId, {
       usuario: getUsuarioAuditoria(req),
       observaciones_admin: "Cancelado por anulacion de venta cobrada"
@@ -12029,12 +12221,13 @@ app.post("/ventas/:id/anular-cc", async (req, res) => {
       return res.status(409).json({ message: "La venta ya fue anulada o no está pendiente en cuenta corriente." });
     }
 
+    const movimientoAnulCc = { tipo_movimiento: "anulacion", motivo: "Reposición por anulación de venta en cuenta corriente", origen_tipo: "anulacion_cc_pendiente", origen_id: ventaId };
     for (const item of items) {
       if (item.producto_id) {
-        await applyStockChange(item.producto_id, -Number(item.cantidad || 0));
+        await applyStockChange(item.producto_id, -Number(item.cantidad || 0), { movimiento: movimientoAnulCc });
       }
     }
-    await aplicarStockComponentesSnapshot(await filtrarDetallesConStockFisico(items), -1);
+    await aplicarStockComponentesSnapshot(await filtrarDetallesConStockFisico(items), -1, movimientoAnulCc);
     await cancelarAjustesPendientesVentaReceta(ventaId, {
       usuario: getUsuarioAuditoria(req),
       observaciones_admin: "Cancelado por anulacion de venta cuenta corriente"
@@ -13375,7 +13568,7 @@ app.post("/tienda/pedidos/:id/convertir-venta", async (req, res) => {
     if (itemsVenta.some((item) => Array.isArray(item.modificadores) && item.modificadores.length)) {
       await guardarSnapshotsModificadoresVenta(detalles);
     }
-    await applyStockForNewItems(itemsVenta);
+    await applyStockForNewItems(itemsVenta, { movimiento: { tipo_movimiento: "venta", motivo: "Descuento por venta", origen_tipo: "venta", origen_id: venta.lastID } });
     await crearAjustesPendientesVentaReceta({
       ventaId: venta.lastID,
       detalles,

@@ -5172,7 +5172,7 @@ async function testVentaSnapshotsHistoricosF2CCuentaCorrienteYPendientes() {
       const pagoCC = await requestJson(baseUrl, "POST", `/ventas/${ventaCC.data.venta_id}/pagar-cuenta-corriente`, {
         monto_pagado: 50,
         tipo_cobro: "efectivo"
-      }, token);
+      }, token, { "Idempotency-Key": crypto.randomUUID() });
       if (!pagoCC.response.ok) throw new Error(`Pago CC F2C fallo: ${pagoCC.data?.message || pagoCC.response.status}`);
       const ventaCCPago = await getVentaDb(dbPath, ventaCC.data.venta_id);
       assertApprox(ventaCCPago.total_venta_original, 200, "F2C pago CC no debe modificar total_venta_original");
@@ -5350,7 +5350,7 @@ async function testCuentaCorrienteSeparaVentaHistoricaYDeudaF2D() {
       const pagoParcial = await requestJson(baseUrl, "POST", `/ventas/${ventaCC.data.venta_id}/pagar-cuenta-corriente`, {
         monto_pagado: 1000,
         tipo_cobro: "efectivo"
-      }, token);
+      }, token, { "Idempotency-Key": crypto.randomUUID() });
       if (!pagoParcial.response.ok) throw new Error(`Pago parcial F2D fallo: ${pagoParcial.data?.message || pagoParcial.response.status}`);
       ventaDb = await getVentaDb(dbPath, ventaCC.data.venta_id);
       assertApprox(ventaDb.total, 3500, "F2D pago parcial no debe cambiar ventas.total");
@@ -5367,7 +5367,7 @@ async function testCuentaCorrienteSeparaVentaHistoricaYDeudaF2D() {
       const pagoTotal = await requestJson(baseUrl, "POST", `/ventas/${ventaCC.data.venta_id}/pagar-cuenta-corriente`, {
         monto_pagado: 3500,
         tipo_cobro: "efectivo"
-      }, token);
+      }, token, { "Idempotency-Key": crypto.randomUUID() });
       if (!pagoTotal.response.ok) throw new Error(`Pago total F2D fallo: ${pagoTotal.data?.message || pagoTotal.response.status}`);
       ventaDb = await getVentaDb(dbPath, ventaCC.data.venta_id);
       assertApprox(ventaDb.total, 3500, "F2D pago total no debe cambiar ventas.total");
@@ -19540,7 +19540,7 @@ async function testSuspensionAutomaticaPorMora() {
         const monto = Math.min(10, Number(vp.saldo_pendiente));
         const { response: r5 } = await requestJson(baseUrl, "POST", `/ventas/${vp.id}/pagar-cuenta-corriente`, {
           monto_pagado: monto, tipo_cobro: "efectivo", monto_efectivo: monto
-        }, token);
+        }, token, { "Idempotency-Key": crypto.randomUUID() });
         if (!r5.ok) throw new Error(`Test5: cobro de cliente suspendido debe ser posible, dio ${r5.status}`);
       }
   });
